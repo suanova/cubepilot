@@ -2,8 +2,9 @@
 
 **文档状态：** Draft（初稿，待评审）
 **适用范围：** CubeStack 智算云平台 · 平台智能助手模块（AI Assistant / AI Ops）
+**产品名：** CubePilot（仓库 `cubepilot`）
 **架构理念：** 平台能力 API 化，AI Agent 只做编排与决策，不直接操作底层资源
-**文档版本：** v0.2
+**文档版本：** v0.3
 
 # 1\. 引言
 
@@ -39,6 +40,8 @@
 |Agent|具备规划、工具调用、记忆能力的自主智能体，本文档指运行于用户实例中的助手 Agent|
 |Skill / Tool|OpenClaw 的扩展机制：将平台 API 封装为可被 Agent 调用的工具；一个 Skill 可含多个 Tool|
 |MCP|Model Context Protocol，开放工具接入协议，本模块工具统一以 MCP 方式暴露|
+|MCP 网关|助手模块的统一 MCP 入口，聚合自研业务工具与上游 MCP（K8s 等），是所有工具调用的必经授权门|
+|Impersonation|K8s 原生身份代持机制：网关以调用者用户身份向 API Server 发请求，权限判定与审计均以真实用户为准|
 |ChatOps|通过自然语言对话完成平台查询与操作的方式|
 |AI Ops|基于 AI 的智能运维，包括巡检、验证、诊断、自动修复等|
 |RCA|Root Cause Analysis，故障根因分析|
@@ -75,7 +78,7 @@
 
 ## 2\.3 用户角色与权限
 
-助手模块复用平台既有「租户 → 项目 → 用户 → 角色」权限体系，在工具调用层叠加**工具级授权**（详见 4\.3\.2）：
+助手模块复用平台既有「租户 → 项目 → 用户 → 角色」权限体系，在工具调用层叠加**工具级授权**（详见 4\.3\.4）：
 
 |角色|助手可用工具|敏感操作|说明|
 |---|---|---|---|
@@ -102,9 +105,10 @@
 
 ## 3\.1 设计原则
 
-- **能力 API 化，Agent 只做编排** — 所有工具最终调用平台开放 API，Agent 不做底层直连，保证操作受控、可审计、可回滚
+- **能力 API 化，Agent 只做编排** — Agent 是认知引擎（理解意图、规划、纠错）；所有动作经统一 MCP 网关汇聚后调用平台能力，网关是唯一授权门，保证操作受控、可审计、可回滚
 - **最小权限与人在回路** — 工具分级授权：只读自动执行、写操作会话确认、高风险操作必须人工审批
 - **每用户实例、物理隔离** — 每个活跃用户一个独立 Agent 实例与数据目录，隔离边界为进程 + 存储的物理边界，不依赖 Agent 框架的多租户能力
+- **K8s 长尾能力聚合暴露，权限等效用户 kubectl** — Agent 经网关聚合的 K8s 原生 MCP 直接操作 K8s 资源，网关以 Impersonation 代持用户身份，受 RBAC 与集群准入策略约束；超出用户权限的高危动作天然回流审批通道
 - **声明式 Workflow、全程留痕** — 运维流程以声明式 YAML 定义（可版本化、可审计）；会话、工具调用、审批、执行结果均记审计
 - **模型无关与私有化** — Agent 通过统一接口对接 LLM；LLM 优先复用平台推理能力私有化部署，满足完全内网环境
 - **渐进演进** — 第一阶段以 OpenClaw 落地，经 Agent Runtime Adapter 平滑迁移到 Hermes / 自研，隔离与记忆机制不因运行时变化而改变
@@ -132,9 +136,9 @@
 └────────────────────────────┬────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  ④ 技能/工具层（Skills / MCP Server，共享无状态）            │
-│  k8s │ gpustack │ monitoring │ logs │ inference │ asset     │
-│  inspection │ validation │ workflow │ notification           │
+│  ④ 统一 MCP 网关（授权门，共享无状态）                      │
+│  自研业务工具：job / inference / inspection / workflow      │
+│  聚合上游：K8s 原生 MCP（get / apply / logs / exec 等）     │
 └────────────────────────────┬────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -147,9 +151,9 @@
 **分层职责与故障边界：**
 
 - ① 入口层仅做渲染与协议适配，无业务逻辑
-- ② 助手服务层为平台自研，承担全部「平台侧」职责（权限、审批、审计、持久化），是合规边界所在
+- ② 助手服务层为平台自研，承担全部「平台侧」职责（权限、审批、审计、持久化），是合规边界所在（统一 MCP 网关为其工具平面）
 - ③ Agent 实例池以「每用户一个实例」提供**物理隔离**：实例不感知平台多租户模型，只服务「自己的那个用户」，平台约束在 ② 层强制
-- ④ 技能层每个 Skill 封装一类同类平台 API，统一错误标准化与重试
+- ④ 统一 MCP 网关是所有工具调用的必经入口：对内聚合自研业务工具与上游 K8s 原生 MCP，对外合并工具清单，执行授权门（L0/L1/L2）、审批流转、审计与错误标准化
 - ⑤ 平台能力层故障不应导致 ①② 崩溃：助手服务对下游调用有超时、降级与熔断（见 9\.10）
 
 ## 3\.3 数据流向
@@ -159,14 +163,14 @@
                                                               │
                             ┌─────────────┬───────────────────┤
                             ▼             ▼                   ▼
-                     LLM(推理服务)   ④ 技能层(MCP)      平台知识库(RAG)
+                     LLM(推理服务)   ④ MCP 网关(授权门)      平台知识库(RAG)
                             │             │                   │
                             ▼             ▼                   ▼
                         对话/工具决策   ⑤ 平台能力层      检索增强上下文
 ```
 
 - **上行**：用户消息经助手服务鉴权后进入该用户的 Agent 实例，实例结合系统提示词、工具定义、知识库检索结果与 LLM 共同产出「回复文本 + 工具调用序列」
-- **下行**：工具调用经助手服务授权/审批后透传到平台能力层，结果回填 Agent，Agent 汇总后经助手服务流式返回用户
+- **下行**：Agent 的每次工具调用都到达统一 MCP 网关（唯一工具出口），经授权/审批后透传到后端工具与平台能力层，结果回填 Agent，汇总后经助手服务流式返回用户
 - **旁路**：定时巡检 / 告警触发等异步任务由调度器直接驱动 Workflow，结果通过通知渠道触达用户
 
 ## 3\.4 技术选型
@@ -174,7 +178,9 @@
 |能力|第一阶段选型|说明|
 |---|---|---|
 |Agent 运行时|OpenClaw（每用户实例形态）|MIT 协议，原生支持 Skills 与 MCP，多模型适配；以每用户一个实例部署，生命周期由 Instance Manager 管理；预留 Agent Runtime Adapter，可切换 Hermes / 自研|
-|工具接入协议|MCP（Model Context Protocol）|平台自研 MCP Server 统一暴露工具，可被 OpenClaw 直接消费，未来可被其他 MCP 宿主复用|
+|工具接入协议|MCP（Model Context Protocol）|统一 MCP 网关聚合自研业务工具 Server 与上游 MCP；可被各 Agent 运行时消费，未来可被其他 MCP 宿主复用|
+|K8s 长尾能力|上游 K8s 原生 MCP（如 kubernetes-mcp-server，固化版本）|提供 get/apply/logs/exec 等直连能力；网关以 Impersonation 代持用户身份，受 RBAC + 集群准入策略约束|
+|载荷护栏|Kyverno / Pod Security Admission（集群级基线策略）|禁 privileged / hostPath / hostNetwork 等危险载荷，与请求来源（Agent / 人工 kubectl）无关|
 |工作流引擎|平台自研 Workflow CRD（可选引入 OpenClaw ClawFlow）|预置流程以 CRD 承载（可版本化、可审计），复杂可视化编排后期引入 ClawFlow|
 |LLM|私有化开源对话模型（具 Function Calling 能力，Qwen / DeepSeek 等）|模型无关，经平台推理服务或独立助手 LLM 服务提供，OpenAI 兼容接口接入|
 |Embedding / 向量库|BGE 系列 + 向量数据库（【待补充】Milvus / Qdrant 选型）|平台知识库 RAG 检索|
@@ -192,7 +198,8 @@
 |Instance Manager|Infra 节点|Deployment（Controller 模式）|多副本 + Leader Election|
 |Agent 实例池（每用户一个）|Infra 节点|用户级 Pod，按需创建、闲置回收|按用户 1:1；实例重建后从 DB / 数据目录恢复|
 |每用户数据目录|共享存储（Lustre / NFS / PVC）|每用户一个 PV 或共享存储子目录|目录级持久化，随实例挂载/卸载|
-|MCP Server（工具层）|Infra 节点|Deployment，多副本|多副本（所有实例共享调用）|
+|统一 MCP 网关（工具平面）|Infra 节点|Deployment，多副本|多副本（所有实例共享调用）|
+|上游 K8s MCP（聚合后端）|Infra 节点|Deployment|仅经网关聚合调用，不直接暴露给实例|
 |助手 LLM 服务|推理池 GPU 节点|InferenceService（独立命名空间）|minReplicas ≥ 1，HPA 扩缩（所有实例共享）|
 |知识库服务（Embedding + 向量库）|Infra 节点|Deployment|多副本（共享）|
 |调度器（定时巡检/验证）|Infra 节点|Deployment，多副本|Leader Election|
@@ -206,7 +213,7 @@
 **隔离原则：**
 
 - **每用户物理隔离**：不同用户的 Agent 运行在独立实例 Pod 与独立数据目录中，进程与文件系统层面天然隔离，不依赖框架多租户能力（详见 9\.4）。
-- 实例 Pod 以**用户级最小权限身份**运行，不持有集群管理员凭据；所有工具调用仍经助手服务层授权门（见 4\.3\.2）。
+- 实例 Pod **零凭据**（不挂 SA token、不下发用户 Token）；工具调用身份经统一 MCP 网关授权门按连接级凭据解析（见 4\.3\.4）；K8s 直连调用由网关以 Impersonation 代持用户身份（见 4\.3\.3）。
 - 助手模块全部部署在 Infra 节点，不占用 GPU 计算节点；助手 LLM 独立部署在推理池专用节点，与用户推理服务物理隔离；对平台能力层全部走既有 API，不持有底层凭据。
 
 # 4\. 详细设计
@@ -218,7 +225,7 @@
 助手服务层是助手模块的「平台侧中枢」，是**所有用户请求的必经入口**，在 Agent 能力之前强制平台约束（身份、权限、审批、审计、数据隔离）：
 
 - **会话管理**：会话创建、续接、超时、关闭；会话级数据隔离
-- **身份与授权**：解析用户 Token，注入用户/租户/项目上下文；按「工具级授权表」校验工具是否可调用
+- **身份与授权**：解析用户 Token，注入用户/租户/项目上下文；为 Agent 实例与网关建立连接级凭据（工具级授权判定在网关执行，见 4\.3\.4）
 - **审批流转**：敏感工具调用生成审批任务，驱动「用户确认 → 管理员审批 → 放行/拒绝」
 - **流式响应**：将 Agent 的流式输出（文本 + 工具调用状态）转为 SSE 推送前端
 - **审计**：记录消息、工具调用、审批、执行结果全链路审计日志
@@ -240,7 +247,7 @@
 - 对外 REST API（见第 5 章）：会话 CRUD、消息发送与流式接收、审批操作
 - 对 Agent 运行时：通过进程内/进程间接口下发用户消息、回收 Agent 事件流
 - 对下游：调用既有平台 API（K8s / AI Controller / GPUStack / Prometheus / Loki）
-- **上游**：Keycloak、平台 BFF/API 网关；**下游**：Agent 实例池（Instance Manager）、MCP Server、数据服务、消息中心、助手 LLM 服务、知识库服务
+- **上游**：Keycloak、平台 BFF/API 网关；**下游**：Agent 实例池（Instance Manager）、MCP 网关、数据服务、消息中心、助手 LLM 服务、知识库服务
 
 ### 4\.1\.4 工作流程
 
@@ -251,9 +258,9 @@ flowchart TD
     C --> D[Agent 实例编排<br/>LLM 规划 + 工具调用]
     D --> E{是否需要调用工具?}
     E -->|否| F[流式返回回复文本]
-    E -->|是| G[工具级授权校验]
+    E -->|是| G[工具调用经统一 MCP 网关<br/>授权门判定]
     G --> H{操作级别}
-    H -->|只读| I[直接透传工具调用<br/>到 MCP Server]
+    H -->|只读| I[执行工具调用]
     H -->|L1 写操作| J[会话内一键确认]
     J -->|确认| I
     J -->|取消| L[拒绝执行<br/>向用户说明原因]
@@ -276,7 +283,7 @@ flowchart TD
 - **Agent 编排**：执行「接收任务 → LLM 规划 → 调用 Skill → 评估结果 → 汇报」核心循环
 - **实例生命周期**：由 Instance Manager 统一管理——按需创建、预热、闲置回收、异常重建；实例 Pod 无状态化，状态（会话 + 记忆）从 DB / 数据目录恢复
 - **上下文与记忆**：会话上下文组装与窗口守卫；短期记忆随会话，长期记忆为实例原生记忆（存于该用户独立数据目录）
-- **技能调度 / 多通道 / 沙箱**：装配已授权 Skills（平台 MCP Server 为共享无状态服务，各实例统一调用）；Web / IM 消息均落到对应用户实例；脚本执行使用 OpenShell 沙箱
+- **技能调度 / 多通道 / 沙箱**：实例的唯一 MCP 端点指向统一网关（共享无状态，各实例独立连接、连接级身份隔离）；Web / IM 消息均落到对应用户实例；脚本执行使用 OpenShell 沙箱
 
 ### 4\.2\.2 系统提示词与上下文组装
 
@@ -309,7 +316,7 @@ Agent 系统提示词由助手服务在每次请求时动态组装：
 |LLM 规划、工具调用序列|Agent 实例|Agent 核心能力|
 |用户级长期记忆|用户实例（原生记忆 + 数据目录）|随实例隔离，跨用户物理不可达|
 |工具是否允许调用、是否需要审批|助手服务层|平台合规约束，必须在 Agent 之外强制|
-|工具调用的实际执行|助手服务层 → MCP Server|统一鉴权、审计、限流|
+|工具调用的实际执行|MCP 网关 → 后端工具（自研/上游）|统一鉴权、审计、限流|
 |会话/报告/审计持久化|助手服务层|平台数据主权|
 |知识库检索|助手服务层|可被 Agent 与非 Agent 场景复用|
 |实例生命周期管理|Instance Manager|统一生命周期，避免重复创建/泄漏|
@@ -331,14 +338,26 @@ Agent 系统提示词由助手服务在每次请求时动态组装：
 - 工具层统一为标准 MCP，各运行时均以 MCP Client 消费，Adapter 无需关心工具差异
 - 记忆与隔离边界定义在平台侧（实例化 + 数据目录），不依赖运行时内部实现；运行时记忆工具即使有缺陷，也仅影响该用户自己的实例
 - 切换运行时的迁移面：工具定义（MCP）、Workflow（CRD）、会话/审计数据（DB）、实例生命周期（Instance Manager）均不变——仅 Agent 编排语义需适配验证
+- 对 MCP 原生运行时（如 Hermes），Adapter 的工具通道即网关：实例的唯一 MCP 端点指向网关，Agent 的每次 tools/call 天然经过授权门，无需改造运行时
 
 **选型兼容性（OpenClaw → Hermes 为例）**：两者均以 MCP 消费工具、均支持多会话与独立存储目录（`HERMES_HOME`），满足每用户实例部署要求；通过 Adapter 切换即可，隔离机制不因运行时不同而改变。
 
-## 4\.3 工具与技能层（Skills / MCP Server）
+## 4\.3 工具与技能层（统一 MCP 网关）
 
-### 4\.3\.1 工具清单
+### 4\.3\.1 统一 MCP 网关（工具通道收敛）
 
-工具统一以 MCP Server 暴露，每个工具封装一个原子能力，具备「输入校验、权限标记、错误标准化」三要素。**MCP Server 为平台共享无状态服务**，所有用户实例统一调用；工具调用时的鉴权仍按当前会话身份执行，与实例无关。完整设计集工具分类如下（按阶段启用，见 14）：
+所有工具来源聚合为一个网关，Agent 实例只与这一个 MCP 端点交互：
+
+- **通道收敛**：实例 Pod 经 NetworkPolicy 限定唯一工具出口为网关；实例**零凭据**（不挂 SA token、不下发用户 Token）；调用身份由网关按连接级凭据解析，Agent 不能自报身份、不能绕过
+- **来源一：自研业务工具**（4\.3\.2）——粒度原则「业务级 ≥ 平台 API 级」：不做 K8s 式 raw 透传，业务工具以用户意图为粒度，服务端完成参数规范化与资源解析
+- **来源二：上游 K8s 原生 MCP**（4\.3\.3）——补长尾直连能力
+- **网关职责**：合并工具清单（按角色过滤）、执行 L0/L1/L2 授权门、审批流转（第二阶段）、审计、参数校验、错误标准化、上游工具描述消毒
+
+> 网关是助手服务层的工具平面，平台共享无状态（多副本），可独立部署；所有用户实例统一调用，鉴权按连接级身份执行，与实例无关。
+
+### 4\.3\.2 业务工具清单
+
+自研业务工具封装平台/业务 API，每个工具具备「输入校验、权限标记、错误标准化」三要素。完整设计集工具分类如下（按阶段启用，见 14）：
 
 |工具名|封装能力|级别|说明|
 |:--|:--|:--:|:--|
@@ -355,9 +374,35 @@ Agent 系统提示词由助手服务在每次请求时动态组装：
 
 > 工具清单为完整设计集，按阶段启用（见 14）：L0/L1 ChatOps 工具随第一阶段上线；inspection/workflow 等 AI Ops 工具随第二阶段；L2 高风险工具随第二阶段审批闭环启用。新增工具必须通过「工具评审」：明确权限级别、输入校验规则、错误语义与审计字段。
 
-### 4\.3\.2 工具级授权模型
+### 4\.3\.3 K8s 直连工具聚合（上游 MCP）
 
-**工具授权表（ToolPolicy）** 由平台管理员维护，定义「角色 × 工具」的可用性与操作级别：
+为覆盖业务工具之外的长尾操作（任意资源查询、apply/patch、exec 调试等），网关聚合上游 K8s 原生 MCP（如 kubernetes-mcp-server，固化版本）。Agent 由此获得**「等效于用户自己 kubectl」**的直连能力，同时保持零凭据与单一咽喉点。
+
+**身份代持（Impersonation）**：网关持有部署于 Infra 节点的代持 SA，转发 K8s 调用时带 `Impersonate-User: <当前用户>`；API Server 以**用户自身 RBAC** 判定权限，K8s Audit Log 同时记录真实用户与代持者。用户凭据不下发到任何实例或上游组件。
+
+**动词分级映射（ToolPolicy 扩展规则，按阶段启用）**：
+
+|上游工具模式|级别|阶段|说明|
+|---|---|---|---|
+|`k8s.get / list / watch / logs`|L0|一|只读直放|
+|`k8s.apply / patch / scale`|L1|一|会话内硬确认|
+|`k8s.delete`|L1 / L2|二|本人项目资源 L1；共享或平台级资源 L2|
+|`k8s.exec / port-forward`|L2|二|进入容器 / 端口转发，需审批|
+
+**多重护栏（任一失守仍有兜底）**：
+
+- **RBAC**：用户角色本不具备的权限（跨项目、平台级资源），直连同样 403；超出 kubectl 权限的高危动作天然回流业务工具的审批通道
+- **准入策略**：Kyverno / Pod Security Admission 基线（见 9\.6），禁 privileged / hostPath / hostNetwork 等危险载荷，集群级强制，与请求来源无关
+- **网关控制**：上游工具白名单（仅聚合评审过的工具）、工具描述消毒/覆盖（防上游描述投毒，以网关登记描述为准）、版本固定、升级走工具评审 + 回归评测
+- **归属解析**：apply / patch 类调用的资源归属以 manifest 内容（`kind` + `metadata.namespace`）解析为准，不信任 args 顶层字段；命名空间不在调用者项目集合内按越权拒绝（错误码 45300）
+- **质量引导**：apply 类工具描述引导先 server-side dry-run 再正式提交，降低手写 YAML 的错误率；`dry_run=true` 的 apply 不改变集群状态，按效果定级为 L0 直放（免确认），仅正式提交进入 L1 挂起-确认（见 4\.3\.5）
+- **关键 CRD 写保护**：`k8s.apply / patch` 命中关键 CRD（TrainingJob / InferenceService / DevEnvironment 等）时，网关强制路由回业务工具（参数规范化 + L1 确认）；直连通道对关键 CRD 仅开放读与调试
+
+> TrainingJob / InferenceService 等 CRD 也是 K8s 资源，直连通道天然可读；但关键 CRD 的创建与变更经网关强制路由回业务工具（参数规范化 + L1 确认，见上），直连仅作为读与调试补充。
+
+### 4\.3\.4 工具级授权模型
+
+**工具授权表（ToolPolicy）** 由平台管理员维护，定义「角色 × 工具」的可用性与操作级别；自研业务工具直接登记，上游聚合工具按 4\.3\.3 动词映射归级：
 
 |授权级别|定义|执行方式|
 |---|---|---|
@@ -365,15 +410,15 @@ Agent 系统提示词由助手服务在每次请求时动态组装：
 |L1 · 写操作|改变业务资源状态但可回退/影响可控|会话内一键确认后执行|
 |L2 · 高风险|删除、重建、跨项目/跨租户影响、影响可用性|生成审批任务，审批人审批后执行（第二阶段启用）；双人复核为第三阶段可选扩展|
 
-**授权判定链（每次工具调用强制）**：① 身份与项目归属 → ② 资源归属校验（复用平台 RBAC，资源必须属于用户有权访问的租户/项目）→ ③ 操作级别判定（查 ToolPolicy）→ ④ L1 会话确认 / L2 审批流转（第二阶段）/ 未授权拒绝 → ⑤ 写审计日志（请求方、资源、操作、审批人、结果）。
+**授权判定链（网关对每次工具调用强制执行）**：① 身份与项目归属（连接级凭据解析）→ ② 资源归属校验（复用平台 RBAC，资源必须属于用户有权访问的租户/项目）→ ③ 操作级别判定（查 ToolPolicy）→ ④ L1 会话确认 / L2 审批流转（第二阶段）/ 未授权拒绝 → ⑤ 写审计日志（请求方、资源、操作、审批人、结果）。
 
-> 工具调用一律由助手服务中转执行并携带当前会话身份，Agent 实例不直接访问 MCP Server。第一阶段不启用 L2 审批：L2 高风险工具不向普通用户开放（不挂载，管理员经平台 Portal 手工执行）。
+> 工具调用一律经统一 MCP 网关中转执行并携带连接级身份，Agent 实例不直接访问任何后端工具或平台 API。第一阶段不启用 L2 审批：L2 高风险工具不向普通用户开放（不挂载，管理员经平台 Portal 手工执行）。
 
-### 4\.3\.3 审批流程（第二阶段启用）
+### 4\.3\.5 审批流程（第二阶段启用）
 
 ```mermaid
 flowchart LR
-    A[Agent 发起 L2 工具调用] --> B[助手服务生成审批任务]
+    A[Agent 发起 L2 工具调用] --> B[网关拦截并生成审批任务]
     B --> C[通知审批人<br/>Portal 消息中心/飞书/邮件]
     C --> D{审批人处理}
     D -->|批准| E[执行工具调用]
@@ -384,8 +429,9 @@ flowchart LR
 
 - 审批人与审批链：默认「同租户内上级角色」单级审批；平台级高风险操作需平台管理员审批；多级顺序审批链/审批人矩阵为第三阶段扩展（见 14.3）
 - 审批留痕：审批动作（谁、何时、同意/拒绝、备注）写入审批任务与审计日志；审批通知含操作说明、影响面、资源快照
+- 审批数据由助手服务层管理，网关通过助手服务 API 创建/查询审批任务
 
-### 4\.3\.4 工具错误标准化
+### 4\.3\.6 工具错误标准化
 
 工具统一返回 `{success, data | error}`，错误分类：
 
@@ -662,7 +708,8 @@ sequenceDiagram
     participant AS as 助手服务
     participant IM as Instance Manager
     participant AG as Agent 实例(该用户)
-    participant MCP as MCP Server(共享)
+    participant GW as MCP网关(授权门)
+    participant BE as 后端工具(自研/上游K8s)
     participant K8s as 平台能力(K8s/监控)
 
     U->>P: 发送消息
@@ -680,13 +727,13 @@ sequenceDiagram
     AG->>AG: LLM 规划
     AG-->>AS: event: agent_thinking
     AS-->>P: event: agent_thinking
-    AG->>AS: 发起 job.query(L0)
-    AS->>AS: 授权判定: L0 通过
-    AS->>MCP: 透传工具调用(携带会话身份)
-    MCP->>K8s: 查询资源状态
-    K8s-->>MCP: 返回结果
-    MCP-->>AS: 标准结果
-    AS-->>AG: 回填工具结果
+    AG->>GW: 调用 job.query(L0)
+    GW->>GW: 授权判定: L0 通过(连接级身份)
+    GW->>BE: 转发工具调用
+    BE->>K8s: 查询资源状态
+    K8s-->>BE: 返回结果
+    BE-->>GW: 结果
+    GW-->>AG: 标准结果
     AG->>AG: 汇总生成回复
     AG-->>AS: 完成事件
     AS-->>P: event: tool_call / tool_result / message_delta
@@ -700,22 +747,25 @@ sequenceDiagram
 sequenceDiagram
     participant U as 用户
     participant AG as Agent 实例(该用户)
-    participant AS as 助手服务
+    participant GW as MCP网关(授权门)
+    participant AS as 助手服务(审批)
     participant AP as 审批人
-    participant MCP as MCP Server
+    participant BE as 后端工具
 
     U->>AG: 「重启那个崩溃的 Pod」
-    AG->>AS: 发起 pod.restart(L2)
-    AS->>AS: 授权判定: L2 需审批
-    AS-->>AG: event: approval_required
+    AG->>GW: 调用 pod.restart(L2)
+    GW->>GW: 授权判定: L2 需审批
+    GW-->>AG: APPROVAL_REQUIRED(apr-001)
     AG-->>U: 提示需要审批
-    AS->>AP: 创建审批任务并通知
+    GW->>AS: 创建审批任务
+    AS->>AP: 通知审批人
     AP->>AS: 审批(批准)
-    AS->>MCP: 执行 pod.restart
-    MCP-->>AS: 执行结果
-    AS->>AG: 回填结果
+    AS->>GW: 审批通过
+    GW->>BE: 执行 pod.restart(代持用户身份)
+    BE-->>GW: 执行结果
+    GW-->>AG: 结果回填
     AG-->>U: 汇报执行结果
-    AS->>AS: 审计落库(含审批链路)
+    GW->>GW: 审计落库(含审批链路)
 ```
 
 ## 7\.3 每日巡检
@@ -900,12 +950,13 @@ stateDiagram-v2
 
 - 统一 Keycloak OIDC 鉴权，助手服务从 Token 解析 `user_id / tenant_id / project_id / role`，**不信任客户端自报身份**
 - 工具调用的资源归属校验复用平台 RBAC：目标资源必须属于用户有权访问的命名空间/项目
-- 助手服务持有的平台凭据为**最小范围 ServiceAccount / API Key**，禁止使用集群管理员凭据
+- 助手服务/网关持有的平台凭据为**最小范围 ServiceAccount / API Key**；网关代持 SA 仅具限定对象的 impersonate 权限并定期审计（见 4\.3\.3），禁止使用集群管理员凭据
 
 ## 9\.2 工具级权限
 
-- ToolPolicy 按「角色 × 工具 × 资源范围」授权，L0/L1/L2 分级（见 4\.3\.2）
-- 授权判定在**助手服务层**强制执行，Agent 实例无权绕过（职责边界见 4\.2\.4）
+- ToolPolicy 按「角色 × 工具 × 资源范围」授权，L0/L1/L2 分级（见 4\.3\.4）；聚合的上游工具按动词映射归级（见 4\.3\.3）
+- 授权判定在**统一 MCP 网关**强制执行；实例 Pod 零凭据、NetworkPolicy 限定唯一工具出口，Agent 实例无权绕过（职责边界见 4\.2\.4）
+- K8s 直连调用经 Impersonation 代持用户身份，同时受 API Server 端 RBAC 与 Kyverno/PodSecurity 准入策略约束（见 9\.6）
 - 平台管理员可随时调整工具策略，变更即时生效并记录审计
 
 ## 9\.3 敏感操作审批
@@ -919,13 +970,15 @@ stateDiagram-v2
 
 |隔离维度|实现机制|
 |---|---|
-|**进程隔离**|每个用户运行独立实例 Pod，互不共享进程与内存；实例以用户级最小权限身份运行，不持有平台底层凭据|
+|**进程隔离**|每个用户运行独立实例 Pod，互不共享进程与内存；实例零凭据（不挂 SA token、不下发用户 Token）|
 |**存储隔离**|每个用户拥有独立数据目录（HERMES_HOME / 记忆文件），挂载于该用户实例；不同用户目录由存储层 ACL/配额强制隔离（必选），即使实例被绕过也无法读取他人数据目录|
 |**会话隔离**|会话数据按 `user_id + tenant_id + project_id` 强隔离（DB 层），跨租户会话互不可见|
 |**框架不可信假设**|即使 Agent 运行时的记忆/工具存在缺陷（如记忆越权写入），也只影响该用户自己的实例与目录，无法越出物理边界|
 |**知识库权限**|知识库条目按权限标注（公开/租户/内部），RAG 检索结果按用户权限过滤|
 |**资源归属校验**|工具调用仍受资源归属校验约束，Agent 无法查询无权限的租户/项目资源|
 |**敏感内容**|历史消息、RCA 报告含敏感内容时，展示与导出均受权限控制|
+
+**工具通道收敛（防绕过的四道墙）**：① 配置注入——实例的唯一 MCP 端点由平台注入，指向网关；② NetworkPolicy——实例出网白名单仅网关与 LLM 端点，不可直连 K8s API / 平台组件；③ 零凭据——不挂 SA token、不下发用户 Token，任何旁路直连均 401/403；④ 身份绑定——用户身份取自网关连接级凭据解析，Agent 自报无效。
 
 > **为什么不用共享实例 + 逻辑隔离**：逻辑隔离靠「会话绑定 + 授权门 + 记忆作用域化」在共享实例内模拟隔离，正确性依赖多层补偿控制——任何一个环节遗漏（如框架记忆工具越权读写、上下文串扰）都可能跨用户泄露；物理隔离把边界放到实例本身，隔离「免费获得、可审计、出错只影响单个用户」，平台只需维护「一用户一实例一目录」的极简机制。
 
@@ -935,10 +988,31 @@ stateDiagram-v2
 - **输出护栏**：工具返回的非信任内容（日志、错误信息）作为**数据**而非指令传入 LLM，由助手服务显式标记
 - **行为兜底**：即使发生提示注入，工具授权与审批仍为不可绕过的安全边界
 
-## 9\.6 沙箱执行
+## 9\.6 沙箱执行与实例加固
 
-- 需执行脚本/命令的运维场景统一在 OpenShell 沙箱执行
-- 沙箱限制：网络白名单（仅内网平台 API）、文件系统隔离、CPU/内存限额、执行审计；禁止访问平台凭据与宿主机敏感路径
+**实例 Pod 加固基线**（所有用户实例强制）：
+
+```yaml
+spec:
+  automountServiceAccountToken: false        # 零凭据，或绑定零权限 SA
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        readOnlyRootFilesystem: true
+      volumeMounts: [仅挂该用户数据目录]       # 无 hostPath
+# 配套 NetworkPolicy：egress 仅 MCP 网关 + LLM 端点
+# 镜像基线：最小化，不含 kubectl / 平台 CLI
+```
+
+**本地工具收敛**：Hermes/OpenClaw 自带本地工具（Shell、文件）只在实例内执行，作用域被关死在沙箱与用户数据目录内，够不到平台资源；可用 disabled_toolsets 收窄，但不作为安全边界依赖。
+
+**危险载荷护栏（集群级）**：所有用户命名空间启用 Pod Security Admission（restricted）+ Kyverno 基线策略——禁 privileged / hostPath / hostNetwork / hostPID、限镜像仓库、强制资源 limits。该护栏与请求来源无关（Agent 直连、业务工具、人工 kubectl 同样受约束）。
+
+**脚本沙箱**：需执行脚本/命令的运维场景统一在 OpenShell 沙箱执行；网络白名单、文件系统隔离、CPU/内存限额、执行审计，禁止访问平台凭据与宿主机敏感路径。
 
 ## 9\.7 审计
 
@@ -960,6 +1034,7 @@ stateDiagram-v2
 |工具级|单工具调用频控（如 job.submit 1/min），防误触发|
 |LLM 级|助手 LLM 服务独立配额，防单会话耗尽平台推理资源|
 |审批级|同一资源重复审批任务合并/去重|
+|网关级|单用户维度聚合频控（含 K8s 直连调用），防单用户压垮 API Server 或 LLM|
 |实例池级|并发活跃实例数上限（按 Infra 容量配置），防实例风暴；Instance Manager 单主限流创建|
 
 ## 9\.10 错误处理与降级
@@ -987,7 +1062,7 @@ stateDiagram-v2
 |指标类别|指标|来源|
 |---|---|---|
 |对话/体验|会话数、消息数、首 Token 延迟、回复总延迟、流式中断率|Assistant Service / LLM 指标|
-|智能|工具调用次数、成功率、L0/L1/L2 分布、审批通过率、审批平均耗时|Assistant Service 指标|
+|智能|工具调用次数、成功率、L0/L1/L2 分布、审批通过率、审批平均耗时|MCP 网关 / Assistant Service 指标|
 |成本|LLM Token 消耗（输入/输出）、模型调用次数|Assistant Service / 助手 LLM 指标|
 |运维|巡检执行时长、巡检异常项分布、验证成功率、RCA 置信度分布|Controller / CRD 指标|
 |实例池|活跃/预热/回收实例数、冷启动时长（P95）、闲置回收率、实例重建率、每实例资源占用|Instance Manager 指标|
@@ -995,9 +1070,9 @@ stateDiagram-v2
 
 ## 10\.2 日志与追踪
 
-- 助手服务结构化日志（含 `conversation_id / user_id / tool_call_id` 关联字段）、Agent 运行时日志（OpenClaw）、MCP Server 日志分级采集，接入 Loki
+- 助手服务结构化日志（含 `conversation_id / user_id / tool_call_id` 关联字段）、Agent 运行时日志（OpenClaw）、MCP 网关日志分级采集，接入 Loki
 - 工具调用与审批事件写入审计日志（见 6\.7），与运行日志分离；热数据 7 天、冷数据 30 天（可调）
-- 链路追踪：OpenTelemetry，覆盖「入口 → 助手服务 → Agent → LLM → MCP → 下游 API」；关键 span：LLM 调用、工具调用、审批等待；复用平台追踪后端（Jaeger / Tempo，见主文档 11\.4【待补充】）
+- 链路追踪：OpenTelemetry，覆盖「入口 → 助手服务 → Agent → LLM → MCP 网关 → 后端工具/平台 API」；关键 span：LLM 调用、工具调用、审批等待；复用平台追踪后端（Jaeger / Tempo，见主文档 11\.4【待补充】）
 
 ## 10\.3 告警
 
@@ -1050,7 +1125,7 @@ stateDiagram-v2
 |测试层级|测试内容|执行时机|
 |---|---|---|
 |单元测试|工具权限判定、审批流转、错误标准化、会话管理逻辑|每次代码提交|
-|集成测试|MCP Server ↔ 平台 API 适配、助手服务 ↔ Agent 运行时、审批与审计链路|每次 PR / 每日构建|
+|集成测试|MCP 网关 ↔ 后端工具/平台 API 适配、助手服务 ↔ Agent 运行时、审批与审计链路|每次 PR / 每日构建|
 |E2E 测试|完整对话流（问答 → 工具调用 → 审批 → 执行 → 汇报）、巡检、验证、RCA|版本发布前|
 |智能评测|意图识别、工具选择、拒绝越权、回复质量评测集|版本发布前 / 定期回归|
 |安全 / 性能 / 故障注入|Prompt 注入、越权、审批绕过、隔离、沙箱逃逸；并发与 LLM 吞吐；下游故障、审批超时|版本发布前 / 定期|
@@ -1067,14 +1142,15 @@ stateDiagram-v2
 
 ## 13\.1 部署形态
 
-助手模块以 Helm Chart（`cubestack-assistant`）交付，纳入平台总装 Chart 依赖管理，随平台一键部署：
+助手模块（CubePilot）以 Helm Chart（`cubepilot`）交付，纳入平台总装 Chart 依赖管理，随平台一键部署：
 
 |组件|Chart 子项|副本|说明|
 |---|---|---|---|
 |Assistant Service|`assistant-service`|2|无状态，水平扩展|
 |Instance Manager|`assistant-instance-manager`|1（Leader）|Agent 实例生命周期管理（Controller 模式）|
 |Agent 实例池|`agent-runtime`（OpenClaw，每用户一个实例）|按需 0~N|用户级 Pod，实例镜像 + 每用户数据目录挂载；闲置回收|
-|MCP Server|`assistant-mcp`|2|无状态（共享）|
+|统一 MCP 网关|`assistant-mcp-gateway`|2|无状态（共享）；聚合自研工具与上游 K8s MCP|
+|上游 K8s MCP|`assistant-k8s-mcp`|2|网关聚合后端，不直接暴露；身份由网关注入|
 |调度器|`assistant-scheduler`|1（Leader）|定时巡检/验证/RCA 触发|
 |知识库服务|`assistant-knowledge`|2|Embedding + 向量库（外部依赖可选）|
 |助手 LLM 服务|`assistant-llm`（InferenceService）|1~N|独立推理池，HPA 扩缩（共享）|
@@ -1082,13 +1158,14 @@ stateDiagram-v2
 ## 13\.2 依赖组件
 
 - **平台既有**：Keycloak、数据服务、Redis、消息中心、Prometheus / Loki / Alertmanager、K8s、AI Controller、GPUStack
-- **新增**：向量数据库（【待补充】选型）、助手 LLM 模型镜像（含工具调用能力）、BGE Embedding 模型、Agent 实例镜像（含 OpenClaw / Hermes 运行时）
+- **新增**：向量数据库（【待补充】选型）、助手 LLM 模型镜像（含工具调用能力）、BGE Embedding 模型、Agent 实例镜像（含 OpenClaw / Hermes 运行时）、上游 K8s MCP 镜像（固化版本）
+- **集群级护栏**：随平台集群交付 Kyverno / Pod Security Admission 基线策略；为网关配置代持 SA（限定对象 impersonate 权限，Infra 节点）
 - **存储依赖**：每用户数据目录依赖共享文件系统（Lustre / NFS）或动态 PVC（按用户动态创建）
 - **离线交付**：所有镜像、模型文件、Helm Chart 随安装包内化（见主文档 14\.5）
 
 ## 13\.3 升级与回滚
 
-- **升级顺序**：CRD → Instance Manager / Controller / 调度器 → Assistant Service → Agent 实例镜像 → 前端
+- **升级顺序**：CRD → Instance Manager / Controller / 调度器 → Assistant Service / MCP 网关 → 上游 K8s MCP（版本固化，升级走工具评审）→ Agent 实例镜像 → 前端
 - **Agent 实例滚动升级**：实例为无状态 Pod（状态在 DB / 数据目录），升级实例镜像 = 滚动重建实例，会话与记忆不受影响；可分批灰度（先预热池，后按用户）
 - **向后兼容**：Conversation / Audit / AssistantInstance 数据模型向前兼容；工具定义变更兼容旧会话
 - **回滚**：`helm rollback` 分钟级回滚；CRD 变更遵循多版本并存 + Conversion Webhook（见主文档 6\.7）
@@ -1097,7 +1174,7 @@ stateDiagram-v2
 ## 13\.4 离线部署
 
 - 助手 LLM / Embedding 模型以离线模型文件随安装包提供，支持从内置模型库选择版本
-- 向量数据库、MCP Server、Agent 实例镜像（OpenClaw / Hermes）全部离线化
+- 向量数据库、MCP 网关、上游 K8s MCP 镜像、Agent 实例镜像（OpenClaw / Hermes）全部离线化
 - 每用户数据目录底层存储（Lustre / NFS / PVC）随平台存储体系就绪，首次部署自动创建目录规划与权限模板
 - 首次部署自动完成：助手 LLM 服务创建 → 知识库初始化（导入内置文档）→ 预置 Workflow 注册 → 默认 ToolPolicy 下发 → Instance Manager 预热池初始化
 
@@ -1109,13 +1186,14 @@ stateDiagram-v2
 
 **做（仅以下）**：
 - 每用户按需实例池：Instance Manager + 用户级实例 + 冷启动/闲置回收（预热池可选）
+- 统一 MCP 网关：自研业务工具 + 聚合上游 K8s MCP（L0/L1 动词：get/list/watch/logs/apply/patch/scale，Impersonation 代持）；Kyverno/PSS 基线随集群交付
 - 对话问答 + 自然语言操作（ChatOps）：L0 只读自动执行、L1 写操作会话内一键确认
 - 平台知识库（RAG）基础问答
 - 全链路审计（会话、工具调用、执行结果）
 - 通知（站内消息中心 + 邮件）；入口：Portal 对话页 / 悬浮窗
 
 **不做**：
-- L2 高风险工具不开放（不挂载，管理员经平台 Portal 手工执行）
+- L2 高风险工具不开放（不挂载，管理员经平台 Portal 手工执行）；K8s 直连 L2 动词（delete / exec / port-forward）同步不开放 → 第二阶段
 - 审批闭环（审批任务 / 审批 API / 审批流）→ 第二阶段
 - AI Ops（巡检、推理服务验证、Workflow、RCA、自动修复）→ 第二阶段
 - IM 通道（飞书 / 企业微信）→ 第二阶段
@@ -1123,7 +1201,7 @@ stateDiagram-v2
 
 ## 14\.2 第二阶段：审批闭环与智能运维
 
-- 审批闭环：L2 审批（单级）+ 审批 API + 审批通知 + 超时默认拒绝
+- 审批闭环：L2 审批（单级）+ 审批 API + 审批通知 + 超时默认拒绝；K8s 直连 L2 动词（delete / exec / port-forward）随审批闭环启用
 - AI Ops：每日巡检、推理服务自动验证、预置 Workflow、故障诊断与 RCA
 - 自动修复（Auto-Fix）白名单受控启用
 - IM 通道（飞书 / 企业微信）：ChatOps + 审批 + 报告推送
@@ -1151,6 +1229,10 @@ stateDiagram-v2
 |ISSUE-009|助手 LLM 服务与用户推理服务在推理池的隔离策略复核|高|待验证|避免相互影响|
 |ISSUE-010|对话/审计数据的加密与保留策略细化|中|待补充|合规要求确认|
 |ISSUE-011|每用户数据目录底层存储选型（Lustre / NFS / PVC）与容量/权限设计|高|待设计|目录权限隔离、配额、备份策略|
-|ISSUE-012|实例 Pod 用户级最小凭据与授权门联调（防实例越权）|高|待设计|实例凭据范围、工具调用归属校验|
+|ISSUE-012|实例 Pod 零凭据与 NetworkPolicy 收敛验证（防实例越权直连）|高|待设计|出网白名单、不挂 SA token、旁路直连拒绝用例|
 |ISSUE-013|预热池大小与空闲回收参数调优（体验 vs 成本）|中|待调优|按用户活跃度画像配置|
 |ISSUE-014|Agent Runtime Adapter 契约与 OpenClaw / Hermes 迁移验证|中|待验证|进入/返回契约、事件流语义对齐|
+|ISSUE-015|K8s 上游 MCP 选型与版本固化（kubernetes-mcp-server 等）与供应链评审|高|待评估|含工具白名单初始集合|
+|ISSUE-016|网关 Impersonation 代持 SA 的权限收窄与审计|高|待设计|仅 impersonate 限定范围主体，定期审计|
+|ISSUE-017|上游动词分级映射表初始内容与评审（delete/exec 细化）|高|待设计|与 4\.3\.3 对齐，安全团队评审|
+|ISSUE-018|上游工具描述消毒/覆盖策略实现|中|待设计|防描述投毒；以网关登记描述为准|
