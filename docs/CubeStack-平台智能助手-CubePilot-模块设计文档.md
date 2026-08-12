@@ -6,7 +6,7 @@
 **架构理念：** 平台能力 API 化，AI Agent 只做编排与决策，不直接操作底层资源
 **文档版本：** v0.2
 
-> **本文档定位**：设计层文档，描述 CubePilot 的模块架构与关键机制，与 [《功能需求细化文档 v0.5》](./CubeStack-平台智能助手-CubePilot-功能需求细化文档.md) 对齐（需求编号 `FR-M{域}-{序号}` / `NFR-{序号}`）。实现层面的方案取舍（如 kubectl 直连、Instance Manager、kubeconfig 注入等）见 [design-notes/implementation-details-from-requirements.md](./design-notes/implementation-details-from-requirements.md)，本文档只保留必要的机制说明。
+> **本文档定位**：设计层文档，描述 CubePilot 的模块架构与关键机制，与 [《功能需求细化文档 v0.5》](./CubeStack-平台智能助手-CubePilot-功能需求细化文档.md) 对齐（需求编号 `FR-M{域}-{序号}` / `NFR-{序号}`），是唯一的设计文档。实现层面的方案取舍（kubectl 直连、Instance Manager、kubeconfig 注入、工具双通道、HITL 双方案等）在 §4 核心扩展点中作为预留点集中说明。
 
 ---
 
