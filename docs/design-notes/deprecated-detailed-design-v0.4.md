@@ -1,5 +1,7 @@
 # CubeStack 平台智能助手模块详细设计文档
 
+> ⚠️ **已废弃（deprecated）**：本详细设计文档已被 [《CubePilot 模块设计文档 v0.2》](../CubeStack-平台智能助手-CubePilot-模块设计文档.md) 取代。现作为**重写阶段二/三详细设计时的参考底稿**保留于此，仅供查阅，请勿作为现行设计使用。架构模型（5 层）与阶段划分（HITL/审计列阶段一等）已过时，与当前模块设计文档的 M1-M6 功能域划分及「MCP Gateway 预留」方向不一致。
+
 **文档状态：** Draft（初稿，待评审）
 **适用范围：** CubeStack 智算云平台 · 平台智能助手模块（AI Assistant / AI Ops）
 **产品名：** CubePilot（仓库 `cubepilot`）
