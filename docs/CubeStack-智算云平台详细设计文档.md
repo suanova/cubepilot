@@ -125,7 +125,7 @@ CubeStack 的定位是企业级 AI Infrastructure Platform，而不是 AI Framew
 
 平台的资源组织遵循「租户 → 项目 → 业务资源」三级层级模型，以项目作为资源隔离的基本边界。
 
-![resource\-hierarchy\.png](图片和附件/resource-hierarchy.png)
+![resource\-hierarchy\.png](images/resource-hierarchy.png)
 
 ### 2\.3\.1 层级定义
 
@@ -177,7 +177,7 @@ CubeStack 的定位是企业级 AI Infrastructure Platform，而不是 AI Framew
 
 - **幂等可重入** — 所有部署与运维操作具备幂等性，失败后可安全重跑
 
-![architecture\_diagram\.png](图片和附件/architecture_diagram.png)
+![architecture\_diagram\.png](images/architecture_diagram.png)
 
 ## 3\.2 组件架构图
 
@@ -2246,7 +2246,7 @@ OpenClaw 作为平台智能运维 Agent，通过统一的工具接口访问 Kube
 
 - ChatOps
 
-![ChatGPT Image 2026年8月4日 23\_00\_06\.png](图片和附件/ChatGPT%20Image%202026年8月4日%2023_00_06.png)
+![ChatGPT Image 2026年8月4日 23\_00\_06\.png](images/ChatGPT-Image-2026年8月4日-23_00_06.png)
 
 # 17\. 待解决问题
 
