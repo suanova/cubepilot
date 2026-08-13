@@ -51,8 +51,8 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | HITL | Human-in-the-loop，写/高风险操作由操作人本人确认后执行 |
 | 确认规则 | 平台维护的「操作 → 是否需要确认」规则表，下发为运行时钩子 |
 | 能力目录 | 平台能力（CRD）登记为 Agent 可发现的能力清单（FR-M3-006） |
-| 定时 AI 任务 | 用户创建的定时/触发 Agent 任务，复用 OpenClaw cron 调度，以创建者身份 + RBAC 执行 |
-| 任务模板 | 预置 Skill（内容 + 所需权限提示）+ 预置 cron 配置（调度），巡检是其中之一 |
+| 定时 AI 任务 | 用户创建的定时/触发 Agent 任务，由平台调度器按任务模板（cron 配置）触发，以创建者身份 + RBAC 执行 |
+| 任务模板 | TaskTemplate CRD：Skill 引用 + cron 配置 + 创建者 + 所需权限提示，巡检是其中一种预置模板 |
 | OpenClaw | 第一阶段 Agent 运行时 |
 | Hermes | 预留的替代 Agent 运行时（隔离与记忆机制同构） |
 
@@ -83,7 +83,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | 每用户实例（非共享） | 物理隔离（NFR-002）要求 Pod 级隔离，共享实例无法满足「用户间不可互访」 |
 | kubectl 直连（非自研 API 封装） | 平台资源皆为 CRD，kubectl 已覆盖；凭据直连等效用户本人操作，权限交 K8s RBAC |
 | 能力目录/任务报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
-| 定时任务经 M2 执行 | 巡检等定时任务由调度器触发，经 M2 Agent 实例执行（创建者身份 + Skill），用 isolated cron session 与对话解耦 |
+| 定时任务经 M2 执行 | 巡检等定时任务由平台调度器触发，到点拉起实例、经 M2 Agent 实例执行（创建者身份 + Skill），独立会话与对话解耦 |
 | OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离与记忆机制同构便于迁移 |
 
 ---
@@ -131,7 +131,7 @@ flowchart TB
 | M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文组装（实例级配置 + 动态会话历史） | 知识注入 hook（→ RAG） |
 | M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes/自研） |
 | M3 工具域 | 平台能力操作化、能力目录、确认判定 | 平台资源操作 + 能力目录；写操作直放 | MCP Gateway（→ 多 MCP Server 聚合 + 统一 HITL） |
-| M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 任务报告 CRD | 定时任务（cron + Skill）→ 推理验证 / RCA |
+| M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 任务报告 CRD | 定时任务（调度器 + 任务模板）→ 推理验证 / RCA |
 | M5 审计域 | 工具调用与确认记录（阶段二） | — | `tool_call_record` 表 → 审计治理 |
 | M6 平台集成 | 凭据管理、下游接入 | 用户凭据生成/注入、K8s+LLM 联通 | 非 K8s 数据源接入（GPUStack/Prometheus 等） |
 
@@ -163,9 +163,9 @@ M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 | 助手服务 | 无状态 Deployment ×2 | M1+M3+M5 | 会话/消息/上下文组装、工具编排、审计写入 | → Instance Manager、Agent 实例、PG/Redis、CRD |
 | Instance Manager | 单副本（Leader） | M2 | 实例拉起/回收/自愈、预热池 | → K8s API（拉起 Agent Pod） |
 | Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
-| 调度器 | 复用 OpenClaw cron | M4 | 定时/手动触发任务 | → M2 Agent 实例 |
+| 调度器 | 单副本（Leader） | M4 | 读 TaskTemplate CRD，到点拉起实例注入任务 | → Instance Manager、Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
-| 能力目录 / 任务报告 | CRD | M3/M4 | 能力契约 / 任务报告资产 | ← 助手服务、调度器 |
+| 能力目录 / 任务模板 / 任务报告 | CRD | M3/M4 | 能力契约 / 调度定义 / 任务报告资产 | ← 助手服务、调度器 |
 | 存储 | PostgreSQL + Redis + 每用户独立 PVC | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
 
 ## 3.4 核心扩展点总览
@@ -178,7 +178,7 @@ M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 | E2 | **工具接入** | kubectl 直连 | MCP Gateway 聚合多 Server | 双路径：直连 + Gateway |
 | E3 | **HITL 确认** | 无（写直放） | 运行时原生 → 网关统一 | 确认规则表 + 确认钩子抽象 |
 | E4 | **知识注入** | 返回空 | RAG 知识库问答 | 系统提示词组装处 hook |
-| E5 | **定时任务（cron + Skill）** | 预置 + AI 巡检 | 推理验证 / RCA / 自定义任务 | 预置 Skill 模板 + cron 调度 |
+| E5 | **定时任务（调度器 + 任务模板）** | 预置 + AI 巡检 | 推理验证 / RCA / 自定义任务 | 任务模板 CRD + 平台调度器 |
 
 ---
 
@@ -258,15 +258,16 @@ M3 工具域
 - 系统提示词组装流程中预留一个**注入点**：阶段一返回空，阶段二接入 RAG 检索结果（手册/FAQ/最佳实践，FR-M1-008）。
 - 约束：注入内容**不改变系统指令优先级**，检索结果作为数据而非指令处理（NFR-003 Prompt 注入防护）。
 
-## 4.5 扩展点五：定时任务（cron + Skill）
+## 4.5 扩展点五：定时任务（调度器 + 任务模板）
 
-**目标**：定时/触发任务复用 OpenClaw cron 调度 + 预置 Skill 模板，不自研 DAG 编排；巡检是预置模板之一，骨架可复用为推理验证 / RCA / 自定义任务。
+**目标**：定时/触发任务用**平台级调度器 + 任务模板 CRD** 落地——任务定义（Skill 引用 + cron 配置）持久化在 `TaskTemplate` CRD，调度器到点拉起实例执行；不自研 DAG 编排。巡检是预置模板之一，骨架可复用为推理验证 / RCA / 自定义任务。
 
+- **平台级调度器**（独立于每用户实例）：读 `TaskTemplate` CRD，到点拉起/创建该用户实例并注入任务（Skill）。不能用「复用 OpenClaw cron」——cron 跑在实例进程内，实例被回收后到点不触发，故必须平台级调度 + 持久化任务定义。
 - 巡检项做成**注册表**（新增巡检项 = 注册一项，FR-M4-003）；
-- 任务以「OpenClaw cron 调度 + 预置/自定义 Skill」复用，后续扩展：
-  - **定时/触发 AI 任务**（FR-M4-002，阶段一）= 预置 Skill（巡检等）+ cron；
+- 任务模板后续扩展：
+  - **定时/触发 AI 任务**（FR-M4-002，阶段一）= 预置 Skill（巡检等）+ cron 配置；
   - **推理服务自动验证**（FR-M4-008，阶段二）= 注册为验证项；
-  - **任务模板**（FR-M4-009，阶段二）= 预置 + 自定义 Skill 模板；
+  - **任务模板**（FR-M4-009，阶段二）= 预置 + 自定义模板；
   - **RCA / 自动修复 / 预测运维**（FR-M4-012~014，阶段三）= 报告 → Agent 消费。
 
 ---
@@ -279,7 +280,7 @@ M3 工具域
 
 | 维度 | 设计 | 需求 |
 |---|---|---|
-| 会话载体 | `Conversation` 实体（DB），绑定 `user_id + tenant_id + project_id`，含 `openclaw_session_id` 映射 | FR-M1-001 |
+| 会话载体 | 阶段一复用 OpenClaw session（数据目录持久、冷启动自恢复）；阶段二多租户落地时引入 `Conversation` 元数据表（`user/tenant/project` 键 + `openclaw_session_id` 映射） | FR-M1-001 |
 | 归属隔离 | 阶段一单操作者（无多用户隔离）；多用户体系就绪后按用户/租户隔离，跨用户访问返回 403 | FR-M1-002（阶段二） |
 | 流式响应 | `POST /messages` → SSE 事件流（8 类事件；阶段一为其余 6 类，`confirm_*` 阶段二 HITL 启用） | FR-M1-003 |
 | 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏 | FR-M1-004 |
@@ -288,7 +289,7 @@ M3 工具域
 | 上下文压缩 | 长对话超窗口时压缩早期历史为摘要，保留系统指令与近期对话（OpenClaw 原生支持，无自研工作） | FR-M1-010 |
 | 扩展点 | 系统提示词组装处「知识注入 hook」（→ RAG） | E4 |
 
-**会话存储分层（账本 vs 执行态）**：实例按需存活、会死会重建，会话因此分两层——① **Conversation 表（平台账本，DB）**：`user/tenant/project` 多租户键、`title`、状态机、`openclaw_session_id` 映射；实例冷热都可在 Portal 查询，冷启动时靠它接回上次会话。② **OpenClaw session（执行态，数据目录）**：消息历史、上下文、compaction、隔离，随实例生死，实例拉起时从数据目录恢复。**Message 表为展示态**：对话产生时由助手服务旁路异步写入，供 Portal 游标分页；OpenClaw transcript 仍是执行态权威，不直读它做历史。
+**会话存储（阶段一不建会话表）**：OpenClaw session 原生持久化在数据目录（`sessions.json` + transcript JSONL），实例回收→重建后自动恢复，冷启动接回无需自建 DB。会话清单与历史由助手服务经 OpenClaw gateway 的 HTTP `POST /tools/invoke` 调 `sessions_list` / `sessions_history` 读取（bearer token 鉴权，本地已验证）——`sessions_list` 返会话元数据（sessionId / 派生 title / 时间戳），`sessions_history` 返结构化消息（含 thinking/toolCall 块，Portal 折叠渲染，超长截断）。**代价**：读取要求实例存活，冷时列会话需先冷启动。阶段二多租户 / 审计 / 200 轮状态机落地时，再引入 Conversation/Message 元数据表。
 
 **上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话历史（近期 N 轮 + 超窗压缩摘要）；其中 ①~④ 为实例级配置（启动时加载），⑤ 每次请求动态。Token 预算：系统指令 + 能力目录固定，剩余分配给会话历史，超窗触发压缩（FR-M1-010）。
 
@@ -353,7 +354,7 @@ stateDiagram-v2
 
 **职责**：定时任务模板（预置巡检 + 自定义）、任务执行、分级报告。
 
-**触发**：调度器（默认每日 02:00）+ 手动/API 触发（FR-M4-001）；任务经 M2 Agent 实例执行（FR-M4-002）。
+**触发**：平台调度器读 `TaskTemplate` CRD 到点触发（默认每日 02:00）+ 手动/API 触发（FR-M4-001）；调度器到点拉起实例，任务经 M2 Agent 实例执行（FR-M4-002）。
 
 **预置巡检项（FR-M4-003）**：
 
@@ -372,7 +373,7 @@ stateDiagram-v2
 
 **报告（FR-M4-004/005）**：结构化存 `TaskRun` CRD（任务报告，巡检为其中一种类型），异常按 P0（紧急）/ P1（重要）/ P2（一般）分级；Portal Dashboard 展示任务结果，API 可查。阶段一不主动推送通知。
 
-**扩展点**：定时任务（cron + Skill）→ 推理验证 / RCA，见 §4.5。
+**扩展点**：定时任务（调度器 + 任务模板）→ 推理验证 / RCA，见 §4.5。
 
 ## 5.5 M5 审计域（阶段二）
 
@@ -506,8 +507,8 @@ sequenceDiagram
     participant CRD as TaskRun CRD
     participant P as Portal(报告)
 
-    S->>M4: Cron 触发巡检任务
-    M4->>M2: 下发任务模板(巡检 Skill)
+    S->>M4: 到点触发（读 TaskTemplate）
+    M4->>M2: 拉起实例 + 注入任务（巡检 Skill）
     M2->>K8s: 以创建者身份只读查询(节点/GPU/Pod/存储)
     K8s-->>M2: 各项结果
     M2->>M2: AI 模式: 自主探索 + 分级汇总(P0/P1/P2)
@@ -519,19 +520,21 @@ sequenceDiagram
 
 # 7. 数据模型
 
-**存储策略**：会话/消息/审计等高写入数据存 PostgreSQL + Redis；任务报告与能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载。
+**存储策略**：会话/消息（阶段一）不存 DB，落在 OpenClaw 实例数据目录（经 `/tools/invoke` 读取）；任务报告/能力目录/任务模板为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载；审计与多租户元数据（阶段二）存 PostgreSQL + Redis。
 
-## 7.1 DB 表
+## 7.1 DB 表（阶段二）
 
 | 表 | 关键字段 | 需求 |
 |---|---|---|
-| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`openclaw_session_id`（映射到 OpenClaw session，冷启动接回）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
-| **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at`（旁路写入的展示态，大 tool 输出截断；执行态权威见 OpenClaw transcript） | FR-M1-003/004 |
+| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`openclaw_session_id`（映射到 OpenClaw session）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
+| **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at` | FR-M1-003/004 |
 | **ToolCallRecord** | `id`、`user_id / conversation_id / message_id`、`tool`、`args`、`level`(L0/L1)、`status`(pending/executed/denied/failed/timeout)、`confirm`(json)、`result`(json)、`created_at` | FR-M5-001 |
 
 ## 7.2 CRD
 
 **TaskRun**（任务报告，FR-M4-004/005）：`spec.type`(inspection/verification/...，巡检为其中一种)、`spec.scope`(all/node-pool/tenant/project)、`spec.items`（启用的巡检项/校验项）、`spec.schedule.cron`、`spec.trigger`(manual/cron)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。
+
+**TaskTemplate**（任务模板/调度定义，FR-M4-001/009）：`spec.skillRef`（Skill 引用）、`spec.schedule.cron`、`spec.creator`（创建者，以创建者身份 + RBAC 执行）、`spec.requiredPermissions`（所需权限提示，非授权机制）、`spec.trigger`(manual/cron)；巡检为其预置模板之一，平台调度器据此到点拉起实例执行。
 
 **Capability**（能力目录，FR-M3-006）：`spec.title`（能力名）、`spec.description`（用途）、`spec.params[]`（关键参数）、`spec.examples[]`（调用示例）、`spec.toolRef`（对应平台 CRD/API 引用）；登记为 Agent 可发现的能力清单，作为实例级配置启动时加载（承接 FR-M2-005），见 §5.7.2。
 
@@ -611,9 +614,10 @@ sequenceDiagram
 | 助手服务 | `assistant-service` | 2 | 无状态，水平扩展（含对话域 / 工具服务 / 审计写入） |
 | Instance Manager | `assistant-instance-manager` | 1（Leader） | Agent 实例生命周期管理 |
 | Agent 实例池 | `agent-runtime` | 按需 0~N | 每用户一个 OpenClaw 实例 Pod + 数据目录 + 用户 kubeconfig |
+| 调度器 | `assistant-scheduler` | 1（Leader） | 读 TaskTemplate CRD，到点拉起实例执行定时任务 |
 | 助手 LLM 服务 | `assistant-llm`（InferenceService） | 1~N | 独立推理池，HPA 扩缩 |
 
-> **调度器**：复用 OpenClaw cron（无独立组件）。**预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
+> **预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
 
 ## 11.2 依赖与离线交付
 
@@ -623,7 +627,7 @@ sequenceDiagram
 
 ## 11.3 升级与回滚
 
-- 升级顺序：CRD → Instance Manager → 助手服务 → Agent 实例镜像 → 前端。
+- 升级顺序：CRD → Instance Manager / 调度器 → 助手服务 → Agent 实例镜像 → 前端。
 - Agent 实例为无状态 Pod（状态在 DB / 数据目录），升级实例镜像 = 滚动重建实例，会话与记忆不受影响。
 - 回滚：`helm rollback` 分钟级；LLM 模型升级独立于平台，评测集通过后生效。
 
