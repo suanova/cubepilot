@@ -33,9 +33,9 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | **二 · 次批** | 安全与 AI Ops 扩展 | 机制设计 + 扩展点预留 |
 | **三 · 后续** | 智能演进 | 扩展点预留（不展开实现） |
 
-**第一阶段包含**：对话闭环 + Portal 对话页、Agent 实例与配置管理、平台资源操作 + 能力目录、基本巡检 + AI 智能巡检、平台集成基础、可观测性接口、模块 Agent 对接机制（开发环境/推理/模型/运维，[§5.7](#57-各模块-ai-agent-能力与对接设计)）。
+**第一阶段包含**：对话闭环 + Portal 对话页、Agent 实例与配置管理、平台资源操作 + 能力目录、定时 AI 任务（含巡检模板 + AI 智能巡检）、平台集成基础、可观测性接口、模块 Agent 对接机制（开发环境/推理/模型/运维，[§5.7](#57-各模块-ai-agent-能力与对接设计)）。
 
-**第一阶段不包含**（后置）：HITL 确认、审计、RAG、通知推送、推理服务验证、Workflow、RCA/自动修复。
+**第一阶段不包含**（后置）：HITL 确认、审计、RAG、通知推送、推理服务验证、自定义任务模板、RCA/自动修复。
 
 ## 1.3 术语表
 
@@ -80,7 +80,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 |---|---|
 | 每用户实例（非共享） | 物理隔离（NFR-002）要求 Pod 级隔离，共享实例无法满足「用户间不可互访」 |
 | kubectl 直连（非自研 API 封装） | 平台资源皆为 CRD，kubectl 已覆盖；凭据直连等效用户本人操作，权限交 K8s RBAC |
-| 能力目录/巡检报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
+| 能力目录/任务报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
 | 定时任务经 M2 执行 | 巡检等定时任务由调度器触发，经 M2 Agent 实例执行（创建者身份 + Skill），用 isolated cron session 与对话解耦 |
 | OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离与记忆机制同构便于迁移 |
 
@@ -129,7 +129,7 @@ flowchart TB
 | M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文组装（实例级配置 + 动态会话历史） | 知识注入 hook（→ RAG） |
 | M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes/自研） |
 | M3 工具域 | 平台能力操作化、能力目录、确认判定 | 平台资源操作 + 能力目录；写操作直放 | MCP Gateway（→ 多 MCP Server 聚合 + 统一 HITL） |
-| M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 报告 CRD | 定时任务（cron + Skill）→ 推理验证 / RCA |
+| M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 任务报告 CRD | 定时任务（cron + Skill）→ 推理验证 / RCA |
 | M5 审计域 | 工具调用与确认记录（阶段二） | — | `tool_call_record` 表 → 审计治理 |
 | M6 平台集成 | 凭据管理、下游接入 | 用户凭据生成/注入、K8s+LLM 联通 | 非 K8s 数据源接入（GPUStack/Prometheus 等） |
 
@@ -144,7 +144,7 @@ flowchart TB
 
 定时任务（调度驱动，经 M2）：
 调度器 ──► M4 定时 AI 任务域(任务模板) ──► M2 Agent 实例 ──► M3 工具域 ──► 平台能力层
-M4 定时 AI 任务域 ──► InspectionRun CRD ──► Portal 报告
+M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 ```
 
 - **上行**：用户消息经 M1 鉴权后进入该用户 Agent 实例，实例结合系统提示词、工具定义/能力目录与 LLM 产出「回复文本 + 工具调用序列」。
@@ -163,7 +163,7 @@ M4 定时 AI 任务域 ──► InspectionRun CRD ──► Portal 报告
 | Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
 | 调度器 | 复用 OpenClaw cron | M4 | 定时/手动触发任务 | → M2 Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
-| 能力目录 / 巡检报告 | CRD | M3/M4 | 能力契约 / 巡检报告资产 | ← 助手服务、调度器 |
+| 能力目录 / 任务报告 | CRD | M3/M4 | 能力契约 / 任务报告资产 | ← 助手服务、调度器 |
 | 存储 | PostgreSQL + Redis + 共享存储 | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
 
 ## 3.4 核心扩展点总览
@@ -260,12 +260,12 @@ M3 工具域
 
 **目标**：定时/触发任务复用 OpenClaw cron 调度 + 预置 Skill 模板，不自研 DAG 编排；巡检是预置模板之一，骨架可复用为推理验证 / RCA / 自定义任务。
 
-- 巡检项做成**注册表**（新增巡检项 = 注册一项，FR-M4-002）；
+- 巡检项做成**注册表**（新增巡检项 = 注册一项，FR-M4-003）；
 - 任务以「OpenClaw cron 调度 + 预置/自定义 Skill」复用，后续扩展：
-  - **定时/触发 AI 任务**（FR-M4-014，阶段一）= 预置 Skill（巡检等）+ cron；
-  - **推理服务自动验证**（FR-M4-007，阶段二）= 注册为验证项；
-  - **任务模板**（FR-M4-008，阶段二）= 预置 + 自定义 Skill 模板；
-  - **RCA / 自动修复 / 预测运维**（FR-M4-011~013，阶段三）= 报告 → Agent 消费。
+  - **定时/触发 AI 任务**（FR-M4-002，阶段一）= 预置 Skill（巡检等）+ cron；
+  - **推理服务自动验证**（FR-M4-008，阶段二）= 注册为验证项；
+  - **任务模板**（FR-M4-009，阶段二）= 预置 + 自定义 Skill 模板；
+  - **RCA / 自动修复 / 预测运维**（FR-M4-012~014，阶段三）= 报告 → Agent 消费。
 
 ---
 
@@ -349,9 +349,9 @@ stateDiagram-v2
 
 **职责**：定时任务模板（预置巡检 + 自定义）、任务执行、分级报告。
 
-**触发**：调度器（默认每日 02:00）+ 手动/API 触发（FR-M4-001）；任务经 M2 Agent 实例执行（FR-M4-014）。
+**触发**：调度器（默认每日 02:00）+ 手动/API 触发（FR-M4-001）；任务经 M2 Agent 实例执行（FR-M4-002）。
 
-**预置巡检项（FR-M4-002）**：
+**预置巡检项（FR-M4-003）**：
 
 | 巡检类别 | 巡检项 | 数据来源 |
 |---|---|---|
@@ -364,9 +364,9 @@ stateDiagram-v2
 
 > 阶段一数据源以 K8s API（kubectl）为主：GPU 经 `nvidia.com/gpu` capacity/allocatable、存储经 PVC 状态做基本检查；GPUStack / DCGM / Ceph Exporter 等详细指标阶段二起接入（FR-M6-002）。
 
-**AI 智能巡检（FR-M4-006）**：巡检作为定时任务经 M2 Agent 实例执行（创建者身份 + RBAC、只读），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
+**AI 智能巡检（FR-M4-007）**：巡检作为定时任务经 M2 Agent 实例执行（创建者身份 + RBAC、只读），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
 
-**报告（FR-M4-003/004）**：结构化存 `InspectionRun` CRD，异常按 P0（紧急）/ P1（重要）/ P2（一般）分级；Portal Dashboard 展示每日巡检结果，API 可查。阶段一不主动推送通知。
+**报告（FR-M4-004/005）**：结构化存 `TaskRun` CRD（任务报告，巡检为其中一种类型），异常按 P0（紧急）/ P1（重要）/ P2（一般）分级；Portal Dashboard 展示任务结果，API 可查。阶段一不主动推送通知。
 
 **扩展点**：定时任务（cron + Skill）→ 推理验证 / RCA，见 §4.5。
 
@@ -433,7 +433,7 @@ stateDiagram-v2
 | 开发环境 | 自然语言创建环境、环境诊断 | 能力目录工具化（创建）/ 模块自带 B（诊断） |
 | 推理 | 智能部署、自动排障 | 模块自带 B（基座执行）/ Agent 原生 + 日志查询 |
 | 模型 | 自动模型测试 | 模块自带 + 基座报告 |
-| 运维 | 巡检自动化、智能日志分析 | 基座巡检（M4）/ Agent 原生 + 日志查询 |
+| 运维 | 巡检自动化、智能日志分析 | 基座定时任务（M4）/ Agent 原生 + 日志查询 |
 
 阶段二/三模块能力按需求 §8.5 分期接入，基座侧配套 RAG（E4）、HITL（E3）、审计（M5）、长期记忆等扩展点预留。
 
@@ -491,7 +491,7 @@ sequenceDiagram
     RT->>M5: 确认事件回传 → 写 tool_call_record
 ```
 
-## 6.3 每日巡检（阶段一）
+## 6.3 定时任务执行（阶段一，巡检示例）
 
 ```mermaid
 sequenceDiagram
@@ -499,7 +499,7 @@ sequenceDiagram
     participant M4 as M4 定时 AI 任务域
     participant M2 as M2 Agent 实例
     participant K8s as 平台能力
-    participant CRD as InspectionRun CRD
+    participant CRD as TaskRun CRD
     participant P as Portal(报告)
 
     S->>M4: Cron 触发巡检任务
@@ -515,7 +515,7 @@ sequenceDiagram
 
 # 7. 数据模型
 
-**存储策略**：会话/消息/审计等高写入数据存 PostgreSQL + Redis；巡检报告与能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载。
+**存储策略**：会话/消息/审计等高写入数据存 PostgreSQL + Redis；任务报告与能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载。
 
 ## 7.1 DB 表
 
@@ -527,7 +527,7 @@ sequenceDiagram
 
 ## 7.2 CRD
 
-**InspectionRun**：`spec.scope`(all/node-pool/tenant/project)、`spec.items`（启用的巡检项）、`spec.schedule.cron`、`spec.trigger`(manual/cron)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。
+**TaskRun**（任务报告，FR-M4-004/005）：`spec.type`(inspection/verification/...，巡检为其中一种)、`spec.scope`(all/node-pool/tenant/project)、`spec.items`（启用的巡检项/校验项）、`spec.schedule.cron`、`spec.trigger`(manual/cron)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。
 
 **Capability**（能力目录，FR-M3-006）：`spec.title`（能力名）、`spec.description`（用途）、`spec.params[]`（关键参数）、`spec.examples[]`（调用示例）、`spec.toolRef`（对应平台 CRD/API 引用）；登记为 Agent 可发现的能力清单，作为实例级配置启动时加载（承接 FR-M2-005），见 §5.7.2。
 
@@ -564,16 +564,16 @@ sequenceDiagram
 
 | 指标类别 | 指标 | 需求 |
 |---|---|---|
-| 对话/体验 | 会话数、消息数、首 Token 延迟（P95）、回复总延迟、流式中断率 | NFR-007/008 |
+| 对话/体验 | 会话数、消息数、首 Token 延迟（P95）、回复总延迟、流式中断率 | NFR-006/007 |
 | 智能 | 工具调用次数、成功率、L0/L1 分布、确认率、确认等待耗时 | — |
 | 成本 | LLM Token 消耗（输入/输出） | — |
-| 运维 | 巡检执行时长、巡检异常项分布（P0/P1/P2） | NFR-011 |
-| 实例池 | 活跃/预热/回收实例数、冷启动时长（P95）、回收率、重建率、每实例资源占用 | NFR-010 |
+| 运维 | 任务执行时长、任务异常项分布（P0/P1/P2） | NFR-010、FR-M4-004 |
+| 实例池 | 活跃/预热/回收实例数、冷启动时长（P95）、回收率、重建率、每实例资源占用 | NFR-009 |
 
-- **接口预留（阶段一）**：暴露 `/metrics`，5 类埋点；采集与面板展示后置（NFR-012）。
-- **结构化日志（阶段一）**：携带 `conversation_id / user_id / tool_call_id` 关联字段；接入 Loki 后置（NFR-013）。
-- **链路追踪（阶段一）**：`trace_id` 透传约定（Portal→助手→Agent→工具）；采集后端后置（NFR-014）。
-- **告警（阶段二）**：助手 LLM 不可用（P1）、首 Token 高延迟 > 5s（P1）、工具失败率 > 10%（P2）、实例池异常（P2，NFR-015）。
+- **接口预留（阶段一）**：暴露 `/metrics`，5 类埋点；采集与面板展示后置（NFR-011）。
+- **结构化日志（阶段一）**：携带 `conversation_id / user_id / tool_call_id` 关联字段；接入 Loki 后置（NFR-012）。
+- **链路追踪（阶段一）**：`trace_id` 透传约定（Portal→助手→Agent→工具）；采集后端后置（NFR-013）。
+- **告警（阶段二）**：助手 LLM 不可用（P1）、首 Token 高延迟 > 5s（P1）、工具失败率 > 10%（P2）、实例池异常（P2，NFR-014）。
 
 ---
 
@@ -581,18 +581,18 @@ sequenceDiagram
 
 | 指标 | 目标值 | 需求 |
 |---|---|---|
-| 对话首 Token 延迟 | P95 < 3s | NFR-007 |
-| 对话完整回复延迟 | P95 < 15s | NFR-008 |
-| 工具调用执行延迟 | P95 < 5s | NFR-009（阶段二） |
-| 实例冷启动（预热池命中 / 完全冷启） | P95 < 1s / < 15s | NFR-010（阶段二） |
-| 巡检全量执行（中规模） | < 15min | NFR-011（阶段二） |
+| 对话首 Token 延迟 | P95 < 3s | NFR-006 |
+| 对话完整回复延迟 | P95 < 15s | NFR-007 |
+| 工具调用执行延迟 | P95 < 5s | NFR-008（阶段二） |
+| 实例冷启动（预热池命中 / 完全冷启） | P95 < 1s / < 15s | NFR-009（阶段二） |
+| 巡检模板全量执行（中规模） | < 15min | NFR-010（阶段二） |
 
 | 资源 | 估算 | 需求 |
 |---|---|---|
-| Agent 实例池 | 单实例约 0.5~1 vCPU / 1~2 GB；活跃实例数 = 并发对话用户数 + 预热池，按 Infra 容量设上限 | NFR-016（阶段三） |
+| Agent 实例池 | 单实例约 0.5~1 vCPU / 1~2 GB；活跃实例数 = 并发对话用户数 + 预热池，按 Infra 容量设上限 | NFR-015（阶段三） |
 | 每用户数据目录 | 单用户约 50~200 MB，默认配额 1 GB | FR-M6-004 |
 | 助手服务 | 单副本 ~50 并发会话，2 副本起步 | — |
-| 助手 LLM GPU | 独立推理节点 ≥ 8 张 64G 级 GPU（按 DeepSeek V4 Flash 最低规格） | NFR-017 |
+| 助手 LLM GPU | 独立推理节点 ≥ 8 张 64G 级 GPU（按 DeepSeek V4 Flash 最低规格） | NFR-016 |
 
 ---
 
@@ -607,10 +607,9 @@ sequenceDiagram
 | 助手服务 | `assistant-service` | 2 | 无状态，水平扩展（含对话域 / 工具服务 / 审计写入） |
 | Instance Manager | `assistant-instance-manager` | 1（Leader） | Agent 实例生命周期管理 |
 | Agent 实例池 | `agent-runtime` | 按需 0~N | 每用户一个 OpenClaw 实例 Pod + 数据目录 + 用户 kubeconfig |
-| 调度器 | `assistant-scheduler` | 1（Leader） | 定时巡检触发 |
 | 助手 LLM 服务 | `assistant-llm`（InferenceService） | 1~N | 独立推理池，HPA 扩缩 |
 
-> **预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
+> **调度器**：复用 OpenClaw cron（无独立组件）。**预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
 
 ## 11.2 依赖与离线交付
 
@@ -620,7 +619,7 @@ sequenceDiagram
 
 ## 11.3 升级与回滚
 
-- 升级顺序：CRD → Instance Manager / 调度器 → 助手服务 → Agent 实例镜像 → 前端。
+- 升级顺序：CRD → Instance Manager → 助手服务 → Agent 实例镜像 → 前端。
 - Agent 实例为无状态 Pod（状态在 DB / 数据目录），升级实例镜像 = 滚动重建实例，会话与记忆不受影响。
 - 回滚：`helm rollback` 分钟级；LLM 模型升级独立于平台，评测集通过后生效。
 
