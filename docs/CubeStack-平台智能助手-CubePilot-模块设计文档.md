@@ -21,6 +21,8 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 - **用户侧**：对话式问答与自然语言操作（ChatOps），降低平台使用门槛；
 - **运维侧**：集群状态自动感知与健康巡检，辅助运维决策。
 
+**与原生 OpenClaw 的关系**：CubePilot 复用 OpenClaw 作为 Agent 运行时，但**不复用其常驻部署与原生 UI**——① **实例按需存活**：OpenClaw 以「每用户实例 Pod」形态按需拉起、闲置回收、异常自愈（原生为常驻 gateway），这是 Instance Manager 与「会话账本 vs 执行态」分层（[§5.1](#51-m1-对话域)）的根因；② **Portal 为平台统一入口**：对话页 / 任务报告 / 审计查询 / Agent 配置，而非 OpenClaw 的聊天 UI / TUI。
+
 本文档描述 CubePilot 的**架构设计**，核心回答四个问题：① 六个功能域如何划分、如何协作（[§3](#3-总体架构)/[§5](#5-功能域设计)）；② 哪些组件**可替换 / 可扩展**，接口如何预留（[§4](#4-核心扩展点设计)）；③ 各业务模块如何接入基座、模块领域智能如何落地（[§5.7](#57-各模块-ai-agent-能力与对接设计)）；④ 第一阶段如何做到**最小可用且可演进**（[§12](#12-架构演进)）。
 
 ## 1.2 范围
@@ -164,7 +166,7 @@ M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 | 调度器 | 复用 OpenClaw cron | M4 | 定时/手动触发任务 | → M2 Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
 | 能力目录 / 任务报告 | CRD | M3/M4 | 能力契约 / 任务报告资产 | ← 助手服务、调度器 |
-| 存储 | PostgreSQL + Redis + 共享存储 | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
+| 存储 | PostgreSQL + Redis + 每用户独立 PVC | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
 
 ## 3.4 核心扩展点总览
 
@@ -277,7 +279,7 @@ M3 工具域
 
 | 维度 | 设计 | 需求 |
 |---|---|---|
-| 会话载体 | `Conversation` 实体（DB），绑定 `user_id + tenant_id + project_id` | FR-M1-001 |
+| 会话载体 | `Conversation` 实体（DB），绑定 `user_id + tenant_id + project_id`，含 `openclaw_session_id` 映射 | FR-M1-001 |
 | 归属隔离 | 阶段一单操作者（无多用户隔离）；多用户体系就绪后按用户/租户隔离，跨用户访问返回 403 | FR-M1-002（阶段二） |
 | 流式响应 | `POST /messages` → SSE 事件流（8 类事件；阶段一为其余 6 类，`confirm_*` 阶段二 HITL 启用） | FR-M1-003 |
 | 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏 | FR-M1-004 |
@@ -285,6 +287,8 @@ M3 工具域
 | Portal 对话页 | chat UI + 流式渲染 + 会话切换 | FR-M1-007 |
 | 上下文压缩 | 长对话超窗口时压缩早期历史为摘要，保留系统指令与近期对话（OpenClaw 原生支持，无自研工作） | FR-M1-010 |
 | 扩展点 | 系统提示词组装处「知识注入 hook」（→ RAG） | E4 |
+
+**会话存储分层（账本 vs 执行态）**：实例按需存活、会死会重建，会话因此分两层——① **Conversation 表（平台账本，DB）**：`user/tenant/project` 多租户键、`title`、状态机、`openclaw_session_id` 映射；实例冷热都可在 Portal 查询，冷启动时靠它接回上次会话。② **OpenClaw session（执行态，数据目录）**：消息历史、上下文、compaction、隔离，随实例生死，实例拉起时从数据目录恢复。**Message 表为展示态**：对话产生时由助手服务旁路异步写入，供 Portal 游标分页；OpenClaw transcript 仍是执行态权威，不直读它做历史。
 
 **上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话历史（近期 N 轮 + 超窗压缩摘要）；其中 ①~④ 为实例级配置（启动时加载），⑤ 每次请求动态。Token 预算：系统指令 + 能力目录固定，剩余分配给会话历史，超窗触发压缩（FR-M1-010）。
 
@@ -409,12 +413,12 @@ stateDiagram-v2
 
 - **载体**：`Capability` CRD（`assistant.suanova.io/v1alpha1`），见 [§7.2](#72-crd)。
 - **注入**：能力目录作为实例级配置、启动时加载——按用户可见范围注册为工具定义 + 能力说明注入系统提示词，变更即时生效（FR-M2-005）；每次请求仅动态组装新消息 + 会话历史（FR-M1-005）。
-- **登记/审核**：阶段一由平台侧（管理员/模块方）维护，登记与审核流程待定（Q-011）。
+- **登记/审核**：阶段一由平台侧（管理员/模块方）维护，登记与审核流程待定（Q-010）。
 - **扩展性**：目录描述「能力 + 参数 + 示例」，不绑定工具实现（kubectl 直连 / MCP Server），与 E2 工具接入双路径解耦；新增能力 = 登记一项，Agent 侧无需改代码。
 
 ### 5.7.3 实现形态（模块「自带」领域智能的三条路径）
 
-基座通用能力（对话/智能问答/多入口、跨模块任务编排、通用日志分析、主动告警与报告、长期记忆，需求 §8.2）由 CubePilot 提供、各模块复用；模块**操作类**能力登记为能力目录工具化；模块**领域智能**由模块自身实现、基座提供对话/推理外壳（需求 §8.3 实现归属约定）。「模块自带」领域智能的三种实现方式（对应 Q-010）：
+基座通用能力（对话/智能问答/多入口、跨模块任务编排、通用日志分析、主动告警与报告、长期记忆，需求 §8.2）由 CubePilot 提供、各模块复用；模块**操作类**能力登记为能力目录工具化；模块**领域智能**由模块自身实现、基座提供对话/推理外壳（需求 §8.3 实现归属约定）。「模块自带」领域智能的三种实现方式（对应 Q-009）：
 
 | 方式 | 说明 | 适用 | 阶段一采用 |
 |---|---|---|---|
@@ -422,7 +426,7 @@ stateDiagram-v2
 | **B. 领域 Skill** | 打包查询工具 + 领域提示词 → 基座场景化加载 | 领域智能（诊断、推荐、解读） | ✓ 倾向 |
 | **C. 数据开放 + 基座推理** | 暴露数据/API → 基座 LLM 直接分析 | 数据问答、血缘问答 | 阶段二起 |
 
-> **阶段一倾向 B**（复用基座 Agent + 模块注册领域 Skill，避免每模块一套实例，Q-010）；关键诊断类场景倾向 A/B 而非 C（C 缺领域提示词约束，可靠性较低）。模块级 Agent 的 LLM 与基座共用一套（Q-012，降低部署成本）。
+> **阶段一倾向 B**（复用基座 Agent + 模块注册领域 Skill，避免每模块一套实例，Q-009）；关键诊断类场景倾向 A/B 而非 C（C 缺领域提示词约束，可靠性较低）。模块级 Agent 的 LLM 与基座共用一套（Q-011，降低部署成本）。
 
 ### 5.7.4 阶段一模块能力映射
 
@@ -521,8 +525,8 @@ sequenceDiagram
 
 | 表 | 关键字段 | 需求 |
 |---|---|---|
-| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
-| **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at` | FR-M1-003/004 |
+| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`openclaw_session_id`（映射到 OpenClaw session，冷启动接回）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
+| **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at`（旁路写入的展示态，大 tool 输出截断；执行态权威见 OpenClaw transcript） | FR-M1-003/004 |
 | **ToolCallRecord** | `id`、`user_id / conversation_id / message_id`、`tool`、`args`、`level`(L0/L1)、`status`(pending/executed/denied/failed/timeout)、`confirm`(json)、`result`(json)、`created_at` | FR-M5-001 |
 
 ## 7.2 CRD
@@ -590,7 +594,7 @@ sequenceDiagram
 | 资源 | 估算 | 需求 |
 |---|---|---|
 | Agent 实例池 | 单实例约 0.5~1 vCPU / 1~2 GB；活跃实例数 = 并发对话用户数 + 预热池，按 Infra 容量设上限 | NFR-015（阶段三） |
-| 每用户数据目录 | 单用户约 50~200 MB，默认配额 1 GB | FR-M6-004 |
+| 每用户数据目录 | 单用户约 50~200 MB，独立 PVC 默认 1 GB | FR-M6-004 |
 | 助手服务 | 单副本 ~50 并发会话，2 副本起步 | — |
 | 助手 LLM GPU | 独立推理节点 ≥ 8 张 64G 级 GPU（按 DeepSeek V4 Flash 最低规格） | NFR-016 |
 
@@ -642,7 +646,7 @@ sequenceDiagram
 
 # 13. 待解决问题
 
-需求侧待确认见需求 §7（Q-001~Q-013）。设计侧额外待定：
+需求侧待确认见需求 §7（Q-001~Q-012）。设计侧额外待定：
 
 - MCP Gateway 引入时机与统一 HITL 可行性（§4.2/§4.3）；
 - Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes 事件流对齐，§4.1）。
