@@ -21,7 +21,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 - **用户侧**：对话式问答与自然语言操作（ChatOps），降低平台使用门槛；
 - **运维侧**：集群状态自动感知与健康巡检，辅助运维决策。
 
-本文档描述 CubePilot 的**架构设计**，核心回答三个问题：① 六个功能域如何划分、如何协作（[§3](#3-总体架构)/[§5](#5-功能域设计)）；② 哪些组件**可替换 / 可扩展**，接口如何预留（[§4](#4-核心扩展点设计)）；③ 第一阶段如何做到**最小可用且可演进**（[§12](#12-阶段落地与演进)）。
+本文档描述 CubePilot 的**架构设计**，核心回答四个问题：① 六个功能域如何划分、如何协作（[§3](#3-总体架构)/[§5](#5-功能域设计)）；② 哪些组件**可替换 / 可扩展**，接口如何预留（[§4](#4-核心扩展点设计)）；③ 各业务模块如何接入基座、模块领域智能如何落地（[§5.7](#57-各模块-ai-agent-能力与对接设计)）；④ 第一阶段如何做到**最小可用且可演进**（[§12](#12-架构演进)）。
 
 ## 1.2 范围
 
@@ -33,7 +33,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | **二 · 次批** | 安全与 AI Ops 扩展 | 机制设计 + 扩展点预留 |
 | **三 · 后续** | 智能演进 | 扩展点预留（不展开实现） |
 
-**第一阶段包含**：对话闭环 + Portal 对话页、Agent 实例与配置管理、平台资源操作 + 能力目录、基本巡检 + AI 智能巡检、平台集成基础、可观测性接口。
+**第一阶段包含**：对话闭环 + Portal 对话页、Agent 实例与配置管理、平台资源操作 + 能力目录、基本巡检 + AI 智能巡检、平台集成基础、可观测性接口、模块 Agent 对接机制（开发环境/推理/模型/运维，[§5.7](#57-各模块-ai-agent-能力与对接设计)）。
 
 **第一阶段不包含**（后置）：HITL 确认、审计、RAG、通知推送、推理服务验证、Workflow、RCA/自动修复。
 
@@ -67,10 +67,20 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | 原则 | 含义 | 落地 |
 |---|---|---|
 | **能力直连 + 用户身份** | Agent 是认知引擎，以**用户自己的凭据**直连平台能力，等效用户本人操作；权限由平台 RBAC 强制 | 实例持用户 kubeconfig 直连 K8s |
-| **每用户实例、物理隔离** | 每活跃用户一个独立 Agent 实例与数据目录，隔离边界为进程 + 存储 | 一用户一实例 Pod + 独立数据目录（NFR-002，阶段一） |
+| **每用户实例、物理隔离** | 每活跃用户一个独立 Agent 实例与数据目录，隔离边界为 Pod + 数据目录 | 一用户一实例 Pod + 独立数据目录（NFR-002，阶段一） |
 | **扩展点前置、最小闭环** | 每个模块只做最小闭环；可扩展能力实现为**标准化注册/适配接口**，不在当下实现扩展本身 | [§4 核心扩展点](#4-核心扩展点设计) |
 | **模型无关** | 统一接口对接 LLM；默认私有化部署（完全内网），也支持配置平台外 LLM（OpenAI 兼容 API） | LLM 路由（FR-M2-003） |
 | **渐进演进** | 第一阶段 OpenClaw 落地，经窄接口平滑迁移到 Hermes/自研，隔离与记忆机制不因运行时变化而改变 | Agent Runtime Adapter（[§4.1](#41-扩展点一agent-runtime-adapter)） |
+
+**关键取舍（为什么这么设计）**：
+
+| 决策 | 理由 |
+|---|---|
+| 每用户实例（非共享） | 物理隔离（NFR-002）要求 Pod 级隔离，共享实例无法满足「用户间不可互访」 |
+| kubectl 直连（非自研 API 封装） | 平台资源皆为 CRD，kubectl 已覆盖；凭据直连等效用户本人操作，权限交 K8s RBAC |
+| 能力目录/巡检报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
+| 巡检旁路（不经 M2） | 巡检是平台级、调度驱动、只读，与每用户对话 Agent 解耦，互不拖累 |
+| OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离与记忆机制同构便于迁移 |
 
 ---
 
@@ -104,7 +114,7 @@ flowchart TB
         M4 -.->|"AI 模式"| IA
     end
 
-    P["平台能力层：K8s · AI Controller · GPUStack · Prometheus/Loki · 助手 LLM"]
+    P["平台能力层：K8s · GPUStack · Prometheus/Loki · 助手 LLM"]
 
     U --> M1
     U --> M2
@@ -122,7 +132,7 @@ flowchart TB
 
 | 模块 | 职责 | 阶段一关键内容 | 扩展点 |
 |---|---|---|---|
-| M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文四要素 | 知识注入 hook（→ RAG） |
+| M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文组装（实例级配置 + 动态会话历史） | 知识注入 hook（→ RAG） |
 | M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes/自研） |
 | M3 工具域 | 平台能力操作化、能力目录、确认判定 | 平台资源操作 + 能力目录；写操作直放 | MCP Gateway（→ 多 MCP Server 聚合 + 统一 HITL） |
 | M4 巡检域 | 定时健康巡检、AI 智能巡检、报告 | 预置巡检 6 类 + AI 巡检 + 报告 CRD | 巡检执行骨架（→ Workflow/RCA） |
@@ -151,15 +161,21 @@ flowchart TB
 - **下行**：Agent 以用户凭据直连平台能力；阶段一写操作直放，阶段二起写/高风险操作先经 HITL 确认再执行，结果回填后经 M1 流式返回用户。
 - **旁路**：巡检由调度器定时驱动 M4 执行（不经 M2），预置巡检项直接查询平台能力层，AI 巡检经 M4 专属巡检 Agent（只读）探索集群；报告写 CRD 供 Portal / API 展示。
 
-## 3.3 技术选型
+## 3.3 组件清单
 
-| 能力 | 第一阶段选型 | 说明 |
-|---|---|---|
-| Agent 运行时 | OpenClaw（每用户实例形态） | 原生支持 MCP / 多模型 / 上下文压缩 / 确认钩子；经 Adapter 预留替换 |
-| 工具接入 | K8s 以用户 kubeconfig 直连（kubectl）；预留 MCP Gateway | 阶段一简单直连，后续可切换到 Gateway 聚合多 MCP Server |
-| LLM | 默认私有化模型（DeepSeek V4 Flash 规格起步，具 Function Calling）；可配置平台外 LLM | OpenAI 兼容接口；私有化走独立推理池，外接走外部端点 |
-| 会话存储 | PostgreSQL + Redis | 会话/消息/审计持久化；热点上下文缓存 |
-| 实例数据目录 | 共享存储（Lustre / NFS / PVC） | 每用户一个目录，持久化实例记忆 |
+功能域（M1~M6）是逻辑划分；物理上由下列组件承载（含选型与交互关系）：
+
+| 组件 | 选型 / 形态 | 承载域 | 职责 | 关键交互 |
+|---|---|---|---|---|
+| Portal 前端 | Web 静态资源 | — | 对话页 / 巡检看板 / 审计查询 / Agent 配置 | → 助手服务（SSE / REST） |
+| 助手服务 | 无状态 Deployment ×2 | M1+M3+M5 | 会话/消息/上下文组装、工具编排、审计写入 | → Instance Manager、Agent 实例、PG/Redis、CRD |
+| Instance Manager | 单副本（Leader） | M2 | 实例拉起/回收/自愈、预热池 | → K8s API（拉起 Agent Pod） |
+| Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
+| 调度器 | 单副本（Leader） | M4 | 定时/手动触发巡检 | → 巡检 Agent、助手服务 |
+| 巡检 Agent | 平台级只读实例 | M4 | AI 智能巡检（只读探索） | → K8s（只读查询） |
+| 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
+| 能力目录 / 巡检报告 | CRD | M3/M4 | 能力契约 / 巡检报告资产 | ← 助手服务、调度器 |
+| 存储 | PostgreSQL + Redis + 共享存储 | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
 
 ## 3.4 核心扩展点总览
 
@@ -196,7 +212,7 @@ AgentRuntimeAdapter ◄──► OpenClawAdapter（阶段一）
 
 | 方向 | 内容 |
 |---|---|
-| **进入** | 消息 + 上下文（身份/能力目录/确认规则/会话历史）+ 工具清单 |
+| **进入** | 消息 + 会话历史（每次请求动态）；身份/能力目录/确认规则 + 工具清单（实例级配置，启动时加载） |
 | **返回** | 事件流（`message_start / agent_thinking / tool_call / tool_result / confirm_pending / confirm_resolved / message_delta / message_done`） |
 
 **为什么可替换**：OpenClaw 与 Hermes 均为「多会话 + 数据目录（HERMES_HOME）+ MCP 工具」形态，实例无状态化（状态持久化于 DB + 数据目录），隔离与记忆机制**不因运行时变化而改变**。替换时只替换 Adapter 实现，业务逻辑（会话、工具、巡检、审计）不动。
@@ -272,30 +288,48 @@ M3 工具域
 | 维度 | 设计 | 需求 |
 |---|---|---|
 | 会话载体 | `Conversation` 实体（DB），绑定 `user_id + tenant_id + project_id` | FR-M1-001 |
-| 归属隔离 | 跨用户访问返回 403；阶段一单操作者，多用户就绪后按用户/租户隔离 | FR-M1-002 |
-| 流式响应 | `POST /messages` → SSE 事件流（8 类事件） | FR-M1-003 |
-| 历史分页 | 翻页不重不漏 | FR-M1-004 |
-| 上下文装载 | 每次请求动态组装：操作者身份 + 能力目录/工具清单 + 确认规则 + 会话历史 | FR-M1-005 |
+| 归属隔离 | 阶段一单操作者（无多用户隔离）；多用户体系就绪后按用户/租户隔离，跨用户访问返回 403 | FR-M1-002（阶段二） |
+| 流式响应 | `POST /messages` → SSE 事件流（8 类事件；阶段一为其余 6 类，`confirm_*` 阶段二 HITL 启用） | FR-M1-003 |
+| 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏 | FR-M1-004 |
+| 上下文装载 | 平台侧要素（身份/能力目录/确认规则）为实例级配置、启动时加载；每次请求仅动态组装新消息 + 会话历史 | FR-M1-005 |
 | Portal 对话页 | chat UI + 流式渲染 + 会话切换 | FR-M1-007 |
 | 上下文压缩 | 长对话超窗口时压缩早期历史为摘要，保留系统指令与近期对话（OpenClaw 原生支持，无自研工作） | FR-M1-010 |
 | 扩展点 | 系统提示词组装处「知识注入 hook」（→ RAG） | E4 |
+
+**上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话历史（近期 N 轮 + 超窗压缩摘要）；其中 ①~④ 为实例级配置（启动时加载），⑤ 每次请求动态。Token 预算：系统指令 + 能力目录固定，剩余分配给会话历史，超窗触发压缩（FR-M1-010）。
+
+**SSE 事件映射**：8 类事件由 Adapter 将 OpenClaw 原生事件流映射而来——`agent_thinking` 对应 LLM 规划阶段，`tool_call/tool_result` 对应工具往返，`message_delta/message_done` 对应回复流式输出；`confirm_*` 阶段二 HITL 启用。
 
 ## 5.2 M2 Agent 域
 
 **职责**：编排核心、实例生命周期、LLM 路由。
 
 - **编排循环**：接收任务 → LLM 规划 → 调用工具 → 评估结果 → 汇报（Agent 运行时原生能力）。
-- **每用户实例**：一用户一个 OpenClaw 实例 Pod + 独立数据目录，进程 + 存储物理隔离（NFR-002）；实例无状态化，状态从 DB/数据目录恢复（FR-M2-004）。
+- **每用户实例**：一用户一个 OpenClaw 实例 Pod + 独立数据目录，以 Pod 为隔离边界（NFR-002）；实例无状态化，状态从 DB/数据目录恢复（FR-M2-004）。
 - **Instance Manager**：按需拉起、闲置回收（默认 30min）、异常自愈（FR-M2-002）；上报实例状态指标（FR-M2-006，阶段二）。
 - **LLM 路由**：模型无关，OpenAI 兼容接口（FR-M2-003）；默认私有化模型，也可配置平台外 LLM；换模型不破坏对话功能。
-- **配置管理**：模型选择/工具开关/系统提示词，持久化并即时生效（FR-M2-005）。
+- **配置管理**：模型选择/工具开关/系统提示词，持久化并即时生效（FR-M2-005）；能力目录作为工具开关 + 系统提示词的一部分，实例启动时加载、变更即时生效。
 - **扩展点**：Agent Runtime Adapter（→ Hermes/自研），见 [§4.1](#41-扩展点一agent-runtime-adapter)。
+
+**实例生命周期**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Creating : 请求到达
+    Creating --> Warm : 就绪
+    Warm --> Warm : 处理请求
+    Warm --> Idle : 闲置 30min
+    Idle --> Warm : 新请求复用
+    Idle --> Reclaiming : 回收
+    Reclaiming --> [*]
+    Warm --> Creating : 异常自愈重建
+```
 
 ## 5.3 M3 工具域
 
 **职责**：将平台能力封装为 Agent 可调用工具，负责凭据直连与确认判定。
 
-**能力目录（FR-M3-006，阶段一核心）**：将平台能力（DevEnvironment / InferenceService / TrainingJob / Model / Dataset 等 CRD）登记为 Agent 可发现的能力清单——每项含用途、关键参数、调用示例；随上下文注入（承接 FR-M1-005），Agent 依据目录正确选择并调用对应能力。
+**能力目录（FR-M3-006，阶段一核心）**：将平台能力（DevEnvironment / InferenceService / TrainingJob / Model / Dataset 等 CRD）登记为 Agent 可发现的能力清单——每项含用途、关键参数、调用示例；作为实例级配置启动时加载（注册为工具定义 + 能力说明注入系统提示词，承接 FR-M2-005 配置管理），Agent 依据目录正确选择并调用对应能力。
 
 **平台资源操作（FR-M3-001）**：Agent 以用户身份操作平台资源（含全部 CRD），权限由平台 RBAC 强制；读操作直放，写操作命中确认规则后需确认（阶段二起）。
 
@@ -305,6 +339,8 @@ M3 工具域
 |---|---|---|
 | L0 · 只读 | 不改变平台状态的查询 | Agent 直接调用，不拦截 |
 | L1 · 写/高风险 | 改变状态、删除、重建、exec | 阶段一：直放；阶段二：HITL 本人确认，fail-closed |
+
+**dry-run（FR-M3-004，阶段二）**：写操作执行前先预览变更影响范围，随 HITL 确认一并展示。
 
 **错误标准化（FR-M3-005，阶段二）**：工具统一返回 `{success, data | error}`，错误分类：
 
@@ -331,10 +367,12 @@ M3 工具域
 |---|---|---|
 | 控制面 | API Server / etcd / Controller Manager / Scheduler 健康 | healthz、组件指标 |
 | 节点 | Node Ready、压力（Disk / Mem / PID） | K8s Node 状态 |
-| GPU | 健康（XID / 降级）、利用率、温度、显存 | GPU Exporter / DCGM |
+| GPU | 健康（XID / 降级）、利用率、温度、显存 | 阶段一 K8s 节点状态（`nvidia.com/gpu`）；阶段二 GPU Exporter / DCGM |
 | Pod | 异常（CrashLoopBackOff / Pending / ImagePullBackOff / OOM） | K8s Pod、事件 |
-| 存储 | Ceph / Lustre 容量、PVC 使用率 | Ceph Exporter / 组件指标 |
+| 存储 | Ceph / Lustre 容量、PVC 使用率 | 阶段一 K8s PVC 状态；阶段二 Ceph Exporter / 组件指标 |
 | 平台组件 | GPUStack / Harbor / Keycloak / Prometheus 健康 | 组件健康检查 |
+
+> 阶段一数据源以 K8s API（kubectl）为主：GPU 经 `nvidia.com/gpu` capacity/allocatable、存储经 PVC 状态做基本检查；GPUStack / DCGM / Ceph Exporter 等详细指标阶段二起接入（FR-M6-002）。
 
 **AI 智能巡检（FR-M4-006）**：使用 **M4 专属的巡检 Agent**（平台级、只读权限，独立于 M2 每用户对话 Agent），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
 
@@ -347,16 +385,67 @@ M3 工具域
 **职责**：工具调用与确认的完整记录。
 
 - `tool_call_record` 表：`user_id / conversation_id / message_id / tool / args / level / status / confirm / result / created_at`（FR-M5-001）。
-- 审计查询 API（/audit-logs 按用户/工具/时间，FR-M5-002）+ 治理界面（FR-M5-004，阶段二）。
+- 审计查询 API（/audit-logs 按用户/工具/时间，offset 分页，FR-M5-002）+ 治理界面（FR-M5-004，阶段二）。
 - 审计写入与主链路解耦（异步写、失败重试），审计故障不阻塞对话（FR-M5-003）。
 - 阶段一写操作仅靠 K8s Audit Log 兜底。
 
 ## 5.6 M6 平台集成（支撑）
 
 - **凭据管理（FR-M6-001）**：按用户 RBAC 最小权限生成 / 注入 / 轮换 kubeconfig（Secret 挂载 0600），用户失效即时吊销；禁止使用集群管理员凭据。
-- **下游接入（FR-M6-002）**：阶段一接入 K8s API Server + 助手 LLM 推理服务；阶段二起按需接入 GPUStack/Prometheus/Loki 等非 K8s 数据源（经 MCP Gateway）。
+- **下游接入（FR-M6-002）**：阶段一接入 K8s API Server + 助手 LLM 推理服务；阶段二起按需接入 GPUStack/Prometheus/Loki 等非 K8s 数据源，经工具接入层预留扩展点（E2）暴露给 Agent，不绑定具体网关实现。
 - **助手 LLM 服务（FR-M6-003）**：默认独立推理池（InferenceService）部署，HPA 扩缩，完全内网运行；同时按 FR-M2-003（模型无关）支持配置平台外 LLM 端点。
 - **下游容错**：下游调用带超时、重试与熔断，平台能力层故障不拖垮助手。
+
+---
+
+## 5.7 各模块 AI Agent 能力与对接设计
+
+> 对应需求 [§8](./CubeStack-平台智能助手-CubePilot-功能需求细化文档.md)。CubePilot 是共享 Agent 基座 + 通用能力，各业务模块的 AI Agent 能力由模块自身承接、经基座对接机制暴露给 Agent；本节定义对接架构，各模块能力的完整清单与分阶段映射见需求 §8.4/§8.5，不在此重复。
+
+### 5.7.1 对接机制（通用 4 步）
+
+任何模块能力接入基座统一走 4 步（需求 §8.3）：
+
+| 步骤 | 内容 | 落地 |
+|---|---|---|
+| ① 能力 API 化 | 模块能力遵循 API/CLI-First，提供标准化接口（CRD / API），Agent 可编程调用 | 平台既有 CRD/API |
+| ② 能力目录登记 | 模块能力登记进能力目录（FR-M3-006）：用途 / 关键参数 / 调用示例 | `Capability` CRD（[§7.2](#72-crd)） |
+| ③ 工具化调用 | Agent 依据目录选择能力，经平台资源操作（FR-M3-001，用户凭据直连）调用；阶段二起复杂操作先预览（FR-M3-004）、高风险 HITL（FR-M3-003） | M3 工具域 |
+| ④ 凭据与权限继承 | 调用以用户身份执行（凭据直连 + RBAC），不越权；全程审计 | M6 / M5 |
+
+### 5.7.2 能力目录设计（FR-M3-006）
+
+能力目录是基座与模块的**契约中心**，与工具实现解耦：
+
+- **载体**：`Capability` CRD（`assistant.suanova.io/v1alpha1`），见 [§7.2](#72-crd)。
+- **注入**：能力目录作为实例级配置、启动时加载——按用户可见范围注册为工具定义 + 能力说明注入系统提示词，变更即时生效（FR-M2-005）；每次请求仅动态组装新消息 + 会话历史（FR-M1-005）。
+- **登记/审核**：阶段一由平台侧（管理员/模块方）维护，登记与审核流程待定（Q-011）。
+- **扩展性**：目录描述「能力 + 参数 + 示例」，不绑定工具实现（kubectl 直连 / MCP Server），与 E2 工具接入双路径解耦；新增能力 = 登记一项，Agent 侧无需改代码。
+
+### 5.7.3 实现形态（模块「自带」领域智能的三条路径）
+
+基座通用能力（对话/智能问答/多入口、跨模块任务编排、通用日志分析、主动告警与报告、长期记忆，需求 §8.2）由 CubePilot 提供、各模块复用；模块**操作类**能力登记为能力目录工具化；模块**领域智能**由模块自身实现、基座提供对话/推理外壳（需求 §8.3 实现归属约定）。「模块自带」领域智能的三种实现方式（对应 Q-010）：
+
+| 方式 | 说明 | 适用 | 阶段一采用 |
+|---|---|---|---|
+| **A. 能力 API 化** | 封装领域逻辑为 API → 登记能力目录 → Agent 工具化调用 | 操作类（创建环境、提交训练、部署推理） | ✓ 主 |
+| **B. 领域 Skill** | 打包查询工具 + 领域提示词 → 基座场景化加载 | 领域智能（诊断、推荐、解读） | ✓ 倾向 |
+| **C. 数据开放 + 基座推理** | 暴露数据/API → 基座 LLM 直接分析 | 数据问答、血缘问答 | 阶段二起 |
+
+> **阶段一倾向 B**（复用基座 Agent + 模块注册领域 Skill，避免每模块一套实例，Q-010）；关键诊断类场景倾向 A/B 而非 C（C 缺领域提示词约束，可靠性较低）。模块级 Agent 的 LLM 与基座共用一套（Q-012，降低部署成本）。
+
+### 5.7.4 阶段一模块能力映射
+
+完整映射见需求 §8.4；阶段一落地模块（需求 §8.5）：
+
+| 模块 | 阶段一能力 | 实现归属 |
+|---|---|---|
+| 开发环境 | 自然语言创建环境、环境诊断 | 能力目录工具化（创建）/ 模块自带 B（诊断） |
+| 推理 | 智能部署、自动排障 | 模块自带 B（基座执行）/ Agent 原生 + 日志查询 |
+| 模型 | 自动模型测试 | 模块自带 + 基座报告 |
+| 运维 | 巡检自动化、智能日志分析 | 基座巡检（M4）/ Agent 原生 + 日志查询 |
+
+阶段二/三模块能力按需求 §8.5 分期接入，基座侧配套 RAG（E4）、HITL（E3）、审计（M5）、长期记忆等扩展点预留。
 
 ---
 
@@ -440,7 +529,7 @@ sequenceDiagram
 
 # 7. 数据模型
 
-**存储策略**：会话/消息/审计等高写入数据存 PostgreSQL + Redis；巡检报告为「运维资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载。
+**存储策略**：会话/消息/审计等高写入数据存 PostgreSQL + Redis；巡检报告与能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载。
 
 ## 7.1 DB 表
 
@@ -454,6 +543,8 @@ sequenceDiagram
 
 **InspectionRun**：`spec.scope`(all/node-pool/tenant/project)、`spec.items`（启用的巡检项）、`spec.schedule.cron`、`spec.trigger`(manual/cron)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。
 
+**Capability**（能力目录，FR-M3-006）：`spec.title`（能力名）、`spec.description`（用途）、`spec.params[]`（关键参数）、`spec.examples[]`（调用示例）、`spec.toolRef`（对应平台 CRD/API 引用）；登记为 Agent 可发现的能力清单，作为实例级配置启动时加载（承接 FR-M2-005），见 §5.7.2。
+
 ---
 
 # 8. 安全设计
@@ -462,11 +553,11 @@ sequenceDiagram
 |---|---|---|
 | 身份与授权 | Keycloak OIDC 鉴权，从 Token 解析用户/租户/项目/角色；工具资源归属校验复用平台 RBAC | NFR-001（阶段二） |
 | 凭据最小化 | 实例仅持用户自己的 kubeconfig（Secret 注入 0600），定期轮换、失效即时吊销；禁止集群管理员凭据 | FR-M6-001 |
-| 物理隔离 | 一用户一实例一数据目录，隔离边界为进程 + 存储 | NFR-002（阶段一） |
+| 物理隔离 | 一用户一实例一数据目录，隔离边界为 Pod + 数据目录 | NFR-002（阶段一） |
 | Prompt 注入防护 | 用户输入与系统指令区分；工具返回的非信任内容作为数据而非指令传入 LLM；即使注入，权限受 RBAC 约束、高危操作须确认 | NFR-003（阶段一） |
 | 实例最小权限 | 非 root、seccomp RuntimeDefault、drop ALL capabilities、readOnlyRootFilesystem、NetworkPolicy egress 白名单（仅 K8s API / 工具下游 / LLM） | NFR-004（阶段一） |
 | 确认护栏 | L1 操作由 HITL 拦截，操作人本人确认；拒绝/超时默认不执行（fail-closed）；Agent 不得重试被拒操作 | FR-M3-003（阶段二） |
-| 限流防滥用 | 按用户/工具/LLM 维度控制调用速率，防止资源滥用 | NFR-006（阶段三） |
+| 限流防滥用 | 按用户/工具/LLM 维度控制调用速率，防止资源滥用 | NFR-005（阶段三） |
 
 ## 8.1 错误处理与降级
 
@@ -476,7 +567,7 @@ sequenceDiagram
 |---|---|---|---|
 | 实例冷启动 | 60s | 2 次 | 提示「助手唤醒失败，请稍后重试」，不影响其他用户实例 |
 | 助手 LLM | 首 Token 15s / 总 60s | 1 次 | 返回「助手暂时不可用」 |
-| K8s / AI Controller | 10s | 2 次（指数退避） | 提示控制面异常，不继续编排 |
+| K8s API Server | 10s | 2 次（指数退避） | 提示控制面异常，不继续编排 |
 | Prometheus / Loki | 5s | 1 次 | 返回「监控数据暂不可用」 |
 
 熔断：单一下游连续失败超阈值（默认 5 次 / 30s）触发熔断，快速失败并告警，恢复探测通过后放行。
@@ -537,7 +628,7 @@ sequenceDiagram
 
 ## 11.2 依赖与离线交付
 
-- **平台既有**：Keycloak、PostgreSQL、Redis、K8s、AI Controller、GPUStack、Prometheus / Loki。
+- **平台既有**：Keycloak、PostgreSQL、Redis、K8s、GPUStack、Prometheus / Loki。
 - **新增**：助手 LLM 模型镜像（具 Function Calling）、Agent 实例镜像（OpenClaw + kubectl）、用户 kubeconfig 生成与轮换机制。
 - **离线交付**：所有镜像、模型、Helm Chart 随安装包内化。
 
@@ -549,15 +640,9 @@ sequenceDiagram
 
 ---
 
-# 12. 阶段落地与演进
+# 12. 架构演进
 
-| 阶段 | 交付重点（需求） | 架构形态 |
-|---|---|---|
-| **一 · 最小可用** | 对话闭环 + Portal 对话页（M1）；OpenClaw 实例 + 配置（M2）；平台资源操作 + 能力目录（M3）；预置 + AI 巡检（M4）；凭据 + LLM + K8s 联通（M6）；可观测接口 + 安全/性能基础 | **kubectl 直连、写操作直放、无 HITL、无审计**（仅 K8s Audit Log 兜底） |
-| **二 · 安全与 AI Ops** | HITL + 确认规则 + dry-run + 错误解析（M3）；审计（M5）；RAG + 主动告警（M1/M2）；巡检增强（M4）；身份认证（NFR-001） | **运行时原生 HITL（方案 A）**；RAG 接入知识注入 hook；非 K8s 数据源按需接入 |
-| **三 · 智能演进** | 运行时替换/多模型路由（M2）；RCA/自动修复/预测运维（M4）；长期记忆（M1/M2） | **Agent Runtime Adapter 切换 Hermes/自研**；可选 MCP Gateway（方案 B，统一 HITL） |
-
-**演进路径总结**（可替换点随阶段切换，不重写业务逻辑）：
+可替换点随交付阶段逐步启用、业务逻辑不重写（各阶段交付内容见需求 §5.1 / §8.5）：
 
 ```text
 阶段一：OpenClaw + kubectl 直连 + 写直放
@@ -572,15 +657,7 @@ sequenceDiagram
 
 # 13. 待解决问题
 
-| 编号 | 问题 | 涉及需求 | 优先级 |
-|---|---|---|---|
-| ISSUE-001 | 助手 LLM 模型选型（DeepSeek V4 Flash 规格）与评估 | FR-M6-003、NFR-017 | 高 |
-| ISSUE-002 | 用户 kubeconfig 注入与轮换机制（生成/挂载/吊销/轮换）及 kubectl 客户端选型 | FR-M6-001、FR-M3-001 | 高 |
-| ISSUE-003 | OpenClaw 确认钩子（requireApproval / exec approval）与 Portal 内嵌确认的适配验证 | FR-M3-002/003 | 高 |
-| ISSUE-004 | 确认规则表初始内容与评审（哪些命令/资源需确认） | FR-M3-002 | 中 |
-| ISSUE-005 | 巡检项与阈值细化（P0/P1/P2 判定标准） | FR-M4-005 | 中 |
-| ISSUE-006 | 实例池参数调优（预热池大小、闲置回收时长、实例数上限） | FR-M2-002、NFR-010 | 中 |
-| ISSUE-007 | 每用户数据目录底层存储选型与权限设计 | FR-M6-004 | 高 |
-| ISSUE-008 | 实例凭据保护与出网收敛验证（kubeconfig 0600/加密、NetworkPolicy 白名单） | NFR-004 | 高 |
-| ISSUE-009 | MCP Gateway（mcp-context-forge）引入时机与统一 HITL 的可行性验证 | §4.2/§4.3 | 中 |
-| ISSUE-010 | Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes 事件流对齐） | §4.1 | 中 |
+需求侧待确认见需求 §7（Q-001~Q-013）。设计侧额外待定：
+
+- MCP Gateway 引入时机与统一 HITL 可行性（§4.2/§4.3）；
+- Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes 事件流对齐，§4.1）。
