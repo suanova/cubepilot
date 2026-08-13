@@ -49,6 +49,8 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | HITL | Human-in-the-loop，写/高风险操作由操作人本人确认后执行 |
 | 确认规则 | 平台维护的「操作 → 是否需要确认」规则表，下发为运行时钩子 |
 | 能力目录 | 平台能力（CRD）登记为 Agent 可发现的能力清单（FR-M3-006） |
+| 定时 AI 任务 | 用户创建的定时/触发 Agent 任务，复用 OpenClaw cron 调度，以创建者身份 + RBAC 执行 |
+| 任务模板 | 预置 Skill（内容 + 所需权限提示）+ 预置 cron 配置（调度），巡检是其中之一 |
 | OpenClaw | 第一阶段 Agent 运行时 |
 | Hermes | 预留的替代 Agent 运行时（隔离与记忆机制同构） |
 
@@ -79,7 +81,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | 每用户实例（非共享） | 物理隔离（NFR-002）要求 Pod 级隔离，共享实例无法满足「用户间不可互访」 |
 | kubectl 直连（非自研 API 封装） | 平台资源皆为 CRD，kubectl 已覆盖；凭据直连等效用户本人操作，权限交 K8s RBAC |
 | 能力目录/巡检报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
-| 巡检旁路（不经 M2） | 巡检是平台级、调度驱动、只读，与每用户对话 Agent 解耦，互不拖累 |
+| 定时任务经 M2 执行 | 巡检等定时任务由调度器触发，经 M2 Agent 实例执行（创建者身份 + Skill），用 isolated cron session 与对话解耦 |
 | OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离与记忆机制同构便于迁移 |
 
 ---
@@ -88,44 +90,36 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 
 ## 3.1 功能域架构
 
-CubePilot 按**功能域**划分 6 个模块（5 功能域 + 1 支撑域），编号与需求文档一致：**M1 对话 / M2 Agent / M3 工具 / M4 巡检 / M5 审计 / M6 平台集成**。
+CubePilot 按**功能域**划分 6 个模块（5 功能域 + 1 支撑域），编号与需求文档一致：**M1 对话 / M2 Agent / M3 工具 / M4 定时 AI 任务 / M5 审计 / M6 平台集成**。
 
 ```mermaid
 flowchart TB
-    U["用户入口：Portal（对话页 / 巡检看板 / 审计查询 / Agent 配置）"]
+    U["用户入口：Portal（对话页 / 任务报告 / 审计查询 / Agent 配置）"]
 
-    subgraph chat["对话主链路"]
-        M1["M1 对话域<br/>会话 · 流式消息 · 上下文"]
+    S["调度器（定时触发）"]
+    M1["M1 对话域<br/>会话 · 流式消息 · 上下文"]
+    M4["M4 定时 AI 任务域<br/>任务模板（巡检等）· 分级报告"]
+
+    subgraph exec["Agent 执行链路"]
         M2["M2 Agent 域<br/>实例(OpenClaw) · 编排 · LLM 路由"]
         M3["M3 工具域<br/>平台操作 · 能力目录 · 确认判定"]
-        M1 --> M2 --> M3
+        M2 --> M3
     end
 
-    subgraph side["审计 · 平台集成"]
-        M5["M5 审计域（阶段二）<br/>调用/确认记录"]
-        M6["M6 平台集成<br/>凭据 · 下游接入"]
-    end
-
-    subgraph insp["巡检旁路（调度驱动，不经 M2）"]
-        S["调度器（定时触发）"]
-        M4["M4 巡检域<br/>预置巡检 · AI 巡检 · 分级报告"]
-        IA["巡检 Agent（平台级 · 只读）"]
-        S --> M4
-        M4 -.->|"AI 模式"| IA
-    end
-
+    M5["M5 审计域（阶段二）<br/>调用/确认记录"]
+    M6["M6 平台集成<br/>凭据 · 下游接入"]
     P["平台能力层：K8s · GPUStack · Prometheus/Loki · 助手 LLM"]
 
     U --> M1
     U --> M2
-    U --> M5
     U --> M4
+    U --> M5
+    S --> M4
+    M1 --> M2
+    M4 --> M2
     M3 --> P
     M3 --> M5
-    M5 --> P
     M6 --> P
-    M4 --> P
-    IA -->|"只读查询"| P
 ```
 
 **各模块职责一览：**
@@ -135,7 +129,7 @@ flowchart TB
 | M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文组装（实例级配置 + 动态会话历史） | 知识注入 hook（→ RAG） |
 | M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes/自研） |
 | M3 工具域 | 平台能力操作化、能力目录、确认判定 | 平台资源操作 + 能力目录；写操作直放 | MCP Gateway（→ 多 MCP Server 聚合 + 统一 HITL） |
-| M4 巡检域 | 定时健康巡检、AI 智能巡检、报告 | 预置巡检 6 类 + AI 巡检 + 报告 CRD | 巡检执行骨架（→ Workflow/RCA） |
+| M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 报告 CRD | 定时任务（cron + Skill）→ 推理验证 / RCA |
 | M5 审计域 | 工具调用与确认记录（阶段二） | — | `tool_call_record` 表 → 审计治理 |
 | M6 平台集成 | 凭据管理、下游接入 | 用户凭据生成/注入、K8s+LLM 联通 | 非 K8s 数据源接入（GPUStack/Prometheus 等） |
 
@@ -144,22 +138,18 @@ flowchart TB
 ```text
 对话主链路：
 用户(对话) ──► Portal ──► M1 对话域(鉴权/会话) ──► M2 Agent 实例(OpenClaw)
-                                                       │
-                              ┌────────────────────────┤
-                              ▼                        ▼
-                       LLM(推理服务)              M3 工具域(用户凭据直连)
-                              │                        │
-                              ▼                        ▼
-                         对话/工具决策              K8s/GPUStack/监控
+                                                        │
+                                                        ├──► LLM(推理服务)
+                                                        └──► M3 工具域(用户凭据直连) ──► K8s/GPUStack/监控
 
-巡检旁路（调度驱动，不经 M2）：
-调度器 ──► M4 巡检域 ──► 预置巡检项 + 巡检 Agent(平台级·只读) ──► 平台能力层
-        M4 巡检域 ──► InspectionRun CRD ──► Portal 看板
+定时任务（调度驱动，经 M2）：
+调度器 ──► M4 定时 AI 任务域(任务模板) ──► M2 Agent 实例 ──► M3 工具域 ──► 平台能力层
+M4 定时 AI 任务域 ──► InspectionRun CRD ──► Portal 报告
 ```
 
 - **上行**：用户消息经 M1 鉴权后进入该用户 Agent 实例，实例结合系统提示词、工具定义/能力目录与 LLM 产出「回复文本 + 工具调用序列」。
 - **下行**：Agent 以用户凭据直连平台能力；阶段一写操作直放，阶段二起写/高风险操作先经 HITL 确认再执行，结果回填后经 M1 流式返回用户。
-- **旁路**：巡检由调度器定时驱动 M4 执行（不经 M2），预置巡检项直接查询平台能力层，AI 巡检经 M4 专属巡检 Agent（只读）探索集群；报告写 CRD 供 Portal / API 展示。
+- **定时任务**：巡检等定时任务由调度器触发，经 M2 Agent 实例执行（创建者身份 + Skill），经 M3 工具访问平台能力层；报告写 CRD 供 Portal / API 展示。
 
 ## 3.3 组件清单
 
@@ -167,12 +157,11 @@ flowchart TB
 
 | 组件 | 选型 / 形态 | 承载域 | 职责 | 关键交互 |
 |---|---|---|---|---|
-| Portal 前端 | Web 静态资源 | — | 对话页 / 巡检看板 / 审计查询 / Agent 配置 | → 助手服务（SSE / REST） |
+| Portal 前端 | Web 静态资源 | — | 对话页 / 任务报告 / 审计查询 / Agent 配置 | → 助手服务（SSE / REST） |
 | 助手服务 | 无状态 Deployment ×2 | M1+M3+M5 | 会话/消息/上下文组装、工具编排、审计写入 | → Instance Manager、Agent 实例、PG/Redis、CRD |
 | Instance Manager | 单副本（Leader） | M2 | 实例拉起/回收/自愈、预热池 | → K8s API（拉起 Agent Pod） |
 | Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
-| 调度器 | 单副本（Leader） | M4 | 定时/手动触发巡检 | → 巡检 Agent、助手服务 |
-| 巡检 Agent | 平台级只读实例 | M4 | AI 智能巡检（只读探索） | → K8s（只读查询） |
+| 调度器 | 复用 OpenClaw cron | M4 | 定时/手动触发任务 | → M2 Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
 | 能力目录 / 巡检报告 | CRD | M3/M4 | 能力契约 / 巡检报告资产 | ← 助手服务、调度器 |
 | 存储 | PostgreSQL + Redis + 共享存储 | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
@@ -187,7 +176,7 @@ flowchart TB
 | E2 | **工具接入** | kubectl 直连 | MCP Gateway 聚合多 Server | 双路径：直连 + Gateway |
 | E3 | **HITL 确认** | 无（写直放） | 运行时原生 → 网关统一 | 确认规则表 + 确认钩子抽象 |
 | E4 | **知识注入** | 返回空 | RAG 知识库问答 | 系统提示词组装处 hook |
-| E5 | **巡检执行骨架** | 预置 + AI 巡检 | Workflow / 推理验证 / RCA | 巡检项注册表 + 调度骨架 |
+| E5 | **定时任务（cron + Skill）** | 预置 + AI 巡检 | 推理验证 / RCA / 自定义任务 | 预置 Skill 模板 + cron 调度 |
 
 ---
 
@@ -267,14 +256,15 @@ M3 工具域
 - 系统提示词组装流程中预留一个**注入点**：阶段一返回空，阶段二接入 RAG 检索结果（手册/FAQ/最佳实践，FR-M1-008）。
 - 约束：注入内容**不改变系统指令优先级**，检索结果作为数据而非指令处理（NFR-003 Prompt 注入防护）。
 
-## 4.5 扩展点五：巡检执行骨架
+## 4.5 扩展点五：定时任务（cron + Skill）
 
-**目标**：巡检的「调度 → 逐项执行 → 汇总 → 报告」骨架可复用为后续 Workflow / 推理验证 / RCA。
+**目标**：定时/触发任务复用 OpenClaw cron 调度 + 预置 Skill 模板，不自研 DAG 编排；巡检是预置模板之一，骨架可复用为推理验证 / RCA / 自定义任务。
 
 - 巡检项做成**注册表**（新增巡检项 = 注册一项，FR-M4-002）；
-- 执行骨架与巡检项解耦，后续复用：
+- 任务以「OpenClaw cron 调度 + 预置/自定义 Skill」复用，后续扩展：
+  - **定时/触发 AI 任务**（FR-M4-014，阶段一）= 预置 Skill（巡检等）+ cron；
   - **推理服务自动验证**（FR-M4-007，阶段二）= 注册为验证项；
-  - **Workflow 引擎**（FR-M4-008，阶段二）= 骨架 + 自定义编排；
+  - **任务模板**（FR-M4-008，阶段二）= 预置 + 自定义 Skill 模板；
   - **RCA / 自动修复 / 预测运维**（FR-M4-011~013，阶段三）= 报告 → Agent 消费。
 
 ---
@@ -355,11 +345,11 @@ stateDiagram-v2
 
 **扩展点**：MCP Gateway 双路径，见 [§4.2](#42-扩展点二工具接入双路径)。
 
-## 5.4 M4 巡检域
+## 5.4 M4 定时 AI 任务域
 
-**职责**：预置巡检 + AI 智能巡检、分级报告。
+**职责**：定时任务模板（预置巡检 + 自定义）、任务执行、分级报告。
 
-**触发**：调度器 Cron（默认每日 02:00）+ 手动/API 触发（FR-M4-001）。
+**触发**：调度器（默认每日 02:00）+ 手动/API 触发（FR-M4-001）；任务经 M2 Agent 实例执行（FR-M4-014）。
 
 **预置巡检项（FR-M4-002）**：
 
@@ -374,11 +364,11 @@ stateDiagram-v2
 
 > 阶段一数据源以 K8s API（kubectl）为主：GPU 经 `nvidia.com/gpu` capacity/allocatable、存储经 PVC 状态做基本检查；GPUStack / DCGM / Ceph Exporter 等详细指标阶段二起接入（FR-M6-002）。
 
-**AI 智能巡检（FR-M4-006）**：使用 **M4 专属的巡检 Agent**（平台级、只读权限，独立于 M2 每用户对话 Agent），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
+**AI 智能巡检（FR-M4-006）**：巡检作为定时任务经 M2 Agent 实例执行（创建者身份 + RBAC、只读），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
 
 **报告（FR-M4-003/004）**：结构化存 `InspectionRun` CRD，异常按 P0（紧急）/ P1（重要）/ P2（一般）分级；Portal Dashboard 展示每日巡检结果，API 可查。阶段一不主动推送通知。
 
-**扩展点**：巡检执行骨架 → Workflow / 推理验证 / RCA，见 [§4.5](#45-扩展点五巡检执行骨架)。
+**扩展点**：定时任务（cron + Skill）→ 推理验证 / RCA，见 §4.5。
 
 ## 5.5 M5 审计域（阶段二）
 
@@ -506,23 +496,19 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant S as 调度器
-    participant M4 as M4 巡检域
-    participant IA as 巡检 Agent(平台级·只读)
+    participant M4 as M4 定时 AI 任务域
+    participant M2 as M2 Agent 实例
     participant K8s as 平台能力
     participant CRD as InspectionRun CRD
-    participant P as Portal(看板)
+    participant P as Portal(报告)
 
-    S->>M4: Cron 触发巡检
-    M4->>CRD: 创建 InspectionRun(Pending)
-    M4->>M4: 逐项执行预置巡检项
-    M4->>K8s: 查询节点/GPU/Pod/存储/服务
-    K8s-->>M4: 各项结果
-    M4->>IA: AI 模式: 只读探索集群
-    IA->>K8s: 只读查询(最小权限 kubeconfig)
-    IA-->>M4: 结构化发现 + 证据链
-    M4->>M4: 分级汇总(P0/P1/P2)
-    M4->>CRD: 写入报告(Completed)
-    M4-->>P: 展示每日巡检结果
+    S->>M4: Cron 触发巡检任务
+    M4->>M2: 下发任务模板(巡检 Skill)
+    M2->>K8s: 以创建者身份只读查询(节点/GPU/Pod/存储)
+    K8s-->>M2: 各项结果
+    M2->>M2: AI 模式: 自主探索 + 分级汇总(P0/P1/P2)
+    M2->>CRD: 写入报告(Completed)
+    M2-->>P: 展示任务结果
 ```
 
 ---
