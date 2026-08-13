@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CubePilot · CubeStack 智能助手</title>
+<style>
+:root{
+  --bg: oklch(98% 0.005 250);
+  --surface: oklch(100% 0 0);
+  --fg: oklch(22% 0.02 240);
+  --muted: oklch(50% 0.018 240);
+  --border: oklch(90% 0.008 240);
+  --accent: oklch(58% 0.16 145);
+  --accent-strong: oklch(46% 0.14 145);
+  --accent-ink: oklch(42% 0.12 145);
+  --accent-soft: oklch(95.5% 0.04 145);
+  --success: oklch(48% 0.14 150);
+  --warn: oklch(45% 0.12 70);
+  --danger: oklch(50% 0.2 25);
+  --success-soft: oklch(95% 0.04 150);
+  --warn-soft: oklch(95% 0.05 80);
+  --danger-soft: oklch(95% 0.04 25);
+  --hover: oklch(95.5% 0.005 250);
+  --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, Menlo, 'Consolas', monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font-body);
+  font-size:14px;
+  line-height:1.5;
+  color:var(--fg);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  font-feature-settings:"tnum";
+}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,textarea,select{font-family:inherit;font-size:inherit;color:inherit}
+svg{display:block}
+.icon{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.mono{font-family:var(--font-mono);font-size:12px;letter-spacing:0}
+.tnum{font-variant-numeric:tabular-nums}
+.kicker{font-size:11px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:var(--muted)}
+
+/* layout */
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:236px;flex:none;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{height:53px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:var(--surface);border-bottom:1px solid var(--border);gap:16px}
+.content{flex:1;min-height:0;overflow:auto}
+
+/* sidebar */
+.brand{display:flex;align-items:center;gap:11px;padding:16px 16px 14px;border-bottom:1px solid var(--border)}
+.brand-mark{width:30px;height:30px;flex:none;color:var(--accent-strong)}
+.brand-text{display:flex;flex-direction:column;line-height:1.2;min-width:0}
+.brand-name{font-weight:650;font-size:14px;letter-spacing:0.01em}
+.brand-sub{font-size:11px;color:var(--muted)}
+.nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:6px;color:var(--muted);font-size:13.5px;font-weight:500;transition:background .12s,color .12s;text-align:left;position:relative;min-height:38px}
+.nav-item:hover{background:var(--hover);color:var(--fg)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.nav-item.active .icon{color:var(--accent-strong)}
+.nav-item .icon{color:var(--muted)}
+.nav-badge{margin-left:auto;font-size:11px;font-weight:600;background:var(--border);color:var(--muted);border-radius:10px;padding:1px 7px;min-width:20px;text-align:center}
+.nav-item.active .nav-badge{background:var(--accent-strong);color:#fff}
+.sidebar-foot{margin-top:auto;padding:12px 12px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+.instance-status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 9px}
+.instance-status .mono{margin-left:auto;color:var(--fg)}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.dot.success{background:var(--success);box-shadow:0 0 0 3px var(--success-soft)}
+.dot.warn{background:var(--warn)}
+.dot.danger{background:var(--danger)}
+.dot.idle{background:var(--border)}
+.user{display:flex;align-items:center;gap:9px}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--fg);color:var(--bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:none}
+.user-meta{display:flex;flex-direction:column;line-height:1.3;min-width:0}
+.user-meta .name{font-size:12.5px;font-weight:600}
+.user-meta .scope{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* topbar */
+.topbar-title{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);min-width:0}
+.topbar-title strong{font-size:15px;font-weight:650;color:var(--fg)}
+.topbar-actions{display:flex;align-items:center;gap:10px}
+.search{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 10px;height:32px;width:260px;color:var(--muted)}
+.search input{border:none;background:none;outline:none;width:100%;font-size:13px;color:var(--fg)}
+.search input::placeholder{color:var(--muted)}
+.icon-btn{position:relative;width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--muted);border:1px solid transparent;transition:background .12s,color .12s}
+.icon-btn:hover{background:var(--hover);color:var(--fg)}
+.badge{position:absolute;top:3px;right:3px;min-width:15px;height:15px;border-radius:8px;background:var(--danger);color:#fff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0 4px}
+.avatar-btn{width:30px;height:30px;border-radius:50%;background:var(--fg);color:var(--bg);font-size:11px;font-weight:600}
+
+/* shared ui */
+.view{display:none;padding:20px 24px 40px}
+.view.active{display:block}
+.view-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:16px;gap:16px;flex-wrap:wrap}
+.view-title{font-size:18px;font-weight:650;letter-spacing:-0.01em}
+.view-desc{font-size:13px;color:var(--muted);margin-top:3px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 14px;border-radius:6px;font-size:13px;font-weight:600;border:1px solid var(--border);background:var(--surface);color:var(--fg);transition:background .12s,border-color .12s;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn:focus-visible,.nav-item:focus-visible,.icon-btn:focus-visible,.switch:focus-visible,.chip:focus-visible,.seg-item:focus-visible,.radio:focus-visible,.task-row:focus-visible,.finding:focus-visible,.session-item:focus-visible,.modal-close:focus-visible,.avatar-btn:focus-visible,.new-chat:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff}
+.btn.primary:hover{background:oklch(41% 0.13 145);border-color:oklch(41% 0.13 145)}
+.btn.ghost{border-color:transparent;color:var(--muted)}
+.btn.ghost:hover{background:var(--hover);color:var(--fg)}
+.btn.sm{height:28px;padding:0 10px;font-size:12.5px}
+.btn .icon{width:15px;height:15px}
+.pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:11px;font-size:11.5px;font-weight:600;line-height:1;white-space:nowrap}
+.pill .dot{width:6px;height:6px}
+.pill.success{background:var(--success-soft);color:var(--success)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.danger{background:var(--danger-soft);color:var(--danger)}
+.pill.neutral{background:var(--hover);color:oklch(40% 0.015 240)}
+.pill.accent{background:var(--accent-soft);color:var(--accent-ink)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px}
+.card-pad{padding:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border)}
+.card-title{font-size:13.5px;font-weight:650}
+.card-hint{font-size:12px;color:var(--muted)}
+.label{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:0.01em;display:block;margin-bottom:6px}
+.field{margin-bottom:14px}
+select.input,textarea.input,input.input{width:100%;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:0 10px;font-size:13px;color:var(--fg);outline:none}
+select.input:focus,textarea.input:focus,input.input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea.input{height:auto;padding:10px;line-height:1.6;resize:vertical;font-size:13px}
+select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:32px}
+
+/* table */
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th{text-align:left;font-size:11.5px;font-weight:600;color:var(--muted);letter-spacing:0.03em;padding:9px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
+.table td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+.table tr:last-child td{border-bottom:none}
+.table tbody tr{transition:background .1s}
+.table tbody tr:hover{background:var(--hover)}
+.table .mono{font-size:12px}
+.task-row{cursor:pointer}
+.task-row:hover td{background:var(--hover)}
+.task-row.selected td{background:var(--accent-soft)}
+.task-row.selected td:first-child{box-shadow:inset 2px 0 0 var(--accent-strong)}
+.task-radio{width:13px;height:13px;border-radius:50%;border:2px solid var(--border);background:var(--surface);flex:none;margin:0 auto}
+.task-row.selected .task-radio{border-color:var(--accent-strong);background:var(--accent-strong);box-shadow:inset 0 0 0 2.5px var(--surface)}
+
+/* chat view */
+.chat-view{display:none;height:100%;flex-direction:column;padding:0}
+.chat-view.active{display:flex}
+.chat-body{flex:1;min-height:0;display:flex}
+.session-panel{width:252px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface)}
+.session-head{padding:12px 12px 8px;display:flex;align-items:center;gap:8px}
+.session-search{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;height:30px;padding:0 8px;color:var(--muted)}
+.session-search input{border:none;background:none;outline:none;width:100%;font-size:12.5px;color:var(--fg)}
+.new-chat{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff;background:var(--accent-strong);flex:none;transition:background .12s}
+.new-chat:hover{background:oklch(41% 0.13 145)}
+.new-chat .icon{width:16px;height:16px}
+.session-list{flex:1;overflow:auto;padding:6px 8px 12px}
+.session-item{display:flex;align-items:flex-start;gap:8px;padding:9px 10px;border-radius:6px;cursor:pointer;margin-bottom:2px;transition:background .12s}
+.session-item:hover{background:var(--hover)}
+.session-item.active{background:var(--accent-soft)}
+.session-item .s-icon{width:16px;height:16px;color:var(--muted);margin-top:1px;flex:none}
+.session-item.active .s-icon{color:var(--accent-strong)}
+.s-main{min-width:0;flex:1}
+.s-title{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.session-item.active .s-title{color:var(--accent-ink);font-weight:600}
+.s-meta{font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:6px}
+.chat-main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+.thread{flex:1;overflow:auto;padding:22px 24px}
+.thread-inner{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.msg{display:flex;gap:12px}
+.msg .avatar{width:30px;height:30px}
+.msg.user{flex-direction:row-reverse}
+.msg.user .avatar{background:var(--accent-strong)}
+.bubble{max-width:82%;min-width:0}
+.user .bubble{background:var(--accent-strong);color:#fff;border-radius:10px 10px 3px 10px;padding:9px 13px;font-size:13.5px;line-height:1.55}
+.assistant .bubble{display:flex;flex-direction:column;gap:10px}
+.msg-meta{font-size:11px;color:var(--muted);margin:5px 0 3px}
+.user .msg-meta{text-align:right}
+/* tool card */
+.tool-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.tool-head{display:flex;align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg)}
+.tool-head .icon{width:15px;height:15px;color:var(--muted)}
+.tool-cmd{font-family:var(--font-mono);font-size:12px;color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-body{padding:10px 12px;font-size:12.5px}
+.tool-body .mono{font-size:12px}
+.mini-table{width:100%;border-collapse:collapse;font-size:12.5px;font-family:var(--font-mono)}
+.mini-table th{text-align:left;font-weight:600;color:var(--muted);font-size:11px;padding:5px 10px;border-bottom:1px solid var(--border)}
+.mini-table td{padding:6px 10px;border-bottom:1px solid var(--border)}
+.mini-table tr:last-child td{border-bottom:none}
+.tool-status{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
+.spin{width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--accent-strong);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* confirm card */
+.confirm-card{border:1px solid oklch(80% 0.12 70);border-radius:8px;background:var(--surface);overflow:hidden}
+.confirm-head{display:flex;align-items:center;gap:9px;padding:10px 13px;background:var(--warn-soft);border-bottom:1px solid oklch(86% 0.1 80);font-size:13px;font-weight:650;color:var(--warn)}
+.confirm-head .icon{width:17px;height:17px}
+.confirm-body{padding:12px 13px;display:flex;flex-direction:column;gap:10px;font-size:13px}
+.confirm-cmd{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--fg);overflow-x:auto;white-space:nowrap}
+.confirm-note{font-size:12px;color:var(--muted)}
+.confirm-actions{display:flex;gap:8px}
+/* input bar */
+.composer{border-top:1px solid var(--border);padding:12px 24px 16px;background:var(--surface)}
+.composer-inner{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
+.composer-inner:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.composer textarea{flex:1;border:none;outline:none;resize:none;background:none;font-size:13.5px;line-height:1.5;max-height:120px;padding:4px 2px}
+.send-btn{width:34px;height:34px;border-radius:8px;background:var(--accent-strong);color:#fff;display:flex;align-items:center;justify-content:center;flex:none;transition:background .12s}
+.send-btn:hover{background:oklch(41% 0.13 145)}
+.send-btn .icon{width:16px;height:16px}
+.composer-hint{max-width:760px;margin:8px auto 0;font-size:11.5px;color:var(--muted)}
+.chat-head{flex:none;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.chat-head-main{max-width:760px;margin:0 auto}
+.chat-head-title{font-size:15px;font-weight:650;color:var(--fg)}
+.chat-head-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
+.thread-empty{max-width:760px;margin:0 auto;text-align:center;padding:72px 20px;color:var(--muted)}
+.thread-empty .icon{width:36px;height:36px;margin:0 auto 14px;color:var(--border)}
+.thread-empty-title{font-size:14px;font-weight:650;color:var(--fg);margin-bottom:6px}
+.thread-empty-desc{font-size:12.5px;line-height:1.7}
+
+/* tasks */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.stat-top{display:flex;align-items:center;justify-content:space-between}
+.stat-label{font-size:12px;color:var(--muted);font-weight:500}
+.stat-value{font-size:26px;font-weight:650;letter-spacing:-0.02em;line-height:1;font-variant-numeric:tabular-nums}
+.stat-sub{font-size:11.5px;color:var(--muted)}
+.sev-row{display:flex;gap:14px;margin-top:2px}
+.sev{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.sev b{font-size:16px;font-weight:650;font-variant-numeric:tabular-nums}
+.sev.p0 b{color:var(--danger)}.sev.p1 b{color:var(--warn)}.sev.p2 b{color:var(--muted)}
+.grid-2{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:16px}
+.grid-2.eq{grid-template-columns:1fr 1fr}
+.chart-wrap{padding:16px 18px 12px}
+.chart-title{font-size:13px;font-weight:650;margin-bottom:4px}
+.chart-sub{font-size:11.5px;color:var(--muted);margin-bottom:14px}
+.legend{display:flex;gap:14px;margin-bottom:12px}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.legend-item .swatch{width:9px;height:9px;border-radius:2px}
+.gauge-row{display:flex;align-items:center;gap:20px;padding:8px 4px}
+.gauge-num{text-align:center}
+.gauge-num .big{font-size:32px;font-weight:650;letter-spacing:-0.02em;font-variant-numeric:tabular-nums;color:var(--success)}
+.gauge-num .cap{font-size:11.5px;color:var(--muted);margin-top:2px}
+.filter-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chip{height:30px;padding:0 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);font-size:12.5px;font-weight:500;color:var(--muted);display:inline-flex;align-items:center;gap:6px;transition:all .12s}
+.chip:hover{background:var(--hover);color:var(--fg)}
+.chip.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.finding{display:flex;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border);align-items:flex-start}
+.finding:last-child{border-bottom:none}
+.finding .f-icon{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+.f-icon.p1{background:var(--warn-soft);color:var(--warn)}
+.f-icon.p2{background:var(--hover);color:var(--muted)}
+.f-main{flex:1;min-width:0}
+.f-title{font-size:13.5px;font-weight:600;line-height:1.45}
+.f-desc{font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.55}
+.f-meta{display:flex;align-items:center;gap:10px;margin-top:7px;flex-wrap:wrap}
+.f-tag{font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.f-tag .mono{font-size:11px}
+.f-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}
+.f-time{font-size:11.5px;color:var(--muted)}
+.evidence{width:100%;margin-top:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--muted);display:none;line-height:1.6}
+.finding.open .evidence{display:block}
+.evidence .mono{display:block;color:var(--fg);margin-top:4px}
+.run-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.run-log{font-family:var(--font-mono);font-size:12px;line-height:1.7;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px 14px;color:var(--fg);white-space:pre-wrap;word-break:break-word}
+.run-log .dim{color:var(--muted)}
+
+/* seg sub-nav */
+.seg{display:inline-flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px;margin-bottom:14px}
+.seg-item{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 14px;border-radius:6px;font-size:13px;font-weight:600;color:var(--muted);transition:color .12s,background .12s}
+.seg-item:hover{color:var(--fg)}
+.seg-item.active{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px oklch(22% 0.02 240 / .08)}
+.seg-count{font-size:11px;font-weight:600;background:var(--border);color:var(--muted);border-radius:9px;padding:0 6px;line-height:16px}
+.seg-item.active .seg-count{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* audit */
+.audit-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.audit-filters select.input{width:auto;min-width:130px}
+.audit-filters .search{width:220px;height:34px}
+.audit-filters .grow{flex:1}
+
+/* agent config */
+.config-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:start}
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+.toggle:last-child{border-bottom:none}
+.toggle-info{min-width:0}
+.toggle-title{font-size:13px;font-weight:600}
+.toggle-desc{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5}
+.toggle .pill{margin-left:auto;flex:none}
+.skill-group{display:flex;align-items:center;gap:8px;padding:16px 0 6px;font-size:11px;letter-spacing:0.07em;text-transform:uppercase;font-weight:650;color:var(--muted)}
+.skill-group:first-of-type{padding-top:6px}
+.skill-group::after{content:"";flex:1;height:1px;background:var(--border)}
+.lock-badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--muted);flex:none;white-space:nowrap}
+.lock-badge .icon{width:13px;height:13px}
+.mcp-empty{display:flex;align-items:center;gap:9px;padding:12px 14px;border:1px dashed var(--border);border-radius:6px;font-size:12.5px;color:var(--muted);line-height:1.55}
+.mcp-empty .icon{width:15px;height:15px;flex:none;color:var(--muted)}
+.switch{position:relative;width:38px;height:22px;border-radius:11px;background:var(--border);transition:background .15s;flex:none;cursor:pointer}
+.switch[aria-checked="true"]{background:var(--accent-strong)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px oklch(0% 0 0 / .25)}
+.switch[aria-checked="true"]::after{transform:translateX(16px)}
+.rule-row{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;font-size:13px}
+.rule-row .mono{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.inst-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.inst{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.inst .k{font-size:11px;color:var(--muted)}
+.inst .v{font-size:14px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums}
+.inst .v .mono{font-size:12px;font-weight:500}
+
+/* toast */
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:13px;font-weight:500;opacity:0;pointer-events:none;transition:all .2s;z-index:50;display:flex;align-items:center;gap:8px}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast .icon{width:15px;height:15px}
+
+/* modal */
+.modal-overlay{position:fixed;inset:0;background:oklch(22% 0.02 240 / 0.42);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+.modal-overlay.open{display:flex}
+.modal{width:520px;max-width:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 50px oklch(22% 0.02 240 / 0.18);overflow:hidden}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-title{font-size:15px;font-weight:650}
+.modal-close{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.modal-close:hover{background:var(--hover);color:var(--fg)}
+.modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--border);background:var(--bg)}
+.notice{display:flex;gap:9px;padding:11px 13px;border:1px solid oklch(86% 0.1 80);background:var(--warn-soft);border-radius:6px;font-size:12.5px;color:var(--warn);line-height:1.6}
+.notice .icon{width:16px;height:16px;flex:none;margin-top:1px}
+.radio-row{display:flex;gap:8px;flex-wrap:wrap}
+.radio{flex:1;min-width:110px;display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s}
+.radio:hover{border-color:var(--accent)}
+.radio.active{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+
+/* scrollbar */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--muted);border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important;transition-duration:0.01ms !important}
+}
+
+@media (max-width:1080px){
+  .sidebar{width:64px}
+  .brand-text,.nav-item span,.nav-badge,.sidebar-foot .instance-status span,.user-meta{display:none}
+  .brand{justify-content:center;padding:16px 0 14px}
+  .nav-item{justify-content:center;padding:10px}
+  .sidebar-foot{align-items:center}
+  .instance-status{justify-content:center}
+  .stat-grid{grid-template-columns:repeat(2,1fr)}
+  .grid-2,.grid-2.eq,.config-grid{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .topbar-actions .search{display:none}
+  .view{padding:16px 14px 32px}
+  .stat-grid{grid-template-columns:1fr}
+  .run-meta{grid-template-columns:repeat(2,1fr)}
+  .inst-grid{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar" data-od-id="sidebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+        <path d="M12 2.5 21 7v10l-9 4.5L3 17V7z"/>
+        <path d="M3.3 7 12 11.3 20.7 7M12 11.3v9.7"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">CubeStack</span>
+        <span class="brand-sub">CubePilot 智能助手</span>
+      </div>
+    </div>
+    <nav class="nav" data-od-id="sidebar-nav">
+      <button class="nav-item active" data-view="chat" data-od-id="nav-chat">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <span>对话</span><span class="nav-badge">3</span>
+      </button>
+      <button class="nav-item" data-view="tasks" data-od-id="nav-tasks">
+        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        <span>定时任务</span>
+      </button>
+      <button class="nav-item" data-view="audit" data-od-id="nav-audit">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 11.5l2 2 4-4"/></svg>
+        <span>审计</span>
+      </button>
+      <button class="nav-item" data-view="agent" data-od-id="nav-agent">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="8" y="8" width="8" height="8" rx="1.5"/><path d="M8 5V3M12 5V3M16 5V3M8 21v-2M12 21v-2M16 21v-2M3 8h2M3 12h2M3 16h2M19 8h2M19 12h2M19 16h2"/></svg>
+        <span>Agent 配置</span>
+      </button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="instance-status" data-od-id="instance-status">
+        <span class="dot success"></span><span>实例运行中</span>
+        <span class="mono">agent-7f3a</span>
+      </div>
+      <div class="user">
+        <div class="avatar">ZW</div>
+        <div class="user-meta">
+          <span class="name">zhang.wei</span>
+          <span class="scope">suanova-dev / cubepilot-demo</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="crumb">Portal</span><span class="crumb">/</span>
+        <strong id="viewTitle" data-od-id="view-title">对话</strong>
+      </div>
+      <div class="topbar-actions">
+        <div class="search">
+          <svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input placeholder="搜索资源、日志、能力…" aria-label="全局搜索">
+        </div>
+        <button class="icon-btn" aria-label="通知">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="badge">2</span>
+        </button>
+        <button class="avatar-btn" aria-label="账户">ZW</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <!-- 对话 -->
+      <section id="view-chat" class="view active chat-view" data-od-id="chat-view">
+        <div class="chat-body">
+          <div class="session-panel" data-od-id="session-panel">
+            <div class="session-head">
+              <div class="session-search">
+                <svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input placeholder="搜索会话" aria-label="搜索会话">
+              </div>
+              <button class="new-chat" aria-label="新建会话" data-od-id="new-chat"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+            </div>
+            <div class="session-list" data-od-id="session-list">
+              <div class="session-item active" data-session="prod" data-od-id="session-item-prod">
+                <svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                <div class="s-main">
+                  <div class="s-title">查询 production 异常 Pod</div>
+                  <div class="s-meta"><span>10:24</span><span>·</span><span>4 条消息</span></div>
+                </div>
+              </div>
+              <div class="session-item" data-session="deploy" data-od-id="session-item-deploy">
+                <svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                <div class="s-main">
+                  <div class="s-title">部署推理服务 qwen2.5-72b</div>
+                  <div class="s-meta"><span>昨日</span><span>·</span><span>12 条消息</span></div>
+                </div>
+              </div>
+              <div class="session-item" data-session="cuda" data-od-id="session-item-cuda">
+                <svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                <div class="s-main">
+                  <div class="s-title">环境诊断 CUDA 版本冲突</div>
+                  <div class="s-meta"><span>3 天前</span><span>·</span><span>8 条消息</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chat-main">
+            <div class="chat-head" data-od-id="chat-head">
+              <div class="chat-head-main">
+                <div class="chat-head-title" id="chatHeadTitle">查询 production 异常 Pod</div>
+                <div class="chat-head-meta" id="chatHeadMeta">4 条消息 · 今天 10:24</div>
+              </div>
+            </div>
+            <div class="thread" data-od-id="thread">
+              <div class="thread-inner">
+                <div class="msg user" data-od-id="msg-user-1">
+                  <div class="avatar">ZW</div>
+                  <div class="bubble">帮我查一下 production 项目里有哪些异常的 Pod</div>
+                </div>
+                <div class="msg assistant" data-od-id="msg-assistant-1">
+                  <div class="avatar">AI</div>
+                  <div class="bubble">
+                    <div class="tool-card" data-od-id="tool-call-1">
+                      <div class="tool-head">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>
+                        <span class="tool-cmd">kubectl get pods -n production --field-selector=status.phase!=Running</span>
+                        <span class="pill accent">L0 · 只读 · 直放</span>
+                      </div>
+                      <div class="tool-body">
+                        <table class="mini-table">
+                          <tr><th>NAME</th><th>READY</th><th>STATUS</th><th>RESTARTS</th><th>AGE</th></tr>
+                          <tr><td>train-llama3-7b-0</td><td>0/1</td><td style="color:var(--danger)">CrashLoopBackOff</td><td>14</td><td>2h</td></tr>
+                          <tr><td>infer-qwen2.5-1</td><td>0/1</td><td style="color:var(--warn)">Pending</td><td>0</td><td>18m</td></tr>
+                          <tr><td>data-prep-8f2a</td><td>1/1</td><td style="color:var(--success)">Running</td><td>0</td><td>6d</td></tr>
+                          <tr><td>eval-judge-3c</td><td>1/1</td><td style="color:var(--success)">Running</td><td>2</td><td>4d</td></tr>
+                        </table>
+                      </div>
+                      <div class="tool-head" style="border-top:1px solid var(--border);border-bottom:none">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+                        <span class="tool-status" style="color:var(--success)">执行完成 · 4 行 · 1.2s</span>
+                      </div>
+                    </div>
+                    <div style="font-size:13.5px;line-height:1.7">
+                      <p>production 项目共 4 个 Pod，发现 <b style="color:var(--danger)">2 个异常</b>：</p>
+                      <p style="margin-top:6px"><b>train-llama3-7b-0</b> — <span class="mono" style="color:var(--danger)">CrashLoopBackOff</span>，已重启 14 次，疑似启动命令或依赖问题，建议查看容器日志定位崩溃原因。</p>
+                      <p style="margin-top:6px"><b>infer-qwen2.5-1</b> — <span class="mono" style="color:var(--warn)">Pending</span> 已 18 分钟，疑似 GPU 资源不足。</p>
+                      <p style="margin-top:6px">需要我进一步排查某个 Pod 吗？</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="msg user" data-od-id="msg-user-2">
+                  <div class="avatar">ZW</div>
+                  <div class="bubble">重启 train-llama3-7b-0 这个 Pod</div>
+                </div>
+                <div class="msg assistant" data-od-id="msg-assistant-2">
+                  <div class="avatar">AI</div>
+                  <div class="bubble">
+                    <div class="confirm-card" data-od-id="confirm-card">
+                      <div class="confirm-head">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>
+                        <span data-od-id="confirm-title">高风险操作 · 需要你的确认</span>
+                      </div>
+                      <div class="confirm-body">
+                        <div class="confirm-cmd" data-od-id="confirm-cmd">kubectl delete pod train-llama3-7b-0 -n production</div>
+                        <div class="confirm-note">该操作将删除并重建 Pod（L1 写操作）。预计影响：服务短暂中断约 10~20 秒。拒绝或 30 秒未确认将默认不执行。</div>
+                        <div class="confirm-actions" data-od-id="confirm-actions">
+                          <button class="btn sm primary" data-od-id="confirm-allow" onclick="resolveConfirm(true)"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>允许执行</button>
+                          <button class="btn sm" data-od-id="confirm-deny" onclick="resolveConfirm(false)"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>拒绝</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="tool-status" style="font-size:12px">等待操作人确认（30s 后超时 fail-closed）…</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="composer" data-od-id="composer">
+              <div class="composer-inner">
+                <textarea id="chatInput" rows="1" placeholder="输入指令，例如「查看 GPU 利用率」或「创建一个开发环境」…" aria-label="输入消息"></textarea>
+                <button class="send-btn" aria-label="发送" data-od-id="send-button" onclick="sendMessage()"><svg class="icon" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
+              </div>
+              <div class="composer-hint">支持自然语言操作平台资源 · 输入 <span class="mono">@</span> 引用资源 · 阶段一写操作直放，阶段二起高风险操作需确认</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 定时任务 -->
+      <section id="view-tasks" class="view" data-od-id="tasks-view">
+        <div class="view-head">
+          <div>
+            <div class="view-title">定时任务</div>
+            <div class="view-desc">定时 AI 任务 · 预置 + 自定义模板 · 以创建者身份执行 · 报告可查询（FR-M4）</div>
+          </div>
+          <button class="btn primary" onclick="openTaskDialog()" data-od-id="new-task"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建任务</button>
+        </div>
+
+        <div class="seg" data-od-id="tasks-seg">
+          <button class="seg-item active" data-tasktab="list" onclick="switchTaskTab('list',this)">任务列表</button>
+          <button class="seg-item" data-tasktab="templates" onclick="switchTaskTab('templates',this)">模板 <span class="seg-count">3</span></button>
+        </div>
+
+        <div id="tasktab-list">
+        <div class="card" style="margin-bottom:16px" data-od-id="task-list">
+          <div class="card-head">
+            <span class="card-title">任务列表</span>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="card-hint">3 个任务 · 报告类型随模板而定</span>
+              <button class="btn sm" onclick="runTask()" data-od-id="run-task"><svg class="icon" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>立即执行</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table">
+              <thead><tr><th style="width:34px"></th><th>任务</th><th>模板</th><th>触发方式</th><th>调度</th><th>状态</th><th>上次执行</th><th>下次执行</th><th>创建者</th><th></th></tr></thead>
+              <tbody>
+                <tr class="task-row selected" data-od-id="task-row-inspect" onclick="selectTask(this,'全集群健康巡检','structured')">
+                  <td><span class="task-radio"></span></td>
+                  <td style="font-weight:600">全集群健康巡检</td>
+                  <td><span class="pill accent">巡检 · 预置</span></td>
+                  <td>定时 + 手动</td>
+                  <td class="mono">每日 02:00</td>
+                  <td><span class="pill success">运行中</span></td>
+                  <td class="tnum">今日 02:00</td>
+                  <td class="tnum">明日 02:00</td>
+                  <td>zhang.wei</td>
+                  <td><button class="btn sm ghost" onclick="focusReport()">查看报告</button></td>
+                </tr>
+                <tr class="task-row" data-od-id="task-row-verify" onclick="selectTask(this,'推理服务自动验证','none')">
+                  <td><span class="task-radio"></span></td>
+                  <td style="font-weight:600">推理服务自动验证</td>
+                  <td><span class="pill neutral">验证 · 预置</span></td>
+                  <td>定时 + 事件</td>
+                  <td class="mono">每日 06:00</td>
+                  <td><span class="pill neutral">预留 · 阶段二</span></td>
+                  <td class="tnum">—</td>
+                  <td class="tnum">—</td>
+                  <td>zhang.wei</td>
+                  <td><button class="btn sm ghost" disabled style="opacity:.5;cursor:not-allowed">查看报告</button></td>
+                </tr>
+                <tr class="task-row" data-od-id="task-row-custom" onclick="selectTask(this,'GPU 资源利用率日报','log')">
+                  <td><span class="task-radio"></span></td>
+                  <td style="font-weight:600">GPU 资源利用率日报</td>
+                  <td><span class="pill neutral">自定义</span></td>
+                  <td>定时</td>
+                  <td class="mono">每周一 09:00</td>
+                  <td><span class="pill success">运行中</span></td>
+                  <td class="tnum">昨日 09:00</td>
+                  <td class="tnum">下周一 09:00</td>
+                  <td>li.ming</td>
+                  <td><button class="btn sm ghost" onclick="focusReport()">查看报告</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="view-head" style="margin-bottom:12px" id="report-header">
+          <div>
+            <div class="view-title" style="font-size:15px">任务报告</div>
+            <div class="view-desc" id="report-sub">全集群健康巡检 · 预置巡检 6 类 + AI 智能巡检 · 报告为所选任务的执行记录</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center" id="report-controls">
+            <select class="input" style="width:auto" aria-label="选择报告运行" id="report-run-select">
+              <option selected>run-20260813 · 今日</option>
+              <option>run-20260812 · 昨日</option>
+              <option>run-20260811 · 08-11</option>
+            </select>
+            <button class="btn" onclick="toast('已导出任务报告 CSV')" data-od-id="export-report"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出报告</button>
+          </div>
+        </div>
+
+        <div id="report-inspect">
+        <div class="stat-grid">
+          <div class="stat" data-od-id="stat-last-run">
+            <div class="stat-top"><span class="stat-label">最近一次执行</span><span class="pill success">已完成</span></div>
+            <div class="stat-value">今日 02:00</div>
+            <div class="stat-sub">耗时 <span class="tnum">4m 12s</span> · <span class="mono">run-20260813</span></div>
+          </div>
+          <div class="stat" data-od-id="stat-anomalies">
+            <div class="stat-top"><span class="stat-label">异常分级计数</span><span class="pill warn">7 项</span></div>
+            <div class="sev-row">
+              <span class="sev p0"><b>0</b> P0 紧急</span>
+              <span class="sev p1"><b>2</b> P1 重要</span>
+              <span class="sev p2"><b>5</b> P2 一般</span>
+            </div>
+            <div class="stat-sub">较昨日 <span class="tnum" style="color:var(--success)">-2</span></div>
+          </div>
+          <div class="stat" data-od-id="stat-items">
+            <div class="stat-top"><span class="stat-label">巡检项通过率</span></div>
+            <div class="stat-value">58<span style="font-size:15px;color:var(--muted);font-weight:500"> / 64</span></div>
+            <div class="stat-sub">6 类巡检项 · 通过率 <span class="tnum">90.6%</span></div>
+          </div>
+          <div class="stat" data-od-id="stat-health">
+            <div class="stat-top"><span class="stat-label">集群健康度</span><span class="pill success">正常</span></div>
+            <div class="stat-value" style="color:var(--success)">92</div>
+            <div class="stat-sub">综合 6 类巡检项加权评分</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card" data-od-id="chart-anomaly-trend">
+            <div class="chart-wrap">
+              <div class="chart-title">近 7 日异常趋势</div>
+              <div class="chart-sub">按 P0 / P1 / P2 分级统计</div>
+              <div class="legend">
+                <span class="legend-item"><span class="swatch" style="background:var(--danger)"></span>P0 紧急</span>
+                <span class="legend-item"><span class="swatch" style="background:var(--warn)"></span>P1 重要</span>
+                <span class="legend-item"><span class="swatch" style="background:var(--muted)"></span>P2 一般</span>
+              </div>
+              <svg viewBox="0 0 440 150" width="100%" height="150" role="img" aria-label="近七日异常趋势图">
+                <g class="grid" stroke="var(--border)" stroke-width="1">
+                  <line x1="34" y1="18" x2="428" y2="18"/><line x1="34" y1="54" x2="428" y2="54"/><line x1="34" y1="90" x2="428" y2="90"/><line x1="34" y1="126" x2="428" y2="126"/>
+                </g>
+                <g fill="var(--danger)">
+                  <rect x="64" y="112" width="34" height="14"/><rect x="120" y="126" width="34" height="0"/>
+                  <rect x="176" y="126" width="34" height="0"/><rect x="232" y="108" width="34" height="18"/>
+                  <rect x="288" y="126" width="34" height="0"/><rect x="344" y="126" width="34" height="0"/>
+                  <rect x="400" y="126" width="34" height="0"/>
+                </g>
+                <g fill="var(--warn)">
+                  <rect x="64" y="76" width="34" height="36"/><rect x="120" y="84" width="34" height="42"/>
+                  <rect x="176" y="96" width="34" height="30"/><rect x="232" y="66" width="34" height="42"/>
+                  <rect x="288" y="82" width="34" height="44"/><rect x="344" y="74" width="34" height="52"/>
+                  <rect x="400" y="58" width="34" height="68"/>
+                </g>
+                <g fill="var(--muted)">
+                  <rect x="64" y="28" width="34" height="48"/><rect x="120" y="24" width="34" height="60"/>
+                  <rect x="176" y="40" width="34" height="56"/><rect x="232" y="18" width="34" height="48"/>
+                  <rect x="288" y="34" width="34" height="48"/><rect x="344" y="26" width="34" height="48"/>
+                  <rect x="400" y="18" width="34" height="40"/>
+                </g>
+                <g font-family="var(--font-mono)" font-size="10" fill="var(--muted)">
+                  <text x="64" y="141" text-anchor="middle">08-07</text><text x="120" y="141" text-anchor="middle">08-08</text>
+                  <text x="176" y="141" text-anchor="middle">08-09</text><text x="232" y="141" text-anchor="middle">08-10</text>
+                  <text x="288" y="141" text-anchor="middle">08-11</text><text x="344" y="141" text-anchor="middle">08-12</text>
+                  <text x="400" y="141" text-anchor="middle">08-13</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+          <div class="card" data-od-id="chart-health-gauge">
+            <div class="chart-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
+              <div class="chart-title" style="align-self:flex-start">集群健康度</div>
+              <div class="gauge-row">
+                <svg viewBox="0 0 120 120" width="140" height="140" role="img" aria-label="集群健康度 92">
+                  <circle cx="60" cy="60" r="48" fill="none" stroke="var(--border)" stroke-width="11"/>
+                  <circle cx="60" cy="60" r="48" fill="none" stroke="var(--success)" stroke-width="11" stroke-linecap="round"
+                    stroke-dasharray="301.6" stroke-dashoffset="24.1" transform="rotate(-90 60 60)"/>
+                </svg>
+                <div class="gauge-num">
+                  <div class="big">92</div>
+                  <div class="cap">综合评分</div>
+                  <div class="cap" style="margin-top:8px"><span class="pill success">健康</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px" data-od-id="inspection-categories">
+          <div class="card-head">
+            <span class="card-title">巡检项分类</span>
+            <span class="card-hint">6 类 · 64 项</span>
+          </div>
+          <table class="table">
+            <thead><tr><th>类别</th><th>巡检项</th><th>通过</th><th>告警</th><th>异常</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>控制面</td><td class="tnum">8</td><td class="tnum">8</td><td class="tnum">0</td><td class="tnum">0</td><td><span class="pill success">通过</span></td></tr>
+              <tr><td>节点</td><td class="tnum">14</td><td class="tnum">13</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
+              <tr><td>GPU</td><td class="tnum">12</td><td class="tnum">10</td><td class="tnum">1</td><td class="tnum">1</td><td><span class="pill warn">告警</span></td></tr>
+              <tr><td>Pod</td><td class="tnum">10</td><td class="tnum">9</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
+              <tr><td>存储</td><td class="tnum">8</td><td class="tnum">7</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
+              <tr><td>平台组件</td><td class="tnum">12</td><td class="tnum">11</td><td class="tnum">0</td><td class="tnum">1</td><td><span class="pill warn">告警</span></td></tr>
+              <tr style="font-weight:650;background:var(--bg)"><td>合计</td><td class="tnum">64</td><td class="tnum">58</td><td class="tnum">4</td><td class="tnum">2</td><td><span class="pill warn">需关注</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card" data-od-id="findings">
+          <div class="card-head">
+            <span class="card-title">发现列表</span>
+            <div class="filter-row" style="margin:0">
+              <button class="chip active" data-sev="all" onclick="filterFindings('all',this)">全部 <span class="tnum">7</span></button>
+              <button class="chip" data-sev="p1" onclick="filterFindings('p1',this)">P1 重要 <span class="tnum">2</span></button>
+              <button class="chip" data-sev="p2" onclick="filterFindings('p2',this)">P2 一般 <span class="tnum">5</span></button>
+            </div>
+          </div>
+          <div id="findings-list">
+            <div class="finding" data-sev="p1" data-od-id="finding-p1-1" onclick="this.classList.toggle('open')">
+              <div class="f-icon p1"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">GPU 节点 gpu-node-03 显存利用率持续过高</div>
+                <div class="f-desc">显存利用率连续 6 小时超过 95%，存在 OOM 风险，建议排查占用异常的任务或调度迁移。</div>
+                <div class="f-meta">
+                  <span class="f-tag">类别：GPU</span>
+                  <span class="f-tag">证据：<span class="mono">dmesg · DCGM</span></span>
+                </div>
+                <div class="evidence">自然语言说明：该节点自 08-13 04:10 起显存占用率维持在 95% 以上，超过历史基线（均值 61%）。<span class="mono">$ nvidia-smi --query-gpu=memory.used --format=csv</span></div>
+              </div>
+              <div class="f-right"><span class="pill warn">P1 重要</span><span class="f-time">04:10</span></div>
+            </div>
+            <div class="finding" data-sev="p1" data-od-id="finding-p1-2" onclick="this.classList.toggle('open')">
+              <div class="f-icon p1"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">存储 PVC data-pvc-11 使用率接近上限</div>
+                <div class="f-desc">PVC 使用率 92%，接近配额上限，建议扩容或清理无用数据。</div>
+                <div class="f-meta"><span class="f-tag">类别：存储</span><span class="f-tag">证据：<span class="mono">PVC status · Ceph</span></span></div>
+                <div class="evidence">data-pvc-11 已使用 92%（943 GB / 1 TB），按当前写入速率预计 3 天后写满。<span class="mono">$ kubectl get pvc data-pvc-11 -o json</span></div>
+              </div>
+              <div class="f-right"><span class="pill warn">P1 重要</span><span class="f-time">03:52</span></div>
+            </div>
+            <div class="finding" data-sev="p2" data-od-id="finding-p2-1" onclick="this.classList.toggle('open')">
+              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">Pod infer-qwen2.5-1 处于 Pending</div>
+                <div class="f-desc">已 Pending 18 分钟，疑似 GPU 资源不足（请求 4×A100，当前可用 2×A100）。</div>
+                <div class="f-meta"><span class="f-tag">类别：Pod</span><span class="f-tag">证据：<span class="mono">Pod events</span></span></div>
+              </div>
+              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">03:28</span></div>
+            </div>
+            <div class="finding" data-sev="p2" data-od-id="finding-p2-2" onclick="this.classList.toggle('open')">
+              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">平台组件 Harbor 证书即将过期</div>
+                <div class="f-desc">Harbor TLS 证书将于 14 天后过期，建议提前续签并滚动更新。</div>
+                <div class="f-meta"><span class="f-tag">类别：平台组件</span></div>
+              </div>
+              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">03:11</span></div>
+            </div>
+            <div class="finding" data-sev="p2" data-od-id="finding-p2-3" onclick="this.classList.toggle('open')">
+              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">节点 node-07 磁盘使用率偏高</div>
+                <div class="f-desc">磁盘使用率 78%，超过 75% 关注阈值，建议关注清理。</div>
+                <div class="f-meta"><span class="f-tag">类别：节点</span></div>
+              </div>
+              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:47</span></div>
+            </div>
+            <div class="finding" data-sev="p2" data-od-id="finding-p2-4" onclick="this.classList.toggle('open')">
+              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">控制面 etcd 发生 leader 选举</div>
+                <div class="f-desc">过去 24h 内 etcd 发生 2 次 leader 选举，建议关注控制面网络稳定性。</div>
+                <div class="f-meta"><span class="f-tag">类别：控制面</span><span class="f-tag">证据：<span class="mono">etcd events</span></span></div>
+              </div>
+              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:19</span></div>
+            </div>
+            <div class="finding" data-sev="p2" data-od-id="finding-p2-5" onclick="this.classList.toggle('open')">
+              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
+              <div class="f-main">
+                <div class="f-title">配置漂移：production 命名空间 ResourceQuota 与基线不一致</div>
+                <div class="f-desc">AI 智能巡检发现的预置项外异常，当前配置与 Git 基线存在 3 处差异。</div>
+                <div class="f-meta"><span class="f-tag">类别：AI 智能巡检</span><span class="f-tag">证据：<span class="mono">drift-diff</span></span></div>
+                <div class="evidence">自然语言说明：命名空间 production 的 ResourceQuota 与基线相比新增了 2 项限制、删除 1 项，疑似被手动修改且未提交。<span class="mono">$ kubectl diff -f baseline/quota.yaml</span></div>
+              </div>
+              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:05</span></div>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        <div id="report-generic" class="card" style="display:none" data-od-id="report-generic">
+          <div class="card-head">
+            <span class="card-title">执行记录</span>
+            <span class="card-hint">自定义模板 · 输出为 AI 生成的自由文本，无结构化分类</span>
+          </div>
+          <div style="padding:16px 18px 18px">
+            <div class="run-meta">
+              <div class="inst"><div class="k">状态</div><div class="v"><span class="pill success">已完成</span></div></div>
+              <div class="inst"><div class="k">耗时</div><div class="v tnum">38s</div></div>
+              <div class="inst"><div class="k">退出码</div><div class="v mono">0</div></div>
+              <div class="inst"><div class="k">触发方式</div><div class="v" style="font-size:13px">定时</div></div>
+            </div>
+            <div style="font-size:11px;letter-spacing:0.07em;text-transform:uppercase;font-weight:650;color:var(--muted);margin-bottom:8px">任务输出</div>
+            <div class="run-log"><span class="dim">[09:00:02] 任务开始 · 以 li.ming 身份执行
+[09:00:05] 获取 GPU 节点列表 · 12 个节点
+[09:00:12] 查询近 24h 显存 / 利用率指标
+[09:00:38] 生成自然语言汇总 · 退出码 0</span>
+
+GPU 资源利用率日报（08-12）
+· 集群整体 GPU 利用率 71%，较昨日 +3pct。
+· 高负载：gpu-node-03 显存 96%，建议关注。
+· 闲置：gpu-node-07 / gpu-node-11 利用率 &lt; 10%，可调度更多任务。
+· 队列等待：3 个训练任务排队，平均等待 14 分钟。</div>
+          </div>
+        </div>
+
+        <div id="report-empty" class="card" style="display:none" data-od-id="report-empty">
+          <div style="padding:56px 24px;text-align:center">
+            <svg class="icon" style="width:32px;height:32px;color:var(--muted);margin:0 auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+            <div id="empty-title" style="font-size:14px;font-weight:650;margin-top:14px">尚未产生执行记录</div>
+            <div id="empty-desc" style="font-size:12.5px;color:var(--muted);line-height:1.7;max-width:420px;margin:6px auto 0">该任务首次执行后，将在此展示结构化报告。你可点击「立即执行」手动触发一次。</div>
+          </div>
+        </div>
+        </div>
+
+        <div id="tasktab-templates" style="display:none">
+        <div class="card" data-od-id="template-list">
+          <div class="card-head">
+            <span class="card-title">模板管理</span>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="card-hint">模板是任务的可复用定义 · 预置模板系统内置不可删改 · 自定义模板阶段二开放</span>
+              <button class="btn sm" onclick="toast('自定义模板创建将于阶段二开放')" data-od-id="new-template"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建模板</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table">
+              <thead><tr><th>模板</th><th>类型</th><th>输出类型</th><th>绑定 Skills</th><th>阶段</th><th>关联任务</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr data-od-id="template-row-inspect">
+                  <td><div style="display:flex;align-items:center;gap:7px"><span style="font-weight:600">集群健康巡检</span></div></td>
+                  <td><span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>预置 · 不可删改</span></td>
+                  <td>结构化报告</td>
+                  <td class="mono">kubectl · logs · 平台组件</td>
+                  <td><span class="pill accent">阶段一</span></td>
+                  <td class="tnum">1</td>
+                  <td><button class="btn sm ghost" onclick="openTaskDialog('集群健康巡检')">基于此创建任务</button></td>
+                </tr>
+                <tr data-od-id="template-row-verify">
+                  <td><div style="display:flex;align-items:center;gap:7px"><span style="font-weight:600">推理服务自动验证</span></div></td>
+                  <td><span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>预置 · 不可删改</span></td>
+                  <td>结构化报告</td>
+                  <td class="mono">InferenceService</td>
+                  <td><span class="pill warn">阶段二</span></td>
+                  <td class="tnum">1</td>
+                  <td><button class="btn sm ghost" onclick="openTaskDialog('推理服务自动验证')">基于此创建任务</button></td>
+                </tr>
+                <tr data-od-id="template-row-custom">
+                  <td><div style="display:flex;align-items:center;gap:7px"><span style="font-weight:600">GPU 资源利用率日报</span></div></td>
+                  <td><span class="pill neutral">自定义</span></td>
+                  <td>自由文本</td>
+                  <td class="mono">GPUStack 指标</td>
+                  <td><span class="pill warn">阶段二</span></td>
+                  <td class="tnum">1</td>
+                  <td>
+                    <button class="btn sm ghost" onclick="toast('模板编辑将于阶段二开放')">编辑</button>
+                    <button class="btn sm ghost" onclick="toast('模板删除将于阶段二开放')">删除</button>
+                    <button class="btn sm ghost" onclick="openTaskDialog('GPU 资源利用率日报')">基于此创建任务</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <!-- 审计 -->
+      <section id="view-audit" class="view" data-od-id="audit-view">
+        <div class="view-head">
+          <div>
+            <div class="view-title">审计</div>
+            <div class="view-desc">工具调用与确认记录 · 按用户 / 工具 / 时间筛选 · 阶段二能力</div>
+          </div>
+          <button class="btn primary" onclick="toast('已导出审计 CSV（7 条记录）')" data-od-id="export-audit"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出 CSV</button>
+        </div>
+        <div class="card" data-od-id="audit-panel">
+          <div class="card-pad audit-filters" data-od-id="audit-filters">
+            <select class="input" aria-label="操作者"><option>全部操作者</option><option>zhang.wei</option><option>li.ming</option></select>
+            <select class="input" aria-label="工具"><option>全部工具</option><option>kubectl</option><option>DevEnvironment</option><option>InferenceService</option></select>
+            <select class="input" aria-label="级别"><option>全部级别</option><option>L0 · 只读</option><option>L1 · 写/高风险</option></select>
+            <select class="input" aria-label="状态"><option>全部状态</option><option>已执行</option><option>已确认</option><option>已拒绝</option><option>超时</option><option>失败</option></select>
+            <div class="search grow"><svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input id="auditSearch" placeholder="搜索会话 / 参数…" aria-label="搜索审计记录" oninput="filterAudit()"></div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table" data-od-id="audit-table">
+              <thead><tr><th>时间</th><th>操作者</th><th>会话</th><th>工具</th><th>参数摘要</th><th>级别</th><th>状态</th><th>结果</th></tr></thead>
+              <tbody id="audit-body">
+                <tr data-search="conv-9f2a get pods production"><td class="mono tnum">10:24:18</td><td>zhang.wei</td><td class="mono">conv-9f2a</td><td class="mono">kubectl get pods</td><td class="mono">-n production</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">0.9s</td></tr>
+                <tr data-search="conv-9f2a delete pod train-llama3"><td class="mono tnum">10:26:02</td><td>zhang.wei</td><td class="mono">conv-9f2a</td><td class="mono">kubectl delete pod</td><td class="mono">train-llama3-7b-0</td><td><span class="pill warn">L1</span></td><td><span class="pill success">已确认</span></td><td class="tnum" style="color:var(--success)">1.4s</td></tr>
+                <tr data-search="conv-3c1e get nodes"><td class="mono tnum">09:58:41</td><td>zhang.wei</td><td class="mono">conv-3c1e</td><td class="mono">kubectl get nodes</td><td class="mono">--show-labels</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">0.7s</td></tr>
+                <tr data-search="conv-3c1e devenv create gpu"><td class="mono tnum">09:40:15</td><td>zhang.wei</td><td class="mono">conv-3c1e</td><td class="mono">DevEnvironment</td><td class="mono">create · cuda-12.1</td><td><span class="pill warn">L1</span></td><td><span class="pill success">已确认</span></td><td class="tnum" style="color:var(--success)">8.2s</td></tr>
+                <tr data-search="conv-77d0 get events"><td class="mono tnum">昨日 21:12:30</td><td>li.ming</td><td class="mono">conv-77d0</td><td class="mono">kubectl get events</td><td class="mono">-n staging</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">1.1s</td></tr>
+                <tr data-search="conv-77d0 delete job failed"><td class="mono tnum">昨日 21:15:44</td><td>li.ming</td><td class="mono">conv-77d0</td><td class="mono">kubectl delete job</td><td class="mono">preprocess-9</td><td><span class="pill warn">L1</span></td><td><span class="pill danger">已拒绝</span></td><td class="tnum" style="color:var(--muted)">fail-closed</td></tr>
+                <tr data-search="conv-1aa2 exec logs timeout"><td class="mono tnum">昨日 18:03:09</td><td>zhang.wei</td><td class="mono">conv-1aa2</td><td class="mono">kubectl exec</td><td class="mono">-- ls /data</td><td><span class="pill warn">L1</span></td><td><span class="pill neutral">超时</span></td><td class="tnum" style="color:var(--muted)">30s</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Agent 配置 -->
+      <section id="view-agent" class="view" data-od-id="agent-view">
+        <div class="view-head">
+          <div>
+            <div class="view-title">Agent 配置</div>
+            <div class="view-desc">模型选择 · Skills 技能 · 系统提示词 · 确认规则 · 实例状态（FR-M2-005）</div>
+          </div>
+          <button class="btn primary" onclick="toast('配置已保存并即时生效')" data-od-id="save-config"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>保存配置</button>
+        </div>
+        <div class="config-grid">
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div class="card" data-od-id="config-model">
+              <div class="card-head"><span class="card-title">模型与运行时</span><span class="card-hint">模型无关 · OpenAI 兼容接口</span></div>
+              <div class="card-pad">
+                <div class="field">
+                  <label class="label">助手 LLM 模型</label>
+                  <select class="input" aria-label="选择模型">
+                    <option selected>DeepSeek V4 Flash（私有化 · 内网）</option>
+                    <option>Qwen2.5-72B（私有化）</option>
+                    <option>平台外 LLM（OpenAI 兼容端点）</option>
+                  </select>
+                </div>
+                <div class="field" style="margin-bottom:0">
+                  <label class="label">Agent 运行时</label>
+                  <select class="input" aria-label="选择运行时">
+                    <option selected>OpenClaw（阶段一）</option>
+                    <option disabled>Hermes（预留 · 阶段三）</option>
+                    <option disabled>自研运行时（预留 · 阶段三）</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="card" data-od-id="config-prompt">
+              <div class="card-head"><span class="card-title">系统提示词</span><span class="card-hint">持久化并即时生效</span></div>
+              <div class="card-pad">
+                <textarea class="input" rows="6" aria-label="系统提示词">你是 CubePilot，CubeStack 智算云平台的智能助手。你可以通过平台 Skills 调用资源（开发环境、推理服务、训练任务等），以用户身份执行操作。写操作需遵循确认规则，只读查询直放。回答使用简体中文，涉及资源时给出明确的名称与命名空间。</textarea>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div class="card" data-od-id="config-instance">
+              <div class="card-head"><span class="card-title">实例状态</span><span class="pill success">运行中</span></div>
+              <div class="card-pad">
+                <div class="inst-grid">
+                  <div class="inst"><div class="k">实例 ID</div><div class="v"><span class="mono">agent-7f3a</span></div></div>
+                  <div class="inst"><div class="k">冷启动时长</div><div class="v">12s</div></div>
+                  <div class="inst"><div class="k">资源占用</div><div class="v">0.8 vCPU</div></div>
+                  <div class="inst"><div class="k">数据目录</div><div class="v" style="font-size:12px"><span class="mono">/data/user-42</span></div></div>
+                  <div class="inst"><div class="k">空闲回收</div><div class="v">30 min</div></div>
+                  <div class="inst"><div class="k">活跃会话</div><div class="v">3</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="card" data-od-id="config-rules">
+              <div class="card-head"><span class="card-title">确认规则</span><span class="card-hint">阶段二 HITL · 命中即确认</span></div>
+              <div class="card-pad">
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl delete *</span><span class="pill warn">需确认</span></div>
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl exec *</span><span class="pill warn">需确认</span></div>
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">InferenceService delete</span><span class="pill warn">需确认</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" data-od-id="config-skills">
+          <div class="card-head"><span class="card-title">Skills 技能</span><span class="card-hint">阶段一以 Skills 注入 · 后续接入 MCP</span></div>
+          <div class="card-pad" style="padding-top:4px;padding-bottom:10px">
+            <div class="skill-group">系统技能 · 内置不可关闭</div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">平台资源操作 <span class="mono" style="color:var(--muted);font-weight:500">kubectl</span></div><div class="toggle-desc">以用户身份直连 K8s API Server，读写平台 CRD</div></div>
+              <span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">日志查询 <span class="mono" style="color:var(--muted);font-weight:500">kubectl logs</span></div><div class="toggle-desc">通用日志分析，任意任务日志定位与修复建议</div></div>
+              <span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span>
+            </div>
+
+            <div class="skill-group">平台能力 · 阶段一 / 阶段二</div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">开发环境 <span class="mono" style="color:var(--muted);font-weight:500">DevEnvironment</span></div><div class="toggle-desc">创建与管理 GPU 开发环境（CUDA 镜像、资源配置）</div></div>
+              <span class="pill accent">阶段一</span>
+              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="开发环境"></button>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">推理服务 <span class="mono" style="color:var(--muted);font-weight:500">InferenceService</span></div><div class="toggle-desc">部署与扩缩容模型推理服务，推荐框架、并行与量化</div></div>
+              <span class="pill accent">阶段一</span>
+              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="推理服务"></button>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">模型 <span class="mono" style="color:var(--muted);font-weight:500">Model</span></div><div class="toggle-desc">管理模型与版本血缘，支持血缘问答与版本监控</div></div>
+              <span class="pill accent">阶段一</span>
+              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="模型"></button>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">训练任务 <span class="mono" style="color:var(--muted);font-weight:500">TrainingJob</span></div><div class="toggle-desc">提交分布式训练任务，监控、智能干预与故障恢复</div></div>
+              <span class="pill warn">阶段二</span>
+              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="训练任务"></button>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">数据集 <span class="mono" style="color:var(--muted);font-weight:500">Dataset</span></div><div class="toggle-desc">管理数据集与预处理，数据画像、问答与异常检测</div></div>
+              <span class="pill warn">阶段二</span>
+              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="数据集"></button>
+            </div>
+
+            <div class="skill-group">扩展技能 · 阶段二</div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">GPUStack 指标查询</div><div class="toggle-desc">GPU 详细指标（DCGM / 利用率 / 温度）</div></div>
+              <span class="pill warn">阶段二</span>
+              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="GPUStack 指标查询"></button>
+            </div>
+            <div class="toggle">
+              <div class="toggle-info"><div class="toggle-title">知识库问答 <span class="mono" style="color:var(--muted);font-weight:500">RAG</span></div><div class="toggle-desc">手册 / FAQ / 最佳实践，回答溯源</div></div>
+              <span class="pill warn">阶段二</span>
+              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="知识库问答"></button>
+            </div>
+
+            <div class="skill-group">MCP 连接器 · 预留阶段三</div>
+            <div class="mcp-empty">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9M21 3v6h-6"/></svg>
+              阶段三接入 MCP 连接器。系统提供的 MCP 默认不可关闭，自定义连接器可停用。
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="modal-overlay" id="taskDialog" role="dialog" aria-modal="true" aria-labelledby="taskDialogTitle">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title" id="taskDialogTitle">新建定时任务</span>
+      <button class="modal-close" onclick="closeTaskDialog()" aria-label="关闭"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="field" style="margin-bottom:0">
+        <label class="label">任务名称</label>
+        <input class="input" id="taskName" placeholder="例如：生产命名空间巡检" aria-label="任务名称">
+      </div>
+      <div>
+        <label class="label">任务模板</label>
+        <select class="input" id="taskTemplate" aria-label="任务模板">
+          <option selected>集群健康巡检（预置）</option>
+          <option>推理服务自动验证（预置 · 阶段二）</option>
+          <option>GPU 资源利用率日报（自定义）</option>
+          <option disabled>＋ 新建自定义模板（阶段二）</option>
+        </select>
+      </div>
+      <div>
+        <label class="label">触发方式</label>
+        <div class="radio-row" role="radiogroup" aria-label="触发方式">
+          <button type="button" class="radio active" role="radio" aria-checked="true" data-trigger="cron" onclick="pickTrigger(this)">定时</button>
+          <button type="button" class="radio" role="radio" aria-checked="false" data-trigger="manual" onclick="pickTrigger(this)">手动</button>
+          <button type="button" class="radio" role="radio" aria-checked="false" data-trigger="event" onclick="pickTrigger(this)">事件</button>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="label">调度时间（Cron）</label>
+        <input class="input mono" id="taskCron" value="0 2 * * *" aria-label="调度时间">
+      </div>
+      <div class="notice">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>
+        <span>该任务将以 <b>你（zhang.wei）</b> 的身份直接执行，阶段一读写直放、<b>不再二次确认</b>；无权限项执行时将被拒绝并标注。</span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeTaskDialog()">取消</button>
+      <button class="btn primary" onclick="createTask()">创建任务</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+var viewTitles = {chat:'对话',tasks:'定时任务',audit:'审计',agent:'Agent 配置'};
+
+function switchView(id){
+  document.querySelectorAll('.view').forEach(function(v){v.classList.remove('active')});
+  var target = document.getElementById('view-'+id);
+  if(target) target.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active', n.dataset.view===id)});
+  document.getElementById('viewTitle').textContent = viewTitles[id] || id;
+}
+
+document.querySelectorAll('.nav-item').forEach(function(n){
+  n.addEventListener('click', function(){switchView(n.dataset.view)});
+});
+
+var toastTimer;
+function toast(msg){
+  var t = document.getElementById('toast');
+  t.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>' + msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){t.classList.remove('show')}, 2400);
+}
+
+function toggleSwitch(el){
+  el.setAttribute('aria-checked', el.getAttribute('aria-checked')==='true' ? 'false' : 'true');
+}
+
+/* chat */
+var chatInput = document.getElementById('chatInput');
+chatInput.addEventListener('input', function(){
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+chatInput.addEventListener('keydown', function(e){
+  if(e.key==='Enter' && !e.shiftKey){e.preventDefault();sendMessage();}
+});
+
+function appendUser(text){
+  var wrap = document.querySelector('.thread-inner');
+  var m = document.createElement('div');
+  m.className = 'msg user';
+  m.innerHTML = '<div class="avatar">ZW</div><div class="bubble"></div>';
+  m.querySelector('.bubble').textContent = text;
+  wrap.appendChild(m);
+  scrollThread();
+}
+
+function scrollThread(){
+  var t = document.querySelector('.thread');
+  t.scrollTop = t.scrollHeight;
+}
+
+function sendMessage(){
+  var text = chatInput.value.trim();
+  if(!text) return;
+  var emptyState = document.querySelector('.thread-inner .thread-empty');
+  if(emptyState) emptyState.remove();
+  appendUser(text);
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+  var wrap = document.querySelector('.thread-inner');
+
+  var m = document.createElement('div');
+  m.className = 'msg assistant';
+  m.innerHTML = '<div class="avatar">AI</div><div class="bubble"><div class="tool-status"><span class="spin"></span>正在思考…</div></div>';
+  wrap.appendChild(m);
+  var bubble = m.querySelector('.bubble');
+  scrollThread();
+
+  setTimeout(function(){
+    bubble.innerHTML = '<div class="tool-card"><div class="tool-head">'+
+      '<svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>'+
+      '<span class="tool-cmd">kubectl get ' + (text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0 ? 'nodes -o wide' : 'pods -n production') + '</span>'+
+      '<span class="pill accent">L0 · 只读 · 直放</span></div>'+
+      '<div class="tool-body"><table class="mini-table"><tr><th>NAME</th><th>STATUS</th><th>INFO</th></tr>'+
+      (text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0
+        ? '<tr><td>gpu-node-01</td><td style="color:var(--success)">Ready</td><td>util 61%</td></tr><tr><td>gpu-node-03</td><td style="color:var(--warn)">Ready</td><td>util 96%</td></tr>'
+        : '<tr><td>train-llama3-7b-0</td><td style="color:var(--danger)">CrashLoopBackOff</td><td>14 restarts</td></tr><tr><td>infer-qwen2.5-1</td><td style="color:var(--warn)">Pending</td><td>18m</td></tr>')+
+      '</table></div></div>';
+    scrollThread();
+  }, 700);
+
+  setTimeout(function(){
+    var summary = document.createElement('div');
+    summary.style.cssText = 'font-size:13.5px;line-height:1.7';
+    summary.innerHTML = text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0
+      ? '<p>当前集群 GPU 利用率：<b>gpu-node-03</b> 持续偏高（<span class="mono">96%</span>），其余节点正常。建议排查该节点上的占用任务。</p>'
+      : '<p>已为你查询结果。需要我进一步排查或执行操作吗？</p>';
+    bubble.appendChild(summary);
+    scrollThread();
+  }, 1300);
+}
+
+function resolveConfirm(allow){
+  var card = document.querySelector('.confirm-card');
+  var head = card.querySelector('.confirm-head');
+  var actions = document.querySelector('#confirm-actions');
+  if(allow){
+    card.style.borderColor = 'var(--success)';
+    head.style.background = 'var(--success-soft)';
+    head.style.borderColor = 'oklch(88% 0.08 150)';
+    head.style.color = 'var(--success)';
+    head.querySelector('span').textContent = '已确认 · 操作执行成功';
+    actions.innerHTML = '<span class="pill success">已执行 · 1.4s</span>';
+    var tail = card.closest('.bubble');
+    var note = document.createElement('div');
+    note.style.cssText = 'font-size:13.5px;line-height:1.7';
+    note.innerHTML = '<p>已重启 <b>train-llama3-7b-0</b>，Pod 正在重新调度，预计 10~20 秒后恢复。确认事件已写入审计记录（M5）。</p>';
+    tail.appendChild(note);
+  }else{
+    card.style.borderColor = 'var(--danger)';
+    head.style.background = 'var(--danger-soft)';
+    head.style.borderColor = 'oklch(88% 0.06 25)';
+    head.style.color = 'var(--danger)';
+    head.querySelector('span').textContent = '已拒绝 · 未执行（fail-closed）';
+    actions.innerHTML = '<span class="pill neutral">已拒绝 · 未执行</span>';
+  }
+  var s = card.closest('.bubble').parentElement.querySelector('.tool-status');
+  if(s) s.textContent = '操作已处理';
+}
+
+/* 会话切换 */
+var SESSION_META = {
+  prod:{meta:'4 条消息 · 今天 10:24'},
+  deploy:{meta:'12 条消息 · 昨天'},
+  cuda:{meta:'8 条消息 · 3 天前'}
+};
+
+var SESSION_THREAD = {
+  deploy:
+    '<div class="msg user"><div class="avatar">ZW</div><div class="bubble">帮我部署 qwen2.5-72b 的推理服务，2 张 A100，走 vLLM</div></div>'+
+    '<div class="msg assistant"><div class="avatar">AI</div><div class="bubble">'+
+      '<div class="tool-card"><div class="tool-head">'+
+        '<svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>'+
+        '<span class="tool-cmd">kubectl apply -f qwen2.5-72b-infer.yaml</span>'+
+        '<span class="pill accent">L1 · 写操作 · 待确认</span></div>'+
+        '<div class="tool-body"><table class="mini-table"><tr><th>RESOURCE</th><th>REPLICAS</th><th>GPU</th></tr>'+
+        '<tr><td>qwen2.5-72b-infer</td><td>1</td><td>2× A100 80G</td></tr>'+
+        '<tr><td>vllm-runtime</td><td>1</td><td>vLLM 0.5.4</td></tr></table></div>'+
+        '<div class="tool-head" style="border-top:1px solid var(--border);border-bottom:none">'+
+        '<svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>'+
+        '<span class="tool-status" style="color:var(--success)">部署完成 · 2 资源 · 3.8s</span></div></div>'+
+      '<div style="font-size:13.5px;line-height:1.7"><p>推理服务 <b>qwen2.5-72b-infer</b> 已部署，健康检查通过，服务地址已注入平台模型目录。需要我压测并发或接入告警吗？</p></div>'+
+    '</div></div>',
+  cuda:
+    '<div class="msg user"><div class="avatar">ZW</div><div class="bubble">训练任务报 CUDA 版本冲突，帮我定位一下</div></div>'+
+    '<div class="msg assistant"><div class="avatar">AI</div><div class="bubble">'+
+      '<div class="tool-card"><div class="tool-head">'+
+        '<svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>'+
+        '<span class="tool-cmd">nvidia-smi && python -c "import torch; print(torch.version.cuda)"</span>'+
+        '<span class="pill accent">L0 · 只读 · 直放</span></div>'+
+        '<div class="tool-body"><table class="mini-table"><tr><th>环境</th><th>驱动</th><th>Torch CUDA</th></tr>'+
+        '<tr><td>gpu-node-02</td><td>535.104</td><td style="color:var(--danger)">cu118</td></tr>'+
+        '<tr><td>期望</td><td>≥525</td><td>cu121</td></tr></table></div>'+
+        '<div class="tool-head" style="border-top:1px solid var(--border);border-bottom:none">'+
+        '<svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>'+
+        '<span class="tool-status" style="color:var(--warn)">诊断完成 · 版本不匹配</span></div></div>'+
+      '<div style="font-size:13.5px;line-height:1.7"><p>根因：镜像内的 PyTorch 编译目标是 <span class="mono">cu118</span>，而节点驱动仅支持 <span class="mono">cu121</span>。建议重建镜像为 <span class="mono">cu121</span>，或切换到匹配的 GPU 节点池。</p></div>'+
+    '</div></div>'
+};
+
+var sessionCache = {};
+var NEW_CHAT_ICON = '<svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+var EMPTY_THREAD_HTML = '<div class="thread-empty"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><div class="thread-empty-title">开始新的对话</div><div class="thread-empty-desc">在下方输入需求，CubePilot 会调用平台能力帮你排查、部署或查询资源。</div></div>';
+
+function activeSessionId(){
+  var el = document.querySelector('.session-item.active');
+  return el ? el.dataset.session : 'prod';
+}
+function switchSession(el){
+  var id = el.dataset.session;
+  if(!id || id === activeSessionId()) return;
+  sessionCache[activeSessionId()] = document.querySelector('.thread-inner').innerHTML;
+  document.querySelectorAll('.session-item').forEach(function(s){s.classList.remove('active')});
+  el.classList.add('active');
+  document.getElementById('chatHeadTitle').textContent = el.querySelector('.s-title').textContent;
+  document.getElementById('chatHeadMeta').textContent = (SESSION_META[id] ? SESSION_META[id].meta : el.querySelector('.s-meta').textContent);
+  var inner = document.querySelector('.thread-inner');
+  inner.innerHTML = (sessionCache[id] !== undefined) ? sessionCache[id] : (SESSION_THREAD[id] || '');
+  scrollThread();
+}
+function bindSessionItem(el){
+  el.addEventListener('click', function(){switchSession(el)});
+  el.addEventListener('keydown', function(e){
+    if(e.key==='Enter' || e.key===' '){e.preventDefault();switchSession(el);}
+  });
+}
+document.querySelectorAll('.session-item').forEach(function(el){
+  el.setAttribute('tabindex','0');
+  bindSessionItem(el);
+});
+
+function newChat(){
+  var id = 'sess-' + Date.now();
+  var item = document.createElement('div');
+  item.className = 'session-item';
+  item.dataset.session = id;
+  item.setAttribute('tabindex','0');
+  item.innerHTML = NEW_CHAT_ICON + '<div class="s-main"><div class="s-title">新会话</div><div class="s-meta"><span>刚刚</span><span>·</span><span>0 条消息</span></div></div>';
+  document.querySelector('.session-list').insertBefore(item, document.querySelector('.session-list').firstChild);
+  bindSessionItem(item);
+  sessionCache[id] = EMPTY_THREAD_HTML;
+  switchSession(item);
+  document.getElementById('chatInput').focus();
+}
+document.querySelector('[data-od-id="new-chat"]').addEventListener('click', newChat);
+
+/* 定时任务 */
+function filterFindings(sev, btn){
+  document.querySelectorAll('.filter-row .chip').forEach(function(c){c.classList.remove('active')});
+  btn.classList.add('active');
+  document.querySelectorAll('#findings-list .finding').forEach(function(f){
+    f.style.display = (sev==='all' || f.dataset.sev===sev) ? 'flex' : 'none';
+  });
+}
+
+var running = false;
+var currentTask = '全集群健康巡检';
+function runTask(){
+  if(running) return;
+  running = true;
+  var btn = document.querySelector('[data-od-id="run-task"]');
+  btn.innerHTML = '<span class="spin" style="border-top-color:#fff"></span> 执行中…';
+  btn.disabled = true;
+  setTimeout(function(){
+    running = false;
+    btn.disabled = false;
+    btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>立即执行';
+    toast('任务「'+currentTask+'」已触发 · 将以你的身份直接执行');
+  }, 1800);
+}
+
+function focusReport(){
+  var c = document.querySelector('.content');
+  var el = document.getElementById('report-header');
+  c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 16;
+}
+
+function selectTask(row, name, mode){
+  document.querySelectorAll('.task-row').forEach(function(r){r.classList.remove('selected')});
+  row.classList.add('selected');
+  currentTask = name;
+  var inspect = document.getElementById('report-inspect');
+  var generic = document.getElementById('report-generic');
+  var empty = document.getElementById('report-empty');
+  var sub = document.getElementById('report-sub');
+  var controls = document.getElementById('report-controls');
+  var runSelect = document.getElementById('report-run-select');
+  inspect.style.display = 'none';
+  generic.style.display = 'none';
+  empty.style.display = 'none';
+  if(mode === 'structured'){
+    inspect.style.display = '';
+    controls.style.display = '';
+    runSelect.innerHTML = '<option selected>run-20260813 · 今日</option><option>run-20260812 · 昨日</option><option>run-20260811 · 08-11</option>';
+    sub.textContent = name + ' · 预置巡检 6 类 + AI 智能巡检 · 报告为所选任务的执行记录';
+  }else if(mode === 'log'){
+    generic.style.display = '';
+    controls.style.display = '';
+    runSelect.innerHTML = '<option selected>run-20260813 · 今日</option><option>run-20260806 · 上周</option>';
+    sub.textContent = name + ' · 自定义模板 · 输出为自由文本 · 报告为所选任务的执行记录';
+  }else{
+    empty.style.display = 'block';
+    controls.style.display = 'none';
+    document.getElementById('empty-title').textContent = '「' + name + '」尚未产生执行记录';
+    document.getElementById('empty-desc').textContent = '该任务首次执行后，将在此展示执行结果与输出日志。你可点击「立即执行」手动触发一次。';
+  }
+}
+
+/* 定时任务 · 子页签 */
+function switchTaskTab(tab, btn){
+  document.querySelectorAll('.seg-item').forEach(function(s){s.classList.remove('active')});
+  btn.classList.add('active');
+  document.getElementById('tasktab-list').style.display = (tab==='list') ? '' : 'none';
+  document.getElementById('tasktab-templates').style.display = (tab==='templates') ? '' : 'none';
+}
+
+/* 新建任务弹窗 */
+function openTaskDialog(tpl){
+  document.getElementById('taskDialog').classList.add('open');
+  if(tpl){
+    var sel = document.getElementById('taskTemplate');
+    for(var i=0;i<sel.options.length;i++){
+      if(sel.options[i].text.indexOf(tpl)>=0){sel.selectedIndex = i;break;}
+    }
+  }
+  document.getElementById('taskName').focus();
+}
+function closeTaskDialog(){document.getElementById('taskDialog').classList.remove('open')}
+function pickTrigger(el){
+  document.querySelectorAll('#taskDialog .radio').forEach(function(r){r.classList.remove('active');r.setAttribute('aria-checked','false')});
+  el.classList.add('active');
+  el.setAttribute('aria-checked','true');
+}
+function createTask(){
+  var name = document.getElementById('taskName').value.trim() || '未命名任务';
+  closeTaskDialog();
+  toast('任务「'+name+'」已创建 · 将以你的身份直接执行');
+  document.getElementById('taskName').value = '';
+}
+
+/* audit */
+function filterAudit(){
+  var q = document.getElementById('auditSearch').value.trim().toLowerCase();
+  document.querySelectorAll('#audit-body tr').forEach(function(tr){
+    tr.style.display = !q || tr.dataset.search.toLowerCase().indexOf(q)>=0 ? '' : 'none';
+  });
+}
+
+/* 键盘可达性：任务行与发现项 */
+document.querySelectorAll('.task-row').forEach(function(r){
+  r.setAttribute('tabindex','0');
+  r.addEventListener('keydown', function(e){
+    if(e.key==='Enter' || e.key===' '){ e.preventDefault(); r.click(); }
+  });
+});
+document.querySelectorAll('.finding').forEach(function(f){
+  f.setAttribute('tabindex','0');
+  f.addEventListener('keydown', function(e){
+    if(e.key==='Enter' || e.key===' '){ e.preventDefault(); f.classList.toggle('open'); }
+  });
+});
+/* 模态框：Esc 关闭 + 点击遮罩关闭 */
+document.getElementById('taskDialog').addEventListener('mousedown', function(e){
+  if(e.target === this) closeTaskDialog();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape') closeTaskDialog();
+});
+</script>
+</body>
+</html>
