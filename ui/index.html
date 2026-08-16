@@ -563,43 +563,8 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
           <div style="overflow-x:auto">
             <table class="table">
               <thead><tr><th style="width:34px"></th><th>任务</th><th>模板</th><th>触发方式</th><th>调度</th><th>状态</th><th>上次执行</th><th>下次执行</th><th>创建者</th><th></th></tr></thead>
-              <tbody>
-                <tr class="task-row selected" data-od-id="task-row-inspect" onclick="selectTask(this,'全集群健康巡检','structured')">
-                  <td><span class="task-radio"></span></td>
-                  <td style="font-weight:600">全集群健康巡检</td>
-                  <td><span class="pill accent">巡检 · 预置</span></td>
-                  <td>定时 + 手动</td>
-                  <td class="mono">每日 02:00</td>
-                  <td><span class="pill success">运行中</span></td>
-                  <td class="tnum">今日 02:00</td>
-                  <td class="tnum">明日 02:00</td>
-                  <td>zhang.wei</td>
-                  <td><button class="btn sm ghost" onclick="focusReport()">查看报告</button></td>
-                </tr>
-                <tr class="task-row" data-od-id="task-row-verify" onclick="selectTask(this,'推理服务自动验证','none')">
-                  <td><span class="task-radio"></span></td>
-                  <td style="font-weight:600">推理服务自动验证</td>
-                  <td><span class="pill neutral">验证 · 预置</span></td>
-                  <td>定时 + 事件</td>
-                  <td class="mono">每日 06:00</td>
-                  <td><span class="pill neutral">预留 · 阶段二</span></td>
-                  <td class="tnum">—</td>
-                  <td class="tnum">—</td>
-                  <td>zhang.wei</td>
-                  <td><button class="btn sm ghost" disabled style="opacity:.5;cursor:not-allowed">查看报告</button></td>
-                </tr>
-                <tr class="task-row" data-od-id="task-row-custom" onclick="selectTask(this,'GPU 资源利用率日报','log')">
-                  <td><span class="task-radio"></span></td>
-                  <td style="font-weight:600">GPU 资源利用率日报</td>
-                  <td><span class="pill neutral">自定义</span></td>
-                  <td>定时</td>
-                  <td class="mono">每周一 09:00</td>
-                  <td><span class="pill success">运行中</span></td>
-                  <td class="tnum">昨日 09:00</td>
-                  <td class="tnum">下周一 09:00</td>
-                  <td>li.ming</td>
-                  <td><button class="btn sm ghost" onclick="focusReport()">查看报告</button></td>
-                </tr>
+              <tbody id="task-list-body">
+                <tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -616,225 +581,49 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
               <option>run-20260812 · 昨日</option>
               <option>run-20260811 · 08-11</option>
             </select>
-            <button class="btn" onclick="toast('已导出任务报告 CSV')" data-od-id="export-report"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出报告</button>
+            <button class="btn" onclick="exportReport()" data-od-id="export-report"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出报告</button>
           </div>
         </div>
 
         <div id="report-inspect">
-        <div class="stat-grid">
-          <div class="stat" data-od-id="stat-last-run">
-            <div class="stat-top"><span class="stat-label">最近一次执行</span><span class="pill success">已完成</span></div>
-            <div class="stat-value">今日 02:00</div>
-            <div class="stat-sub">耗时 <span class="tnum">4m 12s</span> · <span class="mono">run-20260813</span></div>
+        <div class="stat-grid" id="report-stats">
+          <div class="stat">
+            <div class="stat-top"><span class="stat-label">最近一次执行</span></div>
+            <div class="stat-value" id="stat-lastrun-value" style="font-size:18px">—</div>
+            <div class="stat-sub" id="stat-lastrun-sub">尚未执行</div>
           </div>
-          <div class="stat" data-od-id="stat-anomalies">
-            <div class="stat-top"><span class="stat-label">异常分级计数</span><span class="pill warn">7 项</span></div>
+          <div class="stat">
+            <div class="stat-top"><span class="stat-label">异常分级计数</span><span class="pill warn" id="stat-sev-pill">0 项</span></div>
             <div class="sev-row">
-              <span class="sev p0"><b>0</b> P0 紧急</span>
-              <span class="sev p1"><b>2</b> P1 重要</span>
-              <span class="sev p2"><b>5</b> P2 一般</span>
+              <span class="sev p0"><b id="sev-p0">0</b> P0 紧急</span>
+              <span class="sev p1"><b id="sev-p1">0</b> P1 重要</span>
+              <span class="sev p2"><b id="sev-p2">0</b> P2 一般</span>
             </div>
-            <div class="stat-sub">较昨日 <span class="tnum" style="color:var(--success)">-2</span></div>
+            <div class="stat-sub">来自所选运行报告中的分级计数</div>
           </div>
-          <div class="stat" data-od-id="stat-items">
-            <div class="stat-top"><span class="stat-label">巡检项通过率</span></div>
-            <div class="stat-value">58<span style="font-size:15px;color:var(--muted);font-weight:500"> / 64</span></div>
-            <div class="stat-sub">6 类巡检项 · 通过率 <span class="tnum">90.6%</span></div>
+          <div class="stat">
+            <div class="stat-top"><span class="stat-label">执行次数</span></div>
+            <div class="stat-value" id="stat-runs-value">0</div>
+            <div class="stat-sub" id="stat-runs-sub">当前任务累计运行</div>
           </div>
-          <div class="stat" data-od-id="stat-health">
-            <div class="stat-top"><span class="stat-label">集群健康度</span><span class="pill success">正常</span></div>
-            <div class="stat-value" style="color:var(--success)">92</div>
-            <div class="stat-sub">综合 6 类巡检项加权评分</div>
+          <div class="stat">
+            <div class="stat-top"><span class="stat-label">运行状态</span></div>
+            <div class="stat-value" id="stat-status-value" style="font-size:18px">—</div>
+            <div class="stat-sub" id="stat-status-sub">—</div>
           </div>
         </div>
 
-        <div class="grid-2">
-          <div class="card" data-od-id="chart-anomaly-trend">
-            <div class="chart-wrap">
-              <div class="chart-title">近 7 日异常趋势</div>
-              <div class="chart-sub">按 P0 / P1 / P2 分级统计</div>
-              <div class="legend">
-                <span class="legend-item"><span class="swatch" style="background:var(--danger)"></span>P0 紧急</span>
-                <span class="legend-item"><span class="swatch" style="background:var(--warn)"></span>P1 重要</span>
-                <span class="legend-item"><span class="swatch" style="background:var(--muted)"></span>P2 一般</span>
-              </div>
-              <svg viewBox="0 0 440 150" width="100%" height="150" role="img" aria-label="近七日异常趋势图">
-                <g class="grid" stroke="var(--border)" stroke-width="1">
-                  <line x1="34" y1="18" x2="428" y2="18"/><line x1="34" y1="54" x2="428" y2="54"/><line x1="34" y1="90" x2="428" y2="90"/><line x1="34" y1="126" x2="428" y2="126"/>
-                </g>
-                <g fill="var(--danger)">
-                  <rect x="64" y="112" width="34" height="14"/><rect x="120" y="126" width="34" height="0"/>
-                  <rect x="176" y="126" width="34" height="0"/><rect x="232" y="108" width="34" height="18"/>
-                  <rect x="288" y="126" width="34" height="0"/><rect x="344" y="126" width="34" height="0"/>
-                  <rect x="400" y="126" width="34" height="0"/>
-                </g>
-                <g fill="var(--warn)">
-                  <rect x="64" y="76" width="34" height="36"/><rect x="120" y="84" width="34" height="42"/>
-                  <rect x="176" y="96" width="34" height="30"/><rect x="232" y="66" width="34" height="42"/>
-                  <rect x="288" y="82" width="34" height="44"/><rect x="344" y="74" width="34" height="52"/>
-                  <rect x="400" y="58" width="34" height="68"/>
-                </g>
-                <g fill="var(--muted)">
-                  <rect x="64" y="28" width="34" height="48"/><rect x="120" y="24" width="34" height="60"/>
-                  <rect x="176" y="40" width="34" height="56"/><rect x="232" y="18" width="34" height="48"/>
-                  <rect x="288" y="34" width="34" height="48"/><rect x="344" y="26" width="34" height="48"/>
-                  <rect x="400" y="18" width="34" height="40"/>
-                </g>
-                <g font-family="var(--font-mono)" font-size="10" fill="var(--muted)">
-                  <text x="64" y="141" text-anchor="middle">08-07</text><text x="120" y="141" text-anchor="middle">08-08</text>
-                  <text x="176" y="141" text-anchor="middle">08-09</text><text x="232" y="141" text-anchor="middle">08-10</text>
-                  <text x="288" y="141" text-anchor="middle">08-11</text><text x="344" y="141" text-anchor="middle">08-12</text>
-                  <text x="400" y="141" text-anchor="middle">08-13</text>
-                </g>
-              </svg>
-            </div>
-          </div>
-          <div class="card" data-od-id="chart-health-gauge">
-            <div class="chart-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
-              <div class="chart-title" style="align-self:flex-start">集群健康度</div>
-              <div class="gauge-row">
-                <svg viewBox="0 0 120 120" width="140" height="140" role="img" aria-label="集群健康度 92">
-                  <circle cx="60" cy="60" r="48" fill="none" stroke="var(--border)" stroke-width="11"/>
-                  <circle cx="60" cy="60" r="48" fill="none" stroke="var(--success)" stroke-width="11" stroke-linecap="round"
-                    stroke-dasharray="301.6" stroke-dashoffset="24.1" transform="rotate(-90 60 60)"/>
-                </svg>
-                <div class="gauge-num">
-                  <div class="big">92</div>
-                  <div class="cap">综合评分</div>
-                  <div class="cap" style="margin-top:8px"><span class="pill success">健康</span></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px" data-od-id="inspection-categories">
+        <div class="card" data-od-id="report-content-card">
           <div class="card-head">
-            <span class="card-title">巡检项分类</span>
-            <span class="card-hint">6 类 · 64 项</span>
-          </div>
-          <table class="table">
-            <thead><tr><th>类别</th><th>巡检项</th><th>通过</th><th>告警</th><th>异常</th><th>状态</th></tr></thead>
-            <tbody>
-              <tr><td>控制面</td><td class="tnum">8</td><td class="tnum">8</td><td class="tnum">0</td><td class="tnum">0</td><td><span class="pill success">通过</span></td></tr>
-              <tr><td>节点</td><td class="tnum">14</td><td class="tnum">13</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
-              <tr><td>GPU</td><td class="tnum">12</td><td class="tnum">10</td><td class="tnum">1</td><td class="tnum">1</td><td><span class="pill warn">告警</span></td></tr>
-              <tr><td>Pod</td><td class="tnum">10</td><td class="tnum">9</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
-              <tr><td>存储</td><td class="tnum">8</td><td class="tnum">7</td><td class="tnum">1</td><td class="tnum">0</td><td><span class="pill warn">告警</span></td></tr>
-              <tr><td>平台组件</td><td class="tnum">12</td><td class="tnum">11</td><td class="tnum">0</td><td class="tnum">1</td><td><span class="pill warn">告警</span></td></tr>
-              <tr style="font-weight:650;background:var(--bg)"><td>合计</td><td class="tnum">64</td><td class="tnum">58</td><td class="tnum">4</td><td class="tnum">2</td><td><span class="pill warn">需关注</span></td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card" data-od-id="findings">
-          <div class="card-head">
-            <span class="card-title">发现列表</span>
-            <div class="filter-row" style="margin:0">
-              <button class="chip active" data-sev="all" onclick="filterFindings('all',this)">全部 <span class="tnum">7</span></button>
-              <button class="chip" data-sev="p1" onclick="filterFindings('p1',this)">P1 重要 <span class="tnum">2</span></button>
-              <button class="chip" data-sev="p2" onclick="filterFindings('p2',this)">P2 一般 <span class="tnum">5</span></button>
-            </div>
-          </div>
-          <div id="findings-list">
-            <div class="finding" data-sev="p1" data-od-id="finding-p1-1" onclick="this.classList.toggle('open')">
-              <div class="f-icon p1"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">GPU 节点 gpu-node-03 显存利用率持续过高</div>
-                <div class="f-desc">显存利用率连续 6 小时超过 95%，存在 OOM 风险，建议排查占用异常的任务或调度迁移。</div>
-                <div class="f-meta">
-                  <span class="f-tag">类别：GPU</span>
-                  <span class="f-tag">证据：<span class="mono">dmesg · DCGM</span></span>
-                </div>
-                <div class="evidence">自然语言说明：该节点自 08-13 04:10 起显存占用率维持在 95% 以上，超过历史基线（均值 61%）。<span class="mono">$ nvidia-smi --query-gpu=memory.used --format=csv</span></div>
-              </div>
-              <div class="f-right"><span class="pill warn">P1 重要</span><span class="f-time">04:10</span></div>
-            </div>
-            <div class="finding" data-sev="p1" data-od-id="finding-p1-2" onclick="this.classList.toggle('open')">
-              <div class="f-icon p1"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">存储 PVC data-pvc-11 使用率接近上限</div>
-                <div class="f-desc">PVC 使用率 92%，接近配额上限，建议扩容或清理无用数据。</div>
-                <div class="f-meta"><span class="f-tag">类别：存储</span><span class="f-tag">证据：<span class="mono">PVC status · Ceph</span></span></div>
-                <div class="evidence">data-pvc-11 已使用 92%（943 GB / 1 TB），按当前写入速率预计 3 天后写满。<span class="mono">$ kubectl get pvc data-pvc-11 -o json</span></div>
-              </div>
-              <div class="f-right"><span class="pill warn">P1 重要</span><span class="f-time">03:52</span></div>
-            </div>
-            <div class="finding" data-sev="p2" data-od-id="finding-p2-1" onclick="this.classList.toggle('open')">
-              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">Pod infer-qwen2.5-1 处于 Pending</div>
-                <div class="f-desc">已 Pending 18 分钟，疑似 GPU 资源不足（请求 4×A100，当前可用 2×A100）。</div>
-                <div class="f-meta"><span class="f-tag">类别：Pod</span><span class="f-tag">证据：<span class="mono">Pod events</span></span></div>
-              </div>
-              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">03:28</span></div>
-            </div>
-            <div class="finding" data-sev="p2" data-od-id="finding-p2-2" onclick="this.classList.toggle('open')">
-              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">平台组件 Harbor 证书即将过期</div>
-                <div class="f-desc">Harbor TLS 证书将于 14 天后过期，建议提前续签并滚动更新。</div>
-                <div class="f-meta"><span class="f-tag">类别：平台组件</span></div>
-              </div>
-              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">03:11</span></div>
-            </div>
-            <div class="finding" data-sev="p2" data-od-id="finding-p2-3" onclick="this.classList.toggle('open')">
-              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">节点 node-07 磁盘使用率偏高</div>
-                <div class="f-desc">磁盘使用率 78%，超过 75% 关注阈值，建议关注清理。</div>
-                <div class="f-meta"><span class="f-tag">类别：节点</span></div>
-              </div>
-              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:47</span></div>
-            </div>
-            <div class="finding" data-sev="p2" data-od-id="finding-p2-4" onclick="this.classList.toggle('open')">
-              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">控制面 etcd 发生 leader 选举</div>
-                <div class="f-desc">过去 24h 内 etcd 发生 2 次 leader 选举，建议关注控制面网络稳定性。</div>
-                <div class="f-meta"><span class="f-tag">类别：控制面</span><span class="f-tag">证据：<span class="mono">etcd events</span></span></div>
-              </div>
-              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:19</span></div>
-            </div>
-            <div class="finding" data-sev="p2" data-od-id="finding-p2-5" onclick="this.classList.toggle('open')">
-              <div class="f-icon p2"><svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg></div>
-              <div class="f-main">
-                <div class="f-title">配置漂移：production 命名空间 ResourceQuota 与基线不一致</div>
-                <div class="f-desc">AI 智能巡检发现的预置项外异常，当前配置与 Git 基线存在 3 处差异。</div>
-                <div class="f-meta"><span class="f-tag">类别：AI 智能巡检</span><span class="f-tag">证据：<span class="mono">drift-diff</span></span></div>
-                <div class="evidence">自然语言说明：命名空间 production 的 ResourceQuota 与基线相比新增了 2 项限制、删除 1 项，疑似被手动修改且未提交。<span class="mono">$ kubectl diff -f baseline/quota.yaml</span></div>
-              </div>
-              <div class="f-right"><span class="pill neutral">P2 一般</span><span class="f-time">02:05</span></div>
-            </div>
-          </div>
-        </div>
-        </div>
-
-        <div id="report-generic" class="card" style="display:none" data-od-id="report-generic">
-          <div class="card-head">
-            <span class="card-title">执行记录</span>
-            <span class="card-hint">自定义模板 · 输出为 AI 生成的自由文本，无结构化分类</span>
+            <span class="card-title">报告内容</span>
+            <span class="card-hint" id="report-content-hint">AI 巡检输出的原始报告</span>
           </div>
           <div style="padding:16px 18px 18px">
-            <div class="run-meta">
-              <div class="inst"><div class="k">状态</div><div class="v"><span class="pill success">已完成</span></div></div>
-              <div class="inst"><div class="k">耗时</div><div class="v tnum">38s</div></div>
-              <div class="inst"><div class="k">退出码</div><div class="v mono">0</div></div>
-              <div class="inst"><div class="k">触发方式</div><div class="v" style="font-size:13px">定时</div></div>
-            </div>
-            <div style="font-size:11px;letter-spacing:0.07em;text-transform:uppercase;font-weight:650;color:var(--muted);margin-bottom:8px">任务输出</div>
-            <div class="run-log"><span class="dim">[09:00:02] 任务开始 · 以 li.ming 身份执行
-[09:00:05] 获取 GPU 节点列表 · 12 个节点
-[09:00:12] 查询近 24h 显存 / 利用率指标
-[09:00:38] 生成自然语言汇总 · 退出码 0</span>
-
-GPU 资源利用率日报（08-12）
-· 集群整体 GPU 利用率 71%，较昨日 +3pct。
-· 高负载：gpu-node-03 显存 96%，建议关注。
-· 闲置：gpu-node-07 / gpu-node-11 利用率 &lt; 10%，可调度更多任务。
-· 队列等待：3 个训练任务排队，平均等待 14 分钟。</div>
+            <div class="run-log" id="report-content" style="white-space:pre-wrap">选择一个任务后，这里展示其最近一次运行的 AI 报告。</div>
           </div>
         </div>
+        </div>
+
 
         <div id="report-empty" class="card" style="display:none" data-od-id="report-empty">
           <div style="padding:56px 24px;text-align:center">
@@ -901,29 +690,23 @@ GPU 资源利用率日报（08-12）
         <div class="view-head">
           <div>
             <div class="view-title">审计</div>
-            <div class="view-desc">工具调用与确认记录 · 按用户 / 工具 / 时间筛选 · 阶段二能力</div>
+            <div class="view-desc">工具调用实时记录（M5）· 按用户 / 工具 / 级别筛选 · L0 只读直放 / L1 写操作</div>
           </div>
-          <button class="btn primary" onclick="toast('已导出审计 CSV（7 条记录）')" data-od-id="export-audit"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出 CSV</button>
+          <button class="btn primary" onclick="exportAuditCSV()" data-od-id="export-audit"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>导出 CSV</button>
         </div>
         <div class="card" data-od-id="audit-panel">
           <div class="card-pad audit-filters" data-od-id="audit-filters">
-            <select class="input" aria-label="操作者"><option>全部操作者</option><option>zhang.wei</option><option>li.ming</option></select>
-            <select class="input" aria-label="工具"><option>全部工具</option><option>kubectl</option><option>DevEnvironment</option><option>InferenceService</option></select>
-            <select class="input" aria-label="级别"><option>全部级别</option><option>L0 · 只读</option><option>L1 · 写/高风险</option></select>
-            <select class="input" aria-label="状态"><option>全部状态</option><option>已执行</option><option>已确认</option><option>已拒绝</option><option>超时</option><option>失败</option></select>
+            <select class="input" aria-label="操作者" id="auditFilterUser" onchange="filterAudit()"><option value="">全部操作者</option><option>zhang.wei</option><option>li.ming</option></select>
+            <select class="input" aria-label="工具" id="auditFilterTool" onchange="filterAudit()"><option value="">全部工具</option><option>kubectl</option></select>
+            <select class="input" aria-label="级别" id="auditFilterLevel" onchange="filterAudit()"><option value="">全部级别</option><option value="L0">L0 · 只读</option><option value="L1">L1 · 写操作</option></select>
+            <select class="input" aria-label="状态" id="auditFilterStatus" onchange="filterAudit()"><option value="">全部状态</option><option value="executed">已执行</option><option value="failed">失败</option></select>
             <div class="search grow"><svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input id="auditSearch" placeholder="搜索会话 / 参数…" aria-label="搜索审计记录" oninput="filterAudit()"></div>
           </div>
           <div style="overflow-x:auto">
             <table class="table" data-od-id="audit-table">
               <thead><tr><th>时间</th><th>操作者</th><th>会话</th><th>工具</th><th>参数摘要</th><th>级别</th><th>状态</th><th>结果</th></tr></thead>
               <tbody id="audit-body">
-                <tr data-search="conv-9f2a get pods production"><td class="mono tnum">10:24:18</td><td>zhang.wei</td><td class="mono">conv-9f2a</td><td class="mono">kubectl get pods</td><td class="mono">-n production</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">0.9s</td></tr>
-                <tr data-search="conv-9f2a delete pod train-llama3"><td class="mono tnum">10:26:02</td><td>zhang.wei</td><td class="mono">conv-9f2a</td><td class="mono">kubectl delete pod</td><td class="mono">train-llama3-7b-0</td><td><span class="pill warn">L1</span></td><td><span class="pill success">已确认</span></td><td class="tnum" style="color:var(--success)">1.4s</td></tr>
-                <tr data-search="conv-3c1e get nodes"><td class="mono tnum">09:58:41</td><td>zhang.wei</td><td class="mono">conv-3c1e</td><td class="mono">kubectl get nodes</td><td class="mono">--show-labels</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">0.7s</td></tr>
-                <tr data-search="conv-3c1e devenv create gpu"><td class="mono tnum">09:40:15</td><td>zhang.wei</td><td class="mono">conv-3c1e</td><td class="mono">DevEnvironment</td><td class="mono">create · cuda-12.1</td><td><span class="pill warn">L1</span></td><td><span class="pill success">已确认</span></td><td class="tnum" style="color:var(--success)">8.2s</td></tr>
-                <tr data-search="conv-77d0 get events"><td class="mono tnum">昨日 21:12:30</td><td>li.ming</td><td class="mono">conv-77d0</td><td class="mono">kubectl get events</td><td class="mono">-n staging</td><td><span class="pill accent">L0</span></td><td><span class="pill success">已执行</span></td><td class="tnum" style="color:var(--success)">1.1s</td></tr>
-                <tr data-search="conv-77d0 delete job failed"><td class="mono tnum">昨日 21:15:44</td><td>li.ming</td><td class="mono">conv-77d0</td><td class="mono">kubectl delete job</td><td class="mono">preprocess-9</td><td><span class="pill warn">L1</span></td><td><span class="pill danger">已拒绝</span></td><td class="tnum" style="color:var(--muted)">fail-closed</td></tr>
-                <tr data-search="conv-1aa2 exec logs timeout"><td class="mono tnum">昨日 18:03:09</td><td>zhang.wei</td><td class="mono">conv-1aa2</td><td class="mono">kubectl exec</td><td class="mono">-- ls /data</td><td><span class="pill warn">L1</span></td><td><span class="pill neutral">超时</span></td><td class="tnum" style="color:var(--muted)">30s</td></tr>
+                <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -937,19 +720,20 @@ GPU 资源利用率日报（08-12）
             <div class="view-title">Agent 配置</div>
             <div class="view-desc">模型选择 · Skills 技能 · 系统提示词 · 确认规则 · 实例状态（FR-M2-005）</div>
           </div>
-          <button class="btn primary" onclick="toast('配置已保存并即时生效')" data-od-id="save-config"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>保存配置</button>
+          <button class="btn primary" onclick="saveAgentConfig()" data-od-id="save-config"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>保存配置</button>
         </div>
         <div class="config-grid">
           <div style="display:flex;flex-direction:column;gap:14px">
             <div class="card" data-od-id="config-model">
-              <div class="card-head"><span class="card-title">模型与运行时</span><span class="card-hint">模型无关 · OpenAI 兼容接口</span></div>
+              <div class="card-head"><span class="card-title">模型与运行时</span><span class="card-hint">OpenAI 兼容接口 · 保存为偏好，实例重建时生效</span></div>
               <div class="card-pad">
                 <div class="field">
                   <label class="label">助手 LLM 模型</label>
-                  <select class="input" aria-label="选择模型">
-                    <option selected>DeepSeek V4 Flash（私有化 · 内网）</option>
-                    <option>Qwen2.5-72B（私有化）</option>
-                    <option>平台外 LLM（OpenAI 兼容端点）</option>
+                  <select class="input" aria-label="选择模型" id="cfgModel">
+                    <option>cuberouter/glm-5.1</option>
+                    <option>cuberouter/glm-5.2</option>
+                    <option>cuberouter/kimi-k3</option>
+                    <option>cuberouter/kimi-k2.7-code</option>
                   </select>
                 </div>
                 <div class="field" style="margin-bottom:0">
@@ -963,94 +747,41 @@ GPU 资源利用率日报（08-12）
               </div>
             </div>
             <div class="card" data-od-id="config-prompt">
-              <div class="card-head"><span class="card-title">系统提示词</span><span class="card-hint">持久化并即时生效</span></div>
+              <div class="card-head"><span class="card-title">系统提示词</span><span class="card-hint">保存后即时注入后续对话</span></div>
               <div class="card-pad">
-                <textarea class="input" rows="6" aria-label="系统提示词">你是 CubePilot，CubeStack 智算云平台的智能助手。你可以通过平台 Skills 调用资源（开发环境、推理服务、训练任务等），以用户身份执行操作。写操作需遵循确认规则，只读查询直放。回答使用简体中文，涉及资源时给出明确的名称与命名空间。</textarea>
+                <textarea class="input" rows="6" aria-label="系统提示词" id="cfgPrompt" placeholder="留空则使用 Agent 镜像内置人设（SOUL.md）"></textarea>
               </div>
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px">
             <div class="card" data-od-id="config-instance">
-              <div class="card-head"><span class="card-title">实例状态</span><span class="pill success">运行中</span></div>
+              <div class="card-head"><span class="card-title">实例状态</span><span class="pill success" id="instPill">检测中…</span></div>
               <div class="card-pad">
                 <div class="inst-grid">
-                  <div class="inst"><div class="k">实例 ID</div><div class="v"><span class="mono">agent-7f3a</span></div></div>
-                  <div class="inst"><div class="k">冷启动时长</div><div class="v">12s</div></div>
-                  <div class="inst"><div class="k">资源占用</div><div class="v">0.8 vCPU</div></div>
-                  <div class="inst"><div class="k">数据目录</div><div class="v" style="font-size:12px"><span class="mono">/data/user-42</span></div></div>
-                  <div class="inst"><div class="k">空闲回收</div><div class="v">30 min</div></div>
-                  <div class="inst"><div class="k">活跃会话</div><div class="v">3</div></div>
+                  <div class="inst"><div class="k">实例 ID</div><div class="v"><span class="mono" id="instId">—</span></div></div>
+                  <div class="inst"><div class="k">运行状态</div><div class="v" id="instPhase">—</div></div>
+                  <div class="inst"><div class="k">运行时长</div><div class="v" id="instUptime">—</div></div>
+                  <div class="inst"><div class="k">Agent 镜像</div><div class="v" style="font-size:12px"><span class="mono" id="instImage">—</span></div></div>
+                  <div class="inst"><div class="k">空闲回收</div><div class="v" id="instTTL">—</div></div>
+                  <div class="inst"><div class="k">数据卷</div><div class="v" style="font-size:12px"><span class="mono" id="instPVC">—</span></div></div>
                 </div>
               </div>
             </div>
             <div class="card" data-od-id="config-rules">
-              <div class="card-head"><span class="card-title">确认规则</span><span class="card-hint">阶段二 HITL · 命中即确认</span></div>
+              <div class="card-head"><span class="card-title">确认规则</span><span class="card-hint">阶段一读写直放 · 全部写入审计（M5）</span></div>
               <div class="card-pad">
-                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl delete *</span><span class="pill warn">需确认</span></div>
-                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl exec *</span><span class="pill warn">需确认</span></div>
-                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">InferenceService delete</span><span class="pill warn">需确认</span></div>
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl delete *</span><span class="pill accent">直放 · 记审计</span></div>
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">kubectl exec *</span><span class="pill accent">直放 · 记审计</span></div>
+                <div class="rule-row"><svg class="icon" style="width:15px;height:15px;color:var(--danger)" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><span class="mono">InferenceService delete</span><span class="pill accent">直放 · 记审计</span></div>
               </div>
             </div>
           </div>
         </div>
 
         <div class="card" data-od-id="config-skills">
-          <div class="card-head"><span class="card-title">Skills 技能</span><span class="card-hint">阶段一以 Skills 注入 · 后续接入 MCP</span></div>
-          <div class="card-pad" style="padding-top:4px;padding-bottom:10px">
-            <div class="skill-group">系统技能 · 内置不可关闭</div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">平台资源操作 <span class="mono" style="color:var(--muted);font-weight:500">kubectl</span></div><div class="toggle-desc">以用户身份直连 K8s API Server，读写平台 CRD</div></div>
-              <span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">日志查询 <span class="mono" style="color:var(--muted);font-weight:500">kubectl logs</span></div><div class="toggle-desc">通用日志分析，任意任务日志定位与修复建议</div></div>
-              <span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span>
-            </div>
-
-            <div class="skill-group">平台能力 · 阶段一 / 阶段二</div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">开发环境 <span class="mono" style="color:var(--muted);font-weight:500">DevEnvironment</span></div><div class="toggle-desc">创建与管理 GPU 开发环境（CUDA 镜像、资源配置）</div></div>
-              <span class="pill accent">阶段一</span>
-              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="开发环境"></button>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">推理服务 <span class="mono" style="color:var(--muted);font-weight:500">InferenceService</span></div><div class="toggle-desc">部署与扩缩容模型推理服务，推荐框架、并行与量化</div></div>
-              <span class="pill accent">阶段一</span>
-              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="推理服务"></button>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">模型 <span class="mono" style="color:var(--muted);font-weight:500">Model</span></div><div class="toggle-desc">管理模型与版本血缘，支持血缘问答与版本监控</div></div>
-              <span class="pill accent">阶段一</span>
-              <button class="switch" role="switch" aria-checked="true" onclick="toggleSwitch(this)" aria-label="模型"></button>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">训练任务 <span class="mono" style="color:var(--muted);font-weight:500">TrainingJob</span></div><div class="toggle-desc">提交分布式训练任务，监控、智能干预与故障恢复</div></div>
-              <span class="pill warn">阶段二</span>
-              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="训练任务"></button>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">数据集 <span class="mono" style="color:var(--muted);font-weight:500">Dataset</span></div><div class="toggle-desc">管理数据集与预处理，数据画像、问答与异常检测</div></div>
-              <span class="pill warn">阶段二</span>
-              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="数据集"></button>
-            </div>
-
-            <div class="skill-group">扩展技能 · 阶段二</div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">GPUStack 指标查询</div><div class="toggle-desc">GPU 详细指标（DCGM / 利用率 / 温度）</div></div>
-              <span class="pill warn">阶段二</span>
-              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="GPUStack 指标查询"></button>
-            </div>
-            <div class="toggle">
-              <div class="toggle-info"><div class="toggle-title">知识库问答 <span class="mono" style="color:var(--muted);font-weight:500">RAG</span></div><div class="toggle-desc">手册 / FAQ / 最佳实践，回答溯源</div></div>
-              <span class="pill warn">阶段二</span>
-              <button class="switch" role="switch" aria-checked="false" onclick="toggleSwitch(this)" aria-label="知识库问答"></button>
-            </div>
-
-            <div class="skill-group">MCP 连接器 · 预留阶段三</div>
-            <div class="mcp-empty">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9M21 3v6h-6"/></svg>
-              阶段三接入 MCP 连接器。系统提供的 MCP 默认不可关闭，自定义连接器可停用。
-            </div>
+          <div class="card-head"><span class="card-title">Skills 技能</span><span class="card-hint">来自实例镜像内置能力目录 · 开关保存为偏好</span></div>
+          <div class="card-pad" style="padding-top:4px;padding-bottom:10px" id="skills-list">
+            <div style="color:var(--muted);padding:12px 0">加载中…</div>
           </div>
         </div>
       </section>
@@ -1072,23 +803,30 @@ GPU 资源利用率日报（08-12）
       </div>
       <div>
         <label class="label">任务模板</label>
-        <select class="input" id="taskTemplate" aria-label="任务模板">
-          <option selected>集群健康巡检（预置）</option>
-          <option>推理服务自动验证（预置 · 阶段二）</option>
-          <option>GPU 资源利用率日报（自定义）</option>
-          <option disabled>＋ 新建自定义模板（阶段二）</option>
+        <select class="input" id="taskTemplate" aria-label="任务模板" onchange="prefillTaskPrompt()">
+          <option value="inspect" selected>集群健康巡检（预置）</option>
+          <option value="verify">推理服务自动验证（预置）</option>
+          <option value="gpu">GPU 资源利用率日报（自定义）</option>
         </select>
+      </div>
+      <div>
+        <label class="label">任务提示词（AI 执行内容，可编辑）</label>
+        <textarea class="input" id="taskPrompt" rows="4" aria-label="任务提示词"></textarea>
       </div>
       <div>
         <label class="label">触发方式</label>
         <div class="radio-row" role="radiogroup" aria-label="触发方式">
           <button type="button" class="radio active" role="radio" aria-checked="true" data-trigger="cron" onclick="pickTrigger(this)">定时</button>
           <button type="button" class="radio" role="radio" aria-checked="false" data-trigger="manual" onclick="pickTrigger(this)">手动</button>
-          <button type="button" class="radio" role="radio" aria-checked="false" data-trigger="event" onclick="pickTrigger(this)">事件</button>
+          <button type="button" class="radio" role="radio" aria-checked="false" data-trigger="event" disabled style="opacity:.45;cursor:not-allowed" title="阶段二开放">事件</button>
         </div>
       </div>
+      <div class="field">
+        <label class="label">任务提示词（Agent 执行内容）</label>
+        <textarea class="input" rows="5" id="taskPrompt" aria-label="任务提示词"></textarea>
+      </div>
       <div class="field" style="margin-bottom:0">
-        <label class="label">调度时间（Cron）</label>
+        <label class="label">调度时间（Cron）· 留空 = 仅手动</label>
         <input class="input mono" id="taskCron" value="0 2 * * *" aria-label="调度时间">
       </div>
       <div class="notice">
@@ -1158,6 +896,127 @@ function scrollThread(){
   t.scrollTop = t.scrollHeight;
 }
 
+var CURRENT_USER = 'zhang.wei';
+var currentSessionId = null;
+
+/* 将「正在思考…」占位替换为真实内容 */
+function assistantBubble(){
+  var wrap = document.querySelector('.thread-inner');
+  var m = document.createElement('div');
+  m.className = 'msg assistant';
+  m.innerHTML = '<div class="avatar">AI</div><div class="bubble"><div class="tool-status"><span class="spin"></span>正在思考…</div></div>';
+  wrap.appendChild(m);
+  scrollThread();
+  return m.querySelector('.bubble');
+}
+
+function toolCardHTML(name, argsStr){
+  var cmd = '';
+  try{ var a = JSON.parse(argsStr); cmd = a.command || a.cmd || ''; }catch(e){ cmd = argsStr; }
+  var esc = function(s){ return String(s).replace(/[&<>]/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); };
+  return '<div class="tool-card"><div class="tool-head">'+
+    '<svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>'+
+    '<span class="tool-cmd">'+esc(name || 'tool')+'</span>'+
+    '<span class="pill accent">L0 · 只读 · 直放</span></div>'+
+    '<div class="tool-body"><span class="mono" style="white-space:pre-wrap;word-break:break-all">'+esc(cmd)+'</span></div></div>';
+}
+
+function textDiv(){
+  var d = document.createElement('div');
+  d.style.cssText = 'font-size:13.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word';
+  return d;
+}
+
+/* 解析 SSE 事件块 */
+function parseSSEBlock(raw, onEvent){
+  var ev = 'message', data = '';
+  raw.split('\n').forEach(function(line){
+    if(line.indexOf('event:')===0) ev = line.slice(6).trim();
+    else if(line.indexOf('data:')===0) data += line.slice(5).trim();
+  });
+  if(!data) return;
+  try{ onEvent(ev, JSON.parse(data)); }catch(e){}
+}
+
+/* 用 fetch 流式读取 SSE（POST 无法用 EventSource） */
+async function streamSSE(url, opts, onEvent){
+  var resp = await fetch(url, opts);
+  if(!resp.ok){
+    var t = await resp.text();
+    onEvent('message_done', {type:'message_done', error: 'HTTP '+resp.status+' '+t});
+    return;
+  }
+  var reader = resp.body.getReader();
+  var decoder = new TextDecoder();
+  var buf = '';
+  while(true){
+    var r = await reader.read();
+    if(r.done) break;
+    buf += decoder.decode(r.value, {stream:true});
+    var idx;
+    while((idx = buf.indexOf('\n\n')) >= 0){
+      parseSSEBlock(buf.slice(0, idx), onEvent);
+      buf = buf.slice(idx + 2);
+    }
+  }
+}
+
+function handleEvent(evName, ev, bubble){
+  if(evName === 'message_start'){
+    if(ev.session_id) currentSessionId = ev.session_id;
+    return;
+  }
+  if(evName === 'agent_thinking'){
+    var st = bubble.querySelector('.tool-status');
+    if(st) st.innerHTML = '<span class="spin"></span>正在思考…';
+    return;
+  }
+  if(evName === 'tool_call'){
+    var st = bubble.querySelector('.tool-status');
+    if(st) st.remove();
+    var card = document.createElement('div');
+    card.innerHTML = toolCardHTML(ev.name, ev.arguments);
+    bubble.insertBefore(card.firstChild, bubble.firstChild);
+    scrollThread();
+    return;
+  }
+  if(evName === 'tool_result'){
+    var tr = textDiv();
+    tr.style.color = 'var(--muted)';
+    tr.style.fontSize = '12px';
+    tr.textContent = '→ ' + (ev.output || '');
+    bubble.appendChild(tr);
+    scrollThread();
+    return;
+  }
+  if(evName === 'message_delta'){
+    var st = bubble.querySelector('.tool-status');
+    if(st) st.remove();
+    var last = bubble.lastElementChild;
+    if(!last || !last.classList.contains('bubble-text')){
+      var td = textDiv();
+      td.className += ' bubble-text';
+      bubble.appendChild(td);
+      last = td;
+    }
+    last.textContent += ev.delta || '';
+    scrollThread();
+    return;
+  }
+  if(evName === 'message_done'){
+    var st2 = bubble.querySelector('.tool-status');
+    if(st2) st2.remove();
+    if(ev.error){
+      var err = textDiv();
+      err.style.color = 'var(--danger)';
+      err.textContent = '⚠ ' + ev.error;
+      bubble.appendChild(err);
+    }
+    scrollThread();
+    return;
+  }
+}
+
 function sendMessage(){
   var text = chatInput.value.trim();
   if(!text) return;
@@ -1166,37 +1025,18 @@ function sendMessage(){
   appendUser(text);
   chatInput.value = '';
   chatInput.style.height = 'auto';
-  var wrap = document.querySelector('.thread-inner');
-
-  var m = document.createElement('div');
-  m.className = 'msg assistant';
-  m.innerHTML = '<div class="avatar">AI</div><div class="bubble"><div class="tool-status"><span class="spin"></span>正在思考…</div></div>';
-  wrap.appendChild(m);
-  var bubble = m.querySelector('.bubble');
+  var bubble = assistantBubble();
   scrollThread();
 
-  setTimeout(function(){
-    bubble.innerHTML = '<div class="tool-card"><div class="tool-head">'+
-      '<svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>'+
-      '<span class="tool-cmd">kubectl get ' + (text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0 ? 'nodes -o wide' : 'pods -n production') + '</span>'+
-      '<span class="pill accent">L0 · 只读 · 直放</span></div>'+
-      '<div class="tool-body"><table class="mini-table"><tr><th>NAME</th><th>STATUS</th><th>INFO</th></tr>'+
-      (text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0
-        ? '<tr><td>gpu-node-01</td><td style="color:var(--success)">Ready</td><td>util 61%</td></tr><tr><td>gpu-node-03</td><td style="color:var(--warn)">Ready</td><td>util 96%</td></tr>'
-        : '<tr><td>train-llama3-7b-0</td><td style="color:var(--danger)">CrashLoopBackOff</td><td>14 restarts</td></tr><tr><td>infer-qwen2.5-1</td><td style="color:var(--warn)">Pending</td><td>18m</td></tr>')+
-      '</table></div></div>';
-    scrollThread();
-  }, 700);
-
-  setTimeout(function(){
-    var summary = document.createElement('div');
-    summary.style.cssText = 'font-size:13.5px;line-height:1.7';
-    summary.innerHTML = text.indexOf('GPU')>=0 || text.indexOf('利用率')>=0
-      ? '<p>当前集群 GPU 利用率：<b>gpu-node-03</b> 持续偏高（<span class="mono">96%</span>），其余节点正常。建议排查该节点上的占用任务。</p>'
-      : '<p>已为你查询结果。需要我进一步排查或执行操作吗？</p>';
-    bubble.appendChild(summary);
-    scrollThread();
-  }, 1300);
+  streamSSE('/api/messages', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CubePilot-User':CURRENT_USER},
+    body: JSON.stringify({session_id: currentSessionId, content: text})
+  }, function(evName, ev){
+    handleEvent(evName, ev, bubble);
+  }).catch(function(e){
+    handleEvent('message_done', {type:'message_done', error: String(e)}, bubble);
+  });
 }
 
 function resolveConfirm(allow){
@@ -1271,72 +1111,139 @@ var sessionCache = {};
 var NEW_CHAT_ICON = '<svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
 var EMPTY_THREAD_HTML = '<div class="thread-empty"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><div class="thread-empty-title">开始新的对话</div><div class="thread-empty-desc">在下方输入需求，CubePilot 会调用平台能力帮你排查、部署或查询资源。</div></div>';
 
-function activeSessionId(){
-  var el = document.querySelector('.session-item.active');
-  return el ? el.dataset.session : 'prod';
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});
 }
-function switchSession(el){
-  var id = el.dataset.session;
-  if(!id || id === activeSessionId()) return;
-  sessionCache[activeSessionId()] = document.querySelector('.thread-inner').innerHTML;
-  document.querySelectorAll('.session-item').forEach(function(s){s.classList.remove('active')});
-  el.classList.add('active');
-  document.getElementById('chatHeadTitle').textContent = el.querySelector('.s-title').textContent;
-  document.getElementById('chatHeadMeta').textContent = (SESSION_META[id] ? SESSION_META[id].meta : el.querySelector('.s-meta').textContent);
-  var inner = document.querySelector('.thread-inner');
-  inner.innerHTML = (sessionCache[id] !== undefined) ? sessionCache[id] : (SESSION_THREAD[id] || '');
-  scrollThread();
-}
+
 function bindSessionItem(el){
-  el.addEventListener('click', function(){switchSession(el)});
+  el.addEventListener('click', function(){switchSession(el.dataset.session)});
   el.addEventListener('keydown', function(e){
-    if(e.key==='Enter' || e.key===' '){e.preventDefault();switchSession(el);}
+    if(e.key==='Enter' || e.key===' '){e.preventDefault();switchSession(el.dataset.session);}
   });
 }
-document.querySelectorAll('.session-item').forEach(function(el){
-  el.setAttribute('tabindex','0');
-  bindSessionItem(el);
-});
+
+async function loadSessions(){
+  try{
+    var resp = await fetch('/api/sessions', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    if(!data.sessions || !data.sessions.length) return;
+    var list = document.querySelector('.session-list');
+    list.innerHTML = data.sessions.map(function(s){
+      return '<div class="session-item" data-session="'+esc(s.sessionKey)+'" tabindex="0">'+NEW_CHAT_ICON+
+        '<div class="s-main"><div class="s-title">'+esc(s.title || s.sessionKey || '会话')+'</div>'+
+        '<div class="s-meta"><span class="mono" style="font-size:10px">'+esc(s.sessionKey)+'</span></div></div></div>';
+    }).join('');
+    list.querySelectorAll('.session-item').forEach(bindSessionItem);
+  }catch(e){ /* 保留默认列表 */ }
+}
+
+function switchSession(id){
+  currentSessionId = id;
+  document.querySelectorAll('.session-item').forEach(function(s){s.classList.toggle('active', s.dataset.session===id)});
+  var title = '';
+  var el = document.querySelector('.session-item[data-session="'+CSS.escape(id)+'"]');
+  if(el) title = el.querySelector('.s-title').textContent;
+  document.getElementById('chatHeadTitle').textContent = title || '对话';
+  document.getElementById('chatHeadMeta').textContent = '加载历史中…';
+  loadHistory(id);
+}
+
+/* 拉取并渲染单个会话的历史（FR-M1-004） */
+async function loadHistory(id){
+  var inner = document.querySelector('.thread-inner');
+  inner.innerHTML = '<div class="thread-empty"><div class="thread-empty-title">加载历史中…</div></div>';
+  try{
+    var resp = await fetch('/api/sessions/'+encodeURIComponent(id)+'/messages', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    document.getElementById('chatHeadMeta').textContent = '已加载历史 · 继续对话即可';
+    renderHistory(data.items || []);
+  }catch(e){
+    document.getElementById('chatHeadMeta').textContent = '历史加载失败';
+    inner.innerHTML = '<div class="thread-empty"><div class="thread-empty-title">历史加载失败</div><div class="thread-empty-desc">'+esc(String(e))+'</div></div>';
+  }
+}
+
+function historyBubbleEl(inner){
+  var m = document.createElement('div');
+  m.className = 'msg assistant';
+  m.innerHTML = '<div class="avatar">AI</div><div class="bubble"></div>';
+  inner.appendChild(m);
+  return m.querySelector('.bubble');
+}
+
+function appendResultToBubble(bubble, text){
+  var d = document.createElement('div');
+  d.style.cssText = 'margin-top:8px;background:rgba(0,0,0,.04);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:220px;overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all';
+  d.className = 'mono';
+  d.textContent = text;
+  bubble.appendChild(d);
+}
+
+function renderHistory(items){
+  var inner = document.querySelector('.thread-inner');
+  inner.innerHTML = '';
+  if(!items.length){ inner.innerHTML = EMPTY_THREAD_HTML; return; }
+  var lastBubble = null;
+  items.forEach(function(it){
+    var content = it.content || [];
+    if(it.role === 'user'){
+      content.forEach(function(c){
+        if(c.type === 'text' && c.text){
+          var m = document.createElement('div');
+          m.className = 'msg user';
+          m.innerHTML = '<div class="avatar">ZW</div><div class="bubble"></div>';
+          m.querySelector('.bubble').textContent = c.text;
+          inner.appendChild(m);
+        }
+      });
+      lastBubble = null;
+      return;
+    }
+    if(it.role === 'assistant'){
+      var hasTool = content.some(function(c){return c.type==='toolCall'});
+      var hasText = content.some(function(c){return c.type==='text' && c.text});
+      if(!hasTool && !hasText) return;
+      var bubble = lastBubble || historyBubbleEl(inner);
+      content.forEach(function(c){
+        if(c.type === 'toolCall'){
+          var argsObj = c.arguments || {};
+          var argsStr = (typeof argsObj === 'string') ? argsObj : JSON.stringify(argsObj);
+          bubble.insertAdjacentHTML('beforeend', toolCardHTML(c.name || 'exec', argsStr));
+        } else if(c.type === 'text' && c.text){
+          var d = document.createElement('div');
+          d.style.cssText = 'font-size:13.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word;margin-top:8px';
+          d.textContent = c.text;
+          bubble.appendChild(d);
+        }
+      });
+      lastBubble = bubble;
+      return;
+    }
+    if(it.role === 'toolResult'){
+      content.forEach(function(c){
+        if(c.type === 'text' && c.text){
+          if(!lastBubble) lastBubble = historyBubbleEl(inner);
+          appendResultToBubble(lastBubble, c.text);
+        }
+      });
+    }
+  });
+  scrollThread();
+}
 
 function newChat(){
-  var id = 'sess-' + Date.now();
-  var item = document.createElement('div');
-  item.className = 'session-item';
-  item.dataset.session = id;
-  item.setAttribute('tabindex','0');
-  item.innerHTML = NEW_CHAT_ICON + '<div class="s-main"><div class="s-title">新会话</div><div class="s-meta"><span>刚刚</span><span>·</span><span>0 条消息</span></div></div>';
-  document.querySelector('.session-list').insertBefore(item, document.querySelector('.session-list').firstChild);
-  bindSessionItem(item);
-  sessionCache[id] = EMPTY_THREAD_HTML;
-  switchSession(item);
+  currentSessionId = null;
+  document.querySelectorAll('.session-item').forEach(function(s){s.classList.remove('active')});
+  document.querySelector('.thread-inner').innerHTML = EMPTY_THREAD_HTML;
+  document.getElementById('chatHeadTitle').textContent = '新会话';
+  document.getElementById('chatHeadMeta').textContent = '尚未开始';
   document.getElementById('chatInput').focus();
 }
 document.querySelector('[data-od-id="new-chat"]').addEventListener('click', newChat);
 
-/* 定时任务 */
-function filterFindings(sev, btn){
-  document.querySelectorAll('.filter-row .chip').forEach(function(c){c.classList.remove('active')});
-  btn.classList.add('active');
-  document.querySelectorAll('#findings-list .finding').forEach(function(f){
-    f.style.display = (sev==='all' || f.dataset.sev===sev) ? 'flex' : 'none';
-  });
-}
+loadSessions();
 
-var running = false;
-var currentTask = '全集群健康巡检';
-function runTask(){
-  if(running) return;
-  running = true;
-  var btn = document.querySelector('[data-od-id="run-task"]');
-  btn.innerHTML = '<span class="spin" style="border-top-color:#fff"></span> 执行中…';
-  btn.disabled = true;
-  setTimeout(function(){
-    running = false;
-    btn.disabled = false;
-    btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>立即执行';
-    toast('任务「'+currentTask+'」已触发 · 将以你的身份直接执行');
-  }, 1800);
-}
+
 
 function focusReport(){
   var c = document.querySelector('.content');
@@ -1344,36 +1251,6 @@ function focusReport(){
   c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 16;
 }
 
-function selectTask(row, name, mode){
-  document.querySelectorAll('.task-row').forEach(function(r){r.classList.remove('selected')});
-  row.classList.add('selected');
-  currentTask = name;
-  var inspect = document.getElementById('report-inspect');
-  var generic = document.getElementById('report-generic');
-  var empty = document.getElementById('report-empty');
-  var sub = document.getElementById('report-sub');
-  var controls = document.getElementById('report-controls');
-  var runSelect = document.getElementById('report-run-select');
-  inspect.style.display = 'none';
-  generic.style.display = 'none';
-  empty.style.display = 'none';
-  if(mode === 'structured'){
-    inspect.style.display = '';
-    controls.style.display = '';
-    runSelect.innerHTML = '<option selected>run-20260813 · 今日</option><option>run-20260812 · 昨日</option><option>run-20260811 · 08-11</option>';
-    sub.textContent = name + ' · 预置巡检 6 类 + AI 智能巡检 · 报告为所选任务的执行记录';
-  }else if(mode === 'log'){
-    generic.style.display = '';
-    controls.style.display = '';
-    runSelect.innerHTML = '<option selected>run-20260813 · 今日</option><option>run-20260806 · 上周</option>';
-    sub.textContent = name + ' · 自定义模板 · 输出为自由文本 · 报告为所选任务的执行记录';
-  }else{
-    empty.style.display = 'block';
-    controls.style.display = 'none';
-    document.getElementById('empty-title').textContent = '「' + name + '」尚未产生执行记录';
-    document.getElementById('empty-desc').textContent = '该任务首次执行后，将在此展示执行结果与输出日志。你可点击「立即执行」手动触发一次。';
-  }
-}
 
 /* 定时任务 · 子页签 */
 function switchTaskTab(tab, btn){
@@ -1383,51 +1260,14 @@ function switchTaskTab(tab, btn){
   document.getElementById('tasktab-templates').style.display = (tab==='templates') ? '' : 'none';
 }
 
-/* 新建任务弹窗 */
-function openTaskDialog(tpl){
-  document.getElementById('taskDialog').classList.add('open');
-  if(tpl){
-    var sel = document.getElementById('taskTemplate');
-    for(var i=0;i<sel.options.length;i++){
-      if(sel.options[i].text.indexOf(tpl)>=0){sel.selectedIndex = i;break;}
-    }
-  }
-  document.getElementById('taskName').focus();
-}
 function closeTaskDialog(){document.getElementById('taskDialog').classList.remove('open')}
 function pickTrigger(el){
   document.querySelectorAll('#taskDialog .radio').forEach(function(r){r.classList.remove('active');r.setAttribute('aria-checked','false')});
   el.classList.add('active');
   el.setAttribute('aria-checked','true');
 }
-function createTask(){
-  var name = document.getElementById('taskName').value.trim() || '未命名任务';
-  closeTaskDialog();
-  toast('任务「'+name+'」已创建 · 将以你的身份直接执行');
-  document.getElementById('taskName').value = '';
-}
 
-/* audit */
-function filterAudit(){
-  var q = document.getElementById('auditSearch').value.trim().toLowerCase();
-  document.querySelectorAll('#audit-body tr').forEach(function(tr){
-    tr.style.display = !q || tr.dataset.search.toLowerCase().indexOf(q)>=0 ? '' : 'none';
-  });
-}
 
-/* 键盘可达性：任务行与发现项 */
-document.querySelectorAll('.task-row').forEach(function(r){
-  r.setAttribute('tabindex','0');
-  r.addEventListener('keydown', function(e){
-    if(e.key==='Enter' || e.key===' '){ e.preventDefault(); r.click(); }
-  });
-});
-document.querySelectorAll('.finding').forEach(function(f){
-  f.setAttribute('tabindex','0');
-  f.addEventListener('keydown', function(e){
-    if(e.key==='Enter' || e.key===' '){ e.preventDefault(); f.classList.toggle('open'); }
-  });
-});
 /* 模态框：Esc 关闭 + 点击遮罩关闭 */
 document.getElementById('taskDialog').addEventListener('mousedown', function(e){
   if(e.target === this) closeTaskDialog();
@@ -1435,6 +1275,417 @@ document.getElementById('taskDialog').addEventListener('mousedown', function(e){
 document.addEventListener('keydown', function(e){
   if(e.key==='Escape') closeTaskDialog();
 });
+
+
+/* ========== 定时任务（真实 API，FR-M4） ========== */
+var TASK_TEMPLATES = {
+  inspect:{name:'集群健康巡检', cron:'0 2 * * *',
+    prompt:'请对当前 Kubernetes 集群执行一次基础巡检：\n1. 查看节点状态（kubectl get nodes）；\n2. 查找所有命名空间中状态异常的 Pod（非 Running，如 CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled）；\n3. 查看最近的集群事件（kubectl get events -A）。\n将发现的异常按严重程度分级：P0 紧急 / P1 重要 / P2 一般，并用简体中文输出一份结构化巡检报告（含每项的证据）。'},
+  'gpu-daily':{name:'GPU 资源利用率日报', cron:'0 9 * * 1',
+    prompt:'请汇总集群 GPU 资源情况：\n1. kubectl get nodes -o json 查看各节点 nvidia.com/gpu capacity 与 allocatable；\n2. 列出请求 GPU 的 Pod 及其节点分布；\n3. 输出一份 GPU 资源日报（简体中文），标注利用率偏高/闲置的节点，按 P0/P1/P2 分级。'},
+  custom:{name:'自定义任务', cron:'', prompt:''}
+};
+var selectedTaskId = null;
+var taskCache = [];
+var reportCache = [];
+
+function fmtTime(v){
+  if(!v) return '—';
+  var d = new Date(v);
+  if(isNaN(d.getTime())) return '—';
+  var pad = function(n){return n<10?'0'+n:''+n};
+  var now = new Date();
+  var sameDay = d.toDateString() === now.toDateString();
+  return (sameDay ? '' : (pad(d.getMonth()+1)+'-'+pad(d.getDate())+' ')) + pad(d.getHours())+':'+pad(d.getMinutes());
+}
+function fmtCron(expr){
+  return expr && expr.trim() ? '<span class="mono">'+esc(expr)+'</span>' : '仅手动';
+}
+function fmtDuration(a, b){
+  var ms = new Date(b).getTime() - new Date(a).getTime();
+  if(isNaN(ms) || ms < 0) return '—';
+  var s = Math.round(ms/1000);
+  if(s < 60) return s + 's';
+  return Math.floor(s/60) + 'm ' + (s%60) + 's';
+}
+function statusPill(t){
+  if(t.enabled) return '<span class="pill success">启用</span>';
+  return '<span class="pill neutral">停用</span>';
+}
+function taskKindLabel(t){
+  var isInspect = (t.prompt || '').indexOf('巡检') >= 0;
+  return isInspect ? '<span class="pill accent">巡检 · 预置</span>' : '<span class="pill neutral">自定义</span>';
+}
+
+async function loadTasks(){
+  try{
+    var resp = await fetch('/api/tasks', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    taskCache = data.tasks || [];
+    renderTasks();
+    if(selectedTaskId){
+      var still = taskCache.find(function(t){return t.id===selectedTaskId});
+      if(still) loadReports(selectedTaskId);
+      else { selectedTaskId = null; showReportEmpty('请选择一个任务'); }
+    }
+  }catch(e){
+    document.getElementById('task-list-body').innerHTML =
+      '<tr><td colspan="10" style="text-align:center;color:var(--danger);padding:24px">任务加载失败：'+esc(String(e))+'</td></tr>';
+  }
+}
+
+function renderTasks(){
+  var body = document.getElementById('task-list-body');
+  if(!taskCache.length){
+    body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px">暂无任务 · 点击右上角「新建任务」创建</td></tr>';
+    return;
+  }
+  body.innerHTML = taskCache.map(function(t){
+    return '<tr class="task-row'+(selectedTaskId===t.id?' selected':'')+'" data-task="'+t.id+'" tabindex="0">'+
+      '<td><span class="task-radio"></span></td>'+
+      '<td style="font-weight:600">'+esc(t.name)+'</td>'+
+      '<td>'+taskKindLabel(t)+'</td>'+
+      '<td>'+(t.schedule && t.schedule.trim() ? '定时 + 手动' : '仅手动')+'</td>'+
+      '<td>'+fmtCron(t.schedule)+'</td>'+
+      '<td>'+statusPill(t)+'</td>'+
+      '<td class="tnum">'+(t.lastRunAt?fmtTime(t.lastRunAt):'—')+'</td>'+
+      '<td class="tnum">'+(t.nextRunAt?fmtTime(t.nextRunAt):'—')+'</td>'+
+      '<td>'+esc(t.creator||'—')+'</td>'+
+      '<td style="white-space:nowrap">'+
+        '<button class="btn sm ghost" onclick="runTaskId(\''+t.id+'\')">运行</button>'+
+        '<button class="btn sm ghost" onclick="event.stopPropagation();toggleTask(\''+t.id+'\')">'+(t.enabled?'停用':'启用')+'</button>'+
+        '<button class="btn sm ghost" onclick="event.stopPropagation();deleteTask(\''+t.id+'\',\''+esc(t.name)+'\')">删除</button>'+
+      '</td></tr>';
+  }).join('');
+  body.querySelectorAll('.task-row').forEach(function(row){
+    row.addEventListener('click', function(){ selectTaskRow(row, row.dataset.task); });
+    row.addEventListener('keydown', function(e){
+      if(e.key==='Enter' || e.key===' '){ e.preventDefault(); selectTaskRow(row, row.dataset.task); }
+    });
+  });
+}
+
+function selectTaskRow(row, id){
+  document.querySelectorAll('#task-list-body .task-row').forEach(function(r){r.classList.remove('selected')});
+  row.classList.add('selected');
+  selectedTaskId = id;
+  loadReports(id);
+}
+
+async function toggleTask(id){
+  await fetch('/api/tasks/'+id+'/toggle', {method:'POST', headers:{'X-CubePilot-User':CURRENT_USER}});
+  loadTasks();
+}
+async function deleteTask(id, name){
+  if(!confirm('删除任务「'+name+'」？（历史报告保留）')) return;
+  await fetch('/api/tasks/'+id, {method:'DELETE', headers:{'X-CubePilot-User':CURRENT_USER}});
+  selectedTaskId = null;
+  loadTasks();
+  showReportEmpty('请选择一个任务');
+}
+
+var running = false;
+function runTask(){
+  if(!selectedTaskId){ toast('请先在列表中选择一个任务'); return; }
+  runTaskId(selectedTaskId);
+}
+async function runTaskId(id){
+  if(running) return;
+  running = true;
+  var btn = document.querySelector('[data-od-id="run-task"]');
+  if(btn){ btn.innerHTML = '<span class="spin" style="border-top-color:#fff"></span> 执行中…'; btn.disabled = true; }
+  try{
+    var resp = await fetch('/api/tasks/'+id+'/run', {method:'POST', headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    toast(data.started ? '任务已触发，正在以创建者身份执行…' : ('触发失败：'+(data.error||'')));
+  }catch(e){ toast('触发失败：'+e); }
+  if(btn){ btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>立即执行'; btn.disabled = false; }
+  running = false;
+  [5000,15000,30000,60000].forEach(function(ms){ setTimeout(function(){ if(selectedTaskId) loadReports(selectedTaskId); }, ms); });
+}
+
+async function loadReports(id){
+  if(!id) return;
+  try{
+    var resp = await fetch('/api/tasks/'+id+'/reports', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    reportCache = data.reports || [];
+    renderReport();
+  }catch(e){ reportCache = []; renderReport(); }
+}
+
+function showReportEmpty(msg){
+  var inspect = document.getElementById('report-inspect');
+  var empty = document.getElementById('report-empty');
+  var controls = document.getElementById('report-controls');
+  if(inspect) inspect.style.display = 'none';
+  if(controls) controls.style.display = 'none';
+  if(empty){
+    empty.style.display = 'block';
+    document.getElementById('empty-title').textContent = msg || '尚未产生执行记录';
+    document.getElementById('empty-desc').textContent = '该任务首次执行后，将在此展示 AI 报告。可点击「立即执行」手动触发一次。';
+  }
+}
+
+function renderReport(){
+  var inspect = document.getElementById('report-inspect');
+  var empty = document.getElementById('report-empty');
+  var controls = document.getElementById('report-controls');
+  if(!reportCache.length){
+    showReportEmpty();
+    return;
+  }
+  inspect.style.display = '';
+  if(controls) controls.style.display = '';
+  if(empty) empty.style.display = 'none';
+
+  var sel = document.getElementById('report-run-select');
+  sel.innerHTML = reportCache.map(function(r,i){
+    return '<option value="'+i+'">'+esc(fmtTime(r.startedAt))+' · '+(r.trigger==='cron'?'定时':(r.trigger==='manual'?'手动':'巡检'))+(r.status==='failed'?' · 失败':'')+'</option>';
+  }).join('');
+
+  var idx = Math.max(0, sel.selectedIndex);
+  var r = reportCache[idx];
+  document.getElementById('report-sub').textContent = r.taskName + ' · ' + (r.trigger==='cron'?'定时执行':(r.trigger==='manual'?'手动执行':'手动巡检')) + ' · 报告为 Agent 真实输出';
+  document.getElementById('stat-lastrun-value').textContent = fmtTime(r.startedAt);
+  document.getElementById('stat-lastrun-sub').textContent = '耗时 ' + fmtDuration(r.startedAt, r.finishedAt) + ' · ' + (r.status==='failed'?'执行失败':'已完成');
+  document.getElementById('stat-sev-pill').textContent = (r.p0+r.p1+r.p2) + ' 项';
+  document.getElementById('sev-p0').textContent = r.p0;
+  document.getElementById('sev-p1').textContent = r.p1;
+  document.getElementById('sev-p2').textContent = r.p2;
+  document.getElementById('stat-runs-value').textContent = reportCache.length;
+  document.getElementById('stat-runs-sub').textContent = '当前任务累计运行次数';
+  document.getElementById('stat-status-value').textContent = r.status==='failed' ? '失败' : '成功';
+  document.getElementById('stat-status-value').style.color = r.status==='failed' ? 'var(--danger)' : 'var(--success)';
+  document.getElementById('stat-status-sub').textContent = '触发方式：' + (r.trigger==='cron'?'定时':(r.trigger==='manual'?'手动':'巡检'));
+  var contentEl = document.getElementById('report-content');
+  contentEl.textContent = r.content || '（空报告）';
+  document.getElementById('report-content-hint').textContent = fmtTime(r.startedAt) + ' 运行 · ' + (r.status==='failed'?'失败':'成功');
+  sel.onchange = renderReport;
+  focusReport();
+}
+
+function focusReport(){
+  var c = document.querySelector('.content');
+  var el = document.getElementById('report-header');
+  if(c && el) c.scrollTop += el.getBoundingClientRect().top - c.getBoundingClientRect().top - 16;
+}
+
+function exportReport(){
+  if(!reportCache.length){ toast('暂无报告可导出'); return; }
+  var r = reportCache[Math.max(0, document.getElementById('report-run-select').selectedIndex)];
+  downloadText('report-'+r.id+'.md', '#' + r.taskName + '\n\n时间：' + fmtTime(r.startedAt) + '\n状态：' + r.status + '\n\n' + (r.content||''));
+}
+
+function downloadText(name, text){
+  var blob = new Blob([text], {type:'text/plain;charset=utf-8'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* 任务创建弹窗 */
+function openTaskDialog(tpl){
+  document.getElementById('taskDialog').classList.add('open');
+  if(tpl){
+    var sel = document.getElementById('taskTemplate');
+    for(var i=0;i<sel.options.length;i++){
+      if(sel.options[i].text.indexOf(tpl)>=0){ sel.selectedIndex = i; break; }
+    }
+  }
+  applyTaskTemplate();
+  document.getElementById('taskName').focus();
+}
+function applyTaskTemplate(){
+  var sel = document.getElementById('taskTemplate');
+  var tpl = TASK_TEMPLATES[sel.value] || TASK_TEMPLATES.custom;
+  document.getElementById('taskPrompt').value = tpl.prompt;
+  document.getElementById('taskCron').value = tpl.cron;
+  if(sel.value === 'custom'){ document.getElementById('taskPrompt').focus(); }
+}
+function createTask(){
+  var name = document.getElementById('taskName').value.trim();
+  var prompt = document.getElementById('taskPrompt').value.trim();
+  var trigger = document.querySelector('#taskDialog .radio.active').dataset.trigger;
+  var schedule = (trigger === 'cron') ? document.getElementById('taskCron').value.trim() : '';
+  if(!name){ toast('请填写任务名称'); return; }
+  if(!prompt){ toast('请填写任务提示词'); return; }
+  fetch('/api/tasks', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CubePilot-User':CURRENT_USER},
+    body: JSON.stringify({name:name, prompt:prompt, schedule:schedule, enabled:true})
+  }).then(function(resp){ return resp.json(); }).then(function(data){
+    if(data.task){
+      closeTaskDialog();
+      document.getElementById('taskName').value = '';
+      toast('任务「'+name+'」已创建 · 将以你的身份直接执行');
+      loadTasks();
+    }else{
+      toast('创建失败：' + (data.error || '未知错误'));
+    }
+  }).catch(function(e){ toast('创建失败：'+e); });
+}
+
+/* ========== 审计（真实 API，M5） ========== */
+var auditCache = [];
+async function loadAudit(){
+  try{
+    var resp = await fetch('/api/audit?limit=400', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var data = await resp.json();
+    auditCache = data.entries || [];
+    renderAudit();
+  }catch(e){
+    document.getElementById('audit-body').innerHTML =
+      '<tr><td colspan="8" style="text-align:center;color:var(--danger);padding:24px">审计加载失败：'+esc(String(e))+'</td></tr>';
+  }
+}
+function shortSession(s){
+  s = String(s||'').replace('agent:main:','');
+  if(s.length > 28) s = s.slice(0,12)+'…'+s.slice(-12);
+  return s;
+}
+function renderAudit(entries){
+  var list = entries || auditCache;
+  var body = document.getElementById('audit-body');
+  if(!list.length){
+    body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">暂无审计记录 · 发起一次对话/巡检后自动写入</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map(function(e){
+    var search = [e.user, e.sessionId, e.tool, e.command, e.level, e.status].join(' ').toLowerCase();
+    return '<tr data-search="'+search+'">'+
+      '<td class="mono tnum">'+fmtTime(e.ts)+'</td>'+
+      '<td>'+esc(e.user)+'</td>'+
+      '<td class="mono">'+shortSession(e.sessionId)+'</td>'+
+      '<td class="mono">'+esc(e.tool)+'</td>'+
+      '<td class="mono" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(e.command||'')+'</td>'+
+      '<td><span class="pill '+(e.level==='L0'?'accent':'warn')+'">'+esc(e.level)+'</span></td>'+
+      '<td><span class="pill '+(e.status==='executed'?'success':'danger')+'">'+(e.status==='executed'?'已执行':'失败')+'</span></td>'+
+      '<td class="tnum" style="color:var(--muted)">'+(e.status==='executed'?'OK':'fail')+'</td>'+
+    '</tr>';
+  }).join('');
+}
+function filterAudit(){
+  var q = document.getElementById('auditSearch').value.trim().toLowerCase();
+  var fUser = document.getElementById('auditFilterUser').value;
+  var fTool = document.getElementById('auditFilterTool').value;
+  var fLevel = document.getElementById('auditFilterLevel').value;
+  var fStatus = document.getElementById('auditFilterStatus').value;
+  var filtered = auditCache.filter(function(e){
+    if(fUser && e.user !== fUser) return false;
+    if(fTool && e.tool !== fTool) return false;
+    if(fLevel && e.level !== fLevel) return false;
+    if(fStatus && e.status !== fStatus) return false;
+    if(q){
+      var s = [e.user, e.sessionId, e.tool, e.command, e.level, e.status].join(' ').toLowerCase();
+      if(s.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+  renderAudit(filtered);
+}
+function exportAuditCSV(){
+  if(!auditCache.length){ toast('暂无审计记录可导出'); return; }
+  var rows = [['时间','操作者','会话','工具','命令','级别','状态']].concat(auditCache.map(function(e){
+    return [new Date(e.ts).toISOString(), e.user, e.sessionId, e.tool, e.command, e.level, e.status];
+  }));
+  var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\n');
+  downloadText('cubepilot-audit.csv', '﻿' + csv);
+}
+
+/* ========== Agent 配置（真实 API，FR-M2-005） ========== */
+var SKILL_LABELS = {
+  'kubectl-platform':'平台资源操作',
+  'dev-environment':'开发环境',
+  'inference-service':'推理服务',
+  'inspection':'智能巡检'
+};
+async function loadAgentView(){
+  try{
+    var respC = await fetch('/api/agent/config', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var respS = await fetch('/api/agent/status', {headers:{'X-CubePilot-User':CURRENT_USER}});
+    var cfg = (await respC.json()).config;
+    var st = (await respS.json());
+
+    var modelSel = document.getElementById('cfgModel');
+    var has = Array.prototype.some.call(modelSel.options, function(o){return o.value===cfg.model;});
+    if(!has){
+      var opt = document.createElement('option');
+      opt.value = cfg.model; opt.textContent = cfg.model;
+      modelSel.insertBefore(opt, modelSel.options[1]);
+    }
+    modelSel.value = cfg.model;
+    document.getElementById('cfgPrompt').value = cfg.systemPrompt || '';
+    renderSkills(cfg.skills || []);
+
+    document.getElementById('instId').textContent = st.id || '—';
+    document.getElementById('instPhase').textContent = st.exists ? ('Running · 自 ' + fmtTime(st.startedAt)) : (st.phase || '回收中');
+    document.getElementById('instPill').textContent = st.exists ? '运行中' : '已回收';
+    document.getElementById('instPill').className = 'pill ' + (st.exists ? 'success' : 'neutral');
+    var up = st.uptimeSeconds;
+    document.getElementById('instUptime').textContent = up!=null ? (Math.floor(up/60)+'m '+(up%60)+'s') : '—';
+    document.getElementById('instImage').textContent = st.gatewayImage || '—';
+    document.getElementById('instTTL').textContent = st.idleTTLMinutes ? (st.idleTTLMinutes+' min') : (st.idleTTLSeconds ? st.idleTTLSeconds+'s' : '—');
+    document.getElementById('instPVC').textContent = 'data-' + st.user;
+  }catch(e){ console.error('loadAgentView', e); }
+}
+function renderSkills(skills){
+  var wrap = document.getElementById('skills-list');
+  var sys = '<div class="skill-group">系统技能 · 内置不可关闭</div>'+
+    '<div class="toggle"><div class="toggle-info"><div class="toggle-title">平台资源操作 <span class="mono" style="color:var(--muted);font-weight:500">kubectl</span></div><div class="toggle-desc">以用户身份直连 K8s API Server，读写平台资源（RBAC 强制）</div></div>'+
+    '<span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span></div>'+
+    '<div class="toggle"><div class="toggle-info"><div class="toggle-title">日志查询 <span class="mono" style="color:var(--muted);font-weight:500">kubectl logs</span></div><div class="toggle-desc">任意任务日志定位与修复建议</div></div>'+
+    '<span class="lock-badge"><svg class="icon" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>系统</span></div>';
+  var plat = '<div class="skill-group">平台能力 · 能力目录</div>';
+  if(skills.length){
+    plat += skills.map(function(sk){
+      var label = SKILL_LABELS[sk.name] || sk.name;
+      return '<div class="toggle"><div class="toggle-info"><div class="toggle-title">'+esc(label)+' <span class="mono" style="color:var(--muted);font-weight:500">'+esc(sk.name)+'</span></div><div class="toggle-desc">来自实例镜像内置能力目录 · 开关保存为偏好</div></div>'+
+        '<button class="switch" role="switch" aria-checked="'+sk.enabled+'" onclick="toggleSkill(\''+esc(sk.name)+'\',this)" aria-label="'+esc(label)+'"></button></div>';
+    }).join('');
+  }else{
+    plat += '<div style="color:var(--muted);padding:8px 0">暂无登记能力</div>';
+  }
+  wrap.innerHTML = sys + plat;
+}
+function toggleSkill(name, el){
+  el.setAttribute('aria-checked', el.getAttribute('aria-checked')==='true' ? 'false' : 'true');
+}
+async function saveAgentConfig(){
+  var skills = [];
+  document.querySelectorAll('#skills-list .switch').forEach(function(s){
+    var row = s.closest('.toggle');
+    var titleEl = row.querySelector('.toggle-title .mono');
+    var name = titleEl ? titleEl.textContent : '';
+    skills.push({name:name, enabled:s.getAttribute('aria-checked')==='true'});
+  });
+  var cfg = {
+    model: document.getElementById('cfgModel').value,
+    systemPrompt: document.getElementById('cfgPrompt').value.trim(),
+    skills: skills
+  };
+  try{
+    var resp = await fetch('/api/agent/config', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','X-CubePilot-User':CURRENT_USER},
+      body: JSON.stringify({config:cfg})
+    });
+    var data = await resp.json();
+    toast(data.config ? '配置已保存 · 系统提示词即时生效' : ('保存失败：'+(data.error||'')));
+  }catch(e){ toast('保存失败：'+e); }
+}
+
+/* ========== 视图切换：进入即刷新真实数据 ========== */
+var _baseSwitchView = switchView;
+switchView = function(id){
+  _baseSwitchView(id);
+  if(id==='tasks') loadTasks();
+  else if(id==='audit') loadAudit();
+  else if(id==='agent') loadAgentView();
+};
+
 </script>
 </body>
 </html>
