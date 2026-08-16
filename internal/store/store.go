@@ -1,0 +1,321 @@
+// Package store persists CubePilot PoC metadata (scheduled tasks, run reports,
+// audit entries, agent config) as JSON files on the backend PVC — the "tables"
+// (元数据表) approach chosen over CRDs for phase one.
+package store
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const (
+	maxReports = 200
+	maxAudit   = 1000
+)
+
+// Task is a scheduled (or manual) AI task (FR-M4).
+type Task struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Prompt     string     `json:"prompt"`
+	Schedule   string     `json:"schedule"` // 5-field cron; empty = manual only
+	Enabled    bool       `json:"enabled"`
+	Creator    string     `json:"creator"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
+	LastStatus string     `json:"lastStatus,omitempty"` // success | failed
+}
+
+// Report is one execution record of a task (or of /api/inspect).
+type Report struct {
+	ID         string    `json:"id"`
+	TaskID     string    `json:"taskId"`
+	TaskName   string    `json:"taskName"`
+	Trigger    string    `json:"trigger"` // cron | manual | inspect
+	Status     string    `json:"status"`  // success | failed
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt"`
+	Content    string    `json:"content"`
+	P0         int       `json:"p0"`
+	P1         int       `json:"p1"`
+	P2         int       `json:"p2"`
+}
+
+// AuditEntry records one tool invocation observed on the SSE stream (M5).
+type AuditEntry struct {
+	ID        string    `json:"id"`
+	TS        time.Time `json:"ts"`
+	User      string    `json:"user"`
+	SessionID string    `json:"sessionId"`
+	Tool      string    `json:"tool"`
+	Command   string    `json:"command"`
+	Level     string    `json:"level"`  // L0 readonly | L1 write
+	Status    string    `json:"status"` // executed | failed
+	Detail    string    `json:"detail,omitempty"`
+}
+
+// SkillToggle is one capability switch on the Agent config page.
+type SkillToggle struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// AgentConfig is the persisted Agent 配置 desired state (FR-M2-005 subset).
+type AgentConfig struct {
+	Model        string        `json:"model"`
+	SystemPrompt string        `json:"systemPrompt"`
+	Skills       []SkillToggle `json:"skills"`
+}
+
+// DefaultAgentConfig mirrors the baked-in capability catalog + gateway model.
+func DefaultAgentConfig() AgentConfig {
+	return AgentConfig{
+		Model: "cuberouter/glm-5.1",
+		Skills: []SkillToggle{
+			{Name: "kubectl-platform", Enabled: true},
+			{Name: "dev-environment", Enabled: true},
+			{Name: "inference-service", Enabled: true},
+			{Name: "inspection", Enabled: true},
+		},
+	}
+}
+
+// Store keeps each collection in one JSON file under dir.
+type Store struct {
+	dir string
+	mu  sync.Mutex
+}
+
+// New opens (creating if needed) a store rooted at dir.
+func New(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("store dir: %w", err)
+	}
+	return &Store{dir: dir}, nil
+}
+
+func shortID(prefix string) string {
+	return fmt.Sprintf("%s-%s", prefix, uuid.NewString()[:8])
+}
+
+func (s *Store) file(name string, v any, create bool) error {
+	path := filepath.Join(s.dir, name)
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if !create {
+			return nil
+		}
+	case err != nil:
+		return fmt.Errorf("read %s: %w", name, err)
+	default:
+		if err := json.Unmarshal(raw, v); err != nil {
+			return fmt.Errorf("decode %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) save(name string, v any) error {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(s.dir, name+".tmp")
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return os.Rename(tmp, filepath.Join(s.dir, name))
+}
+
+// ---- tasks ----
+
+// ListTasks returns all tasks newest-first.
+func (s *Store) ListTasks() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var tasks []Task
+	if err := s.file("tasks.json", &tasks, false); err != nil {
+		return nil, err
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
+	return tasks, nil
+}
+
+// GetTask returns one task by ID.
+func (s *Store) GetTask(id string) (Task, error) {
+	tasks, err := s.ListTasks()
+	if err != nil {
+		return Task{}, err
+	}
+	for _, t := range tasks {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return Task{}, fmt.Errorf("task %s not found", id)
+}
+
+// CreateTask persists a new task and returns it with ID/timestamps filled in.
+func (s *Store) CreateTask(t Task) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var tasks []Task
+	if err := s.file("tasks.json", &tasks, false); err != nil {
+		return Task{}, err
+	}
+	t.ID = shortID("t")
+	t.CreatedAt = time.Now()
+	tasks = append(tasks, t)
+	if err := s.save("tasks.json", tasks); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// UpdateTask applies fn to the task with the given ID and persists the list.
+func (s *Store) UpdateTask(id string, fn func(*Task)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var tasks []Task
+	if err := s.file("tasks.json", &tasks, false); err != nil {
+		return err
+	}
+	for i := range tasks {
+		if tasks[i].ID == id {
+			fn(&tasks[i])
+			return s.save("tasks.json", tasks)
+		}
+	}
+	return fmt.Errorf("task %s not found", id)
+}
+
+// DeleteTask removes a task.
+func (s *Store) DeleteTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var tasks []Task
+	if err := s.file("tasks.json", &tasks, false); err != nil {
+		return err
+	}
+	kept := tasks[:0]
+	found := false
+	for _, t := range tasks {
+		if t.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	if !found {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return s.save("tasks.json", kept)
+}
+
+// ---- reports ----
+
+// AddReport appends a report, capping the collection at maxReports.
+func (s *Store) AddReport(r Report) (Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var reports []Report
+	if err := s.file("reports.json", &reports, false); err != nil {
+		return Report{}, err
+	}
+	r.ID = shortID("r")
+	reports = append(reports, r)
+	if len(reports) > maxReports {
+		reports = reports[len(reports)-maxReports:]
+	}
+	if err := s.save("reports.json", reports); err != nil {
+		return Report{}, err
+	}
+	return r, nil
+}
+
+// ListReports returns reports newest-first, optionally filtered by task ID.
+func (s *Store) ListReports(taskID string) ([]Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var reports []Report
+	if err := s.file("reports.json", &reports, false); err != nil {
+		return nil, err
+	}
+	out := reports[:0]
+	if taskID != "" {
+		filtered := make([]Report, 0, len(reports))
+		for _, r := range reports {
+			if r.TaskID == taskID {
+				filtered = append(filtered, r)
+			}
+		}
+		out = filtered
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	return out, nil
+}
+
+// ---- audit ----
+
+// AddAudit appends an audit entry, capping at maxAudit.
+func (s *Store) AddAudit(e AuditEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var entries []AuditEntry
+	if err := s.file("audit.json", &entries, false); err != nil {
+		return err
+	}
+	e.ID = shortID("a")
+	entries = append(entries, e)
+	if len(entries) > maxAudit {
+		entries = entries[len(entries)-maxAudit:]
+	}
+	return s.save("audit.json", entries)
+}
+
+// ListAudit returns audit entries newest-first.
+func (s *Store) ListAudit(limit int) ([]AuditEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var entries []AuditEntry
+	if err := s.file("audit.json", &entries, false); err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].TS.After(entries[j].TS) })
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
+}
+
+// ---- agent config ----
+
+// GetAgentConfig returns the saved config merged over defaults.
+func (s *Store) GetAgentConfig() (AgentConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg := DefaultAgentConfig()
+	if err := s.file("agent-config.json", &cfg, false); err != nil {
+		return AgentConfig{}, err
+	}
+	if cfg.Model == "" {
+		cfg.Model = DefaultAgentConfig().Model
+	}
+	return cfg, nil
+}
+
+// SaveAgentConfig persists the config.
+func (s *Store) SaveAgentConfig(cfg AgentConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.save("agent-config.json", cfg)
+}

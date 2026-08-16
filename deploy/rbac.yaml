@@ -1,0 +1,74 @@
+# RBAC for the CubePilot PoC.
+#   cubepilot-manager : the assistant service / Instance Manager (namespace-scoped).
+#   cubepilot-agent   : the identity each per-user agent Pod uses for `kubectl`
+#                       (cluster-scoped, intentionally broad for the demo — the
+#                       production contract is per-user minimal RBAC, FR-M3-001).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cubepilot-manager
+  namespace: cubepilot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cubepilot-agent
+  namespace: cubepilot
+---
+# Instance Manager: manage per-user Pods/PVCs/Services within the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cubepilot-manager
+  namespace: cubepilot
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims", "services", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cubepilot-manager
+  namespace: cubepilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cubepilot-manager
+subjects:
+  - kind: ServiceAccount
+    name: cubepilot-manager
+    namespace: cubepilot
+---
+# Agent instances: read cluster state, write pods (demo scope — broad).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cubepilot-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "events", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Platform CRDs (DevEnvironment / InferenceService / ...) — demo wildcard.
+  - apiGroups: ["assistant.suanova.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cubepilot-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cubepilot-agent
+subjects:
+  - kind: ServiceAccount
+    name: cubepilot-agent
+    namespace: cubepilot

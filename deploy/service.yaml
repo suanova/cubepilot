@@ -1,0 +1,78 @@
+# The assistant service + Instance Manager (merged in one Deployment for the PoC).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cubepilot
+  namespace: cubepilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cubepilot
+  template:
+    metadata:
+      labels:
+        app: cubepilot
+    spec:
+      serviceAccountName: cubepilot-manager
+      # Container runs as `node` (uid 1000); make the data PVC writable.
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: cubepilot
+          image: cubepilot-service:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CUBEPILOT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-config
+                  key: gatewayToken
+            - name: CUBEPILOT_NAMESPACE
+              value: cubepilot
+            - name: CUBEPILOT_AGENT_IMAGE
+              value: cubepilot-agent:local
+            - name: CUBEPILOT_IDLE_TTL
+              value: 5m
+            - name: CUBEPILOT_USERS
+              value: zhang.wei,li.ming
+            - name: CUBEPILOT_DATA_DIR
+              value: /opt/cubepilot/data
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /opt/cubepilot/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cubepilot-data
+---
+# Metadata store for tasks / reports / audit / agent config (元数据表, JSON).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cubepilot-data
+  namespace: cubepilot
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cubepilot
+  namespace: cubepilot
+spec:
+  selector:
+    app: cubepilot
+  ports:
+    - port: 8080
+      targetPort: 8080
