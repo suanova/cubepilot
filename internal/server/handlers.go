@@ -313,13 +313,9 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 // transcript is the authoritative source. Retries briefly to let the gateway
 // flush the transcript file after the turn ends.
 func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string) []openclaw.Event {
-	return s.extractToolEventsFrom(ctx, user, s.clientFor(user), sessionKey)
-}
-
-func (s *Server) extractToolEventsFrom(ctx context.Context, user string, oc *openclaw.Client, sessionKey string) []openclaw.Event {
 	var out []openclaw.Event
 	for attempt := 0; attempt < 4; attempt++ {
-		raw, err := oc.GetHistory(ctx, sessionKey, 50)
+		raw, err := s.clientFor(user).GetHistory(ctx, sessionKey, 50)
 		if err == nil {
 			out = parseHistoryTools(sessionKey, raw)
 			if len(out) > 0 {
@@ -399,27 +395,25 @@ func (s *Server) recordToolCall(user string, ev openclaw.Event) {
 
 // handleInspect runs a basic cluster inspection and returns the report as JSON.
 // The run is also persisted as a report (taskID "inspect") with audit entries.
-// Inspection runs on the read-only instance (design §5.4 权限边界技术强制):
-// the instance mounts a dedicated read-only kubeconfig, so even a
-// prompt-injected agent cannot mutate cluster state.
+// 巡检以创建者身份执行、权限与创建者一致（design §5.4 / FR-M4 授权约定）:
+// 只读由巡检模板行为约束 + RBAC 兜底，不再使用专用只读实例。
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	user := s.userOf(r)
-	if err := s.mgr.EnsureInspect(r.Context(), user); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("inspection instance warming failed: %v", err)})
+	if err := s.mgr.Ensure(r.Context(), user); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
 	sessionKey := "inspect-" + uuid.NewString()[:8]
 	started := time.Now()
-	oc := openclaw.New(s.mgr.InspectBaseURL(user), s.cfg.GatewayToken)
-	content, err := inspect.Run(r.Context(), oc, sessionKey, func(ev openclaw.Event) {
+	content, err := inspect.Run(r.Context(), s.clientFor(user), sessionKey, func(ev openclaw.Event) {
 		s.recordToolCall(user, ev)
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.
-	s.extractToolEventsFrom(r.Context(), user, oc, sessionKey)
+	s.extractToolEvents(r.Context(), user, sessionKey)
 	report, _ := s.store.AddReport(storeReport("inspect", "手动巡检", "inspect", started, content, err))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})

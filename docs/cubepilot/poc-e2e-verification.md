@@ -8,8 +8,7 @@
 
 - kind 集群：`cube`（单 control-plane 节点）
 - 助手服务：`deploy/service.yaml`，**2 副本**（多副本 Active/Standby，lease 选主）
-- 每用户实例：`agent-<user>`（对话，全权 SA `cubepilot-agent`）
-- 巡检实例：`inspect-<user>`（只读 SA `cubepilot-agent-inspect`，只读 kubeconfig）
+- 每用户实例：`agent-<user>`（对话/巡检共用，创建者身份，SA `cubepilot-agent`）
 - 数据：每用户 PVC `data-<user>` 1Gi；元数据 JSON 存后端 PVC
 
 ## 验收清单结果
@@ -25,24 +24,25 @@
 
 ## 关键机制验证
 
-### 1. 多副本 Leader Election（§3.3）
-- 2 副本部署后 Lease `cubepilot-instance-manager` 创建，holder 唯一（`cubepilot-6b798948b4-86vmj`），另一副本 standby。
-- 调度器/IM reconcile/GC 均仅 leader 执行（standby 日志 `scheduler: standby replica, waiting for leadership`）。
-- 单副本部署（replicas=1）自动恒为 leader，行为与旧版一致（单测覆盖）。
+### 1. 控制面 Leader Election 边界（§3.3/§11.1）
+- Leader Election 仅适用于控制面组件（IM/调度器）；Agent 实例是每用户有状态单例（单副本、单写者，0~N 为用户数），不做副本复制，可靠性由 K8s 自愈 + 数据目录持久承接。
+- IM/调度器**单副本起步**（`CUBEPILOT_REPLICAS=1`，deploy replicas=1）；控制器化实现时随框架（--leader-elect）平滑升 2 副本。
+- 单副本阶段：`leader.New(..., replicas<=1)` 恒为 leader（单测覆盖），无选举开销、行为与旧版一致。
 
 ### 2. 常驻策略 + 自愈补拉（§5.2 / FR-M2-002）
 - 默认 `CUBEPILOT_RECLAIM=false`：实例常驻，不闲置回收。
 - **修复的缺陷**：初版 reconcile 只 heal 已存在的 crash-loop pod，不补拉被意外删除的 pod。已改为常驻模式下按 PVC（数据目录）反推用户，pod 缺失即重建。
 - 实证：`kubectl delete pod agent-zhang-wei` → ~35s 内自动补拉并 Ready（数据目录 PVC 复用，会话无损）。
 
-### 3. 巡检只读边界（§5.4 权限边界技术强制）
-- 巡检实例 `inspect-<user>` 挂载：只读 SA `cubepilot-agent-inspect` + 只读 kubeconfig Secret `agent-kubeconfig-inspect`。
-- RBAC：`cubepilot-agent-inspect` ClusterRole 仅 `get/list/watch`（节点/Pod/PVC/事件/工作负载 + metrics），无任何写动词。
-- 实证：
-  - `kubectl delete pod test-xyz`（inspect 身份）→ **Forbidden**（`cannot delete resource "pods"`）✅
-  - `kubectl get nodes`（inspect 身份）→ 成功 ✅
-- **修复的缺陷**：初版巡检实例与对话实例共用 `cubepilot-agent=true` label，reconcile 会把巡检 pod 误认作对话实例（不补拉对话 pod），且巡检 pod crash-loop 时会被用全权 spec 重建（破坏只读边界）。已改为巡检资源使用独立 label `cubepilot-agent-inspect`，reconcile/GC 完全隔离。
-- 巡检报告输出：`P0:0 / P1:1 / P2:1`，结构化含证据链；prompt 约束「疑似发现标注『AI 疑似，需人工复核』」「只读、禁止写操作」。
+### 3. 巡检权限模型（§5.4：以创建者身份）
+
+> 2026-08-17 设计确认：撤销「专用只读 kubeconfig」技术强制，巡检以创建者身份执行、
+> 权限与创建者一致（FR-M4 授权约定）；只读由巡检模板行为约束 + RBAC 兜底，残留风险与
+> 「创建者派生只读凭据」加固项（阶段二、Q-002）记入设计文档 §5.4/§13。
+
+- 巡检任务（`/api/inspect`、定时巡检）复用当前用户实例 `agent-<user>`，以创建者身份 + 创建者 RBAC 执行，不另建实例/凭据。
+- 巡检模板（`inspect.go` prompt）行为约束：只读命令（`get/list/watch/logs`）、禁止写操作、每项发现附证据链、疑似发现标注「AI 疑似，需人工复核」；无权限项被 RBAC 拒绝并如实标注，不重试被拒操作。
+- 实证：巡检报告正常产出（`P0:0 / P1:1 / P2:1`，结构化含证据链），以 `zhang.wei` 身份执行。
 
 ### 4. 数据目录 GC（§5.1 / §10）
 - `internal/instances/manager.go` `gcDataDirs`：leader 每 5min 对每用户 PVC 执行 `find -mmin +窗口` 清理超期 session/transcript（默认 72h 滑动窗口）。
