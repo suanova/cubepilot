@@ -17,18 +17,8 @@ const (
 	KubeconfigSecretName = "agent-kubeconfig"
 	ConfigSecretName     = "openclaw-config"
 	ServiceAccountName   = "cubepilot-agent"
-	// ReadOnlyServiceAccountName is the identity used by inspection instances
-	// (design §5.4 权限边界技术强制): a read-only RBAC that cannot write even
-	// when the agent is prompt-injected.
-	ReadOnlyServiceAccountName = "cubepilot-agent-inspect"
-	// ReadOnlyKubeconfigSecretName carries the in-cluster kubeconfig for the
-	// read-only identity, mounted by inspection instances.
-	ReadOnlyKubeconfigSecretName = "agent-kubeconfig-inspect"
-	AgentLabelApp                = "cubepilot-agent"
-	AgentLabelUser               = "cubepilot/user"
-	// AgentLabelInspect marks read-only inspection resources (design §5.4).
-	// Kept separate from AgentLabelApp so reconcile/GC never touch them.
-	AgentLabelInspect = "cubepilot-agent-inspect"
+	AgentLabelApp        = "cubepilot-agent"
+	AgentLabelUser       = "cubepilot/user"
 )
 
 // NewClient returns a clientset using in-cluster config when available, otherwise

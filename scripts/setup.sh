@@ -37,15 +37,7 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
   --from-file=config="$REPO_DIR/deploy/agent-kubeconfig.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 2. agent-kubeconfig-inspect: same in-cluster form, mounted by read-only
-#    inspection instances (design §5.4 权限边界技术强制). The identity is the
-#    read-only SA cubepilot-agent-inspect; kubectl resolves the token from the
-#    Pod's serviceaccount, so no extra credentials live in the Secret.
-kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig-inspect \
-  --from-file=config="$REPO_DIR/deploy/agent-kubeconfig-inspect.yaml" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. openclaw-config: host LLM config, adjusted for the agent Pod runtime.
+# 2. openclaw-config: host LLM config, adjusted for the agent Pod runtime.
 #    - enable the OpenAI-compatible chat endpoint (agent loop over HTTP)
 #    - point the workspace at the baked-in capability catalog
 #    - exec "full/off" = write-direct (phase one, no HITL)

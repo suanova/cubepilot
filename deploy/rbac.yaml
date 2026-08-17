@@ -3,9 +3,10 @@
 #   cubepilot-agent   : the identity each per-user agent Pod uses for `kubectl`
 #                       (cluster-scoped, intentionally broad for the demo — the
 #                       production contract is per-user minimal RBAC, FR-M3-001).
-#   cubepilot-agent-inspect : read-only identity for inspection instances
-#                       (design §5.4 权限边界技术强制 — cannot write even when
-#                       the agent is prompt-injected).
+#
+# 巡检（FR-M4-007）以创建者身份执行、权限与创建者一致（design §5.4 / FR-M4 授权
+# 约定）——不设专用只读凭据；只读由巡检模板行为约束 + RBAC 兜底，残留风险与
+# 「创建者派生只读凭据」加固项（阶段二、Q-002）记入设计文档 §5.4/§13。
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -18,14 +19,8 @@ metadata:
   name: cubepilot-agent
   namespace: cubepilot
 ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cubepilot-agent-inspect
-  namespace: cubepilot
----
 # Instance Manager: manage per-user Pods/PVCs/Services within the namespace,
-# plus leader-election Leases (design §3.3 多副本 Active/Standby).
+# plus leader-election Leases (design §3.3: IM 单副本起步, 控制器化后随框架升 2 副本).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -87,34 +82,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: cubepilot-agent
-    namespace: cubepilot
----
-# Inspection instances (design §5.4): read-only whitelist — get/list/watch on a
-# bounded resource subset. No create/update/patch/delete anywhere.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: cubepilot-agent-inspect
-rules:
-  - apiGroups: [""]
-    resources: ["nodes", "namespaces", "events", "pods", "persistentvolumeclaims", "componentstatuses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["metrics.k8s.io"]
-    resources: ["nodes", "pods"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: cubepilot-agent-inspect
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cubepilot-agent-inspect
-subjects:
-  - kind: ServiceAccount
-    name: cubepilot-agent-inspect
     namespace: cubepilot
