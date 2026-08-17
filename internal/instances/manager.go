@@ -41,9 +41,6 @@ const (
 type Manager struct {
 	client *kubernetes.Clientset
 	spec   k8s.AgentSpec
-	// inspectSpec is the read-only inspection instance spec (design §5.4:
-	// 巡检实例挂载专用只读 kubeconfig, 即使被注入也无法写入).
-	inspectSpec k8s.AgentSpec
 
 	mu     sync.Mutex
 	active map[string]time.Time // user -> last activity
@@ -69,13 +66,6 @@ func New(client *kubernetes.Clientset, cfg config.Config) *Manager {
 			GatewayToken: cfg.GatewayToken,
 			Port:         int32(cfg.AgentPort),
 		},
-		inspectSpec: k8s.AgentSpec{
-			Namespace:    cfg.Namespace,
-			Image:        cfg.AgentImage,
-			GatewayToken: cfg.GatewayToken,
-			Port:         int32(cfg.AgentPort),
-			ReadOnly:     true,
-		},
 		active:         map[string]time.Time{},
 		ttl:            cfg.IdleTTL,
 		reclaimEnabled: cfg.ReclaimEnabled,
@@ -95,63 +85,6 @@ func (m *Manager) isLeader() bool {
 // BaseURL returns the in-cluster gateway URL for a user's agent instance.
 func (m *Manager) BaseURL(user string) string {
 	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.ResourceName("agent", user), m.spec.Namespace, m.spec.Port)
-}
-
-// InspectBaseURL returns the in-cluster gateway URL for a user's read-only
-// inspection instance.
-func (m *Manager) InspectBaseURL(user string) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.ResourceName("inspect", user), m.inspectSpec.Namespace, m.inspectSpec.Port)
-}
-
-// EnsureInspect guarantees a healthy read-only inspection instance for user
-// (design §5.4 权限边界技术强制). Inspection tasks run on this instance so
-// even a prompt-injected agent cannot mutate cluster state.
-func (m *Manager) EnsureInspect(ctx context.Context, user string) error {
-	podName := k8s.ResourceName("inspect", user)
-	existing, err := m.client.CoreV1().Pods(m.spec.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		if err := m.createInspectResources(ctx, user); err != nil {
-			return err
-		}
-	case err != nil:
-		return err
-	case isCrashLoop(existing):
-		log.Printf("instances: recreating crashed inspect pod %s", podName)
-		if err := m.client.CoreV1().Pods(m.spec.Namespace).Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		if err := m.createInspectResources(ctx, user); err != nil {
-			return err
-		}
-	}
-
-	if err := m.waitReadyFor(ctx, podName); err != nil {
-		return err
-	}
-	return m.waitReachableFor(ctx, podName)
-}
-
-func (m *Manager) createInspectResources(ctx context.Context, user string) error {
-	pvc := m.inspectSpec.DataPVC(user)
-	if _, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create inspect pvc: %w", err)
-		}
-	}
-
-	svc := m.inspectSpec.Service(user)
-	if _, err := m.client.CoreV1().Services(m.spec.Namespace).Get(ctx, svc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, err := m.client.CoreV1().Services(m.spec.Namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create inspect service: %w", err)
-		}
-	}
-
-	pod := m.inspectSpec.Pod(user)
-	if _, err := m.client.CoreV1().Pods(m.spec.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create inspect pod: %w", err)
-	}
-	return nil
 }
 
 // Touch records activity for a user (keeps the instance warm).
