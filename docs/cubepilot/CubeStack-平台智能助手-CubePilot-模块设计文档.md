@@ -21,7 +21,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 - **用户侧**：对话式问答与自然语言操作（ChatOps），降低平台使用门槛；
 - **运维侧**：集群状态自动感知与健康巡检，辅助运维决策。
 
-**与原生 OpenClaw 的关系**：CubePilot 复用 OpenClaw 作为 Agent 运行时，但**不复用其常驻部署与原生 UI**——① **实例按需存活**：OpenClaw 以「每用户实例 Pod」形态按需拉起、闲置回收、异常自愈（原生为常驻 gateway），这是 Instance Manager 与「会话账本 vs 执行态」分层（[§5.1](#51-m1-对话域)）的根因；② **Portal 为平台统一入口**：对话页 / 任务报告 / 审计查询 / Agent 配置，而非 OpenClaw 的聊天 UI / TUI。
+**与原生 OpenClaw 的关系**：CubePilot 复用 OpenClaw 作为 Agent 运行时，但**不复用其原生部署与原生 UI**——① **实例生命周期由平台管理**：OpenClaw 以「每用户实例 Pod」形态运行，拉起、常驻、异常自愈、闲置回收均由 Instance Manager 统一管理（区别于原生单 gateway 常驻部署），这是 Instance Manager 与「会话账本 vs 执行态」分层（[§5.1](#51-m1-对话域)）的根因；闲置回收 / 按需启停为**可配置策略**（默认常驻运行），启停安排以需求文档 FR-M2-002 为准；② **Portal 为平台统一入口**：对话页 / 任务报告 / 审计查询 / Agent 配置，而非 OpenClaw 的聊天 UI / TUI。
 
 本文档描述 CubePilot 的**架构设计**，核心回答四个问题：① 六个功能域如何划分、如何协作（[§3](#3-总体架构)/[§5](#5-功能域设计)）；② 哪些组件**可替换 / 可扩展**，接口如何预留（[§4](#4-核心扩展点设计)）；③ 各业务模块如何接入基座、模块领域智能如何落地（[§5.7](#57-各模块-ai-agent-能力与对接设计)）；④ 第一阶段如何做到**最小可用且可演进**（[§12](#12-架构演进)）。
 
@@ -54,7 +54,8 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | 定时 AI 任务 | 用户创建的定时/触发 Agent 任务，由平台调度器按任务模板（cron 配置）触发，以创建者身份 + RBAC 执行 |
 | 任务模板 | TaskTemplate CRD：Skill 引用 + cron 配置 + 创建者 + 所需权限提示，巡检是其中一种预置模板 |
 | OpenClaw | 第一阶段 Agent 运行时 |
-| Hermes | 预留的替代 Agent 运行时（隔离与记忆机制同构） |
+| Hermes | 预留的替代 Agent 运行时（隔离机制同构，记忆为运行时私有、不跨迁移） |
+| DeepSeek-Harness | deepseek-ai/deepseek-harness（2026-08 开源），预留评估的 Agent 运行时（Model + Harness = Agent，模型无关，可接 OpenAI 兼容端点） |
 
 ## 1.4 参考资料
 
@@ -74,7 +75,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | **每用户实例、物理隔离** | 每活跃用户一个独立 Agent 实例与数据目录，隔离边界为 Pod + 数据目录 | 一用户一实例 Pod + 独立数据目录（NFR-002，阶段一） |
 | **扩展点前置、最小闭环** | 每个模块只做最小闭环；可扩展能力实现为**标准化注册/适配接口**，不在当下实现扩展本身 | [§4 核心扩展点](#4-核心扩展点设计) |
 | **模型无关** | 统一接口对接 LLM；默认私有化部署（完全内网），也支持配置平台外 LLM（OpenAI 兼容 API） | LLM 路由（FR-M2-003） |
-| **渐进演进** | 第一阶段 OpenClaw 落地，经窄接口平滑迁移到 Hermes/自研，隔离与记忆机制不因运行时变化而改变 | Agent Runtime Adapter（[§4.1](#41-扩展点一agent-runtime-adapter)） |
+| **渐进演进** | 第一阶段 OpenClaw 落地，经窄接口平滑迁移到 Hermes/DeepSeek-Harness/自研，隔离机制与平台账本不因运行时变化而改变（运行时私有记忆不迁移） | Agent Runtime Adapter（[§4.1](#41-扩展点一agent-runtime-adapter)） |
 
 **关键取舍（为什么这么设计）**：
 
@@ -84,7 +85,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | kubectl 直连（非自研 API 封装） | 平台资源皆为 CRD，kubectl 已覆盖；凭据直连等效用户本人操作，权限交 K8s RBAC |
 | 能力目录/任务报告用 CRD（非 DB） | 与平台资产同生命周期，声明式 + RBAC 管控；报告是运维资产 |
 | 定时任务经 M2 执行 | 巡检等定时任务由平台调度器触发，到点拉起实例、经 M2 Agent 实例执行（创建者身份 + Skill），独立会话与对话解耦 |
-| OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离与记忆机制同构便于迁移 |
+| OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离机制同构、账本在平台侧，便于迁移（运行时私有记忆不迁移） |
 
 ---
 
@@ -129,7 +130,7 @@ flowchart TB
 | 模块 | 职责 | 阶段一关键内容 | 扩展点 |
 |---|---|---|---|
 | M1 对话域 | 会话管理、消息流、上下文组装 | 会话 CRUD、SSE、上下文组装（实例级配置 + 动态会话历史） | 知识注入 hook（→ RAG） |
-| M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes/自研） |
+| M2 Agent 域 | 编排核心、实例生命周期、LLM 路由 | OpenClaw 每用户实例、配置管理 | Agent Runtime Adapter（→ Hermes / DeepSeek-Harness / 自研） |
 | M3 工具域 | 平台能力操作化、能力目录、确认判定 | 平台资源操作 + 能力目录；写操作直放 | MCP Gateway（→ 多 MCP Server 聚合 + 统一 HITL） |
 | M4 定时 AI 任务域 | 定时任务（巡检等）、分级报告 | 预置巡检 6 类 + AI 巡检 + 任务报告 CRD | 定时任务（调度器 + 任务模板）→ 推理验证 / RCA |
 | M5 审计域 | 工具调用与确认记录（阶段二） | — | `tool_call_record` 表 → 审计治理 |
@@ -161,9 +162,9 @@ M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 |---|---|---|---|---|
 | Portal 前端 | Web 静态资源 | — | 对话页 / 任务报告 / 审计查询 / Agent 配置 | → 助手服务（SSE / REST） |
 | 助手服务 | 无状态 Deployment ×2 | M1+M3+M5 | 会话/消息/上下文组装、工具编排、审计写入 | → Instance Manager、Agent 实例、PG/Redis、CRD |
-| Instance Manager | 单副本（Leader） | M2 | 实例拉起/回收/自愈、预热池 | → K8s API（拉起 Agent Pod） |
+| Instance Manager | 多副本（Leader Election，Active/Standby） | M2 | 实例拉起/回收/自愈、数据目录 GC、预热池 | → K8s API（拉起 Agent Pod） |
 | Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
-| 调度器 | 单副本（Leader） | M4 | 读 TaskTemplate CRD，到点拉起实例注入任务 | → Instance Manager、Agent 实例 |
+| 调度器 | 多副本（Leader Election，Active/Standby） | M4 | 读 TaskTemplate CRD，到点拉起实例注入任务 | → Instance Manager、Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
 | 能力目录 / 任务模板 / 任务报告 | CRD | M3/M4 | 能力契约 / 调度定义 / 任务报告资产 | ← 助手服务、调度器 |
 | 存储 | PostgreSQL + Redis + 每用户独立 PVC | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
@@ -196,6 +197,7 @@ M2 Agent 域
    ▼
 AgentRuntimeAdapter ◄──► OpenClawAdapter（阶段一）
                      ◄──► HermesAdapter（预留）
+                     ◄──► DeepSeekHarnessAdapter（预留）
                      ◄──► SelfBuiltAdapter（预留）
 ```
 
@@ -203,12 +205,24 @@ AgentRuntimeAdapter ◄──► OpenClawAdapter（阶段一）
 
 | 方向 | 内容 |
 |---|---|
-| **进入** | 消息 + 会话历史（每次请求动态）；身份/能力目录/确认规则 + 工具清单（实例级配置，启动时加载） |
+| **进入** | 新消息 + 会话引用（每次请求动态）；身份/能力目录/确认规则 + 工具清单（实例级配置，启动时加载） |
 | **返回** | 事件流（`message_start / agent_thinking / tool_call / tool_result / confirm_pending / confirm_resolved / message_delta / message_done`） |
 
-**为什么可替换**：OpenClaw 与 Hermes 均为「多会话 + 数据目录（HERMES_HOME）+ MCP 工具」形态，实例无状态化（状态持久化于 DB + 数据目录），隔离与记忆机制**不因运行时变化而改变**。替换时只替换 Adapter 实现，业务逻辑（会话、工具、巡检、审计）不动。
+**为什么可替换**：架构按「契约层 / 实例层」分层，运行时只承载实例层——换运行时只重写 Adapter，业务逻辑（会话、工具、巡检、审计）不动：
 
-**阶段一落地**：OpenClaw 每用户实例 Pod + 独立数据目录；实例生命周期由 Instance Manager 管理（按需拉起、闲置回收、异常自愈，FR-M2-002）。
+- **契约层（平台拥有，与运行时无关，替换时保留）**：会话账本与消息历史（Conversation / Message 元数据，§7.1）、能力目录（Capability CRD）、实例配置（模型 / 工具开关 / 系统提示词）、知识注入源（RAG 索引，阶段二起）。
+- **实例层（运行时拥有）**：执行态、原生 session 状态与**私有 memory** 落在每用户数据目录（PVC）；实例无状态化 = Pod 可重建、数据目录持久，状态从 DB + 数据目录恢复。**私有记忆不跨运行时迁移**（格式私有），换运行时重新积累，长期记忆由契约层的知识注入（E4 hook）与长期记忆机制（FR-M1-014）兜底。
+- **Skills**：OpenClaw / Hermes / DeepSeek-Harness 均提供一等技能的子系统（skill / 插件形态，SKILL.md 目录为通用载体）；能力目录 → 各运行时技能/工具的映射收敛在 Adapter 内，技能载体格式的跨运行时兼容性在契约冻结（§13）时验证。
+
+**会话真源（Source of Truth）**：会话历史分两层，真源各归一处——
+
+- **消息历史（用户可见 / 审计 / 保留 / 换运行时恢复）＝ 平台为真源**：M1 对话域是 SSE 中枢，`user` 消息与 `tool_call / tool_result / message_delta / message_done` 事件全部流经它，**在转发路径上顺带把每一轮写入 `Message` 表（阶段二；事件流捕获，event-sourcing）**——账本是事件流的投影，天然一致，runtime 无需感知；中断 / 失败的轮次标记 `incomplete`。
+- **执行上下文（会话进行时 LLM 窗口 / 压缩摘要）＝ runtime 为真源**：由 OpenClaw 数据目录中的 session 管理（FR-M1-010 原生能力），平台每次请求只下发「新消息 + 会话引用」，不重传历史、不干预窗口。
+- **换运行时接回**：用平台账本把近期消息**播种**为新 runtime 的会话上下文，会话继续，仅丢失旧 runtime 的压缩摘要（可接受）。阶段一无 Message 表、换运行时丢近期历史——阶段一单管理员、换运行时在阶段三，接受此代价。
+
+**契约冻结与验证（E1 成立的前提，PoC 先行）**：8 类事件契约在阶段一 PoC 前**不冻结**，需实测 OpenClaw 事件流后回填映射表。PoC 验收清单：① 单会话消息往返（新消息 → 完整回复）；② 工具调用往返（`tool_call` / `tool_result` 时序与载荷）；③ 流式增量（`message_delta` / `message_done`）；④ 会话接回（实例重建后同一会话可继续）；⑤ **事件流捕获同步**——平台从 SSE 流顺带落账 `Message` 表后，历史渲染 / 换 runtime 播种均可还原近期对话（本「会话真源」模型的可行性在此验证）；⑥ 事件映射表（OpenClaw 原生事件 → 8 类 SSE）定稿。**降级契约**：若运行时无法精确映射全部 8 类，契约降级为**最少必要事件** `message_delta / message_done / tool_call / tool_result`（4 类，保证对话闭环与工具呈现），`agent_thinking / confirm_*` 为可选增强——E1 不因单点映射失败而推翻。
+
+**阶段一落地**：OpenClaw 每用户实例 Pod + 独立数据目录；实例生命周期由 Instance Manager 管理（拉起、常驻运行、异常自愈；闲置回收 / 按需启停为可配置策略，启停以需求 FR-M2-002 为准）。
 
 ## 4.2 扩展点二：工具接入双路径
 
@@ -229,7 +243,7 @@ M3 工具域
 
 **路径 A（阶段一）**：实例挂载用户 kubeconfig（Secret，0600），以 kubectl 直连 K8s，等效用户自己的 kubectl；只读命令（`get/list/watch/logs`）直放，写命令命中确认规则后经 HITL 执行（阶段二起）；权限由 K8s API Server RBAC 强制，操作记入 K8s Audit Log。
 
-**路径 B（预留）**：引入 MCP Gateway（如 mcp-context-forge），将 K8s 能力以 **K8s MCP Server** 暴露，与其他 MCP Server（GPUStack、Prometheus 等非 K8s 数据源）统一挂到 Gateway 下。Gateway 集中做：工具路由、鉴权、限流、策略、以及 **HITL**（见 [§4.3](#43-扩展点三hitl-确认)）。
+**路径 B（预留）**：引入 MCP Gateway（如 mcp-context-forge），将 K8s 能力以 **K8s MCP Server** 暴露，与其他 MCP Server（GPUStack、Prometheus 等非 K8s 数据源）统一挂到 Gateway 下。Gateway 集中做：工具路由、鉴权、限流、策略、以及 **HITL**（见 [§4.3](#43-扩展点三hitl-确认)）。**凭据衔接**：切到 Gateway 后用户凭据由平台托管于 Gateway 侧（Secret），Gateway 以用户身份透传调用下游，Agent 实例不再直持写权限 kubeconfig（或降级为只读）——与「凭据直连」原则仅凭据持有位置不同，RBAC 与审计语义不变。
 
 **演进关系**：两条路径对 Agent 而言是**同一抽象**（工具调用），能力目录（FR-M3-006）描述的始终是「能力 + 参数 + 示例」，不绑定实现方式。从 A 切换到 B，Agent 侧无感知，仅替换「工具提供方」。
 
@@ -268,6 +282,7 @@ M3 工具域
   - **定时/触发 AI 任务**（FR-M4-002，阶段一）= 预置 Skill（巡检等）+ cron 配置；
   - **推理服务自动验证**（FR-M4-008，阶段二）= 注册为验证项；
   - **任务模板**（FR-M4-009，阶段二）= 预置 + 自定义模板；
+  - **告警触发自动诊断**（FR-M4-010，阶段二）= 告警联动拉起诊断任务；
   - **RCA / 自动修复 / 预测运维**（FR-M4-012~014，阶段三）= 报告 → Agent 消费。
 
 ---
@@ -280,18 +295,18 @@ M3 工具域
 
 | 维度 | 设计 | 需求 |
 |---|---|---|
-| 会话载体 | 阶段一复用 OpenClaw session（数据目录持久、冷启动自恢复）；阶段二多租户落地时引入 `Conversation` 元数据表（`user/tenant/project` 键 + `openclaw_session_id` 映射） | FR-M1-001 |
+| 会话载体 | 阶段一复用 OpenClaw session（数据目录持久、冷启动自恢复）；阶段二多租户落地时引入 `Conversation` 元数据表（`user/tenant/project` 键 + `runtime` + `runtime_session_id` 映射，运行时无关） | FR-M1-001 |
 | 归属隔离 | 阶段一单操作者（无多用户隔离）；多用户体系就绪后按用户/租户隔离，跨用户访问返回 403 | FR-M1-002（阶段二） |
 | 流式响应 | `POST /messages` → SSE 事件流（8 类事件；阶段一为其余 6 类，`confirm_*` 阶段二 HITL 启用） | FR-M1-003 |
-| 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏 | FR-M1-004 |
+| 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏；仅保留近期 48~72 小时历史，超期清理、不长期存储 | FR-M1-004 |
 | 上下文装载 | 平台侧要素（身份/能力目录/确认规则）为实例级配置、启动时加载；每次请求仅动态组装新消息 + 会话历史 | FR-M1-005 |
 | Portal 对话页 | chat UI + 流式渲染 + 会话切换 | FR-M1-007 |
 | 上下文压缩 | 长对话超窗口时压缩早期历史为摘要，保留系统指令与近期对话（OpenClaw 原生支持，无自研工作） | FR-M1-010 |
 | 扩展点 | 系统提示词组装处「知识注入 hook」（→ RAG） | E4 |
 
-**会话存储（阶段一不建会话表）**：OpenClaw session 原生持久化在数据目录（`sessions.json` + transcript JSONL），实例回收→重建后自动恢复，冷启动接回无需自建 DB。会话清单与历史由助手服务经 OpenClaw gateway 的 HTTP `POST /tools/invoke` 调 `sessions_list` / `sessions_history` 读取（bearer token 鉴权，本地已验证）——`sessions_list` 返会话元数据（sessionId / 派生 title / 时间戳），`sessions_history` 返结构化消息（含 thinking/toolCall 块，Portal 折叠渲染，超长截断）。**代价**：读取要求实例存活，冷时列会话需先冷启动。阶段二多租户 / 审计 / 200 轮状态机落地时，再引入 Conversation/Message 元数据表。
+**会话存储（阶段一不建会话表）**：OpenClaw session 原生持久化在数据目录（`sessions.json` + transcript JSONL），实例回收→重建后自动恢复，冷启动接回无需自建 DB。会话清单与历史由助手服务经 OpenClaw gateway 的 HTTP `POST /tools/invoke` 调 `sessions_list` / `sessions_history` 读取（bearer token 鉴权，本地已验证）——`sessions_list` 返会话元数据（sessionId / 派生 title / 时间戳），`sessions_history` 返结构化消息（含 thinking/toolCall 块，Portal 折叠渲染，超长截断）。**代价**：读取要求实例存活，冷时列会话需先冷启动。**保留策略**：对话历史仅保留近期 48~72 小时，超期清理、不长期存储（FR-M1-004）——**清理由 Instance Manager 对每用户数据目录定期 GC 执行**（默认保留 72h 滑动窗口，删除超期 session/transcript；阶段二起以 Message 表为真源，同步清理超期行），助手服务读取时对超期窗口外内容返回过期提示；PVC 容量按滑动窗口估算，水位 >70% 触发清理/告警（§10）。阶段二多租户 / 审计 / 200 轮状态机落地时，再引入 Conversation/Message 元数据表。
 
-**上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话历史（近期 N 轮 + 超窗压缩摘要）；其中 ①~④ 为实例级配置（启动时加载），⑤ 每次请求动态。Token 预算：系统指令 + 能力目录固定，剩余分配给会话历史，超窗触发压缩（FR-M1-010）。
+**上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话引用（指向 runtime 执行态）；其中 ①~④ 为**实例级配置**（启动时加载、随请求下发），⑤ **以 runtime 执行态为真源**——平台只传会话引用，历史窗口由 OpenClaw 自维护（含超窗压缩摘要，FR-M1-010），不重复序列化全量历史进请求。**E4 hook 落在平台侧 ①② 组装处**，注入结果随实例级配置下发，不进入 runtime 内部 prompt 组装。Token 预算：系统指令 + 能力目录固定，会话历史窗口由 runtime 管理、平台不重复计数。
 
 **SSE 事件映射**：8 类事件由 Adapter 将 OpenClaw 原生事件流映射而来——`agent_thinking` 对应 LLM 规划阶段，`tool_call/tool_result` 对应工具往返，`message_delta/message_done` 对应回复流式输出；`confirm_*` 阶段二 HITL 启用。
 
@@ -301,7 +316,7 @@ M3 工具域
 
 - **编排循环**：接收任务 → LLM 规划 → 调用工具 → 评估结果 → 汇报（Agent 运行时原生能力）。
 - **每用户实例**：一用户一个 OpenClaw 实例 Pod + 独立数据目录，以 Pod 为隔离边界（NFR-002）；实例无状态化，状态从 DB/数据目录恢复（FR-M2-004）。
-- **Instance Manager**：按需拉起、闲置回收（默认 30min）、异常自愈（FR-M2-002）；上报实例状态指标（FR-M2-006，阶段二）。
+- **Instance Manager**：实例生命周期管理——拉起、**常驻运行**、异常自愈重建；闲置回收 / 按需启停为**可配置策略**（默认常驻运行、不闲置回收；回收策略启停以需求文档 FR-M2-002 为准）；上报实例状态指标（FR-M2-006，阶段二）。
 - **LLM 路由**：模型无关，OpenAI 兼容接口（FR-M2-003）；默认私有化模型，也可配置平台外 LLM；换模型不破坏对话功能。
 - **配置管理**：模型选择/工具开关/系统提示词，持久化并即时生效（FR-M2-005）；能力目录作为工具开关 + 系统提示词的一部分，实例启动时加载、变更即时生效。
 - **扩展点**：Agent Runtime Adapter（→ Hermes/自研），见 [§4.1](#41-扩展点一agent-runtime-adapter)。
@@ -313,12 +328,14 @@ stateDiagram-v2
     [*] --> Creating : 请求到达
     Creating --> Warm : 就绪
     Warm --> Warm : 处理请求
-    Warm --> Idle : 闲置 30min
+    Warm --> Idle : 闲置超时（回收策略启用）
     Idle --> Warm : 新请求复用
     Idle --> Reclaiming : 回收
     Reclaiming --> [*]
     Warm --> Creating : 异常自愈重建
 ```
+
+> 常驻运行时不触发闲置回收；闲置回收 / 按需启停为可配置策略，启停安排以需求文档 FR-M2-002 为准。
 
 ## 5.3 M3 工具域
 
@@ -369,7 +386,11 @@ stateDiagram-v2
 
 > 阶段一数据源以 K8s API（kubectl）为主：GPU 经 `nvidia.com/gpu` capacity/allocatable、存储经 PVC 状态做基本检查；GPUStack / DCGM / Ceph Exporter 等详细指标阶段二起接入（FR-M6-002）。
 
-**AI 智能巡检（FR-M4-007）**：巡检作为定时任务经 M2 Agent 实例执行（创建者身份 + RBAC、只读），自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。
+**AI 智能巡检（FR-M4-007）**：巡检作为定时任务经 M2 Agent 实例执行，自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。**边界与可信度约束**：
+
+- **权限边界（技术强制）**：巡检实例挂载**专用只读 kubeconfig**（只读 RBAC：`get/list/watch` 白名单 + 限定资源子集），即使被注入也无法写入；探索受「只读命令 + 单任务限时（NFR-010 <15min）+ 限资源」约束。
+- **行为约束（提示词 + 策略）**：巡检 Skill 限定目标为发现异常、禁止任何变更操作、禁止重复全量扫描；发现去重（同一异常不重复报告）、噪声阈值过滤。
+- **输出可信度**：每项发现必须附**证据链**（命令 + 原始输出摘录 + 时间戳）；**疑似发现标记「AI 疑似，需人工复核」**——阶段一报告内标注待确认，阶段二起经确认流程（E3）回写结果，误报进入发现去重。
 
 **报告（FR-M4-004/005）**：结构化存 `TaskRun` CRD（任务报告，巡检为其中一种类型），异常按 P0（紧急）/ P1（重要）/ P2（一般）分级；Portal Dashboard 展示任务结果，API 可查。阶段一不主动推送通知。
 
@@ -413,9 +434,9 @@ stateDiagram-v2
 能力目录是基座与模块的**契约中心**，与工具实现解耦：
 
 - **载体**：`Capability` CRD（`assistant.suanova.io/v1alpha1`），见 [§7.2](#72-crd)。
-- **注入**：能力目录作为实例级配置、启动时加载——按用户可见范围注册为工具定义 + 能力说明注入系统提示词，变更即时生效（FR-M2-005）；每次请求仅动态组装新消息 + 会话历史（FR-M1-005）。
+- **注入**：能力目录作为实例级配置、启动时加载——**按用户可见范围（RBAC 可见 CRD + 角色/项目）加载可见子集而非全量**，注册为工具定义 + 能力说明注入系统提示词，变更即时生效（FR-M2-005）；每次请求仅动态组装新消息 + 会话引用（FR-M1-005）。高频能力常驻加载，低频能力按需（调用时临时注册）。
 - **登记/审核**：阶段一由平台侧（管理员/模块方）维护，登记与审核流程待定（Q-010）。
-- **扩展性**：目录描述「能力 + 参数 + 示例」，不绑定工具实现（kubectl 直连 / MCP Server），与 E2 工具接入双路径解耦；新增能力 = 登记一项，Agent 侧无需改代码。
+- **扩展性**：目录描述「能力 + 参数 + 示例」，**`examples[]` 存语义化参数示例（非 kubectl/MCP 命令语法），语法翻译收敛在工具实现层（E2 双路径各自翻译）**——切换 kubectl 直连 ↔ MCP Server 时示例不重写、Agent 侧无感知；新增能力 = 登记一项，Agent 侧无需改代码。
 
 ### 5.7.3 实现形态（模块「自带」领域智能的三条路径）
 
@@ -526,7 +547,7 @@ sequenceDiagram
 
 | 表 | 关键字段 | 需求 |
 |---|---|---|
-| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`openclaw_session_id`（映射到 OpenClaw session）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
+| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`runtime`(openclaw/hermes/deepseek-harness)、`runtime_session_id`（映射到对应运行时会话）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
 | **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at` | FR-M1-003/004 |
 | **ToolCallRecord** | `id`、`user_id / conversation_id / message_id`、`tool`、`args`、`level`(L0/L1)、`status`(pending/executed/denied/failed/timeout)、`confirm`(json)、`result`(json)、`created_at` | FR-M5-001 |
 
@@ -562,6 +583,8 @@ sequenceDiagram
 | 助手 LLM | 首 Token 15s / 总 60s | 1 次 | 返回「助手暂时不可用」 |
 | K8s API Server | 10s | 2 次（指数退避） | 提示控制面异常，不继续编排 |
 | Prometheus / Loki | 5s | 1 次 | 返回「监控数据暂不可用」 |
+| Instance Manager 故障 | — | — | 既有实例不受影响（对话可继续）；新实例拉起 / 回收 / GC 暂停，恢复后补处理，告警（P1） |
+| 调度器故障 | — | — | 到点任务不触发，手动 / API 触发不受影响；恢复后补跑错过的任务一次，告警（P1） |
 
 熔断：单一下游连续失败超阈值（默认 5 次 / 30s）触发熔断，快速失败并告警，恢复探测通过后放行。
 
@@ -597,9 +620,9 @@ sequenceDiagram
 | 资源 | 估算 | 需求 |
 |---|---|---|
 | Agent 实例池 | 单实例约 0.5~1 vCPU / 1~2 GB；活跃实例数 = 并发对话用户数 + 预热池，按 Infra 容量设上限 | NFR-015（阶段三） |
-| 每用户数据目录 | 单用户约 50~200 MB，独立 PVC 默认 1 GB | FR-M6-004 |
+| 每用户数据目录 | 单用户约 50~200 MB（按 72h 滑动窗口保留，GC 由 Instance Manager 执行），独立 PVC 默认 1 GB，水位 >70% 触发清理/告警 | FR-M6-004 |
 | 助手服务 | 单副本 ~50 并发会话，2 副本起步 | — |
-| 助手 LLM GPU | 独立推理节点 ≥ 8 张 64G 级 GPU（按 DeepSeek V4 Flash 最低规格） | NFR-016 |
+| 助手 LLM GPU | 独立推理节点，默认 W8A8/FP8 部署（DeepSeek V4 Flash 同级），64G 级 GPU 推荐 6 张、生产富余 8 张 | NFR-016 |
 
 ---
 
@@ -612,9 +635,9 @@ sequenceDiagram
 | 组件 | Chart 子项 | 副本 | 说明 |
 |---|---|---|---|
 | 助手服务 | `assistant-service` | 2 | 无状态，水平扩展（含对话域 / 工具服务 / 审计写入） |
-| Instance Manager | `assistant-instance-manager` | 1（Leader） | Agent 实例生命周期管理 |
+| Instance Manager | `assistant-instance-manager` | 2（Leader Election） | Agent 实例生命周期管理、数据目录 GC |
 | Agent 实例池 | `agent-runtime` | 按需 0~N | 每用户一个 OpenClaw 实例 Pod + 数据目录 + 用户 kubeconfig |
-| 调度器 | `assistant-scheduler` | 1（Leader） | 读 TaskTemplate CRD，到点拉起实例执行定时任务 |
+| 调度器 | `assistant-scheduler` | 2（Leader Election） | 读 TaskTemplate CRD，到点拉起实例执行定时任务 |
 | 助手 LLM 服务 | `assistant-llm`（InferenceService） | 1~N | 独立推理池，HPA 扩缩 |
 
 > **预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
@@ -642,7 +665,7 @@ sequenceDiagram
     │
     ├──► 阶段二：+ 运行时原生 HITL（OpenClaw requireApproval / exec approval）
     │
-    └──► 阶段三：OpenClaw ──Adapter──► Hermes / 自研
+    └──► 阶段三：OpenClaw ──Adapter──► Hermes / DeepSeek-Harness / 自研
                 kubectl 直连 ──Gateway──► MCP Gateway 聚合多 Server + 统一 HITL
 ```
 
@@ -653,4 +676,9 @@ sequenceDiagram
 需求侧待确认见需求 §7（Q-001~Q-012）。设计侧额外待定：
 
 - MCP Gateway 引入时机与统一 HITL 可行性（§4.2/§4.3）；
-- Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes 事件流对齐，§4.1）。
+- Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes/DeepSeek-Harness 事件流对齐 + 会话真源 / 降级契约，§4.1）——阶段一 PoC 按 §4.1 验证清单先行实测，8 类事件契约在 PoC 前不冻结；
+- **Instance Manager 实现形态**：除「单副本 Leader 服务」外，备选落地为 K8s Operator（`AgentInstance` CRD + controller-runtime controller），统一负责 Agent 运行时实例 Pod 的安装 / 启动 / 停止 / 自愈 / 闲置回收，`spec.runtime` 区分 OpenClaw / Hermes / DeepSeek-Harness，常驻与回收策略由 CR spec 声明（原生适配 FR-M2-002/006/009）；两种形态职责等价，实现取舍待定；
+- **DeepSeek-Harness 作为 Agent 运行时候选**：deepseek-ai/deepseek-harness（2026-08 开源，「Model + Harness = Agent」，MIT，模型无关）作为 FR-M2-009 的适配对象之一，与 Hermes 同级评估；阶段一仍以 OpenClaw 落地，不影响既有演进路径。
+- 高可用：IM / 调度器多副本 Leader Election（lease）与故障转移演练（§3.3/§8.1）；
+- AI 巡检：只读专用凭据边界与「疑似需复核」流程的 PoC 验证（§5.4）；
+- 消息历史真源（事件流捕获 → Message 表）与换 runtime 播种机制在 PoC 验证（§4.1/§5.1）。
