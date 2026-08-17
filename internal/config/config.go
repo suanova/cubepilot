@@ -23,8 +23,28 @@ type Config struct {
 	// gateway (mirrors gateway.auth.token in the injected openclaw.json).
 	GatewayToken string
 
-	// IdleTTL is how long an agent instance may sit idle before the manager reclaims it.
+	// IdleTTL is how long an agent instance may sit idle before the manager
+	// reclaims it. Only effective when ReclaimEnabled is true (design doc §5.2:
+	// 常驻运行是默认策略, 闲置回收为可配置策略).
 	IdleTTL time.Duration
+
+	// ReclaimEnabled gates idle reclaim (design doc §5.2 / FR-M2-002). Default
+	// false = instances stay resident once started; enabling it switches the
+	// lifecycle to on-demand start + idle reclaim.
+	ReclaimEnabled bool
+
+	// Replicas is the desired Instance Manager / scheduler replica count used
+	// for leader election. 1 = no election (single replica).
+	Replicas int
+
+	// GCWindow is the retention window for per-user data directories
+	// (design doc §5.1: 近期 48~72h 滑动窗口). Session/transcript files older
+	// than this are pruned by the manager's GC pass.
+	GCWindow time.Duration
+
+	// GCWatermark is the PVC usage ratio that triggers an aggressive GC + log
+	// warning (design doc §10: 水位 >70% 触发清理/告警).
+	GCWatermark float64
 
 	// Users is the set of demo operator identities, one independent instance each.
 	Users []string
@@ -43,14 +63,18 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	cfg := Config{
-		Listen:       getenv("CUBEPILOT_LISTEN", ":8080"),
-		Namespace:    getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		AgentImage:   getenv("CUBEPILOT_AGENT_IMAGE", "cubepilot-agent:local"),
-		GatewayToken: os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
-		IdleTTL:      getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
-		DefaultUser:  getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
-		AgentPort:    getInt("CUBEPILOT_AGENT_PORT", 18789),
-		DataDir:      getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
+		Listen:         getenv("CUBEPILOT_LISTEN", ":8080"),
+		Namespace:      getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
+		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "cubepilot-agent:local"),
+		GatewayToken:   os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
+		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
+		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),
+		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),
+		GCWindow:       getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
+		GCWatermark:    getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
+		DefaultUser:    getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
+		AgentPort:      getInt("CUBEPILOT_AGENT_PORT", 18789),
+		DataDir:        getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
 	}
 	users := getenv("CUBEPILOT_USERS", "zhang.wei,li.ming")
 	for _, u := range strings.Split(users, ",") {
@@ -86,6 +110,30 @@ func getInt(key string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func getBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func getFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseFloat(v, 64)
 	if err != nil {
 		return def
 	}

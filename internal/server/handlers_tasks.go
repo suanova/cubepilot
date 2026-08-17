@@ -253,7 +253,12 @@ func countSeverity(content, sev string) int {
 }
 
 // StartScheduler launches the FR-M4 cron loop: every 30s it runs due tasks.
+// Multi-replica deployments only run tasks on the leader (design §3.3);
+// standby replicas observe but do not fire.
 func (s *Server) StartScheduler(ctx context.Context) {
+	if s.schedulerLeader != nil && !s.schedulerLeader.IsLeader() {
+		log.Printf("scheduler: standby replica, waiting for leadership")
+	}
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	for {
@@ -261,6 +266,9 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if s.schedulerLeader != nil && !s.schedulerLeader.IsLeader() {
+				continue // standby: no firing
+			}
 			s.runDue(ctx)
 		}
 	}

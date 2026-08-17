@@ -1,11 +1,13 @@
 # The assistant service + Instance Manager (merged in one Deployment for the PoC).
+# Multi-replica with leader election (design §3.3 多副本 Active/Standby):
+# reconcile / GC / scheduler only act on the leader.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cubepilot
   namespace: cubepilot
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: cubepilot
@@ -32,8 +34,16 @@ spec:
               value: cubepilot
             - name: CUBEPILOT_AGENT_IMAGE
               value: cubepilot-agent:local
+            - name: CUBEPILOT_REPLICAS
+              value: "2"
+            - name: CUBEPILOT_RECLAIM
+              value: "false" # 常驻运行（默认）；闲置回收为可配置策略 FR-M2-002
             - name: CUBEPILOT_IDLE_TTL
-              value: 5m
+              value: 30m
+            - name: CUBEPILOT_GC_WINDOW
+              value: 72h
+            - name: CUBEPILOT_GC_WATERMARK
+              value: "0.7"
             - name: CUBEPILOT_USERS
               value: zhang.wei,li.ming
             - name: CUBEPILOT_DATA_DIR

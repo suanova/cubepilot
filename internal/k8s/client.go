@@ -17,8 +17,18 @@ const (
 	KubeconfigSecretName = "agent-kubeconfig"
 	ConfigSecretName     = "openclaw-config"
 	ServiceAccountName   = "cubepilot-agent"
-	AgentLabelApp        = "cubepilot-agent"
-	AgentLabelUser       = "cubepilot/user"
+	// ReadOnlyServiceAccountName is the identity used by inspection instances
+	// (design §5.4 权限边界技术强制): a read-only RBAC that cannot write even
+	// when the agent is prompt-injected.
+	ReadOnlyServiceAccountName = "cubepilot-agent-inspect"
+	// ReadOnlyKubeconfigSecretName carries the in-cluster kubeconfig for the
+	// read-only identity, mounted by inspection instances.
+	ReadOnlyKubeconfigSecretName = "agent-kubeconfig-inspect"
+	AgentLabelApp                = "cubepilot-agent"
+	AgentLabelUser               = "cubepilot/user"
+	// AgentLabelInspect marks read-only inspection resources (design §5.4).
+	// Kept separate from AgentLabelApp so reconcile/GC never touch them.
+	AgentLabelInspect = "cubepilot-agent-inspect"
 )
 
 // NewClient returns a clientset using in-cluster config when available, otherwise
@@ -26,7 +36,7 @@ const (
 func NewClient() (*kubernetes.Clientset, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath())
+		cfg, err = clientcmd.BuildConfigFromFlags("", KubeconfigPath())
 		if err != nil {
 			return nil, err
 		}
@@ -34,7 +44,9 @@ func NewClient() (*kubernetes.Clientset, error) {
 	return kubernetes.NewForConfig(cfg)
 }
 
-func kubeconfigPath() string {
+// KubeconfigPath returns the kubeconfig used by NewClient for out-of-cluster
+// fallback (CUBEPILOT_KUBECONFIG or ~/.kube/config).
+func KubeconfigPath() string {
 	if p := os.Getenv("CUBEPILOT_KUBECONFIG"); p != "" {
 		return p
 	}
