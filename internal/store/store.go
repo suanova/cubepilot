@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	maxReports = 200
-	maxAudit   = 1000
+	maxReports  = 200
+	maxAudit    = 1000
+	maxMessages = 5000
 )
 
 // Task is a scheduled (or manual) AI task (FR-M4).
@@ -66,6 +67,112 @@ type AuditEntry struct {
 type SkillToggle struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+}
+// Message is one ledger row captured from the SSE stream (design doc §4.1
+// 会话真源: 平台为消息历史真源, 事件流捕获 event-sourcing). Rows are written
+// on the forwarding path as user messages and tool_call / tool_result /
+// message_delta / message_done events flow through the assistant service.
+type Message struct {
+	ID             string          `json:"id"`
+	ConversationID string          `json:"conversationId"`
+	User           string          `json:"user"`
+	Role           string          `json:"role"` // user | assistant | tool | system
+	EventType      string          `json:"eventType,omitempty"` // tool_call | tool_result | message_delta | message_done
+	Content        string          `json:"content,omitempty"`
+	ToolCalls      json.RawMessage `json:"toolCalls,omitempty"`
+	ToolName       string          `json:"toolName,omitempty"`
+	CallID         string          `json:"callId,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	Incomplete     bool            `json:"incomplete,omitempty"` // interrupted/failed turn (design §4.1)
+	CreatedAt      time.Time       `json:"createdAt"`
+}
+
+// TurnEnd marks a message_done: it flips the last assistant delta row (if any)
+// from streaming to terminal and records whether the turn failed.
+func (s *Store) TurnEnd(conversationID string, errMsg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var msgs []Message
+	if err := s.file("messages.json", &msgs, false); err != nil {
+		return err
+	}
+	// Mark the most recent assistant row for this conversation as terminal.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].ConversationID == conversationID && msgs[i].Role == "assistant" {
+			msgs[i].EventType = "message_done"
+			msgs[i].Incomplete = errMsg != ""
+			msgs[i].Error = errMsg
+			break
+		}
+	}
+	return s.save("messages.json", msgs)
+}
+
+// AppendMessage records one ledger row, capping the collection at maxMessages
+// (oldest dropped). Returns the stored message with ID/timestamp filled in.
+func (s *Store) AppendMessage(m Message) (Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var msgs []Message
+	if err := s.file("messages.json", &msgs, false); err != nil {
+		return Message{}, err
+	}
+	m.ID = shortID("m")
+	m.CreatedAt = time.Now()
+	msgs = append(msgs, m)
+	if len(msgs) > maxMessages {
+		msgs = msgs[len(msgs)-maxMessages:]
+	}
+	if err := s.save("messages.json", msgs); err != nil {
+		return Message{}, err
+	}
+	return m, nil
+}
+
+// ListMessages returns ledger rows for a conversation, oldest-first (used for
+// history rendering and cross-runtime re-seeding, design §4.1/§5.1).
+func (s *Store) ListMessages(conversationID string, limit int) ([]Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var msgs []Message
+	if err := s.file("messages.json", &msgs, false); err != nil {
+		return nil, err
+	}
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.ConversationID == conversationID {
+			out = append(out, m)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+// GCExpiredMessages prunes ledger rows older than the retention window
+// (design §5.1 48~72h 滑动窗口). Returns the number of rows removed.
+func (s *Store) GCExpiredMessages(window time.Duration) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var msgs []Message
+	if err := s.file("messages.json", &msgs, false); err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-window)
+	kept := msgs[:0]
+	for _, m := range msgs {
+		if m.CreatedAt.After(cutoff) {
+			kept = append(kept, m)
+		}
+	}
+	removed := len(msgs) - len(kept)
+	if removed > 0 {
+		if err := s.save("messages.json", kept); err != nil {
+			return 0, err
+		}
+	}
+	return removed, nil
 }
 
 // AgentConfig is the persisted Agent 配置 desired state (FR-M2-005 subset).
