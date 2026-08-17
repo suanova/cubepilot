@@ -162,12 +162,14 @@ M4 定时 AI 任务域 ──► TaskRun CRD ──► Portal 报告
 |---|---|---|---|---|
 | Portal 前端 | Web 静态资源 | — | 对话页 / 任务报告 / 审计查询 / Agent 配置 | → 助手服务（SSE / REST） |
 | 助手服务 | 无状态 Deployment ×2 | M1+M3+M5 | 会话/消息/上下文组装、工具编排、审计写入 | → Instance Manager、Agent 实例、PG/Redis、CRD |
-| Instance Manager | 多副本（Leader Election，Active/Standby） | M2 | 实例拉起/回收/自愈、数据目录 GC、预热池 | → K8s API（拉起 Agent Pod） |
-| Agent 实例 | OpenClaw Pod 0~N（每用户） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
-| 调度器 | 多副本（Leader Election，Active/Standby） | M4 | 读 TaskTemplate CRD，到点拉起实例注入任务 | → Instance Manager、Agent 实例 |
+| Instance Manager | 单副本起步（控制器化后 → 多副本 Leader Election） | M2 | 实例拉起/回收/自愈、数据目录 GC、预热池 | → K8s API（拉起 Agent Pod） |
+| Agent 实例 | OpenClaw Pod 0~N（每用户，单副本有状态单例） | M2 | 编排循环（规划→工具调用→汇总） | → 助手 LLM、K8s（kubectl）、数据目录 |
+| 调度器 | 单副本起步（控制器化后 → 多副本 Leader Election） | M4 | 读 TaskTemplate CRD，到点拉起实例注入任务 | → Instance Manager、Agent 实例 |
 | 助手 LLM | InferenceService 1~N | M6 | 推理（DeepSeek V4 Flash 起步，OpenAI 兼容，可外接） | ← Agent 实例 |
 | 能力目录 / 任务模板 / 任务报告 | CRD | M3/M4 | 能力契约 / 调度定义 / 任务报告资产 | ← 助手服务、调度器 |
 | 存储 | PostgreSQL + Redis + 每用户独立 PVC | — | 会话/消息/审计 + 实例数据目录 | ← 助手服务、Agent 实例 |
+
+> **Leader Election 的边界**：多副本 Leader Election 仅适用于**控制面组件**（Instance Manager、调度器）；Agent 实例是**每用户有状态单例**（单副本、单写者，`0~N` 为用户数而非单实例副本数），不做副本复制，可靠性由 K8s 自愈 + 数据目录持久承接（FR-M2-002/004）。IM / 调度器默认**单副本起步**；控制器化实现时 Leader Election 随框架（controller-runtime `--leader-elect`）免费获得、平滑升 2 副本——不是专项高可用建设。
 
 ## 3.4 核心扩展点总览
 
@@ -388,7 +390,7 @@ stateDiagram-v2
 
 **AI 智能巡检（FR-M4-007）**：巡检作为定时任务经 M2 Agent 实例执行，自主探索集群，发现预置项未覆盖的异常（配置漂移、资源浪费、跨资源关联异常等），输出结构化发现 + 自然语言描述 + 证据链。**边界与可信度约束**：
 
-- **权限边界（技术强制）**：巡检实例挂载**专用只读 kubeconfig**（只读 RBAC：`get/list/watch` 白名单 + 限定资源子集），即使被注入也无法写入；探索受「只读命令 + 单任务限时（NFR-010 <15min）+ 限资源」约束。
+- **权限边界（以创建者身份，非专用只读凭据）**：巡检以创建者身份执行、权限与创建者一致（FR-M4 授权约定：定时 AI 任务均为用户级能力）；巡检模板限定只读命令（`get/list/watch/logs`），写命令在模板 / 工具层被拒，无权限项被 RBAC 拒绝并标注；全集群巡检需创建者具备集群级只读权限（通常管理员，普通用户范围限于自身 project）。探索另受「单任务限时（NFR-010 <15min）+ 限资源」约束。**残留风险**：阶段一写操作直放背景下，创建者为管理员时巡检实例技术上是可写的，只读依赖模板行为约束 + RBAC、无技术强制；如需技术兜底，阶段二随凭据机制（Q-002）以「创建者派生只读凭据」实现（PoC 验证，§13）。
 - **行为约束（提示词 + 策略）**：巡检 Skill 限定目标为发现异常、禁止任何变更操作、禁止重复全量扫描；发现去重（同一异常不重复报告）、噪声阈值过滤。
 - **输出可信度**：每项发现必须附**证据链**（命令 + 原始输出摘录 + 时间戳）；**疑似发现标记「AI 疑似，需人工复核」**——阶段一报告内标注待确认，阶段二起经确认流程（E3）回写结果，误报进入发现去重。
 
@@ -635,9 +637,9 @@ sequenceDiagram
 | 组件 | Chart 子项 | 副本 | 说明 |
 |---|---|---|---|
 | 助手服务 | `assistant-service` | 2 | 无状态，水平扩展（含对话域 / 工具服务 / 审计写入） |
-| Instance Manager | `assistant-instance-manager` | 2（Leader Election） | Agent 实例生命周期管理、数据目录 GC |
-| Agent 实例池 | `agent-runtime` | 按需 0~N | 每用户一个 OpenClaw 实例 Pod + 数据目录 + 用户 kubeconfig |
-| 调度器 | `assistant-scheduler` | 2（Leader Election） | 读 TaskTemplate CRD，到点拉起实例执行定时任务 |
+| Instance Manager | `assistant-instance-manager` | 1（可升 2，控制器化） | Agent 实例生命周期管理、数据目录 GC |
+| Agent 实例池 | `agent-runtime` | 按需 0~N（每用户单副本单例） | 每用户一个 OpenClaw 实例 Pod + 数据目录 + 用户 kubeconfig |
+| 调度器 | `assistant-scheduler` | 1（可升 2，控制器化） | 读 TaskTemplate CRD，到点拉起实例执行定时任务 |
 | 助手 LLM 服务 | `assistant-llm`（InferenceService） | 1~N | 独立推理池，HPA 扩缩 |
 
 > **预留（阶段二/三）**：MCP Gateway（`mcp-gateway`）子项——当工具接入切换到 [§4.2](#42-扩展点二工具接入双路径) 路径 B 时启用。
@@ -679,6 +681,6 @@ sequenceDiagram
 - Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes/DeepSeek-Harness 事件流对齐 + 会话真源 / 降级契约，§4.1）——阶段一 PoC 按 §4.1 验证清单先行实测，8 类事件契约在 PoC 前不冻结；
 - **Instance Manager 实现形态**：除「单副本 Leader 服务」外，备选落地为 K8s Operator（`AgentInstance` CRD + controller-runtime controller），统一负责 Agent 运行时实例 Pod 的安装 / 启动 / 停止 / 自愈 / 闲置回收，`spec.runtime` 区分 OpenClaw / Hermes / DeepSeek-Harness，常驻与回收策略由 CR spec 声明（原生适配 FR-M2-002/006/009）；两种形态职责等价，实现取舍待定；
 - **DeepSeek-Harness 作为 Agent 运行时候选**：deepseek-ai/deepseek-harness（2026-08 开源，「Model + Harness = Agent」，MIT，模型无关）作为 FR-M2-009 的适配对象之一，与 Hermes 同级评估；阶段一仍以 OpenClaw 落地，不影响既有演进路径。
-- 高可用：IM / 调度器多副本 Leader Election（lease）与故障转移演练（§3.3/§8.1）；
-- AI 巡检：只读专用凭据边界与「疑似需复核」流程的 PoC 验证（§5.4）；
+- 高可用（轻量）：IM / 调度器单副本起步，控制器化实现时 Leader Election（lease）随框架免费获得、平滑升 2 副本；单副本阶段故障行为与降级见 §8.1（§3.3/§11.1）。
+- AI 巡检：以创建者身份的巡检权限边界（模板只读约束 + 无权限项拒绝）与「疑似需复核」流程的 PoC 验证（§5.4）；
 - 消息历史真源（事件流捕获 → Message 表）与换 runtime 播种机制在 PoC 验证（§4.1/§5.1）。
