@@ -104,7 +104,7 @@ flowchart TB
     end
 
     subgraph Infra["CubeStack 平台能力层"]
-        I1["K8s · GPUStack · Prometheus/Loki · 助手 LLM"]
+        I1["K8s · Prometheus/Loki · 助手 LLM"]
     end
 
     U --> P1
@@ -123,6 +123,7 @@ flowchart TB
 
 - 用户消息经会话网关进入**指定 Agent 的实例**（默认内置 agent-for-cloud）；Agent 编排循环（规划 → 工具调用 → 汇总）在实例内完成，工具调用经平台层 Tool Gateway / 能力目录以**用户身份 + Agent 身份**执行。
 - 平台层所有组件**与具体 Agent 无关**：换 Agent（自建/替换）只新增 Agent 定义与实例，平台层不重写。
+- 会话路由：阶段一会话默认绑定内置 `agent-for-cloud`；阶段二再定义会话↔Agent 绑定语义（默认仍为内置）。
 
 ## 2.2 与既有 M1~M6 功能域的映射
 
@@ -147,8 +148,8 @@ v0.2 的六个功能域在本文档框架下重新归属——**内容不变，�
 | Agent 实例池 | OpenClaw Pod 0~N（每用户每 Agent 单例） | Agent 层 | 编排循环（规划 → 工具调用 → 汇总） | → 助手 LLM、Tool Gateway、数据目录 |
 | Agent Registry | 服务 + `Agent` CRD | 平台层 | Agent 定义发布/版本/可见性/审核 | → 会话网关、Instance Manager |
 | 调度器 | 单副本起步（控制器化后多副本） | 平台层 | 读 Task/TaskTemplate CRD，到点拉起 Agent 实例注入任务，平台身份回写 TaskRun | → Instance Manager、Agent 实例 |
-| Tool Gateway | 阶段一：kubectl 直连；阶段二：MCP Gateway | 平台层 | 工具路由 / 鉴权 / 策略 / HITL | → 平台能力层 |
-| 助手 LLM | InferenceService 1~N | 平台层 | 模型无关推理（FR-M6-003）：平台内置推理池 + 平台外自定义端点；凭据平台托管 | ← Agent 实例 |
+| 工具执行 / Tool Gateway | 阶段一：工具执行（kubectl 直连，无网关）；阶段二：MCP Gateway | 平台层 | 工具路由 / 鉴权 / 策略 / HITL | → 平台能力层 |
+| 助手 LLM | InferenceService 1~N | 平台层 | 模型接入（FR-M2-003）+ 推理服务（FR-M6-003）：平台内置推理池 + 平台外自定义端点；凭据平台托管 | ← Agent 实例 |
 | 存储 | PostgreSQL + Redis + 每 Agent 独立 PVC | 平台层 | 平台自产数据 + 实例数据目录 | ← 会话网关、Agent 实例 |
 
 > **Leader Election 边界**（沿用 v0.2 §3.3）：多副本 Leader Election 仅适用于控制面组件（Instance Manager、调度器）；Agent 实例是**每用户每 Agent 有状态单例**（单副本、单写者），不做副本复制，可靠性由 K8s 自愈 + 数据目录持久承接。
@@ -169,7 +170,7 @@ v0.2 的六个功能域在本文档框架下重新归属——**内容不变，�
 | 配置 | Agent | AgentInstance | 说明 |
 |---|---|---|---|
 | displayName / description / runtime | ✓ | | 定义级元数据与运行时选型 |
-| model[]（provider + name + fallback 顺序） | ✓（唯一一份 = 模型 allowlist） | 可「选」（modelRef） | **model 只定义在 Agent**；实例在 allowlist 内切换（默认 model[0]），不重复定义；切到 allowlist 外需改定义发布新版本 |
+| model[]（provider + name + fallback 顺序） | ✓（唯一一份 = 模型 allowlist） | 可「选」（selectedModel） | **model 只定义在 Agent**；实例在 allowlist 内切换（默认 model[0]），不重复定义；切到 allowlist 外需改定义发布新版本 |
 | model[].endpoint / apiKeyRef | 默认凭据引用（共享） | 个人凭据覆盖 | **key 是凭据、不属于 model**：定义放共享默认引用，实例 credentials[] 放个人覆盖；实例化时按 实例 > 定义 > 平台默认 解析注入（§4.4） |
 | instructions（默认系统提示词） | ✓ | 可覆盖 | 定义给默认；实例可用户定制（受能力边界约束） |
 | tools[]（能力目录声明） | ✓ | 可开关 | 定义声明能力边界；实例可开关可见子集（FR-M2-005） |
@@ -189,12 +190,12 @@ v0.2 的六个功能域在本文档框架下重新归属——**内容不变，�
 
 | 问题 | 答案 |
 |---|---|
-| AgentInstance 能切换模型吗？ | **能**——改 `modelRef`（在 Agent 定义 `model[]` allowlist 内选择，默认 `model[0]`），持久化、即时生效（FR-M2-005） |
+| AgentInstance 能切换模型吗？ | **能**——改 `selectedModel`（在 Agent 定义 `model[]` allowlist 内按 `name` 选择，默认 `model[0].name`），持久化、即时生效（FR-M2-005） |
 | 能切到定义外的模型吗？ | **不能直接切**——`model[]` 是能力边界；需更新 Agent 定义（发布新版本，Registry §4.6）或由平台扩展 allowlist |
-| 使用 agent 的用户能切换吗？ | **能**——owner 通过 Portal「Agent 管理」配置实例 `modelRef`（内置 agent 的用户即 owner）；非 owner 需 owner / 管理员授权 |
+| 使用 agent 的用户能切换吗？ | **能**——owner 通过 Portal「Agent 管理」配置实例 `selectedModel`（内置 agent 的用户即 owner）；非 owner 需 owner / 管理员授权 |
 | 动态按会话 / 用户切换？ | 阶段三多模型路由（FR-M2-010）：运行时按会话 / 用户路由，不改配置（与上面的静态配置切换互补） |
 
-**覆盖规则**：`AgentInstance` 可覆盖 `Agent` 定义中**允许定制**的字段（instructions / tools 开关 / **model 选择（modelRef）** / 个人凭据 / lifecycle），但覆盖不得超出定义声明的能力边界（`tools ⊆` 定义声明集）、**身份模式不可改**（mode 与定义一致）、并受平台配额约束。
+**覆盖规则**：`AgentInstance` 可覆盖 `Agent` 定义中**允许定制**的字段（instructions / tools 开关 / **model 选择（selectedModel）** / 个人凭据 / lifecycle），但覆盖不得超出定义声明的能力边界（`tools ⊆` 定义声明集）、**身份模式不可改**（mode 与定义一致，实例仅绑定 `principalRef`）、并受平台配额约束。
 
 **版本规则**：`Agent` 定义变更 = 发布新版本（Registry 版本化，§4.6）；存量实例按发布策略升级或保持。`AgentInstance` 的运行态字段（phase / podName）由控制器维护，用户不直接改。
 
@@ -217,7 +218,7 @@ spec:
     - provider: external         # model[1:] = fallback 链（运行时支持时生效；只有一项则无 fallback）
       name: deepseek-chat
       endpoint: https://api.example.com/v1
-      apiKeyRef: cubepilot/cred-llm-org-gateway   # 定义级「默认凭据引用」：组织共享 key（所有实例共用）
+      apiKeyRef: cubepilot/cred-llm-org-gateway   # 定义级「默认凭据引用」：组织共享 key（所有实例共用）；仅引用、不是 key 本体
                                                   # 留空 → 实例 credentials[] 提供个人 key（覆盖，§4.4）
   instructions: |                # 系统提示词（真源 = 实例数据目录，此处为定义级默认）
     ...
@@ -239,7 +240,7 @@ spec:
 **关键点**：
 
 - **内置 agent-for-cloud 是平台预置的第一个 `Agent` 定义**（`builtin: true`）：每用户自动实例化一个，不可删除，可被用户配置（模型/工具开关/提示词，FR-M2-005）。
-- **模型接入（模型无关，FR-M2-003 / FR-M6-003）**：`spec.model` 为**有序模型数组**，同时是该 Agent 的**模型 allowlist**——`model[0]` 为主模型（primary），`model[1:]` 为降级模型链（fallback）；**只有一项时即仅主模型、无 fallback**；实例在 allowlist 内切换（`modelRef`），切到 allowlist 外需改定义发布新版本；运行期按会话 / 用户路由属 FR-M2-010（阶段三）。每项支持平台内置推理池（`provider: platform`，默认 DeepSeek V4 Flash 同级）或**平台外自定义大模型端点**（`provider: external`，OpenAI 兼容，含公司已有/公网推理服务）；端点凭据支持**两层**：定义级**共享凭据**（组织统一模型网关，所有实例共用同一 key，`apiKeyRef` 引用平台共享 Secret）与实例级**个人凭据**（用户自带 key，`credentials[]` 覆盖共享凭据），解析优先级**实例级 > 定义级 > 平台默认**（§4.4）；凭据一律平台托管，**Agent 定义不落明文密钥**。
+- **模型接入（模型无关，FR-M2-003）与推理服务（FR-M6-003）**：`spec.model` 为**有序模型数组**，同时是该 Agent 的**模型 allowlist**——`model[0]` 为主模型（primary），`model[1:]` 为降级模型链（fallback）；**只有一项时即仅主模型、无 fallback**；实例在 allowlist 内切换（`selectedModel`），切到 allowlist 外需改定义发布新版本；运行期按会话 / 用户路由属 FR-M2-010（阶段三）。每项支持平台内置推理池（`provider: platform`，默认 DeepSeek V4 Flash 同级）或**平台外自定义大模型端点**（`provider: external`，OpenAI 兼容，含公司已有/公网推理服务）；端点凭据支持**两层**：定义级**共享凭据**（组织统一模型网关，所有实例共用同一 key，`apiKeyRef` 引用平台共享 Secret）与实例级**个人凭据**（用户自带 key，`credentials[]` 覆盖共享凭据），解析优先级**实例级 > 定义级 > 平台默认**（§4.4）；凭据一律平台托管，**Agent 定义不落明文密钥**。
 - **Model fallback（视运行时能力）**：运行时在主模型**失败 / 超时 / 限流**时按数组顺序依次切换后续模型；是否生效取决于 runtime 是否原生支持（OpenClaw / Hermes 支持，DeepSeek-Harness 待验证，§10）；模型切换作为 trajectory 观测数据记录（可选增强事件，不新增必选事件），供 AgentOps 观测「实际用了哪个模型」。
 - Agent 定义与实例分离：定义是「做什么、用什么工具、什么身份、什么模型」，实例是「谁的、跑在哪、状态如何」。
 - **AgentRegistry 与能力目录的区别**：Registry 管「Agent 定义」（谁能创建什么 Agent）；Capability CRD 管「平台能力」（Agent 能用什么工具）。阶段一 Registry 简化为内置 Agent 列表；阶段二开放用户创建/审核发布。
@@ -248,7 +249,7 @@ spec:
 
 | 维度 | 设计 |
 |---|---|
-| 实例 key | `agentKey = user + agent`（每用户每 Agent 单实例、单写者）——从 v0.2 的 `user` 泛化，为 1:N（一个用户多个 Agent）预留 |
+| 实例 key | `agentKey = user + agent`（每用户每 Agent 单实例、单写者）——从 v0.2 的 `user` 泛化，为 1:N（一个用户多个 Agent）预留；**阶段二 `identity.mode: service` 下实例作用域需重新定义（如 `principal + agent + scope`），阶段一不扩展（§10）** |
 | spec | `agentRef` + `owner`(user) + `identity`（主体：mode + principalRef）+ `credentials[]`（类型化下游凭据）+ 数据目录 PVC |
 | status | Creating / Warm / Idle / Reclaiming / Failed（沿用 v0.2 生命周期状态图） |
 | 生命周期 | Instance Manager（控制器）reconcile：拉起、自愈、闲置回收（可配置）、预热池 |
@@ -265,12 +266,12 @@ spec:
   agentRef: agent-for-cloud            # → Agent 定义（§3.1 示例）
   owner: zhang.wei                     # 实例归属用户
   identity:                            # 平台侧「我是谁」：单一语义，不按下游区分
-    mode: user                         # user（以用户身份执行）| service（独立服务身份，阶段二）
-    principalRef:
+    mode: user                         # 与 Agent 定义一致（继承，不可改）
+    principalRef:                      # userRef 与 serviceRef 互斥（按 mode 二选一）
       userRef: zhang.wei               # mode=user：绑定用户
-      serviceRef: ""                   # mode=service：绑定服务身份（阶段二）
+      # serviceRef: ""                 # mode=service：绑定服务身份（阶段二）
   credentials:                         # 「我怎么认证到下游」：类型化凭据列表，可多个并存
-    - target: k8s                      # 目标下游：k8s | gputack | prometheus | harbor | llm | itsm | ...
+    - target: k8s                      # 目标下游：k8s | prometheus | harbor | llm | itsm | ...
       type: kubeconfig                 # 凭据类型：kubeconfig | api-key | oauth2 | bearer-token | basic-auth | x509 | ...
       ref: cubepilot/cred-k8s-zhang-wei         # → Secret：最小权限、0600、轮换/吊销
     - target: llm                      # 平台外模型端点
@@ -278,7 +279,7 @@ spec:
       modelRef: deepseek-chat          # 绑定：给 Agent 定义 model[] 中 name=deepseek-chat 的条目（§4.4）
                                        # 或改 endpoint: https://... 按端点绑定（同网关多模型共用一把 key）
       ref: cubepilot/cred-llm-external # 个人 key：覆盖该模型条目的定义级默认（§4.4）
-  # modelRef: model[1]                 # 可选：切换模型（在 Agent 定义 model[] allowlist 内选择，默认 model[0]）；仅选择、不定义
+  # selectedModel: deepseek-v4-flash   # 可选：切换模型（在 Agent 定义 model[] allowlist 内按 name 选择，默认 model[0].name）；仅选择、不定义
   dataVolume:
     pvc: pvc-zhang-wei-agent-for-cloud # 每实例独立 PVC（真源 = 数据目录）
     size: 1Gi
@@ -343,7 +344,7 @@ spec:
       - "看看 data-team 项目下有哪些开发环境"
   security:                         # 只碰安全
     denyOperations: [delete]        # 禁用 delete（即使 CRD 存在）
-    confirmWrites: true             # 写操作强制 HITL（默认已如此）
+    confirmWrites: true             # 写操作强制 HITL（阶段二起；阶段一写操作直放，FR-M3-001）
 ```
 
 > **不碰字段**：文件里没有 `params` / `mapping` / `bindings`——`parameters` 由平台从 CRD OpenAPI schema 自动生成并注入，执行走通用执行器（kubectl 优先）；`target` 指向的 CRD 不存在 / 无 schema → 登记校验 fail-fast。
@@ -413,7 +414,7 @@ spec:
     2. 检查 GPU 健康与利用率（nvidia.com/gpu）
     3. 检查异常 Pod（CrashLoopBackOff / Pending / ImagePullBackOff / OOM）
     4. 检查存储（PVC 使用率）
-    5. 检查平台组件健康（GPUStack / Harbor / Keycloak / Prometheus）
+    5. 检查平台组件健康（Harbor / Keycloak / Prometheus）
     发现异常附证据链，按 P0/P1/P2 分级；禁止任何写操作。
   paramsSchema:
     - name: scope
@@ -448,6 +449,8 @@ status:
   lastRunTime: "2026-08-18T02:00:00Z"
   nextTaskRunName: zhang-wei-daily-inspection-20260818
 ```
+
+> **执行解析规则**：`Task.agentRef` 指向 Agent 定义（默认 `agent-for-cloud`）；实际执行由调度器按 `creator + agentRef` 解析为对应 `AgentInstance(user + agent)`，实例缺失 / Idle 时按 §4.1 拉起。
 
 ### 3.3.4 TaskRun 示例（执行报告，平台身份写入）
 
@@ -490,8 +493,10 @@ status:
 沿用 v0.2 §7「平台零持有 agent 私有数据」：
 
 - **agent 私有数据**（会话 / 消息 / 轨迹 / 记忆 / skill 与配置）：任何阶段不建表、不落 DB，唯一真源 = 实例数据目录（经 runtime 会话接口读取，冷时先冷启动）。
-- **平台自产数据**（Agent 定义、AgentInstance、Registry 元数据、TaskTemplate/Task/TaskRun、Capability（`type: atomic | domain`）、确认台账、多租户元数据）：CRD（`assistant.suanova.io/v1alpha1`）+ PostgreSQL + Redis。
+- **平台自产数据**（Agent 定义、AgentInstance、Registry 元数据、TaskTemplate/Task/TaskRun、Capability（`type: atomic | domain`）、确认台账、工具调用记录 / 工具集快照、多租户元数据）：CRD（`assistant.suanova.io/v1alpha1`）+ PostgreSQL + Redis。
 - **换运行时 = 丢或迁**（沿用 §4.1）：agent 私有数据接受丢弃，或以旧 PVC 为原料写一次性迁移工具。
+
+> **「平台零持有」边界**：仅针对 agent 私有数据（会话 / 消息 / 记忆 / skill / 配置）；平台自产审计数据（确认台账、工具调用记录、工具集快照）是明确例外，用于溯源与工具集变更治理。
 
 ## 3.5 示例串联（贯穿示例：内置 agent-for-cloud + 每日巡检）
 
@@ -544,7 +549,7 @@ flowchart LR
 - 契约层（平台拥有，与运行时无关）：Agent 定义、能力目录、任务域资产、知识注入源（RAG，阶段二起）。
 - 实例层（运行时拥有）：执行态、原生 session、私有 memory、实例配置（数据目录）。
 - **Instance Manager 控制器化**：落地为 K8s Operator（`AgentInstance` CRD + controller-runtime，v0.2 §13 备选），`spec.runtime` 区分 OpenClaw / Hermes / DeepSeek-Harness / custom；常驻与回收策略由 CR spec 声明。职责：安装 / 启动 / 停止 / 自愈 / 闲置回收 / 数据目录 GC / 预热池。
-- **模型接入与 fallback（运行时级）**：`spec.model`（有序数组，`model[0]` primary、`model[1:]` fallback）作为实例级配置注入运行时（provider 配置，真源 = 数据目录），由 runtime 网关负责模型路由与降级切换；平台只负责**凭据托管与配置下发**，不代理模型请求（external 端点出网由 NetworkPolicy egress 白名单管控，§8）。
+- **模型接入与 fallback（运行时级）**：`spec.model`（有序数组，`model[0]` primary、`model[1:]` fallback）作为实例级配置注入运行时（provider 配置，真源 = 数据目录），由 runtime 网关负责模型路由与降级切换；平台只负责**凭据托管与配置下发**，不代理模型请求（external 端点出网由 NetworkPolicy egress 白名单管控，§8）。**原则**：fallback 尽量收敛为平台 / 网关侧关注点，runtime 只暴露请求失败 / 超时 / 限流事件；阶段二若依赖 runtime 原生 fallback，视为临时约束、不作为平台契约（§10）。
 - 实例池模型：内置 agent 阶段一常驻（注册即拉起）；用户自建 Agent 按配额 + 按需启停（阶段二）。实例数上限受 Infra 容量约束（NFR-015 扩展：每用户配额 + 全平台上限）。
 
 ## 4.2 能力层：三层能力（generic / atomic / domain）+ 执行
@@ -626,7 +631,7 @@ sequenceDiagram
 | 语义差 / 要引导（描述、示例、用户话映射） | atomic 薄覆盖 `semantics`（几行） |
 | 要收紧安全（禁用操作、强制确认） | atomic 薄覆盖 `security`（一行） |
 | 复合 / 领域逻辑（诊断、推荐、解读、多步） | domain（uses[] + instructions + 脚本） |
-| 外部系统（GPUStack / Prometheus / ITSM） | MCP 工具（独立于 Capability） |
+| 外部系统（Prometheus / ITSM） | MCP 工具（独立于 Capability） |
 
 **判断规则**：这个能力是不是「对某个 CRD 的通用操作」？是 → 什么都不写 / 顶多薄覆盖；不是 → domain 或 MCP。
 
@@ -656,7 +661,7 @@ sequenceDiagram
 |---|---|
 | `identity.mode` | `user`：以创建者/用户身份执行（内置 agent-for-cloud，阶段一）；`service`：独立服务身份，凭据由创建者授予的范围化 RoleBinding 派生（用户自建 Agent，阶段二起） |
 | `identity.principalRef` | mode=user → `userRef`；mode=service → `serviceRef`（阶段二） |
-| `credentials[].target` | 凭据目标下游：`k8s` / `gputack` / `prometheus` / `harbor` / `llm` / `itsm` / …（**按目标系统命名，而非客户端**——kubectl 是客户端，目标应为 `k8s`） |
+| `credentials[].target` | 凭据目标下游：`k8s` / `prometheus` / `harbor` / `llm` / `itsm` / …（**按目标系统命名，而非客户端**——kubectl 是客户端，目标应为 `k8s`） |
 | `credentials[].type` | 凭据类型：`kubeconfig` / `api-key` / `oauth2` / `bearer-token` / `basic-auth` / `x509` / … |
 | `credentials[].ref` | → Secret（最小权限、0600、轮换/吊销、失效即时吊销）；Agent 定义不落明文 |
 | `credentials[].modelRef` | 仅 `target: llm` 时用于**绑定到具体模型**：指向 Agent 定义 `model[]` 中某条目（按 `name`）；也可用 `endpoint` 按端点绑定（同一网关端点的多个模型共用一把 key）。缺省时仅当定义中**只有一个 external 模型**才允许隐式绑定；多个 external 模型必须显式绑定，否则校验拒绝（fail-closed） |
@@ -675,7 +680,7 @@ credentials:
 **未来会有哪些 identity / 凭据？**：
 
 - **身份（identity）不扩展**：平台侧主体只有 `user` / `service` 两种语义，不按下游拆分；
-- **凭据（credentials）持续扩展**：GPUStack（api-key）、Prometheus/Loki（basic-auth / bearer-token）、Harbor（basic-auth）、Keycloak（oauth2 委托）、外部 LLM（api-key）、ITSM/工单（oauth2 client-credentials）、数据库（basic-auth）等——新增下游 = 新增 `target`/`type` 条目 + 对应 Secret，不改 Agent 结构（对齐 v0.2 §5.6 M6「阶段二接入 GPUStack/Prometheus/Loki 等非 K8s 数据源」）；
+- **凭据（credentials）持续扩展**：Prometheus/Loki（basic-auth / bearer-token）、Harbor（basic-auth）、Keycloak（oauth2 委托）、外部 LLM（api-key）、ITSM/工单（oauth2 client-credentials）、数据库（basic-auth）等——新增下游 = 新增 `target`/`type` 条目 + 对应 Secret，不改 Agent 结构（对齐 v0.2 §5.6 M6「阶段二接入 Prometheus/Loki 等非 K8s 数据源」）；
 - **与 `spec.model[].apiKeyRef` 的关系（共享 vs 个人）**：external 模型端点凭据分两层——①**定义级共享凭据**：组织统一模型网关 / 平台统一外接端点时，API key 放 Agent 定义层（`apiKeyRef` 引用平台共享 Secret 或 `Credential` CRD），所有实例共用、用户无需各自配置；②**实例级个人凭据**：用户自带 key 时放 `credentials[]`（`target: llm` + `modelRef` / `endpoint` 绑定），覆盖定义级。解析优先级：**实例级 > 定义级 > 平台默认**；解析在**实例化时**完成，结果注入实例运行时配置（数据目录），运行期改动即时生效（FR-M2-005）；阶段二统一收敛到 `Credential` 机制（`scope: shared | instance`，§10）；
 - **llm 凭据如何定位到模型**：定义层 `model[].apiKeyRef` 已**按模型条目逐一绑定**（无歧义）；实例层个人 key 必须通过 `modelRef`（指向定义 `model[]` 中某条目）或 `endpoint`（匹配 `model[].endpoint`）**显式绑定到具体模型**，覆盖该条目的定义默认——回答「这把 key 是给哪个模型的」；唯一 external 模型时可省略（隐式绑定），多个 external 模型时缺绑定按校验拒绝（fail-closed）。
 - **Credential 建模（阶段二）**：引入平台级 `Credential` CRD（`scope: shared | instance`、`target`、`type`、`secretRef`、`owner`）——Agent 定义引用 `shared` 凭据，AgentInstance 引用 `instance` 凭据，统一授权 / 审计 / 轮换。**共享凭据安全约束**：仍平台托管、不落明文；共享 key 无法区分调用者 → 平台侧审计记录「哪个 Agent / 实例 / 用户何时使用」；轮换影响所有引用实例（滚动更新）；external 端点经 NetworkPolicy egress 白名单放行。
@@ -687,7 +692,7 @@ credentials:
 ## 4.5 AgentOps（M5 上移 + Evaluation）
 
 - **溯源（按 Agent 粒度）**：runtime trajectory（transcript + sidecar），平台零复制；任意一次执行可回放工具调用序列（FR-M5-001）。
-- **审计**：确认台账（平台自产、低频）+ 导出归档（`export-trajectory` bundle → 对象存储）；审计查询按 agent + user 双维度。
+- **审计**：确认台账 + 工具调用记录（平台自产，承接 M5 / 工具集变更治理）+ 导出归档（`export-trajectory` bundle → 对象存储）；审计查询按 agent + user 双维度。
 - **观测**：对话 / 工具 / 成本 / 实例池指标沿用 v0.2 §9，增加 **agent 维度标签**（agent 名、版本、builtin/custom）。
 - **评估（阶段三，对标 AgentCore Evaluations）**：任务完成度 / 工具选择正确性 / 安全合规 / 质量；内置 agent 评测集先行，用户自建 Agent 上线前必须过基础评测。Observability 与 Evaluation 共用 trajectory（对齐行业趋势）。
 
@@ -865,7 +870,7 @@ Portal 对话 / 配置 / 观测 / 审计（与内置 agent 同一套入口）
 | Tool Gateway | `tool-gateway` | 1~2 | MCP Gateway 聚合 + 统一 Policy/HITL（阶段二起） |
 | 助手 LLM 服务 | `assistant-llm`（InferenceService） | 1~N | 独立推理池，HPA 扩缩 |
 
-**依赖与离线交付**：平台既有（Keycloak、PostgreSQL、Redis、K8s、GPUStack、Prometheus/Loki）+ 新增（助手 LLM 模型镜像、Agent 实例镜像（OpenClaw + kubectl）、凭据生成与轮换机制）；所有镜像、模型、Helm Chart 随安装包内化（沿用 v0.2 §11.2）。
+**依赖与离线交付**：平台既有（Keycloak、PostgreSQL、Redis、K8s、Prometheus/Loki）+ 新增（助手 LLM 模型镜像、Agent 实例镜像（OpenClaw + kubectl）、凭据生成与轮换机制）；所有镜像、模型、Helm Chart 随安装包内化（沿用 v0.2 §11.2）。
 
 ---
 
@@ -874,12 +879,12 @@ Portal 对话 / 配置 / 观测 / 审计（与内置 agent 同一套入口）
 - **Agent / AgentInstance CRD 形态与 Instance Manager 控制器化落地**：`AgentInstance` CRD 的 `spec.runtime` 区分多运行时；内置 agent 的「每用户自动实例化」由平台控制器生成（`builtin: true` → 用户创建时自动 reconcile 实例），实现细节 PoC 验证（v0.2 §13 待定项收敛）。
 - **Agent 定义参数化与用户自建流程**：Agent 模板（参数化 instructions / tools）的 Schema 设计；用户创建 Agent 的 UI / API 流程与审核链（阶段二 PoC）。
 - **自定义 Agent 代码托管边界**：container 形态的镜像审核、沙箱强化、资源限制的具体基线（阶段三前置研究）。
-- **AgentIdentity `service` 模式**：服务身份与 Keycloak / K8s RBAC 的映射、凭据轮换与吊销语义（阶段二 PoC）。
+- **AgentIdentity `service` 模式**：服务身份与 Keycloak / K8s RBAC 的映射、凭据轮换与吊销语义；`service` 模式下实例 key / 作用域需重定义（`user + agent` 不适用，§3.2）（阶段二 PoC）。
 - **Agent Evaluation 引入时机**：内置 agent 评测集范围、用户自建 Agent 上线门槛（阶段三）。
 - **配额模型**：每用户自定义 Agent 数默认值、全平台实例上限与 Infra 容量关系（NFR-015 细化）。
 - **Model fallback 契约与运行时能力映射**：OpenClaw / Hermes 原生 model fallback 的触发条件（失败/超时/限流）、切换粒度与事件暴露需 PoC 实测后回填；DeepSeek-Harness 是否支持待验证；Adapter 进入契约（模型配置注入）与返回契约（模型切换观测）并入 v0.2 §4.1 PoC 验证清单。
 - **自定义模型凭据托管**：external 端点 API Key 的托管 / 注入 / 轮换语义、与用户失效联动、egress 白名单（NFR-004 扩展：external LLM 端点入白名单）。
-- **凭据类型清单与 target 映射**：阶段二接入 GPUStack / Prometheus / Loki / Harbor / ITSM 等下游时，`credentials[].target/type` 枚举范围、各类型 Secret 结构、以及 `model[].apiKeyRef` 收敛到 `credentials` 机制的迁移语义（§4.4）。
+- **凭据类型清单与 target 映射**：阶段二接入 Prometheus / Loki / Harbor / ITSM 等下游时，`credentials[].target/type` 枚举范围、各类型 Secret 结构、以及 `model[].apiKeyRef` 收敛到 `credentials` 机制的迁移语义（§4.4）。
 - **共享凭据的审计与轮换**：定义级共享凭据（组织统一模型网关）的使用方审计（哪些 Agent / 实例 / 用户）、轮换对存量实例的影响与滚动更新、个人凭据覆盖共享凭据的语义（§4.4）。
 - **llm 凭据绑定的校验**：`credentials[].modelRef` / `endpoint` 与 `spec.model[]` 的解析规则（显式绑定、唯一 external 隐式绑定、歧义拒绝）与缺省行为 PoC 验证（§4.4）。
 - **Task 的 `agentRef` 语义**：巡检绑定用户自建 Agent 时的权限边界（以创建者身份 vs service 身份）需与 FR-M4 授权约定对齐。
