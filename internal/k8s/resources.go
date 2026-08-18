@@ -32,17 +32,30 @@ func (s AgentSpec) labels(user string) map[string]string {
 
 // DataPVC returns the per-user PVC that persists sessions/memory (FR-M2-004).
 func (s AgentSpec) DataPVC(user string) *corev1.PersistentVolumeClaim {
+	return s.DataPVCFor(s.pvcName(user), user, "1Gi")
+}
+
+// DataPVCFor builds a per-instance data PVC (设计 §3.2: 每实例独立 PVC,
+// 真源 = 实例数据目录; 默认 1Gi). Name/labels follow the instance identity.
+func (s AgentSpec) DataPVCFor(name, instance string, size string) *corev1.PersistentVolumeClaim {
+	if size == "" {
+		size = "1Gi"
+	}
+	labels := map[string]string{AgentLabelApp: "true"}
+	if instance != "" {
+		labels[AgentLabelUser] = instance
+	}
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      s.pvcName(user),
+			Name:      name,
 			Namespace: s.Namespace,
-			Labels:    s.labels(user),
+			Labels:    labels,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Gi"),
+					corev1.ResourceStorage: resource.MustParse(size),
 				},
 			},
 		},
@@ -51,14 +64,29 @@ func (s AgentSpec) DataPVC(user string) *corev1.PersistentVolumeClaim {
 
 // Service returns the ClusterIP service exposing the agent gateway on s.Port.
 func (s AgentSpec) Service(user string) *corev1.Service {
+	return s.ServiceFor(s.svcName(user), user, s.podName(user))
+}
+
+// ServiceFor builds the ClusterIP service exposing an agent instance gateway.
+// The selector must match the Pod labels (AgentLabelApp + AgentLabelUser =
+// instance) so the service actually routes to the instance Pod.
+func (s AgentSpec) ServiceFor(name, instance, _ string) *corev1.Service {
+	labels := map[string]string{AgentLabelApp: "true"}
+	if instance != "" {
+		labels[AgentLabelUser] = instance
+	}
+	selector := map[string]string{AgentLabelApp: "true"}
+	if instance != "" {
+		selector[AgentLabelUser] = instance
+	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      s.svcName(user),
+			Name:      name,
 			Namespace: s.Namespace,
-			Labels:    s.labels(user),
+			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: s.labels(user),
+			Selector: selector,
 			Ports: []corev1.ServicePort{{
 				Name:       "gateway",
 				Port:       s.Port,
@@ -72,12 +100,24 @@ func (s AgentSpec) Service(user string) *corev1.Service {
 // shared openclaw-config Secret (subPath over the PVC); kubeconfig from the
 // shared agent-kubeconfig Secret; mutable state lives in the per-user PVC.
 func (s AgentSpec) Pod(user string) *corev1.Pod {
+	return s.PodFor(s.podName(user), user, s.pvcName(user), s.svcName(user))
+}
+
+// PodFor builds the per-user OpenClaw gateway Pod for an agent instance.
+// Config is injected from the shared openclaw-config Secret (subPath over the
+// PVC); kubeconfig from the shared agent-kubeconfig Secret; mutable state lives
+// in the per-instance data PVC (设计 §3.4: 平台零持有 agent 私有数据).
+func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 	port := s.Port
+	labels := map[string]string{AgentLabelApp: "true"}
+	if instance != "" {
+		labels[AgentLabelUser] = instance
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      s.podName(user),
+			Name:      name,
 			Namespace: s.Namespace,
-			Labels:    s.labels(user),
+			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: ServiceAccountName,
@@ -123,7 +163,7 @@ func (s AgentSpec) Pod(user string) *corev1.Pod {
 				{
 					Name: "data",
 					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: s.pvcName(user)},
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
 					},
 				},
 				{

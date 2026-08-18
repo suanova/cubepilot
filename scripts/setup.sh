@@ -31,6 +31,9 @@ log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f "$REPO_DIR/deploy/rbac.yaml"
 
+log "installing platform CRDs (design §3: Agent / AgentInstance / Capability / TaskTemplate / Task / TaskRun)"
+kubectl apply -f "$REPO_DIR/config/crd/bases/"
+
 log "creating shared secrets"
 # 1. agent-kubeconfig: in-cluster kubeconfig using the Pod's own SA token.
 kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \

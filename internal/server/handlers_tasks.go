@@ -165,6 +165,14 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// RunTask implements scheduler.Runner (design §4.5 / §5.4): it runs one
+// agent turn through the creator's instance and returns the collected text.
+// The CRD scheduler calls this and writes the TaskRun report itself
+// (平台身份写入).
+func (s *Server) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	return s.streamCollect(ctx, creator, sessionKey, prompt)
+}
+
 // runTask executes one task through the user's agent instance: streams the
 // prompt, records tool calls for audit, and stores a severity-counted report.
 func (s *Server) runTask(ctx context.Context, task store.Task, trigger string) error {

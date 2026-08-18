@@ -24,6 +24,17 @@ const (
 // NewClient returns a clientset using in-cluster config when available, otherwise
 // the kubeconfig from CUBEPILOT_KUBECONFIG or ~/.kube/config (local dev).
 func NewClient() (*kubernetes.Clientset, error) {
+	cfg, err := NewRestConfig()
+	if err != nil {
+		return nil, err
+	}
+	return kubernetes.NewForConfig(cfg)
+}
+
+// NewRestConfig resolves the cluster REST config (in-cluster first, then
+// CUBEPILOT_KUBECONFIG or ~/.kube/config). Shared by the clientset and the
+// controller-runtime manager.
+func NewRestConfig() (*rest.Config, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		cfg, err = clientcmd.BuildConfigFromFlags("", KubeconfigPath())
@@ -31,7 +42,7 @@ func NewClient() (*kubernetes.Clientset, error) {
 			return nil, err
 		}
 	}
-	return kubernetes.NewForConfig(cfg)
+	return cfg, nil
 }
 
 // KubeconfigPath returns the kubeconfig used by NewClient for out-of-cluster
@@ -59,4 +70,10 @@ func Sanitize(s string) string {
 // ResourceName builds a per-user resource name from a prefix.
 func ResourceName(prefix, user string) string {
 	return prefix + "-" + Sanitize(user)
+}
+
+// InstanceName builds the AgentInstance name for (user, agent) — 实例 key =
+// user + agent (设计 §3.2). Both segments are sanitized to DNS-1123.
+func InstanceName(user, agent string) string {
+	return Sanitize(user) + "-" + Sanitize(agent)
 }
