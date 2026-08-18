@@ -59,8 +59,36 @@
 - `/api/sessions/{key}/seed`：账本近期行播种新 runtime（换运行时接回）。
 - M5 审计：工具调用经 transcript 回放记录（`/api/audit`，L0/L1 分类）。
 
+## 控制器化改造验证（2026-08-18）
+
+> 按最新设计文档实现 CRD 平台层后复验：CRD 安装 → bootstrap → 实例拉起 → 对话 → 定时任务 → TaskRun 闭环。
+
+### 平台层 CRD（设计 §3，集群级）
+- 6 个 CRD 全部安装：`agents / agentinstances / capabilities / tasktemplates / tasks / taskruns.assistant.suanova.io`（v1alpha1，controller-gen v0.19 生成）。
+- 平台 API：`GET /api/agents`（内置 `agent-for-cloud`，builtin=true）、`GET /api/instances?user=`（`zhang-wei-agent-for-cloud Warm`）、`GET /api/kinds`（73 个 kind，含平台 6 类 + K8s 内置）。
+
+### Bootstrap（设计 §3.2：内置 agent-for-cloud 每用户实例化）
+- 服务启动后自动创建：`Agent agent-for-cloud`、`Capability cluster-inspection`（domain 型）、`TaskTemplate daily-inspection`（cron `0 2 * * *`、指令、paramsSchema、requiredPermissions）、每用户 `AgentInstance <user>-agent-for-cloud`（zhang.wei / li.ming）。
+
+### Instance Manager 控制器化（设计 §3.3）
+- `AgentInstance` 控制器声明式 reconcile：创建 PVC/Pod/Service（`agent-<instance>` 命名一致）→ 观察 Pod → 状态机 `Creating → Warm`，finalizer 保证删除顺序。
+- 实证：两个实例 Pod 自动拉起并 Ready，`AgentInstance.status.phase=Warm`（约 1 个 reconcile 周期收敛）。
+- cache 限定 `cubepilot` 命名空间 + 集群级 CRD 权限分离（namespace Role + cluster ClusterRole）；controller-runtime 日志经 `logr_adapter.go` 接入标准日志。
+
+### 对话闭环（设计 §4.1）
+- `POST /api/messages`（X-CubePilot-User: zhang.wei）→ SSE：`message_start → agent_thinking → message_delta*（节点汇总表）→ tool_call（read SKILL.md / exec kubectl get nodes）→ message_done`，agent 正确汇总集群节点状态。
+
+### 任务调度闭环（设计 §3.3.4：Task CRD → TaskRun 平台身份写入）
+- 创建 cron Task（`* * * * *`，模板 daily-inspection，创建者 zhang.wei）→ 调度器控制器到期触发 → TaskRun `e2e-cron-task-<ts>` Pending → Running → **Completed（P0=1 / P1=4 / P2=6）**；Task.status 回写 `lastRunTime / lastStatus=success / lastTaskRunName`。
+- 下一分钟自动触发新一轮 TaskRun，每分钟调度稳定。
+- 调度器单测覆盖：到期触发、TaskRun 生成与状态流转、severity summary、Task 状态回写（fake client + status subresource）。
+
+### 清理
+- 验证用 Task 已删除；遗留旧版 `agent-zhang-wei` Pod/Service/PVC 已清理（新实现以 `agent-<instance>` 命名）。
+
 ## 遗留 / 后续
 
 - 阶段二：HITL（`confirm_pending/confirm_resolved` 契约 + `requireApproval` 钩子）、Message 表作为正式持久层、能力目录按 RBAC 可见范围动态加载。
 - 调度器多副本故障转移演练（kill leader → standby 接管）未做破坏性测试，仅验证了 lease 唯一性。
 - Agent Runtime Adapter 接口契约（§4.1）已由本 PoC 回填事件映射表，正式冻结待阶段二 HITL 事件补全后。
+- 阶段二待办：atomic Capability 薄覆盖 CRD 落地（平台域 CRD 未在 PoC 集群部署）、Capability 状态校验循环（`status.valid` 写入）、TaskRun 报告详情持久化到平台存储。

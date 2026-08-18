@@ -1,5 +1,6 @@
-# RBAC for the CubePilot PoC.
-#   cubepilot-manager : the assistant service / Instance Manager (namespace-scoped).
+# CubePilot PoC RBAC.
+#   cubepilot-manager : the assistant service / controllers (namespace-scoped
+#                       + cluster-scoped platform CRDs).
 #   cubepilot-agent   : the identity each per-user agent Pod uses for `kubectl`
 #                       (cluster-scoped, intentionally broad for the demo — the
 #                       production contract is per-user minimal RBAC, FR-M3-001).
@@ -19,8 +20,10 @@ metadata:
   name: cubepilot-agent
   namespace: cubepilot
 ---
-# Instance Manager: manage per-user Pods/PVCs/Services within the namespace,
-# plus leader-election Leases (design §3.3: IM 单副本起步, 控制器化后随框架升 2 副本).
+# Instance Manager / controllers: manage per-user Pods/PVCs/Services within the
+# namespace, leader-election Leases (设计 §3.3: IM 单副本起步, 控制器化后随框架
+# 升 2 副本), and the platform CRDs (Agent / AgentInstance / Capability /
+# TaskTemplate / Task / TaskRun — 设计 §3, 集群级).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -46,6 +49,39 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: cubepilot-manager
+subjects:
+  - kind: ServiceAccount
+    name: cubepilot-manager
+    namespace: cubepilot
+---
+# Platform CRDs are cluster-scoped (设计 §3: Agent / AgentInstance / Capability /
+# TaskTemplate / Task / TaskRun 均为集群级资源).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cubepilot-manager-crds
+rules:
+  - apiGroups: ["assistant.suanova.io"]
+    resources: ["agents", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["assistant.suanova.io"]
+    resources: ["agents/status", "agentinstances/status", "tasks/status", "taskruns/status", "capabilities/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cubepilot-manager-crds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cubepilot-manager-crds
 subjects:
   - kind: ServiceAccount
     name: cubepilot-manager

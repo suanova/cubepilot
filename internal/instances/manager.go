@@ -1,6 +1,9 @@
-// Package instances implements the Instance Manager: per-user OpenClaw agent
-// Pods, resident by default, healed when unhealthy, and (optionally) reclaimed
-// when idle (design doc FR-M2-002 / §5.2: 常驻运行是默认策略, 闲置回收为可配置策略).
+// Package instances implements the Instance Manager facade used by the
+// assistant service. With the controller-runtime incarnation (design doc
+// CubePilot-Cloud-for-Agents-Design.md §4.1: Instance Manager 控制器化), the
+// AgentInstance controller owns the Pod/PVC/Service lifecycle; this package
+// resolves the per-(user, agent) instance and waits for it to be Warm, and
+// keeps the legacy in-process reconcile/GC for non-CRD deployments.
 package instances
 
 import (
@@ -18,12 +21,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/leader"
@@ -31,41 +35,46 @@ import (
 )
 
 const (
-	readyTimeout          = 60 * time.Second
-	reconcileEvery        = 30 * time.Second
-	crashRestartThreshold = 3
-	gcEvery               = 5 * time.Minute
+	readyTimeout   = 60 * time.Second
+	reconcileEvery = 30 * time.Second
+	gcEvery        = 5 * time.Minute
 )
 
-// Manager owns the lifecycle of per-user agent instances.
+// Manager resolves and warms per-(user, agent) instances. When the CRD path
+// is enabled (crClient != nil), instances are AgentInstance CRs reconciled by
+// the controller; otherwise it falls back to the legacy Pod/PVC manager.
 type Manager struct {
-	client *kubernetes.Clientset
-	spec   k8s.AgentSpec
+	client  *kubernetes.Clientset
+	cr      client.Client // controller-runtime client (CRD path); nil = legacy
+	spec    k8s.AgentSpec
+	cfg     config.Config
+	ns      string
+	agentNS string // namespace of platform CRs (cluster-scoped → unused)
 
 	mu     sync.Mutex
-	active map[string]time.Time // user -> last activity
+	active map[string]time.Time // agentKey -> last activity
 	ttl    time.Duration
 
-	// reclaimEnabled gates idle reclaim (§5.2): false (default) = resident.
 	reclaimEnabled bool
-	// gcWindow is the per-user data directory retention window (§5.1: 72h).
-	gcWindow time.Duration
-	// gcWatermark is the PVC usage ratio that triggers aggressive GC + alert.
-	gcWatermark float64
-	// elector gates reconcile + GC to the leader replica (§3.3).
-	elector *leader.Elector
+	gcWindow       time.Duration
+	gcWatermark    float64
+	elector        *leader.Elector
 }
 
-// New constructs a Manager for the given clientset and configuration.
-func New(client *kubernetes.Clientset, cfg config.Config) *Manager {
+// New constructs a Manager. cr is the controller-runtime client used to watch
+// AgentInstance CRs (may be nil for the legacy path).
+func New(client *kubernetes.Clientset, cr client.Client, cfg config.Config) *Manager {
 	return &Manager{
 		client: client,
+		cr:     cr,
+		cfg:    cfg,
 		spec: k8s.AgentSpec{
 			Namespace:    cfg.Namespace,
 			Image:        cfg.AgentImage,
 			GatewayToken: cfg.GatewayToken,
 			Port:         int32(cfg.AgentPort),
 		},
+		ns:             cfg.Namespace,
 		active:         map[string]time.Time{},
 		ttl:            cfg.IdleTTL,
 		reclaimEnabled: cfg.ReclaimEnabled,
@@ -74,115 +83,87 @@ func New(client *kubernetes.Clientset, cfg config.Config) *Manager {
 	}
 }
 
-// SetElector attaches the shared leader elector. The manager only reconciles
-// and GCs when this elector reports leadership (multi-replica Active/Standby).
+// SetElector attaches the shared leader elector (reconcile/GC leader-only).
 func (m *Manager) SetElector(e *leader.Elector) { m.elector = e }
 
 func (m *Manager) isLeader() bool {
 	return m.elector == nil || m.elector.IsLeader()
 }
 
-// BaseURL returns the in-cluster gateway URL for a user's agent instance.
-func (m *Manager) BaseURL(user string) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.ResourceName("agent", user), m.spec.Namespace, m.spec.Port)
+// AgentKey is the instance key = user + agent (设计 §3.2).
+type AgentKey struct {
+	User  string
+	Agent string
 }
 
-// Touch records activity for a user (keeps the instance warm).
+func (k AgentKey) String() string {
+	if k.Agent == "" {
+		k.Agent = v1alpha1.DefaultAgentName
+	}
+	return k.User + "/" + k.Agent
+}
+
+// InstanceName returns the CR name for the key.
+func (k AgentKey) InstanceName() string {
+	agent := k.Agent
+	if agent == "" {
+		agent = v1alpha1.DefaultAgentName
+	}
+	return k8s.InstanceName(k.User, agent)
+}
+
+// BaseURL returns the in-cluster gateway URL for the agent instance.
+func (m *Manager) BaseURL(user string) string {
+	return m.BaseURLFor(AgentKey{User: user, Agent: v1alpha1.DefaultAgentName})
+}
+
+// BaseURLFor returns the in-cluster gateway URL for an agentKey. The
+// controller names the instance's Pod/Service `agent-<instanceName>`
+// (design §3.2: podName: agent-zhang-wei-agent-for-cloud), so the URL uses
+// that resource name.
+func (m *Manager) BaseURLFor(k AgentKey) string {
+	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.ResourceName("agent", k.InstanceName()), m.ns, m.spec.Port)
+}
+
+// Touch records activity for an agentKey (keeps the instance warm).
 func (m *Manager) Touch(user string) {
+	m.TouchFor(AgentKey{User: user, Agent: v1alpha1.DefaultAgentName})
+}
+
+// TouchFor records activity for an agentKey.
+func (m *Manager) TouchFor(k AgentKey) {
 	m.mu.Lock()
-	m.active[user] = time.Now()
+	m.active[k.String()] = time.Now()
 	m.mu.Unlock()
 }
 
-// Ensure guarantees a healthy agent instance exists for user, waiting for the
-// gateway to become ready. It recreates a crashed Pod and returns the first
-// readiness error (which callers surface as a "still warming" signal).
+// Ensure guarantees a healthy agent instance for the default agent of user
+// (legacy signature; delegates to EnsureFor).
 func (m *Manager) Ensure(ctx context.Context, user string) error {
-	m.Touch(user)
+	return m.EnsureFor(ctx, AgentKey{User: user, Agent: v1alpha1.DefaultAgentName})
+}
 
-	podName := k8s.ResourceName("agent", user)
-	existing, err := m.client.CoreV1().Pods(m.spec.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		if err := m.createResources(ctx, user); err != nil {
+// EnsureFor guarantees a healthy agent instance exists for the key, waiting
+// for the gateway to become ready.
+func (m *Manager) EnsureFor(ctx context.Context, k AgentKey) error {
+	m.TouchFor(k)
+	instanceName := k.InstanceName()
+
+	if m.cr != nil {
+		// CRD path: the AgentInstance controller owns the lifecycle; wait for
+		// the instance to be Warm and the gateway reachable.
+		if err := m.waitCRWarm(ctx, instanceName); err != nil {
 			return err
 		}
-	case err != nil:
-		return err
-	case isCrashLoop(existing):
-		log.Printf("instances: recreating crashed pod %s", podName)
-		if err := m.client.CoreV1().Pods(m.spec.Namespace).Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		if err := m.createResources(ctx, user); err != nil {
-			return err
-		}
+		return m.waitReachableFor(ctx, k8s.ResourceName("agent", instanceName))
 	}
 
-	if err := m.waitReady(ctx, user); err != nil {
-		return err
-	}
-	// The Pod may be Ready before the Service's Endpoints have propagated to
-	// kube-proxy; dialing the gateway directly here closes that cold-start
-	// race (observed as "connection refused" right after a fresh start).
-	return m.waitReachable(ctx, user)
+	// Legacy path: in-process Pod management (kept for non-CRD deployments).
+	return m.ensureLegacy(ctx, k.User)
 }
 
-// waitReachable probes the agent's ClusterIP service with a raw TCP dial until
-// it accepts connections (or the deadline expires). This guarantees a caller
-// that just got an instance "ready" can actually reach the gateway.
-func (m *Manager) waitReachable(ctx context.Context, user string) error {
-	return m.waitReachableFor(ctx, k8s.ResourceName("agent", user))
-}
-
-func (m *Manager) waitReachableFor(ctx context.Context, podName string) error {
-	addr := fmt.Sprintf("%s.%s.svc:%d", podName, m.spec.Namespace, m.spec.Port)
-	deadline := time.After(30 * time.Second)
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf("agent service %s not reachable within timeout", addr)
-		case <-tick.C:
-			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-			if err == nil {
-				_ = conn.Close()
-				return nil
-			}
-		}
-	}
-}
-
-func (m *Manager) createResources(ctx context.Context, user string) error {
-	pvc := m.spec.DataPVC(user)
-	if _, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create pvc: %w", err)
-		}
-	}
-
-	svc := m.spec.Service(user)
-	if _, err := m.client.CoreV1().Services(m.spec.Namespace).Get(ctx, svc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, err := m.client.CoreV1().Services(m.spec.Namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create service: %w", err)
-		}
-	}
-
-	pod := m.spec.Pod(user)
-	if _, err := m.client.CoreV1().Pods(m.spec.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create pod: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) waitReady(ctx context.Context, user string) error {
-	return m.waitReadyFor(ctx, k8s.ResourceName("agent", user))
-}
-
-func (m *Manager) waitReadyFor(ctx context.Context, podName string) error {
+// waitCRWarm polls the AgentInstance CR until phase == Warm (or the deadline).
+func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 	deadline := time.After(readyTimeout)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
@@ -191,23 +172,48 @@ func (m *Manager) waitReadyFor(ctx context.Context, podName string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return errors.New("agent instance not ready within timeout")
+			return fmt.Errorf("agent instance %s not warm within timeout", instanceName)
 		case <-tick.C:
-			pod, err := m.client.CoreV1().Pods(m.spec.Namespace).Get(ctx, podName, metav1.GetOptions{})
+			var inst v1alpha1.AgentInstance
+			err := m.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
 			if err != nil {
+				if apierrors.IsNotFound(err) {
+					continue // controller still creating
+				}
 				continue
 			}
-			if podReady(pod) {
+			switch inst.Status.Phase {
+			case v1alpha1.InstanceWarm:
 				return nil
+			case v1alpha1.InstanceFailed:
+				// Let the controller heal; keep waiting (transient).
+				log.Printf("instances: %s failed (%s), waiting for heal", instanceName, inst.Status.Message)
 			}
 		}
 	}
 }
 
-// InstanceStatus reports whether the user's agent Pod currently exists, its
-// phase and start time — backing the Portal 实例状态 card.
+// InstanceStatus reports whether the user's agent instance exists and its
+// phase (Portal 实例状态 card).
 func (m *Manager) InstanceStatus(ctx context.Context, user string) (exists bool, phase string, startedAt time.Time) {
-	pod, err := m.client.CoreV1().Pods(m.spec.Namespace).Get(ctx, k8s.ResourceName("agent", user), metav1.GetOptions{})
+	return m.InstanceStatusFor(ctx, AgentKey{User: user, Agent: v1alpha1.DefaultAgentName})
+}
+
+// InstanceStatusFor reports the live state of an agent instance.
+func (m *Manager) InstanceStatusFor(ctx context.Context, k AgentKey) (exists bool, phase string, startedAt time.Time) {
+	instanceName := k.InstanceName()
+	if m.cr != nil {
+		var inst v1alpha1.AgentInstance
+		if err := m.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst); err != nil {
+			return false, "未拉起（常驻策略）", time.Time{}
+		}
+		p := string(inst.Status.Phase)
+		if p == "" {
+			p = "Creating"
+		}
+		return true, p, time.Time{}
+	}
+	pod, err := m.client.CoreV1().Pods(m.ns).Get(ctx, k8s.ResourceName("agent", k.User), metav1.GetOptions{})
 	if err != nil {
 		if m.reclaimEnabled {
 			return false, "回收中（按需拉起）", time.Time{}
@@ -220,10 +226,12 @@ func (m *Manager) InstanceStatus(ctx context.Context, user string) (exists bool,
 	return true, string(pod.Status.Phase), startedAt
 }
 
-// Run starts the background reconciliation loop (idle reclaim + crash heal)
-// and the per-user data directory GC. Both only act on the leader replica
-// (design doc §3.3 多副本 Active/Standby).
+// Run starts the background reconciliation loop (legacy path only; the CRD
+// controller replaces it when enabled).
 func (m *Manager) Run(ctx context.Context) {
+	if m.cr != nil {
+		return // CRD path: the controller owns reconcile/GC.
+	}
 	go func() {
 		t := time.NewTicker(reconcileEvery)
 		defer t.Stop()
@@ -233,7 +241,7 @@ func (m *Manager) Run(ctx context.Context) {
 				return
 			case <-t.C:
 				if !m.isLeader() {
-					continue // standby replica: observe only
+					continue
 				}
 				if err := m.reconcile(ctx); err != nil {
 					log.Printf("instances: reconcile: %v", err)
@@ -260,17 +268,108 @@ func (m *Manager) Run(ctx context.Context) {
 	}()
 }
 
+// ---- legacy Pod manager (non-CRD deployments) ----
+
+func (m *Manager) ensureLegacy(ctx context.Context, user string) error {
+	podName := k8s.ResourceName("agent", user)
+	existing, err := m.client.CoreV1().Pods(m.ns).Get(ctx, podName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		if err := m.createResources(ctx, user); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case isCrashLoop(existing):
+		log.Printf("instances: recreating crashed pod %s", podName)
+		if err := m.client.CoreV1().Pods(m.ns).Delete(ctx, podName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err := m.createResources(ctx, user); err != nil {
+			return err
+		}
+	}
+	if err := m.waitReady(ctx, user); err != nil {
+		return err
+	}
+	return m.waitReachable(ctx, user)
+}
+
+func (m *Manager) createResources(ctx context.Context, user string) error {
+	pvc := m.spec.DataPVC(user)
+	if _, err := m.client.CoreV1().PersistentVolumeClaims(m.ns).Get(ctx, pvc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+		if _, err := m.client.CoreV1().PersistentVolumeClaims(m.ns).Create(ctx, pvc, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create pvc: %w", err)
+		}
+	}
+	svc := m.spec.Service(user)
+	if _, err := m.client.CoreV1().Services(m.ns).Get(ctx, svc.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+		if _, err := m.client.CoreV1().Services(m.ns).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create service: %w", err)
+		}
+	}
+	pod := m.spec.Pod(user)
+	if _, err := m.client.CoreV1().Pods(m.ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create pod: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) waitReady(ctx context.Context, user string) error {
+	deadline := time.After(readyTimeout)
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return errors.New("agent instance not ready within timeout")
+		case <-tick.C:
+			pod, err := m.client.CoreV1().Pods(m.ns).Get(ctx, k8s.ResourceName("agent", user), metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if podReady(pod) {
+				return nil
+			}
+		}
+	}
+}
+
+func (m *Manager) waitReachable(ctx context.Context, user string) error {
+	return m.waitReachableFor(ctx, k8s.ResourceName("agent", user))
+}
+
+func (m *Manager) waitReachableFor(ctx context.Context, podName string) error {
+	addr := fmt.Sprintf("%s.%s.svc:%d", podName, m.ns, m.spec.Port)
+	deadline := time.After(30 * time.Second)
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("agent service %s not reachable within timeout", addr)
+		case <-tick.C:
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+		}
+	}
+}
+
 func (m *Manager) reconcile(ctx context.Context) error {
-	pods, err := m.client.CoreV1().Pods(m.spec.Namespace).List(ctx, metav1.ListOptions{
+	pods, err := m.client.CoreV1().Pods(m.ns).List(ctx, metav1.ListOptions{
 		LabelSelector: k8s.AgentLabelApp + "=true",
 	})
 	if err != nil {
 		return err
 	}
-
 	now := time.Now()
-
-	// Instance pool gauge (design §9 实例池: 活跃/回收实例数).
 	metrics.SetGauge("cubepilot_pool_instances", int64(len(pods.Items)))
 
 	existing := map[string]bool{}
@@ -281,9 +380,6 @@ func (m *Manager) reconcile(ctx context.Context) error {
 			m.mu.Lock()
 			last, ok := m.active[user]
 			if !ok {
-				// First sighting in this process: seed with the Pod creation time so
-				// a freshly-restarted backend doesn't immediately reclaim instances
-				// that were created by the previous process (activity is in-memory).
 				last = pod.CreationTimestamp.Time
 				m.active[user] = last
 			}
@@ -291,7 +387,7 @@ func (m *Manager) reconcile(ctx context.Context) error {
 			if now.Sub(last) > m.ttl {
 				log.Printf("instances: reclaiming idle instance for %s", user)
 				metrics.Inc("cubepilot_pool_reclaims_total", "", 1)
-				if err := m.client.CoreV1().Pods(m.spec.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				if err := m.client.CoreV1().Pods(m.ns).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 					return err
 				}
 				continue
@@ -300,17 +396,14 @@ func (m *Manager) reconcile(ctx context.Context) error {
 		if isCrashLoop(&pod) {
 			log.Printf("instances: healing crashed instance for %s", user)
 			metrics.Inc("cubepilot_pool_rebuilds_total", "", 1)
-			if err := m.client.CoreV1().Pods(m.spec.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := m.client.CoreV1().Pods(m.ns).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
 			_ = m.createResources(ctx, user)
 		}
 	}
-
-	// 常驻策略（reclaimEnabled=false）下，实例应保持运行：对有数据目录（PVC）
-	// 但 Pod 意外缺失的用户补拉实例（设计 §5.2 拉起、常驻运行、异常自愈重建）。
 	if !m.reclaimEnabled {
-		pvcs, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).List(ctx, metav1.ListOptions{
+		pvcs, err := m.client.CoreV1().PersistentVolumeClaims(m.ns).List(ctx, metav1.ListOptions{
 			LabelSelector: k8s.AgentLabelApp + "=true",
 		})
 		if err != nil {
@@ -331,29 +424,8 @@ func (m *Manager) reconcile(ctx context.Context) error {
 	return nil
 }
 
-func isCrashLoop(pod *corev1.Pod) bool {
-	if pod.Status.Phase == corev1.PodFailed {
-		return true
-	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		if !cs.Ready && cs.RestartCount >= crashRestartThreshold {
-			return true
-		}
-	}
-	return false
-}
-
-// ---- per-user data directory GC (design doc §5.1 / §10) ----
-//
-// Conversation history is retained for a sliding window (default 72h) and
-// pruned beyond it; PVC watermarks above 70% trigger an aggressive pass and a
-// warning (水位 >70% 触发清理/告警). GC is leader-only (multi-replica).
-
-// gcDataDirs lists per-user data PVCs and prunes expired session/transcript
-// files inside each via an exec into the owning agent Pod. Pods that are
-// currently down are skipped (their data is untouched; next pass retries).
 func (m *Manager) gcDataDirs(ctx context.Context) error {
-	pvcs, err := m.client.CoreV1().PersistentVolumeClaims(m.spec.Namespace).List(ctx, metav1.ListOptions{
+	pvcs, err := m.client.CoreV1().PersistentVolumeClaims(m.ns).List(ctx, metav1.ListOptions{
 		LabelSelector: k8s.AgentLabelApp + "=true",
 	})
 	if err != nil {
@@ -373,47 +445,32 @@ func (m *Manager) gcDataDirs(ctx context.Context) error {
 
 func (m *Manager) gcUserData(ctx context.Context, user string) error {
 	podName := k8s.ResourceName("agent", user)
-	pod, err := m.client.CoreV1().Pods(m.spec.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	pod, err := m.client.CoreV1().Pods(m.ns).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("get pod: %w", err) // down: skip, retry next pass
+		return fmt.Errorf("get pod: %w", err)
 	}
 	if !podReady(pod) {
 		return fmt.Errorf("pod not ready, skip")
 	}
-
-	// Delete transcript JSONL / sessions files older than the window. The
-	// gateway writes state under OPENCLAW_STATE_DIR (/home/node/.openclaw):
-	// sessions.json + transcript JSONL per session in the session store dir.
-	// A conservative find over the state dir removes files with mtime older
-	// than the window; the gateway recreates them on next use.
 	hours := int64(m.gcWindow.Hours())
 	if hours <= 0 {
 		hours = 72
 	}
 	cmd := fmt.Sprintf(
 		`find /home/node/.openclaw -type f \( -name '*.jsonl' -o -name 'sessions.json' -o -name '*.json' \) -mmin +%d -delete 2>/dev/null; echo gc-done`, hours*60)
-
-	resp, err := m.execInPod(ctx, podName, "gateway", cmd)
-	if err != nil {
+	if _, err := m.execInPod(ctx, podName, "gateway", cmd); err != nil {
 		return fmt.Errorf("exec gc: %w", err)
 	}
-
-	// Watermark check (§10 水位 >70% 触发清理/告警): measure real usage of the
-	// data mount via df (the Pod's PVC is mounted at /home/node/.openclaw).
 	df, err := m.execInPod(ctx, podName, "gateway",
 		`df -P /home/node/.openclaw | awk 'NR==2 {print $5}' | tr -d '%'`)
 	if err != nil {
 		return fmt.Errorf("df: %w", err)
 	}
-	if pct, err := strconv.Atoi(strings.TrimSpace(df)); err == nil {
-		if float64(pct)/100 > m.gcWatermark {
-			log.Printf("instances: PVC watermark %d%% > %.0f%% for %s, aggressive GC advised",
-				pct, m.gcWatermark*100, user)
-		}
-	} else {
-		log.Printf("instances: parse df output %q for %s: %v", df, user, err)
+	pct, err := strconv.Atoi(strings.TrimSpace(df))
+	if err == nil && float64(pct)/100 > m.gcWatermark {
+		log.Printf("instances: PVC watermark %d%% > %.0f%% for %s, aggressive GC advised",
+			pct, m.gcWatermark*100, user)
 	}
-	_ = resp
 	return nil
 }
 
@@ -423,7 +480,7 @@ func (m *Manager) execInPod(ctx context.Context, pod, container, cmd string) (st
 	req := m.client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod).
-		Namespace(m.spec.Namespace).
+		Namespace(m.ns).
 		SubResource("exec").
 		Param("container", container).
 		VersionedParams(&corev1.PodExecOptions{
@@ -432,12 +489,9 @@ func (m *Manager) execInPod(ctx context.Context, pod, container, cmd string) (st
 			Stderr:  true,
 		}, scheme.ParameterCodec)
 
-	cfg, err := rest.InClusterConfig()
+	cfg, err := k8s.NewRestConfig()
 	if err != nil {
-		cfg, err = clientcmd.BuildConfigFromFlags("", k8s.KubeconfigPath())
-		if err != nil {
-			return "", fmt.Errorf("rest config: %w", err)
-		}
+		return "", fmt.Errorf("rest config: %w", err)
 	}
 	exec, err := remotecommand.NewSPDYExecutor(cfg, "POST", req.URL())
 	if err != nil {
@@ -452,6 +506,18 @@ func (m *Manager) execInPod(ctx context.Context, pod, container, cmd string) (st
 		return buf.String(), fmt.Errorf("exec: %w", err)
 	}
 	return buf.String(), nil
+}
+
+func isCrashLoop(pod *corev1.Pod) bool {
+	if pod.Status.Phase == corev1.PodFailed {
+		return true
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready && cs.RestartCount >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 func podReady(pod *corev1.Pod) bool {
