@@ -21,7 +21,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 - **用户侧**：对话式问答与自然语言操作（ChatOps），降低平台使用门槛；
 - **运维侧**：集群状态自动感知与健康巡检，辅助运维决策。
 
-**与原生 OpenClaw 的关系**：CubePilot 复用 OpenClaw 作为 Agent 运行时，但**不复用其原生部署与原生 UI**——① **实例生命周期由平台管理**：OpenClaw 以「每用户实例 Pod」形态运行，拉起、常驻、异常自愈、闲置回收均由 Instance Manager 统一管理（区别于原生单 gateway 常驻部署），这是 Instance Manager 与「会话账本 vs 执行态」分层（[§5.1](#51-m1-对话域)）的根因；闲置回收 / 按需启停为**可配置策略**（默认常驻运行），启停安排以需求文档 FR-M2-002 为准；② **Portal 为平台统一入口**：对话页 / 任务报告 / 审计查询 / Agent 配置，而非 OpenClaw 的聊天 UI / TUI。
+**与原生 OpenClaw 的关系**：CubePilot 复用 OpenClaw 作为 Agent 运行时，但**不复用其原生部署与原生 UI**——① **实例生命周期由平台管理**：OpenClaw 以「每用户实例 Pod」形态运行，拉起、常驻、异常自愈、闲置回收均由 Instance Manager 统一管理（区别于原生单 gateway 常驻部署），这是 Instance Manager 与「数据真源归 runtime 数据目录」（[§5.1](#51-m1-对话域)）的根因；闲置回收 / 按需启停为**可配置策略**（默认常驻运行），启停安排以需求文档 FR-M2-002 为准；② **Portal 为平台统一入口**：对话页 / 任务报告 / 审计查询 / Agent 配置，而非 OpenClaw 的聊天 UI / TUI。
 
 本文档描述 CubePilot 的**架构设计**，核心回答四个问题：① 六个功能域如何划分、如何协作（[§3](#3-总体架构)/[§5](#5-功能域设计)）；② 哪些组件**可替换 / 可扩展**，接口如何预留（[§4](#4-核心扩展点设计)）；③ 各业务模块如何接入基座、模块领域智能如何落地（[§5.7](#57-各模块-ai-agent-能力与对接设计)）；④ 第一阶段如何做到**最小可用且可演进**（[§12](#12-架构演进)）。
 
@@ -76,7 +76,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | **每用户实例、物理隔离** | 每活跃用户一个独立 Agent 实例与数据目录，隔离边界为 Pod + 数据目录 | 一用户一实例 Pod + 独立数据目录（NFR-002，阶段一） |
 | **扩展点前置、最小闭环** | 每个模块只做最小闭环；可扩展能力实现为**标准化注册/适配接口**，不在当下实现扩展本身 | [§4 核心扩展点](#4-核心扩展点设计) |
 | **模型无关** | 统一接口对接 LLM；默认私有化部署（完全内网），也支持配置平台外 LLM（OpenAI 兼容 API） | LLM 路由（FR-M2-003） |
-| **渐进演进** | 第一阶段 OpenClaw 落地，经窄接口平滑迁移到 Hermes/DeepSeek-Harness/自研，隔离机制与平台账本不因运行时变化而改变（运行时私有记忆不迁移） | Agent Runtime Adapter（[§4.1](#41-扩展点一agent-runtime-adapter)） |
+| **渐进演进** | 第一阶段 OpenClaw 落地，经窄接口平滑迁移到 Hermes/DeepSeek-Harness/自研，隔离机制与平台资产不因运行时变化而改变——**平台任何阶段不持有 agent 私有数据**（消息 / 轨迹 / 记忆 / 配置，真源 = 数据目录），换运行时时按「丢」或「一次性迁移工具」（原料 = 旧数据目录 PVC）处理 | Agent Runtime Adapter（[§4.1](#41-扩展点一agent-runtime-adapter)） |
 
 **关键取舍（为什么这么设计）**：
 
@@ -87,7 +87,7 @@ CubePilot 是 CubeStack 面向「所有用户」的一站式 AI 助手：将平�
 | 能力目录 / 任务 / 任务报告用 CRD（非 DB） | 契约/执行记录同生命周期（Task + TaskRun 一体）；声明式 + RBAC 管控；报告是运维资产 |
 | 任务模板 / 任务拆分 | 模板 = 「做什么」（指令定义，平台维护）；任务 = 「谁的任务、何时跑」（实例，用户建）；TaskRun 由平台写入——授权与凭据边界清晰 |
 | 定时任务经 M2 执行 | 巡检等定时任务由平台调度器触发，到点拉起实例、经 M2 Agent 实例执行（创建者身份 + 渲染后指令），独立会话与对话解耦 |
-| OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩；隔离机制同构、账本在平台侧，便于迁移（运行时私有记忆不迁移） |
+| OpenClaw 起步（经 Adapter 可替换） | 阶段一求最小闭环，OpenClaw 原生 MCP/确认钩子/上下文压缩/会话轨迹；隔离机制同构、agent 私有数据不跨 runtime（格式私有，换运行时按丢/迁处理），平台资产不受影响 |
 
 ---
 
@@ -214,17 +214,18 @@ AgentRuntimeAdapter ◄──► OpenClawAdapter（阶段一）
 
 **为什么可替换**：架构按「契约层 / 实例层」分层，运行时只承载实例层——换运行时只重写 Adapter，业务逻辑（会话、工具、巡检、审计）不动：
 
-- **契约层（平台拥有，与运行时无关，替换时保留）**：会话账本与消息历史（Conversation / Message 元数据，§7.1）、能力目录（Capability CRD）、实例配置（模型 / 工具开关 / 系统提示词）、知识注入源（RAG 索引，阶段二起）。
-- **实例层（运行时拥有）**：执行态、原生 session 状态与**私有 memory** 落在每用户数据目录（PVC）；实例无状态化 = Pod 可重建、数据目录持久，状态从 DB + 数据目录恢复。**私有记忆不跨运行时迁移**（格式私有），换运行时重新积累，长期记忆由契约层的知识注入（E4 hook）与长期记忆机制（FR-M1-014）兜底。
+- **契约层（平台拥有，与运行时无关，替换时保留）**：能力目录（Capability CRD）、任务域资产（Task / TaskTemplate / TaskRun CRD）、知识注入源（RAG 索引，阶段二起）。
+- **实例层（运行时拥有）**：执行态、原生 session 状态（transcript / trajectory）、私有 memory、**agent 配置（模型 / 工具开关 / 系统提示词）** 落在每用户数据目录（PVC）；实例无状态化 = Pod 可重建、数据目录持久，状态从数据目录恢复。**私有数据不跨运行时迁移**（格式私有），换运行时按「丢」或「迁移工具」处理；长期能力替代路径 = 契约层知识注入（E4 hook）。
 - **Skills**：OpenClaw / Hermes / DeepSeek-Harness 均提供一等技能的子系统（skill / 插件形态，SKILL.md 目录为通用载体）；能力目录 → 各运行时技能/工具的映射收敛在 Adapter 内，技能载体格式的跨运行时兼容性在契约冻结（§13）时验证。
 
-**会话真源（Source of Truth）**：会话历史分两层，真源各归一处——
+**会话与数据真源（Source of Truth）**：**平台任何阶段零持有 agent 私有数据**——消息历史 / 执行上下文 / 记忆 / skill 与配置，唯一真源 = 各用户实例的数据目录（PVC）：
 
-- **消息历史（用户可见 / 审计 / 保留 / 换运行时恢复）＝ 平台为真源**：M1 对话域是 SSE 中枢，`user` 消息与 `tool_call / tool_result / message_delta / message_done` 事件全部流经它，**在转发路径上顺带把每一轮写入 `Message` 表（阶段二；事件流捕获，event-sourcing）**——账本是事件流的投影，天然一致，runtime 无需感知；中断 / 失败的轮次标记 `incomplete`。
-- **执行上下文（会话进行时 LLM 窗口 / 压缩摘要）＝ runtime 为真源**：由 OpenClaw 数据目录中的 session 管理（FR-M1-010 原生能力），平台每次请求只下发「新消息 + 会话引用」，不重传历史、不干预窗口。
-- **换运行时接回**：用平台账本把近期消息**播种**为新 runtime 的会话上下文，会话继续，仅丢失旧 runtime 的压缩摘要（可接受）。阶段一无 Message 表、换运行时丢近期历史——阶段一单管理员、换运行时在阶段三，接受此代价。
+- **执行上下文（LLM 窗口 / 压缩摘要）= runtime 维护**（FR-M1-010 原生能力）：平台每次请求只下发「新消息 + 会话引用」，不重传历史、不干预窗口；
+- **消息历史（用户可见）= runtime 数据目录**：Portal 经 gateway 会话接口读取，冷时先冷启动实例（代价见 §5.1）；
+- **Agent 行为轨迹（审计溯源）= runtime 数据目录**：transcript + trajectory 记录 tool.call 入参 / tool.result / 时序（§5.5）；
+- **换运行时 = 丢或迁**：agent 私有数据接受丢弃，或以旧数据目录（PVC）为原料写一次性迁移工具——平台事先不为此存任何副本。
 
-**契约冻结与验证（E1 成立的前提，PoC 先行）**：8 类事件契约在阶段一 PoC 前**不冻结**，需实测 OpenClaw 事件流后回填映射表。PoC 验收清单：① 单会话消息往返（新消息 → 完整回复）；② 工具调用往返（`tool_call` / `tool_result` 时序与载荷）；③ 流式增量（`message_delta` / `message_done`）；④ 会话接回（实例重建后同一会话可继续）；⑤ **事件流捕获同步**——平台从 SSE 流顺带落账 `Message` 表后，历史渲染 / 换 runtime 播种均可还原近期对话（本「会话真源」模型的可行性在此验证）；⑥ 事件映射表（OpenClaw 原生事件 → 8 类 SSE）定稿。**降级契约**：若运行时无法精确映射全部 8 类，契约降级为**最少必要事件** `message_delta / message_done / tool_call / tool_result`（4 类，保证对话闭环与工具呈现），`agent_thinking / confirm_*` 为可选增强——E1 不因单点映射失败而推翻。
+**契约冻结与验证（E1 成立的前提，PoC 先行）**：8 类事件契约在阶段一 PoC 前**不冻结**，需实测 OpenClaw 事件流后回填映射表。PoC 验收清单：① 单会话消息往返（新消息 → 完整回复）；② 工具调用往返（`tool_call` / `tool_result` 时序与载荷）；③ 流式增量（`message_delta` / `message_done`）；④ 会话接回（实例重建后同一会话可继续）；⑤ **纯 runtime 数据通路**——Portal 不落地任何 agent 数据副本：会话清单 / 历史渲染全程经 gateway 会话接口读取（含冷启动接回）、agent 配置写路径（编辑模型 / 开关 / 提示词）实测（本「零持有」模型的可行性在此验证）；⑥ 事件映射表（OpenClaw 原生事件 → 8 类 SSE）定稿。**降级契约**：若运行时无法精确映射全部 8 类，契约降级为**最少必要事件** `message_delta / message_done / tool_call / tool_result`（4 类，保证对话闭环与工具呈现），`agent_thinking / confirm_*` 为可选增强——E1 不因单点映射失败而推翻。
 
 **阶段一落地**：OpenClaw 每用户实例 Pod + 独立数据目录；实例生命周期由 Instance Manager 管理（拉起、常驻运行、异常自愈；闲置回收 / 按需启停为可配置策略，启停以需求 FR-M2-002 为准）。
 
@@ -303,16 +304,16 @@ M3 工具域
 
 | 维度 | 设计 | 需求 |
 |---|---|---|
-| 会话载体 | 阶段一复用 OpenClaw session（数据目录持久、冷启动自恢复）；阶段二多租户落地时引入 `Conversation` 元数据表（`user/tenant/project` 键 + `runtime` + `runtime_session_id` 映射，运行时无关） | FR-M1-001 |
+| 会话载体 | 复用 OpenClaw session（数据目录持久、冷启动自恢复）——**任何阶段不建会话 / 消息表**，会话清单经 gateway 会话接口读取，Portal 会话 ID = runtime session key | FR-M1-001 |
 | 归属隔离 | 阶段一单操作者（无多用户隔离）；多用户体系就绪后按用户/租户隔离，跨用户访问返回 403 | FR-M1-002（阶段二） |
 | 流式响应 | `POST /messages` → SSE 事件流（8 类事件；阶段一为其余 6 类，`confirm_*` 阶段二 HITL 启用） | FR-M1-003 |
 | 历史分页 | 游标（cursor）分页，向上滚动加载，不重不漏；仅保留近期 48~72 小时历史，超期清理、不长期存储 | FR-M1-004 |
-| 上下文装载 | 平台侧要素（身份/能力目录/确认规则）为实例级配置、启动时加载；每次请求仅动态组装新消息 + 会话历史 | FR-M1-005 |
+| 上下文装载 | 平台侧要素（身份/能力目录/确认规则）为实例级配置、启动时加载；每次请求仅动态组装新消息 + 会话引用 | FR-M1-005 |
 | Portal 对话页 | chat UI + 流式渲染 + 会话切换 | FR-M1-007 |
 | 上下文压缩 | 长对话超窗口时压缩早期历史为摘要，保留系统指令与近期对话（OpenClaw 原生支持，无自研工作） | FR-M1-010 |
 | 扩展点 | 系统提示词组装处「知识注入 hook」（→ RAG） | E4 |
 
-**会话存储（阶段一不建会话表）**：OpenClaw session 原生持久化在数据目录（`sessions.json` + transcript JSONL），实例回收→重建后自动恢复，冷启动接回无需自建 DB。会话清单与历史由助手服务经 OpenClaw gateway 的 HTTP `POST /tools/invoke` 调 `sessions_list` / `sessions_history` 读取（bearer token 鉴权，本地已验证）——`sessions_list` 返会话元数据（sessionId / 派生 title / 时间戳），`sessions_history` 返结构化消息（含 thinking/toolCall 块，Portal 折叠渲染，超长截断）。**代价**：读取要求实例存活，冷时列会话需先冷启动。**保留策略**：对话历史仅保留近期 48~72 小时，超期清理、不长期存储（FR-M1-004）——**清理由 Instance Manager 对每用户数据目录定期 GC 执行**（默认保留 72h 滑动窗口，删除超期 session/transcript；阶段二起以 Message 表为真源，同步清理超期行），助手服务读取时对超期窗口外内容返回过期提示；PVC 容量按滑动窗口估算，水位 >70% 触发清理/告警（§10）。阶段二多租户 / 审计 / 200 轮状态机落地时，再引入 Conversation/Message 元数据表。
+**会话存储（不建会话表——任何阶段）**：OpenClaw session 原生持久化在数据目录（`sessions.json` + transcript JSONL），实例回收→重建后自动恢复，冷启动接回无需自建 DB。会话清单与历史由助手服务经 OpenClaw gateway 的 HTTP `POST /tools/invoke` 调 `sessions_list` / `sessions_history` 读取（bearer token 鉴权，本地已验证）——`sessions_list` 返会话元数据（sessionId / 派生 title / 时间戳），`sessions_history` 返结构化消息（含 thinking/toolCall 块，Portal 折叠渲染，超长截断）。**代价**：读取要求实例存活，冷时列会话需先冷启动。**保留策略**：对话历史仅保留近期 48~72 小时，超期清理（FR-M1-004）——**清理由 Instance Manager 对每用户数据目录定期 GC 执行**（默认 72h 滑动窗口，按文件龄期删除超期 session/transcript，不解析内容），读取时对超期窗口返回过期提示；**trajectory 文件独立保留节奏**（溯源用途不受对话窗口 GC 影响，超限经 runtime 原生导出归档后清理，§5.5）；PVC 容量按滑动窗口估算，水位 >70% 触发清理/告警（§10）。**会话限制**（200 轮 / 空闲 24h inactive，FR-M1-006）由 runtime 会话能力与 IM 策略承接，不建平台状态机。
 
 **上下文组装**：按序装载——① 系统提示词（指令层）② 知识注入（E4 hook，阶段一空）③ 能力目录/工具清单 ④ 确认规则（阶段二起）⑤ 会话引用（指向 runtime 执行态）；其中 ①~④ 为**实例级配置**（启动时加载、随请求下发），⑤ **以 runtime 执行态为真源**——平台只传会话引用，历史窗口由 OpenClaw 自维护（含超窗压缩摘要，FR-M1-010），不重复序列化全量历史进请求。**E4 hook 落在平台侧 ①② 组装处**，注入结果随实例级配置下发，不进入 runtime 内部 prompt 组装。Token 预算：系统指令 + 能力目录固定，会话历史窗口由 runtime 管理、平台不重复计数。
 
@@ -326,7 +327,7 @@ M3 工具域
 - **每用户实例**：一用户一个 OpenClaw 实例 Pod + 独立数据目录，以 Pod 为隔离边界（NFR-002）；实例无状态化，状态从 DB/数据目录恢复（FR-M2-004）。
 - **Instance Manager**：实例生命周期管理——拉起、**常驻运行**、异常自愈重建；闲置回收 / 按需启停为**可配置策略**（默认常驻运行、不闲置回收；回收策略启停以需求文档 FR-M2-002 为准）；上报实例状态指标（FR-M2-006，阶段二）。
 - **LLM 路由**：模型无关，OpenAI 兼容接口（FR-M2-003）；默认私有化模型，也可配置平台外 LLM；换模型不破坏对话功能。
-- **配置管理**：模型选择/工具开关/系统提示词，持久化并即时生效（FR-M2-005）；能力目录作为工具开关 + 系统提示词的一部分，实例启动时加载、变更即时生效。
+- **配置管理**：模型选择/工具开关/系统提示词，持久化并即时生效（FR-M2-005）；**配置真源 = 数据目录（PVC），平台不持副本**——读取 / 编辑经 runtime 配置接口（冷时先冷启动实例；写路径挂 PoC 验证，§13）；能力目录作为工具开关 + 系统提示词的一部分，实例启动时加载、变更即时生效。
 - **扩展点**：Agent Runtime Adapter（→ Hermes/自研），见 [§4.1](#41-扩展点一agent-runtime-adapter)。
 
 **实例生命周期**：
@@ -406,12 +407,13 @@ stateDiagram-v2
 
 ## 5.5 M5 审计域（阶段二）
 
-**职责**：工具调用与确认的完整记录。
+**职责**：Agent 行为溯源与确认留痕。
 
-- `tool_call_record` 表：`user_id / conversation_id / message_id / tool / args / level / status / confirm / result / created_at`（FR-M5-001）。
-- 审计查询 API（/audit-logs 按用户/工具/时间，offset 分页，FR-M5-002）+ 治理界面（FR-M5-004，阶段二）。
-- 审计写入与主链路解耦（异步写、失败重试），审计故障不阻塞对话（FR-M5-003）。
-- 阶段一写操作仅靠 K8s Audit Log 兜底。
+- **溯源 = 复用 runtime 轨迹（平台零复制，这是常态而非降级）**：runtime 原生记录完整行为轨迹——OpenClaw 的 transcript（tool.call 完整入参 / tool.result 出参与时序，exec 含 exitCode/durationMs）+ trajectory sidecar（结构化 `openclaw-trajectory` 事件，默认开启），DeepSeek-Harness 的 session 轨迹等价；全部落在数据目录。任意一次执行可回放其工具调用序列（FR-M5-001）。
+- **确认台账（平台唯一自留的审计数据）**：runtime 不持久化审批决策（审批人身份丢失）——HITL 确认动作发生在平台侧（规则命中 → Portal/CLI 确认 → 决定），平台记录**自己的**确认事件：会话引用 / 命中规则 / 操作人 / 决定 / 时间，不含消息内容（FR-M5-001）。薄、低频、平台自产。
+- **长期留存 = 导出归档**：对话窗口 GC（48~72h）之外需要长期留档的，经 runtime 原生导出（OpenClaw `export-trajectory` bundle：events / prompts / tools / artifacts）归档至对象存储；在线侧只有确认台账，不建消息级审计表。
+- **审计查询**（/audit-logs，FR-M5-002）+ 治理界面（FR-M5-004）：近期 = 冷启动实例读轨迹；长期 = 读归档物；确认记录 = 台账。审计读写与主链路解耦，审计故障不阻塞对话（FR-M5-003）。
+- **阶段一兜底**：K8s Audit Log + runtime 轨迹（数据目录有界窗口内）。
 
 ## 5.6 M6 平台集成（支撑）
 
@@ -555,15 +557,15 @@ sequenceDiagram
 
 # 7. 数据模型
 
-**存储策略**：会话/消息（阶段一）不存 DB，落在 OpenClaw 实例数据目录（经 `/tools/invoke` 读取）；任务模板 / 任务 / 任务报告 / 能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载；审计与多租户元数据（阶段二）存 PostgreSQL + Redis。
+**存储策略**：**agent 私有数据（会话 / 消息 / 轨迹 / 配置 / 记忆）任何阶段不建表、不落 DB**——唯一真源为实例数据目录（经 gateway 会话接口读取，冷时先冷启动）；任务模板 / 任务 / 任务报告 / 能力目录为「运维/契约资产」，以 CRD（`assistant.suanova.io/v1alpha1`）承载；确认台账与多租户元数据（阶段二）存 PostgreSQL + Redis。
 
 ## 7.1 DB 表（阶段二）
 
+> 仅平台自产数据；agent 私有数据零平台存储（§4.1「会话与数据真源」）。
+
 | 表 | 关键字段 | 需求 |
 |---|---|---|
-| **Conversation** | `id`(UUID)、`user_id / tenant_id / project_id`（隔离键）、`runtime`(openclaw/hermes/deepseek-harness)、`runtime_session_id`（映射到对应运行时会话）、`title`、`status`(active/inactive/archived/closed)、`context`(json)、时间戳 | FR-M1-001 |
-| **Message** | `id`、`conversation_id`、`role`(user/assistant/tool/system)、`content`、`tool_calls`(json)、`token_usage`(json)、`error`(json)、`created_at` | FR-M1-003/004 |
-| **ToolCallRecord** | `id`、`user_id / conversation_id / message_id`、`tool`、`args`、`level`(L0/L1)、`status`(pending/executed/denied/failed/timeout)、`confirm`(json)、`result`(json)、`created_at` | FR-M5-001 |
+| **ConfirmRecord**（确认台账） | `id`、`user_id`、`session_key`（会话引用）、`rule_id`、`command_hint`（命中内容摘要，截断）、`decision`(approved/denied/timeout)、`decided_at`、`created_at` | FR-M5-001 |
 
 ## 7.2 CRD
 
@@ -571,7 +573,7 @@ sequenceDiagram
 
 **Task**（定时/触发 AI 任务，FR-M4-001/002）：`spec.templateRef`（可选，引用 TaskTemplate；为空时直接写 `spec.instruction`）、`spec.instruction`（模板为空时的直接指令文本）、`spec.params`（覆盖/填充模板 `paramsSchema` 默认值，运行时与 `{{param}}` 插值）、`spec.creator`（创建者，以创建者身份 + RBAC 执行）、`spec.trigger`(manual/cron)、`spec.cron`；`status.phase`(Ready/Paused/…)、`status.lastRunTime`、`status.nextTaskRunName`。
 
-**TaskRun**（任务报告，FR-M4-004/005）：`spec.type`(inspection/verification/…，巡检为其中一种)、`spec.scope`(all/node-pool/tenant/project)、`spec.creatorTaskRef`(name + uid)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。**由调度器以平台身份创建并写入**，Agent 实例与用户凭据不直接写 CRD（凭据最小化）。`TaskRun` 属「有界资产」：只保留近期窗口的（例如 `ttlSecondsAfterFinished` 风格 GC），超期清理——长寿命分析走 PG/下游（FR-M4-012~014）。
+**TaskRun**（任务报告，FR-M4-004/005）：`spec.type`(inspection/verification/…，巡检为其中一种)、`spec.scope`(all/node-pool/tenant/project)、`spec.creatorTaskRef`(name + uid)；`status.phase`(Pending/Running/Completed/Failed/Cancelled)、`status.items`（各项结果与证据）、`status.summary`（异常数与 P0/P1/P2 计数）、`status.conditions`。**由调度器以平台身份创建并写入**，Agent 实例与用户凭据不直接写 CRD（凭据最小化）。`TaskRun` 属「有界资产」：只保留近期窗口的（例如 `ttlSecondsAfterFinished` 风格 GC），超期清理——长寿命分析走下游（Prometheus / Loki，FR-M4-012~014）。
 
 **Capability**（能力目录，FR-M3-006）：`spec.title`（能力名）、`spec.description`（用途）、`spec.params[]`（关键参数）、`spec.examples[]`（调用示例）、`spec.toolRef`（对应平台 CRD/API 引用）；登记为 Agent 可发现的能力清单，作为实例级配置启动时加载（承接 FR-M2-005），见 §5.7.2。
 
@@ -692,9 +694,9 @@ sequenceDiagram
 需求侧待确认见需求 §7（Q-001~Q-012）。设计侧额外待定：
 
 - MCP Gateway 引入时机与统一 HITL 可行性（§4.2/§4.3）；
-- Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes/DeepSeek-Harness 事件流对齐 + 会话真源 / 降级契约，§4.1）——阶段一 PoC 按 §4.1 验证清单先行实测，8 类事件契约在 PoC 前不冻结；
+- Agent Runtime Adapter 接口契约冻结（OpenClaw/Hermes/DeepSeek-Harness 事件流对齐 + 会话与数据真源 / 降级契约，§4.1）——阶段一 PoC 按 §4.1 验证清单先行实测，8 类事件契约在 PoC 前不冻结；
 - **Instance Manager 实现形态**：除「单副本 Leader 服务」外，备选落地为 K8s Operator（`AgentInstance` CRD + controller-runtime controller），统一负责 Agent 运行时实例 Pod 的安装 / 启动 / 停止 / 自愈 / 闲置回收，`spec.runtime` 区分 OpenClaw / Hermes / DeepSeek-Harness，常驻与回收策略由 CR spec 声明（原生适配 FR-M2-002/006/009）；两种形态职责等价，实现取舍待定；
 - **DeepSeek-Harness 作为 Agent 运行时候选**：deepseek-ai/deepseek-harness（2026-08 开源，「Model + Harness = Agent」，MIT，模型无关）作为 FR-M2-009 的适配对象之一，与 Hermes 同级评估；阶段一仍以 OpenClaw 落地，不影响既有演进路径。
 - 高可用（轻量）：IM / 调度器单副本起步，控制器化实现时 Leader Election（lease）随框架免费获得、平滑升 2 副本；单副本阶段故障行为与降级见 §8.1（§3.3/§11.1）。
 - AI 巡检：以创建者身份的巡检权限边界（模板只读约束 + 无权限项拒绝）与「疑似需复核」流程的 PoC 验证（§5.4）；
-- 消息历史真源（事件流捕获 → Message 表）与换 runtime 播种机制在 PoC 验证（§4.1/§5.1）。
+- 「平台零持有 agent 数据」模型在 PoC 验证：纯 runtime 历史通路（会话清单 / 渲染 / 冷启动接回）、agent 配置写路径（runtime 配置接口）、trajectory 溯源与导出归档流程（§4.1/§5.1/§5.5）。
