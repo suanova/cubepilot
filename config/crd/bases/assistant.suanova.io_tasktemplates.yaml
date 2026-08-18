@@ -1,0 +1,104 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: tasktemplates.assistant.suanova.io
+spec:
+  group: assistant.suanova.io
+  names:
+    kind: TaskTemplate
+    listKind: TaskTemplateList
+    plural: tasktemplates
+    singular: tasktemplate
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: DisplayName
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TaskTemplate is a parameterized task template (design §3.3.2) — 模板 ≠
+          实例 ≠ 执行: TaskTemplate (做什么) ≠ Task (谁的任务、何时跑) ≠ TaskRun (执行报告).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TaskTemplateSpec is a parameterized task template (design §3.3.2) — 模板
+              (做什么), the "class" of tasks. Preloaded: daily-inspection.
+            properties:
+              defaults:
+                description: Defaults are the default trigger settings.
+                properties:
+                  cron:
+                    type: string
+                  trigger:
+                    description: TaskTriggerKind is how a task is triggered (design
+                      §3.3.3).
+                    type: string
+                type: object
+              description:
+                description: Description explains what the template does.
+                type: string
+              displayName:
+                description: DisplayName is the human-facing template name.
+                type: string
+              instruction:
+                description: Instruction is the parameterized prompt ({{param}} interpolation).
+                type: string
+              paramsSchema:
+                description: ParamsSchema declares the parameters.
+                items:
+                  description: ParamSchema describes one task parameter (design §3.3.2
+                    paramsSchema).
+                  properties:
+                    default:
+                      type: string
+                    enum:
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              requiredPermissions:
+                description: RequiredPermissions is the permission hint.
+                properties:
+                  level:
+                    type: string
+                  note:
+                    type: string
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
