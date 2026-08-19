@@ -218,7 +218,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
 		}
 		sseMu.Lock()
-		writeSSE(w, ev)
+		if err := writeSSE(w, ev); err != nil {
+			sseMu.Unlock()
+			return err // client went away; abort the stream
+		}
 		flusher.Flush()
 		sseMu.Unlock()
 		return nil
@@ -258,7 +261,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				s.streamToolEvents(toolCtx, user, sessionKey, seen, func(ev openclaw.Event) {
 					s.ledgerEvent(user, sessionKey, ev)
 					sseMu.Lock()
-					writeSSE(w, ev)
+					if err := writeSSE(w, ev); err != nil {
+						sseMu.Unlock()
+						cancelTools()
+						return
+					}
 					flusher.Flush()
 					sseMu.Unlock()
 				})
@@ -279,15 +286,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, seen) {
 		s.ledgerEvent(user, sessionKey, ev)
 		sseMu.Lock()
-		writeSSE(w, ev)
+		if err := writeSSE(w, ev); err != nil {
+			sseMu.Unlock()
+			break // client went away
+		}
 		flusher.Flush()
 		sseMu.Unlock()
 	}
 	if doneEvent != nil {
 		sseMu.Lock()
-		writeSSE(w, *doneEvent)
-		flusher.Flush()
-		sseMu.Unlock()
+		if err := writeSSE(w, *doneEvent); err != nil {
+			sseMu.Unlock()
+		} else {
+			flusher.Flush()
+			sseMu.Unlock()
+		}
 	}
 	// Terminate the ledger turn: mark the assistant row done (incomplete when
 	// the stream failed / instance warming failed).
@@ -519,9 +532,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"report": content, "reportId": report.ID})
 }
 
-func writeSSE(w http.ResponseWriter, ev openclaw.Event) {
-	_, _ = fmt.Fprintf(w, "event: %s\n", ev.Type)
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", ev.Marshal())
+func writeSSE(w http.ResponseWriter, ev openclaw.Event) error {
+	if _, err := fmt.Fprintf(w, "event: %s\n", ev.Type); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", ev.Marshal()); err != nil {
+		return err
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
