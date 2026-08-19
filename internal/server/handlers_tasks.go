@@ -66,12 +66,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		body.Prompt = strings.TrimSpace(body.Prompt)
 		body.Schedule = strings.TrimSpace(body.Schedule)
 		if body.Name == "" || body.Prompt == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name 与 prompt 必填"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and prompt are required"})
 			return
 		}
 		if body.Schedule != "" {
 			if _, err := schedule.Parse(body.Schedule); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("cron 表达式无效: %v", err)})
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid cron expression: %v", err)})
 				return
 			}
 		}
@@ -165,14 +165,6 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// RunTask implements scheduler.Runner (design §4.5 / §5.4): it runs one
-// agent turn through the creator's instance and returns the collected text.
-// The CRD scheduler calls this and writes the TaskRun report itself
-// (平台身份写入).
-func (s *Server) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
-	return s.streamCollect(ctx, creator, sessionKey, prompt)
-}
-
 // runTask executes one task through the user's agent instance: streams the
 // prompt, records tool calls for audit, and stores a severity-counted report.
 func (s *Server) runTask(ctx context.Context, task store.Task, trigger string) error {
@@ -233,7 +225,7 @@ func storeReport(taskID, taskName, trigger string, started time.Time, content st
 	status := "success"
 	if runErr != nil {
 		status = "failed"
-		content = content + "\n\n[执行错误] " + runErr.Error()
+		content = content + "\n\n[run error] " + runErr.Error()
 	}
 	return store.Report{
 		TaskID:     taskID,
@@ -250,7 +242,8 @@ func storeReport(taskID, taskName, trigger string, started time.Time, content st
 }
 
 // countSeverity counts distinct severity findings in a report. Structured
-// reports list each finding under a header like "### P1 重要 — …", so count
+// reports list each finding under a header like "### P1 Important — …", so
+// count
 // those first; fall back to counting bare mentions for free-text reports.
 func countSeverity(content, sev string) int {
 	header := regexp.MustCompile(`(?m)^#{1,4}\s*` + sev + `\b`)
@@ -258,28 +251,6 @@ func countSeverity(content, sev string) int {
 		return n
 	}
 	return strings.Count(content, sev)
-}
-
-// StartScheduler launches the FR-M4 cron loop: every 30s it runs due tasks.
-// Multi-replica deployments only run tasks on the leader (design §3.3);
-// standby replicas observe but do not fire.
-func (s *Server) StartScheduler(ctx context.Context) {
-	if s.schedulerLeader != nil && !s.schedulerLeader.IsLeader() {
-		log.Printf("scheduler: standby replica, waiting for leadership")
-	}
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			if s.schedulerLeader != nil && !s.schedulerLeader.IsLeader() {
-				continue // standby: no firing
-			}
-			s.runDue(ctx)
-		}
-	}
 }
 
 func (s *Server) runDue(ctx context.Context) {

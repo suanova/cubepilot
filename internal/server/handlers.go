@@ -69,7 +69,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLedger serves GET /api/sessions/{key}/ledger — the platform-side
-// message ledger rows for a conversation (design §4.1 会话真源). This is the
+// message ledger rows for a conversation (design §4.1: the platform is the
+// source of truth for the session). This is the
 // authoritative history for rendering and cross-runtime recovery; it does not
 // require the agent instance to be alive.
 func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
@@ -92,8 +93,9 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSeed serves POST /api/sessions/{key}/seed — re-seeds a new runtime
-// session from the platform ledger (design §4.1 换运行时接回: 用平台账本把近期
-// 消息播种为新 runtime 的会话上下文). The assistant service replays ledger
+// session from the platform ledger (design §4.1 runtime swap re-attach: the
+// platform ledger replays recent messages as the new runtime's session
+// context). The assistant service replays ledger
 // rows as chat messages to the agent gateway, so a fresh runtime (or a rebuilt
 // instance) can continue the conversation from the platform's source of truth.
 func (s *Server) handleSeed(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +169,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 
-	// 会话真源（design §4.1）: the platform ledger is the source of truth for
+	// Session source of truth (design §4.1): the platform ledger is the source
+	// of truth for
 	// message history. Record the user message up front so the turn is durable
 	// even if the runtime stream fails mid-way (marked incomplete on done).
 	if s.store != nil {
@@ -221,7 +224,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	_ = emit(openclaw.Event{Type: openclaw.EventMessageStart, SessionID: sessionKey})
 	_ = emit(openclaw.Event{Type: openclaw.EventAgentThinking, SessionID: sessionKey})
 
-	// Ensure the instance is running; this may cold-start the Pod ("正在唤醒助手…").
+	// Ensure the instance is running; this may cold-start the Pod.
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
 		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
 		return
@@ -265,7 +268,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // ledgerEvent writes one message-ledger row per SSE event flowing through the
-// forwarding path (design §4.1 事件流捕获, event-sourcing). Tool events are
+// forwarding path (design §4.1 event capture on the stream, event-sourcing).
+// Tool events are
 // recorded for audit as well; user-facing deltas are coalesced into the
 // assistant row (latest delta row is the terminal text).
 func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
@@ -395,8 +399,10 @@ func (s *Server) recordToolCall(user string, ev openclaw.Event) {
 
 // handleInspect runs a basic cluster inspection and returns the report as JSON.
 // The run is also persisted as a report (taskID "inspect") with audit entries.
-// 巡检以创建者身份执行、权限与创建者一致（design §5.4 / FR-M4 授权约定）:
-// 只读由巡检模板行为约束 + RBAC 兜底，不再使用专用只读实例。
+// Run the inspection with the creator's identity and the creator's
+// permissions (design §5.4 / FR-M4 authorization contract): read-only is
+// enforced by the inspection template's behavior plus RBAC as the backstop;
+// a dedicated read-only instance is no longer used.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -414,7 +420,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.
 	s.extractToolEvents(r.Context(), user, sessionKey)
-	report, _ := s.store.AddReport(storeReport("inspect", "手动巡检", "inspect", started, content, err))
+	report, _ := s.store.AddReport(storeReport("inspect", "manual inspection", "inspect", started, content, err))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
 		return

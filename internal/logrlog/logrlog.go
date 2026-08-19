@@ -1,7 +1,7 @@
-// Package main (internal helpers) — tiny logr adapter so controller-runtime
-// logs flow to the standard log package (the service uses log.Printf; without
-// a logger controller-runtime silently drops reconcile errors).
-package main
+// Package logrlog adapts the standard log package to logr so
+// controller-runtime logs flow into pod logs (the platform uses log.Printf;
+// without a logger controller-runtime silently drops reconcile errors).
+package logrlog
 
 import (
 	"log"
@@ -16,8 +16,8 @@ type stdLogr struct {
 
 var _ logr.LogSink = (*stdLogr)(nil)
 
-func (l *stdLogr) Init(info logr.RuntimeInfo)        {}
-func (l *stdLogr) Enabled(level int) bool            { return true }
+func (l *stdLogr) Init(info logr.RuntimeInfo) {}
+func (l *stdLogr) Enabled(level int) bool     { return true }
 func (l *stdLogr) Info(level int, msg string, kv ...any) {
 	if l.name != "" {
 		log.Printf("ctrl[%s]: %s %v", l.name, msg, kv)
@@ -37,7 +37,7 @@ func (l *stdLogr) WithName(name string) logr.LogSink {
 	return &stdLogr{name: name}
 }
 
-// stdLogger returns a logr.Logger writing to the standard logger.
-func stdLogger() logr.Logger {
+// New returns a logr.Logger writing to the standard logger.
+func New() logr.Logger {
 	return logr.New(&stdLogr{})
 }

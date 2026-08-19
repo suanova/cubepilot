@@ -13,10 +13,12 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 )
 
-// ---- Agent definitions (设计 §3.1 / §4.6: Agent Registry 阶段一 = 内置列表) ----
+// ---- Agent definitions (design §3.1 / §4.6: Agent Registry phase one =
+// builtin list) ----
 
-// handleAgents serves GET /api/agents — the Agent Registry (阶段一: 内置
-// agent-for-cloud 列表; 阶段二开放用户创建/审核发布).
+// handleAgents serves GET /api/agents — the Agent Registry (phase one: the
+// builtin agent-for-cloud list; phase two opens user creation / review and
+// publish).
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -53,10 +55,12 @@ func (s *Server) handleAgentByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
 
-// ---- AgentInstance (设计 §3.2: 实例列表, 每用户每 Agent 单例) ----
+// ---- AgentInstance (design §3.2: instance list, one per user per agent)
+// ----
 
 // handleInstances serves GET /api/instances?user=... — AgentInstance CRs
-// (阶段一: 内置 agent 每用户实例; 状态由控制器维护).
+// (phase one: the builtin agent's per-user instance;status is maintained by
+// the controller).
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -82,10 +86,12 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"instances": out})
 }
 
-// ---- Capability catalog (设计 §3.3.1: 三层能力; atomic/domain 注册) ----
+// ---- Capability catalog (design §3.3.1: three-layer capabilities;
+// atomic/domain registration) ----
 
 // handleCapabilities serves GET /api/capabilities — the registered Capability
-// CRs (atomic 薄覆盖 + domain 领域知识; generic 层平台自带, 不在此列).
+// CRs (atomic thin overrides + domain knowledge; the generic layer is
+// platform-provided and not listed here).
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -103,7 +109,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"capabilities": list.Items})
 }
 
-// ---- TaskRun (设计 §3.3.4: 执行报告, 平台身份写入) ----
+// ---- TaskRun (design §3.3.4: run report, written with the platform
+// identity) ----
 
 // handleTaskRuns serves GET /api/taskruns?task=... — TaskRun CRs newest-first.
 func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
@@ -153,10 +160,12 @@ func (s *Server) handleTaskRunByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"taskrun": run})
 }
 
-// ---- Kinds / generic 工具 (设计 §3.3.1 generic 层: list-kinds 的 HTTP 面) ----
+// ---- Kinds / generic tools (design §3.3.1 generic layer: the HTTP face of
+// list-kinds) ----
 
 // handleKinds serves GET /api/kinds — the discovered CRD schema table
-// (generic 层 list-kinds / describe-kind 的数据源; 平台启动读全部 CRD schema).
+// (the data source for the generic layer's list-kinds / describe-kind; the
+// platform reads all CRD schemas at startup).
 func (s *Server) handleKinds(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
