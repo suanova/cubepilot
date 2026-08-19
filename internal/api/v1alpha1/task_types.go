@@ -14,7 +14,8 @@ const (
 	TaskPhasePaused TaskPhase = "Paused"
 )
 
-// TaskSpec is a task instance (design §3.3.3) — 谁的任务、何时跑. It links the
+// TaskSpec is a task instance (design §3.3.3) — whose task, when it runs. It
+// links the
 // execution subject (agentRef → Agent) with the task content (templateRef →
 // TaskTemplate); creator decides the execution identity.
 type TaskSpec struct {
@@ -29,12 +30,12 @@ type TaskSpec struct {
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
 	// AgentRef points to the Agent definition that executes the task
-	// (default agent-for-cloud). 设计 §3.3.3: 由哪个 Agent 执行.
+	// (default agent-for-cloud). Design §3.3.3: which Agent executes it.
 	// +kubebuilder:default=agent-for-cloud
 	// +optional
 	AgentRef string `json:"agentRef,omitempty"`
-	// Creator is the task creator; execution identity = creator (RBAC 与
-	// 创建者一致).
+	// Creator is the task creator; execution identity = creator (RBAC matches
+	// the creator).
 	Creator string `json:"creator"`
 	// Trigger is manual | cron.
 	Trigger TaskTriggerKind `json:"trigger"`
@@ -78,7 +79,8 @@ type TaskStatus struct {
 
 // Task is a task instance (design §3.3.3) — the "object" of the task domain:
 // who owns it, when it runs, which Agent executes it. The scheduler reads
-// Task CRDs and writes TaskRun (平台身份写入, 凭据最小化).
+// Task CRDs and writes TaskRun (written with the platform identity, credential
+// minimization).
 type Task struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

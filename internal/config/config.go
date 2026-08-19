@@ -1,4 +1,4 @@
-// Package config loads CubePilot PoC configuration from environment variables.
+// Package config loads CubePilot configuration from environment variables.
 package config
 
 import (
@@ -25,12 +25,13 @@ type Config struct {
 
 	// IdleTTL is how long an agent instance may sit idle before the manager
 	// reclaims it. Only effective when ReclaimEnabled is true (design doc §5.2:
-	// 常驻运行是默认策略, 闲置回收为可配置策略).
+	// resident is the default policy, idle reclaim is a configurable policy).
 	IdleTTL time.Duration
 
 	// ReclaimEnabled gates idle reclaim (design doc §5.2 / FR-M2-002). Default
 	// false = instances stay resident once started; enabling it switches the
-	// lifecycle to on-demand start + idle reclaim.
+	// lifecycle to on-demand start + idle reclaim. (Resident is the default
+	// policy; idle reclaim is a configurable policy.)
 	ReclaimEnabled bool
 
 	// Replicas is the desired Instance Manager / scheduler replica count used
@@ -38,12 +39,12 @@ type Config struct {
 	Replicas int
 
 	// GCWindow is the retention window for per-user data directories
-	// (design doc §5.1: 近期 48~72h 滑动窗口). Session/transcript files older
+	// (design doc §5.1: 48~72h sliding window). Session/transcript files older
 	// than this are pruned by the manager's GC pass.
 	GCWindow time.Duration
 
 	// GCWatermark is the PVC usage ratio that triggers an aggressive GC + log
-	// warning (design doc §10: 水位 >70% 触发清理/告警).
+	// warning (design doc §10: watermark >70% triggers cleanup/alert).
 	GCWatermark float64
 
 	// Users is the set of demo operator identities, one independent instance each.
@@ -55,7 +56,7 @@ type Config struct {
 	// AgentPort is the port the OpenClaw gateway listens on inside each agent Pod.
 	AgentPort int
 
-	// DataDir is where PoC metadata (tasks / reports / audit / agent config)
+	// DataDir is where platform metadata (tasks / reports / audit / agent config)
 	// is persisted as JSON files — backed by a PVC on the backend Pod.
 	DataDir string
 }

@@ -23,7 +23,8 @@ type ParamSchema struct {
 }
 
 // RequiredPermissions is the permission hint of a task template
-// (design §3.3.2: 全集群巡检需创建者具备集群级只读权限).
+// (design §3.3.2: full-cluster inspection requires the creator to hold
+// cluster-level read permission).
 type RequiredPermissions struct {
 	Level string `json:"level,omitempty"`
 	Note  string `json:"note,omitempty"`
@@ -35,8 +36,8 @@ type TaskTemplateDefaults struct {
 	Cron    string          `json:"cron,omitempty"`
 }
 
-// TaskTemplateSpec is a parameterized task template (design §3.3.2) — 模板
-// (做什么), the "class" of tasks. Preloaded: daily-inspection.
+// TaskTemplateSpec is a parameterized task template (design §3.3.2) — the
+// template (what to do), the "class" of tasks. Preloaded: daily-inspection.
 type TaskTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`
@@ -60,8 +61,9 @@ type TaskTemplateSpec struct {
 // +kubebuilder:printcolumn:name="DisplayName",type="string",JSONPath=".spec.displayName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// TaskTemplate is a parameterized task template (design §3.3.2) — 模板 ≠
-// 实例 ≠ 执行: TaskTemplate (做什么) ≠ Task (谁的任务、何时跑) ≠ TaskRun (执行报告).
+// TaskTemplate is a parameterized task template (design §3.3.2) — template ≠
+// instance ≠ run: TaskTemplate (what to do) ≠ Task (whose task, when it runs)
+// ≠ TaskRun (run report).
 type TaskTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

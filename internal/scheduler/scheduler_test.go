@@ -52,7 +52,7 @@ type fakeRunner struct {
 func (f *fakeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
 	f.gotUser = creator
 	f.gotPrompt = prompt
-	return "### P1 重要 — inference pod CrashLoopBackOff\n证据: kubectl get pods", nil
+	return "### P1 Important — inference pod CrashLoopBackOff\nEvidence: kubectl get pods", nil
 }
 
 func dueTask(created time.Time) *v1alpha1.Task {
@@ -75,7 +75,8 @@ func dueTask(created time.Time) *v1alpha1.Task {
 
 // TestSchedulerFiresDueTask verifies the CRD scheduler: a due cron task is
 // fired through the runner and the report is written as a TaskRun with the
-// platform identity (设计 §3.3.4: TaskRun 平台身份写入; §5.4 巡检以创建者身份).
+// platform identity (design §3.3.4: TaskRun written with the platform
+// identity; §5.4 inspection runs with the creator's identity).
 func TestSchedulerFiresDueTask(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &fakeRunner{}
@@ -91,8 +92,8 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	tpl := &v1alpha1.TaskTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
 		Spec: v1alpha1.TaskTemplateSpec{
-			DisplayName: "每日集群巡检",
-			Instruction: "以只读方式巡检集群，发现异常按 P0/P1/P2 分级；范围 {{scope}}",
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only, grade findings as P0/P1/P2; scope {{scope}}",
 		},
 	}
 	if err := cl.Create(context.Background(), tpl); err != nil {
@@ -118,7 +119,7 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	}
 	if !strings.Contains(runner.gotPrompt, "{{scope}}") {
 		// No params set → placeholder stays; instruction still rendered.
-		if !strings.Contains(runner.gotPrompt, "只读方式巡检") {
+		if !strings.Contains(runner.gotPrompt, "read-only") {
 			t.Errorf("prompt not rendered from template: %q", runner.gotPrompt)
 		}
 	}
@@ -155,10 +156,11 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	}
 }
 
-// TestRenderTemplate verifies {{param}} interpolation (设计 §3.3.2 参数化指令).
+// TestRenderTemplate verifies {{param}} interpolation (design §3.3.2
+// parameterized instruction).
 func TestRenderTemplate(t *testing.T) {
-	got := renderTemplate("巡检范围 {{scope}}，节点 {{scope}}", map[string]string{"scope": "all"})
-	if got != "巡检范围 all，节点 all" {
+	got := renderTemplate("inspection scope {{scope}}, nodes {{scope}}", map[string]string{"scope": "all"})
+	if got != "inspection scope all, nodes all" {
 		t.Errorf("render = %q", got)
 	}
 }

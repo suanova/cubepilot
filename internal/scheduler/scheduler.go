@@ -1,8 +1,9 @@
-// Package scheduler implements the FR-M4 / design §4.5 调度器: it reads
+// Package scheduler implements the FR-M4 / design §4.5 task scheduler: it reads
 // Task CRDs (design §3.3.3), fires due tasks through the creator's agent
 // instance, and writes the execution report as a TaskRun CRD with the
-// platform identity (设计 §3.3.4 / §5.4: TaskRun 由调度器以平台身份创建并写入,
-// Agent 实例与用户凭据不直接写 CRD — 凭据最小化).
+// platform identity (design §3.3.4 / §5.4: the scheduler creates and writes
+// TaskRuns with the platform identity; Agent instances and user credentials
+// never write CRDs directly — credential minimization).
 package scheduler
 
 import (
@@ -32,7 +33,8 @@ type Runner interface {
 }
 
 // ReconcileScheduler is the CRD-driven scheduler: it watches Task CRs and
-// fires due ones. 平台身份写入 TaskRun (设计 §3.3.4).
+// fires due ones. TaskRuns are written with the platform identity (design
+// §3.3.4).
 type ReconcileScheduler struct {
 	client.Client
 	Cfg    config.Config
@@ -119,7 +121,8 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 }
 
 // fire executes a due task: creates a TaskRun (Pending → Running), runs the
-// agent turn, and writes the report (Completed / Failed) — 平台身份写入.
+// agent turn, and writes the report (Completed / Failed) — written with the
+// platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
 	run := NewTaskRun(task, trigger)
 	if err := r.Create(ctx, run); err != nil {
@@ -148,11 +151,12 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		prompt = task.Spec.Instruction
 	}
 
-	// Run through the creator's agent instance (巡检以创建者身份执行, §5.4).
+	// Run through the creator's agent instance (inspection runs with the
+	// creator's identity, §5.4).
 	sessionKey := fmt.Sprintf("task-%s-%s", task.Name, run.Name)
 	content, runErr := r.Runner.RunTask(ctx, task.Spec.Creator, sessionKey, prompt)
 
-	// 平台身份写入 TaskRun 报告.
+	// Write the TaskRun report with the platform identity.
 	finishPatch := client.MergeFrom(run.DeepCopy())
 	finish := metav1.Now()
 	run.Status.FinishedAt = &finish
@@ -190,7 +194,8 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 }
 
 // NewTaskRun builds the TaskRun skeleton (design §3.3.4: creatorTaskRef links
-// back to the Task; 平台身份写入). TaskRun is a cluster-scoped CRD, so no
+// back to the Task; written with the platform identity). TaskRun is a
+// cluster-scoped CRD, so no
 // namespace is set. Exported for reuse by the server's manual-run path.
 func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
 	ts := time.Now().UTC()
@@ -217,7 +222,8 @@ func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
 }
 
 // renderTemplate interpolates {{param}} placeholders in a template
-// instruction with the task's params (design §3.3.2: 参数化指令).
+// instruction with the task's params (design §3.3.2: parameterized
+// instruction).
 func renderTemplate(instruction string, params map[string]string) string {
 	out := instruction
 	for k, v := range params {
