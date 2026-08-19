@@ -54,14 +54,14 @@ web/                    Portal SPA — Vue 3 + TypeScript + Vite (independent
 capabilities/           capability catalog SKILL.md × 4
 workspace/              SOUL.md / AGENTS.md
 config/crd/bases        generated CRD manifests
-deploy/                 Dockerfile + RBAC + Service + kubeconfig template
-scripts/setup.sh        one-shot deployment
+deploy/                 images Dockerfiles + charts/cubepilot Helm chart + kubeconfig template
+scripts/setup.sh        one-shot deployment (build → kind → helm install)
 ```
 
 ## Prerequisites
 
 - Docker, [kind](https://kind.sigs.k8s.io/) (cluster name `cube`), `kubectl`,
-  `jq`, Go 1.26+.
+  `jq`, `helm` (v3), Go 1.26+.
 - A working OpenClaw config at `~/.openclaw/openclaw.json` (with
   `models.providers.deepseek` and `gateway.auth.token`), and a locally built
   `openclaw:local` image.
@@ -69,7 +69,7 @@ scripts/setup.sh        one-shot deployment
 ## Run
 
 ```bash
-# 1. Build images, load them into kind, create Secret/RBAC, deploy the service
+# 1. Build images, load them into kind, create Secrets, deploy via Helm
 scripts/setup.sh
 
 # 2. Expose the Portal
@@ -77,6 +77,13 @@ kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
 
 # 3. Open http://127.0.0.1:8080
 ```
+
+Deployment is Helm-managed (`deploy/charts/cubepilot`): the operator, api,
+web and per-component RBAC are chart templates; platform CRDs ship in the
+chart's `crds/` dir (installed at `helm install` — upgrade them explicitly
+with `kubectl apply -f config/crd/bases/`). Secrets (`openclaw-config`,
+`agent-kubeconfig`) are created out-of-band by `scripts/setup.sh` because they
+hold host-derived LLM credentials.
 
 The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
 assistant as thinking while it waits for the gateway to become ready), then

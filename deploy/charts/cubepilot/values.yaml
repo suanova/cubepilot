@@ -1,0 +1,61 @@
+# CubePilot Helm values — default to the kind-cluster local images; override
+# repository/tag for real registries.
+
+# --- shared ---------------------------------------------------------------
+# Image pull policy for all components.
+imagePullPolicy: IfNotPresent
+
+# Agent runtime config (per-user OpenClaw instances, design §5).
+agents:
+  image: cubepilot-agent:local
+  # Comma-separated operator identities, one independent instance each.
+  users: zhang.wei,li.ming
+  # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
+  reclaim: "false"
+  idleTTL: 30m
+  gcWindow: 72h
+  gcWatermark: "0.7"
+
+# Existing secrets to consume (created out-of-band, e.g. by scripts/setup.sh —
+# they hold host-derived LLM/gateway credentials and are never templated).
+secrets:
+  # openclaw.json (agent runtime config) + gatewayToken key.
+  openclawConfig: openclaw-config
+  # In-cluster kubeconfig for agent pods (key: config).
+  agentKubeconfig: agent-kubeconfig
+
+# --- operator (control plane, leader election, no HTTP/PVC) --------------
+operator:
+  name: cubepilot-operator
+  replicas: 1
+  image: cubepilot-operator:local
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+
+# --- api (Portal REST/SSE + JSON metadata store, single RWO PVC) ---------
+api:
+  name: cubepilot-api
+  replicas: 1
+  image: cubepilot-api:local
+  dataDir: /opt/cubepilot/data
+  storage: 1Gi
+  storageClassName: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+
+# --- web (independent Vue SPA, stateless, nginx) --------------------------
+web:
+  name: cubepilot-web
+  replicas: 2
+  image: cubepilot-web:local
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+
+# --- service accounts ------------------------------------------------------
+serviceAccounts:
+  operator: cubepilot-operator
+  api: cubepilot-api
+  agent: cubepilot-agent

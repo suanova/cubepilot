@@ -17,7 +17,7 @@
 | 关注点 | 现状 | 评价 |
 |---|---|---|
 | 进程形态 | ~~`cmd/cubepilot` 单进程~~ → `cmd/cubepilot-operator`（3 controllers，无 HTTP/PVC）+ `cmd/cubepilot-api`（REST/SSE + embed UI + JSON store，无控制器） | ✅ 已拆（见文末） |
-| 部署形态 | `deploy/service.yaml`：2 Deployment（operator replicas:1 开选举 / api replicas:1 RWO PVC）、2 Service、headless operator svc | 与 §9 部署表对齐；多副本待共享存储 |
+| 部署形态 | ~~`deploy/service.yaml` 裸清单~~ → `deploy/charts/cubepilot` Helm chart（operator/api/web + 按组件 RBAC + crds/ 目录） | ✅ 已 Helm 化（见文末） |
 | 控制器 | AgentInstance / BuiltinBootstrap / ReconcileScheduler，均走 controller-runtime | 方向正确 |
 | 选举 | ~~manager 级 + 自研 `internal/leader` 双轨~~ → 仅 operator 用 controller-runtime `LeaderElection: true`（lease: `cubepilot-operator.suanova.io`）；api 无选举 | ✅ 已统一（见文末） |
 | 实例管理 | `instances.Manager` 仅保留 CRD 门面（Ensure/Wait/Status/BaseURL/Touch）；legacy 直管 Pod 路径已删 | ✅ 已删（见文末） |
@@ -166,3 +166,30 @@ cubepilot-ui        静态前端（nginx/CDN），可选——现阶段可继续
 
 - web 镜像构建依赖外网拉 node/nginx 基础镜像（当前用镜像加速源 `docker.1ms.run` / `dockerproxy.net`）；后续可固化到私有 registry。
 - CSP / 安全头、认证接入（当前仍靠 X-CubePilot-User 头）随阶段二身份方案补。
+
+---
+
+## 8. Helm 化部署（2026-08-19 追加）
+
+裸清单（`deploy/service.yaml` + `deploy/rbac.yaml`）迁移为 Helm chart `deploy/charts/cubepilot`（v2, 0.1.0）。
+
+| 项 | 结果 |
+|---|---|
+| Chart | `Chart.yaml` + `values.yaml`（镜像/副本/资源/Secrets 全参数化）+ `templates/`（operator/api/web 三组件 + 按组件 RBAC）+ `crds/`（6 个平台 CRD，install 时自动安装）+ `NOTES.txt` |
+| 共享 env | `_helpers.tpl` 定义 `cubepilot.agentEnv`（operator 与 api 都调 `config.Load()`，env 块一致；`CUBEPILOT_NAMESPACE` 取自 `.Release.Namespace`，镜像/用户/TTL 等取自 values） |
+| 组件 | operator（replicas 1，leader election，headless svc）/ api（replicas 1，RWO PVC `cubepilot-api-data`，readiness /healthz）/ web（replicas 2，入口 Service `cubepilot`→web:80） |
+| RBAC | 固定 ClusterRole 名（单实例）；operator CRUD CRD + namespaced + lease；api 只读 CRD；agent 现状通配 |
+| CRD 分发 | chart `crds/` 目录 = Helm 标准 CRD 分发渠道（install 时自动装；upgrade 不更新 CRD，需显式 `kubectl apply -f config/crd/bases/`）——顺带解决"其他模块怎么拿 CRD"：发布 chart 即可共享 |
+| Secrets | `openclaw-config` / `agent-kubeconfig` 仍由 setup.sh 外部创建（含宿主机 LLM 凭据，不入 chart） |
+| setup.sh | 改 `helm upgrade --install`，构建/加载镜像逻辑不变，加 helm 前置检查 |
+| 实测 | kind 集群：helm install → 三组件 rollout 成功；UI 200、/api 反代正常（agent/status Warm、tasks、instances 真实数据）、SSE 对话全链路（message_start→thinking→delta→done）、手动任务触发 → 报告 success——全部通过 |
+
+### 踩坑记录
+
+1. **env 值 bool 渲染**：`value: {{ .Values.agents.reclaim }}` 渲染成裸 `false`（bool），K8s env.value 需 string → 所有 env 值加 `| quote`。
+2. **RBAC 文档分隔**：模板里用 `# --- 注释` 冒充分隔符，YAML 解析时 RoleBinding/ClusterRole 粘成一个损坏文档（install 时 `unknown field "roleRef"/"subjects"` 警告，导致 operator/api 的 ClusterRoleBinding 静默丢失、api SA 读不了 CRD）→ 重写模板，每个文档前放真正的 `---`。教训：**Helm 模板每个 YAML 文档必须显式 `---` 分隔，注释不能充当**。
+
+### 遗留
+
+- chart 未含 liveness probe、resources 默认值（values 留空 `{}`）、Ingress/域名入口——随部署演进补。
+- `helm upgrade` 后 CRD 变更不自动应用（Helm 语义），发布流程需配套 CRD 更新步骤。

@@ -1,0 +1,228 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: taskruns.assistant.suanova.io
+spec:
+  group: assistant.suanova.io
+  names:
+    kind: TaskRun
+    listKind: TaskRunList
+    plural: taskruns
+    singular: taskrun
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.creatorTaskRef.name
+      name: Task
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.summary.p0
+      name: P0
+      type: integer
+    - jsonPath: .status.summary.p1
+      name: P1
+      type: integer
+    - jsonPath: .status.summary.p2
+      name: P2
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TaskRun is the execution report (design §3.3.4) — written by the scheduler
+          with the platform identity, completing the template → task → run report loop.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TaskRunSpec is the execution report of a task (design §3.3.4). It is
+              created and written by the scheduler with the platform identity.
+            properties:
+              creator:
+                description: Creator is the task creator (execution identity).
+                type: string
+              creatorTaskRef:
+                description: CreatorTaskRef links back to the owning Task.
+                properties:
+                  name:
+                    type: string
+                  uid:
+                    type: string
+                required:
+                - name
+                type: object
+              scope:
+                description: Scope is the task scope (e.g. all).
+                type: string
+              taskName:
+                description: TaskName is the display name of the task (denormalized).
+                type: string
+              trigger:
+                description: Trigger is cron | manual.
+                type: string
+              type:
+                description: Type is inspection | verification | ...
+                type: string
+            required:
+            - creatorTaskRef
+            type: object
+          status:
+            description: |-
+              TaskRunStatus is the execution report written by the scheduler with the
+              platform identity (design §3.3.4: written with the platform identity; Agent
+              instances and user credentials never write CRDs directly).
+            properties:
+              conditions:
+                description: Conditions carries detail (Inspected=True etc).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              content:
+                description: Content is the full natural-language report text.
+                type: string
+              error:
+                description: Error carries the failure detail.
+                type: string
+              finishedAt:
+                format: date-time
+                type: string
+              items:
+                description: Items are the structured findings.
+                items:
+                  description: |-
+                    FindingItem is one structured finding of an inspection-style report
+                    (design §3.3.4: category / level / finding / evidence chain).
+                  properties:
+                    category:
+                      description: Category is the finding category (pod / node /
+                        gpu / storage / ...).
+                      type: string
+                    evidence:
+                      description: Evidence is the evidence chain (command + output
+                        excerpt + ts).
+                      items:
+                        description: 'EvidenceEntry is one piece of evidence (design
+                          §3.3.4: evidence chain).'
+                        properties:
+                          command:
+                            type: string
+                          output:
+                            type: string
+                          ts:
+                            type: string
+                        type: object
+                      type: array
+                    finding:
+                      description: Finding is the human-readable finding text.
+                      type: string
+                    level:
+                      description: Level is P0 / P1 / P2.
+                      type: string
+                  type: object
+                type: array
+              phase:
+                description: Phase is Pending / Running / Completed / Failed / Cancelled.
+                type: string
+              startedAt:
+                description: StartedAt / FinishedAt bound the run.
+                format: date-time
+                type: string
+              summary:
+                description: Summary carries the severity counts.
+                properties:
+                  abnormal:
+                    type: integer
+                  p0:
+                    type: integer
+                  p1:
+                    type: integer
+                  p2:
+                    type: integer
+                  total:
+                    type: integer
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

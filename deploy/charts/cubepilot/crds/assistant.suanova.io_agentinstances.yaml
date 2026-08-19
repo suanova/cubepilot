@@ -1,0 +1,269 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: agentinstances.assistant.suanova.io
+spec:
+  group: assistant.suanova.io
+  names:
+    kind: AgentInstance
+    listKind: AgentInstanceList
+    plural: agentinstances
+    singular: agentinstance
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.owner
+      name: Owner
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.podName
+      name: Pod
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AgentInstance is the runtime instance of an Agent for one user (design §3.2).
+          It is reconciled by the Instance Manager controller: provision / self-heal / idle reclaim /
+          data-directory GC. The instance key is user + agent (one instance per user per agent, single-writer).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AgentInstanceSpec is the runtime instance of an Agent definition for one
+              user (design §3.2). The instance key is `user + agent` — one instance per
+              user per agent, single-writer.
+            properties:
+              agentRef:
+                description: AgentRef points to the Agent definition (e.g. agent-for-cloud).
+                type: string
+              credentials:
+                description: Credentials are the typed downstream credentials.
+                items:
+                  description: |-
+                    CredentialSpec is one typed downstream credential of an instance
+                    (design §4.4: identity = who I am; credentials[] = how I authenticate to downstreams).
+                    The actual secret is platform-managed; refs only, never plaintext.
+                  properties:
+                    endpoint:
+                      description: |-
+                        Endpoint optionally binds an llm credential by endpoint (matches
+                        model[].endpoint). Mutually exclusive with ModelRef.
+                      type: string
+                    modelRef:
+                      description: |-
+                        ModelRef optionally binds an llm credential to a model entry in the
+                        Agent definition model[] (by name). Required when multiple external
+                        models exist; implicit when exactly one (design §4.4, fail-closed).
+                      type: string
+                    ref:
+                      description: Ref is the platform-managed Secret reference (namespace/name
+                        or name).
+                      type: string
+                    target:
+                      description: 'Target is the downstream system: k8s | prometheus
+                        | harbor | llm | itsm | ...'
+                      type: string
+                    type:
+                      description: 'Type is the credential type: kubeconfig | api-key
+                        | oauth2 | bearer-token | ...'
+                      type: string
+                  required:
+                  - ref
+                  - target
+                  - type
+                  type: object
+                type: array
+              dataVolume:
+                description: DataVolume is the per-instance data directory.
+                properties:
+                  pvc:
+                    description: PVC is the per-instance PVC name (platform-generated
+                      when empty).
+                    type: string
+                  size:
+                    description: Size is the requested capacity (default 1Gi, applied
+                      in code).
+                    type: string
+                type: object
+              identity:
+                description: Identity is the platform-side identity (mode + principal).
+                properties:
+                  mode:
+                    description: Mode must match the Agent definition (inherited,
+                      immutable).
+                    type: string
+                  principalRef:
+                    description: PrincipalRef binds the concrete principal.
+                    properties:
+                      serviceRef:
+                        description: ServiceRef binds a service identity (mode=service,
+                          phase 2+).
+                        type: string
+                      userRef:
+                        description: UserRef binds a user identity (mode=user).
+                        type: string
+                    type: object
+                required:
+                - mode
+                - principalRef
+                type: object
+              instructions:
+                description: Instructions optionally overrides the definition default
+                  system prompt.
+                type: string
+              lifecycle:
+                description: Lifecycle overrides the definition default (within quota
+                  bounds).
+                properties:
+                  idleTTLSeconds:
+                    description: |-
+                      IdleTTL is the idle retention for on-demand instances (0 = never
+                      reclaimed; default 0).
+                    format: int64
+                    type: integer
+                  strategy:
+                    default: resident
+                    description: Strategy is resident | on-demand (default resident).
+                    type: string
+                type: object
+              owner:
+                description: Owner is the user the instance belongs to.
+                type: string
+              selectedModel:
+                description: |-
+                  SelectedModel optionally switches the model within the Agent definition
+                  model[] allowlist (default model[0].name). FR-M2-005.
+                type: string
+              toolOverrides:
+                additionalProperties:
+                  type: boolean
+                description: |-
+                  ToolOverrides optionally toggles tools declared by the Agent definition
+                  (subset visibility, FR-M2-005). Map key = tool name, value = enabled.
+                type: object
+            required:
+            - agentRef
+            - identity
+            - owner
+            type: object
+          status:
+            description: |-
+              AgentInstanceStatus is the observed state of an instance (design §3.2,
+              written by the Instance Manager controller — users do not edit it).
+            properties:
+              conditions:
+                description: Conditions carries detail (Ready / Reclaiming / Failed
+                  reason).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastActivity:
+                description: LastActivity is the last observed activity time (agentKey
+                  -> activity).
+                format: date-time
+                type: string
+              message:
+                description: Message is a human-readable status detail.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is Creating / Warm / Idle / Reclaiming / Failed.
+                type: string
+              podName:
+                description: PodName is the running agent Pod (empty when not running).
+                type: string
+              pvcName:
+                description: PVCName is the per-instance data PVC.
+                type: string
+              serviceName:
+                description: ServiceName is the ClusterIP service exposing the gateway.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
