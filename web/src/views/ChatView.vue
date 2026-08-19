@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Chat view — session list + thread + composer, SSE streaming from /api/messages.
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
@@ -14,13 +14,26 @@ const userInitials = user
   .slice(0, 2)
   .join('')
 
+interface ToolCallVM {
+  name: string
+  cmd: string
+  callID: string
+  done: boolean
+}
+
+// Turn lifecycle phases; drives the per-bubble status line so the user can
+// always tell "still working" (think/tools/stream) from "finished" (done).
+type BubblePhase = 'thinking' | 'tools' | 'streaming' | 'done'
+
 interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
-  tools: Array<{ name: string; cmd: string }>
+  tools: ToolCallVM[]
   toolResults: string[]
   error?: string
-  thinking: boolean
+  thinking: boolean // true while phase !== 'done' (kept for existing template)
+  phase?: BubblePhase
+  phaseAt?: number // Date.now() when the current phase started
 }
 
 const sessions = ref<SessionInfo[]>([])
@@ -40,6 +53,38 @@ const filteredSessions = computed(() => {
   if (!q) return sessions.value
   return sessions.value.filter((s) => (s.title || s.sessionKey).toLowerCase().includes(q))
 })
+
+// Tick every second so running bubbles show live "waiting Ns" in pauses.
+const now = ref(Date.now())
+const ticker = setInterval(() => {
+  now.value = Date.now()
+}, 1000)
+onUnmounted(() => clearInterval(ticker))
+
+function setPhase(b: BubbleMsg, phase: BubblePhase) {
+  b.phase = phase
+  b.phaseAt = Date.now()
+  b.thinking = phase !== 'done'
+}
+
+function statusLine(b: BubbleMsg): string {
+  if (b.kind === 'user' || !b.phase) return ''
+  const secs = b.phaseAt ? Math.max(0, Math.round((now.value - b.phaseAt) / 1000)) : 0
+  switch (b.phase) {
+    case 'thinking':
+      return `正在思考… ${secs}s`
+    case 'tools': {
+      const n = b.tools.filter((t) => !t.done).length
+      return n > 0
+        ? `正在执行 ${n} 个工具… ${secs}s`
+        : `整理工具结果・思考中… ${secs}s`
+    }
+    case 'streaming':
+      return `正在输出回复… ${secs}s`
+    case 'done':
+      return '回答完成'
+  }
+}
 
 async function loadSessions() {
   try {
@@ -87,7 +132,7 @@ function renderHistory(items: HistoryMessage[]) {
       const hasText = it.content.some((c) => c.type === 'text' && c.text)
       if (!hasTool && !hasText) continue
       if (!last || last.kind !== 'assistant') {
-        last = { kind: 'assistant', tools: [], toolResults: [], thinking: false }
+        last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
         out.push(last)
       }
       for (const c of it.content) {
@@ -100,7 +145,7 @@ function renderHistory(items: HistoryMessage[]) {
           } catch {
             cmd = args
           }
-          last.tools.push({ name: c.name || 'exec', cmd })
+          last.tools.push({ name: c.name || 'exec', cmd, callID: c.id || '', done: true })
         } else if (c.type === 'text' && c.text) {
           last.text = (last.text ? last.text + '\n' : '') + c.text
         }
@@ -111,7 +156,7 @@ function renderHistory(items: HistoryMessage[]) {
       for (const c of it.content) {
         if (c.type === 'text' && c.text) {
           if (!last || last.kind !== 'assistant') {
-            last = { kind: 'assistant', tools: [], toolResults: [], thinking: false }
+            last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
             out.push(last)
           }
           last.toolResults.push(c.text)
@@ -149,8 +194,12 @@ async function sendMessage() {
   bubbles.value.push({ kind: 'user', text, tools: [], toolResults: [], thinking: false })
   el.value = ''
   el.style.height = 'auto'
-  const bubble: BubbleMsg = { kind: 'assistant', tools: [], toolResults: [], thinking: true }
-  bubbles.value.push(bubble)
+  // IMPORTANT: read the bubble back through the reactive proxy. Mutating a
+  // plain-object closure reference (created before push) would bypass Vue's
+  // reactivity and never trigger a re-render — the UI would stay stuck on
+  // the initial "thinking" state even though the SSE events arrive.
+  bubbles.value.push({ kind: 'assistant', tools: [], toolResults: [], thinking: true })
+  const bubble: BubbleMsg = bubbles.value[bubbles.value.length - 1]
   await nextTick()
   scrollThread()
 
@@ -168,11 +217,11 @@ async function sendMessage() {
           return
         }
         if (ev.type === 'agent_thinking') {
-          bubble.thinking = true
+          setPhase(bubble, 'thinking')
           return
         }
         if (ev.type === 'tool_call') {
-          bubble.thinking = false
+          setPhase(bubble, 'tools')
           let cmd = ''
           try {
             const a = JSON.parse(ev.arguments)
@@ -180,26 +229,33 @@ async function sendMessage() {
           } catch {
             cmd = ev.arguments
           }
-          bubble.tools.push({ name: ev.name, cmd })
+          bubble.tools.push({ name: ev.name, cmd, callID: ev.call_id || '', done: false })
           return
         }
         if (ev.type === 'tool_result') {
+          setPhase(bubble, 'tools')
           bubble.toolResults.push(ev.output || '')
+          // Mark the matching tool call completed (fall back to the oldest
+          // unfinished one when the id doesn't line up).
+          const t = bubble.tools.find((x) => x.callID && x.callID === ev.call_id)
+            || bubble.tools.find((x) => !x.done)
+          if (t) t.done = true
           return
         }
         if (ev.type === 'message_delta') {
-          bubble.thinking = false
+          setPhase(bubble, 'streaming')
           bubble.text = (bubble.text || '') + (ev.delta || '')
           return
         }
         if (ev.type === 'message_done') {
-          bubble.thinking = false
+          setPhase(bubble, 'done')
           if (ev.error) bubble.error = ev.error
           return
         }
       },
     )
   } catch (e) {
+    setPhase(bubble, 'done')
     bubble.error = String(e)
   } finally {
     await nextTick()
@@ -255,16 +311,25 @@ onMounted(() => {
             <div v-for="(b, i) in bubbles" :key="i" class="msg" :class="b.kind">
               <div class="avatar">{{ b.kind === 'user' ? userInitials : 'AI' }}</div>
               <div class="bubble">
-                <div v-if="b.thinking" class="tool-status"><span class="spin"></span>正在思考…</div>
+                <!-- Status line: thinking / executing tools / streaming / done -->
+                <div v-if="b.phase && b.phase !== 'done'" class="tool-status">
+                  <span class="spin"></span>{{ statusLine(b) }}
+                </div>
+                <div v-if="b.phase === 'done' && !b.error" class="tool-status done-mark">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                  {{ statusLine(b) }}
+                </div>
                 <div
                   v-for="(t, ti) in b.tools"
                   :key="'t' + ti"
                   class="tool-card"
+                  :class="{ 'tool-running': !t.done && b.phase !== 'done' }"
                 >
                   <div class="tool-head">
                     <svg class="icon" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8" /></svg>
                     <span class="tool-cmd">{{ t.name }}</span>
-                    <span class="pill accent">L0 · 只读 · 直放</span>
+                    <span v-if="!t.done && b.phase !== 'done'" class="pill accent">执行中…</span>
+                    <span v-else class="pill neutral">已完成</span>
                   </div>
                   <div class="tool-body"><span class="mono" style="white-space: pre-wrap; word-break: break-all">{{ t.cmd }}</span></div>
                 </div>
