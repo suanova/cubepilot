@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CubePilot PoC setup: build images, load into kind, create shared Secrets and
+# CubePilot setup: build images, load into kind, create shared Secrets and
 # RBAC. Requires: docker, kind (cluster "cube"), kubectl, jq.
 #
 # The LLM/gateway configuration is extracted from the host's existing
@@ -19,13 +19,17 @@ command -v kubectl >/dev/null || { echo "kubectl required"; exit 1; }
 command -v jq >/dev/null || { echo "jq required"; exit 1; }
 [ -f "$HOST_CONFIG" ] || { echo "missing $HOST_CONFIG"; exit 1; }
 
-log "building Go binary (host) + images"
-(cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/cubepilot ./cmd/cubepilot)
-docker build -t cubepilot-agent:local   -f "$REPO_DIR/deploy/agent-image.Dockerfile"   "$REPO_DIR"
-docker build -t cubepilot-service:local -f "$REPO_DIR/deploy/service-image.Dockerfile" "$REPO_DIR"
+log "building Go binaries (host) + images"
+(cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/cubepilot-operator ./cmd/cubepilot-operator)
+(cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/cubepilot-api ./cmd/cubepilot-api)
+docker build -t cubepilot-agent:local    -f "$REPO_DIR/deploy/agent-image.Dockerfile"    "$REPO_DIR"
+docker build -t cubepilot-operator:local -f "$REPO_DIR/deploy/operator-image.Dockerfile" "$REPO_DIR"
+docker build -t cubepilot-api:local      -f "$REPO_DIR/deploy/api-image.Dockerfile"      "$REPO_DIR"
+# Portal SPA — multi-stage node build → nginx (independent component, §9).
+docker build -t cubepilot-web:local      -f "$REPO_DIR/web/Dockerfile"                  "$REPO_DIR/web"
 
 log "loading images into kind ($KIND_CLUSTER)"
-kind load docker-image cubepilot-agent:local cubepilot-service:local --name "$KIND_CLUSTER"
+kind load docker-image cubepilot-agent:local cubepilot-operator:local cubepilot-api:local cubepilot-web:local --name "$KIND_CLUSTER"
 
 log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
@@ -71,7 +75,7 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-config \
   --from-literal=gatewayToken="$GATEWAY_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-log "deploying assistant service + Instance Manager"
+log "deploying operator + api"
 kubectl apply -f "$REPO_DIR/deploy/service.yaml"
 
 log "done. expose the portal with:"
