@@ -6,8 +6,10 @@
 imagePullPolicy: IfNotPresent
 
 # Agent runtime config (per-user OpenClaw instances, design §5).
+# runtime names the agent runtime image family: openclaw today, hermes later.
 agents:
-  image: cubepilot-agent:local
+  runtime: openclaw
+  image: cubepilot-openclaw:local
   # Comma-separated operator identities, one independent instance each.
   users: zhang.wei,li.ming
   # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
