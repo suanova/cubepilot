@@ -1,8 +1,9 @@
 // Package server exposes the CubePilot Portal and REST/SSE API, routing chat
-// turns to per-user OpenClaw instances via the Instance Manager. With the
-// CRD path enabled, instance state comes from AgentInstance CRs; the server
-// also serves the platform objects (Agent / Capability / Task / TaskRun)
-// over the API (design doc CubePilot-Cloud-for-Agents-Design.md §2.1).
+// turns to per-user OpenClaw instances via the Instance Manager. Instance
+// state comes from AgentInstance CRs; the server also serves the platform
+// objects (Agent / Capability / Task / TaskRun) over the API (design doc
+// CubePilot-Cloud-for-Agents-Design.md §2.1). The API process is stateless
+// except for the JSON metadata store (single replica, RWO PVC).
 package server
 
 import (
@@ -19,7 +20,6 @@ import (
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/store"
-	"github.com/suanova/cubepilot/ui"
 )
 
 // Server holds shared dependencies for HTTP handlers.
@@ -29,34 +29,12 @@ type Server struct {
 	store   *store.Store
 	catalog *capability.Catalog
 	cr      client.Client
-
-	schedulerLeader schedulerLeader
-	taskRunner      schedulerRunner
-}
-
-// schedulerLeader is the minimal leader-check interface the scheduler needs
-// (implemented by *leader.Elector). Multi-replica deployments only run due
-// tasks on the leader (design §3.3 Active/Standby).
-type schedulerLeader interface {
-	IsLeader() bool
-}
-
-// schedulerRunner executes one task turn (implemented by *Server; used by the
-// CRD scheduler controller).
-type schedulerRunner interface {
-	RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error)
 }
 
 // New builds the HTTP handler for the assistant service.
 func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *capability.Catalog, cr client.Client) *Server {
 	return &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
 }
-
-// SetSchedulerLeader attaches the leader elector that gates the scheduler.
-func (s *Server) SetSchedulerLeader(e schedulerLeader) { s.schedulerLeader = e }
-
-// SetTaskRunner attaches the task runner (the server itself implements it).
-func (s *Server) SetTaskRunner(r schedulerRunner) { s.taskRunner = r }
 
 // Handler returns the fully wired HTTP handler.
 func (s *Server) Handler() http.Handler {
@@ -79,13 +57,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)
-	mux.HandleFunc("/", s.handleStatic)
 	return logRequests(mux)
 }
 
-// StartLegacyScheduler launches the legacy FR-M4 cron loop over the JSON task
-// store (kept for non-CRD deployments; the CRD scheduler controller replaces
-// it when the CRD path is active).
+// StartLegacyScheduler launches the FR-M4 cron loop over the JSON task store.
+// The API process runs a single replica today (RWO metadata PVC), so there is
+// no leader gate; the CRD scheduler in the operator owns the platform Task
+// CRs and runs with leader election.
 func (s *Server) StartLegacyScheduler(ctx context.Context) {
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
@@ -95,9 +73,6 @@ func (s *Server) StartLegacyScheduler(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if s.schedulerLeader != nil && !s.schedulerLeader.IsLeader() {
-					continue
-				}
 				s.runDue(ctx)
 			}
 		}
@@ -115,15 +90,6 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	default:
 		http.NotFound(w, r)
 	}
-}
-
-func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(ui.IndexHTML))
 }
 
 func logRequests(next http.Handler) http.Handler {
