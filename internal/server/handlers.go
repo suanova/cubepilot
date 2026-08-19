@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -197,6 +198,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var doneEvent *openclaw.Event
+	var sseMu sync.Mutex
 	emit := func(ev openclaw.Event) error {
 		// The gateway's chat-completions stream only carries final text; hold
 		// message_done so we can first replay tool events extracted from the
@@ -215,8 +217,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			firstToken = time.Now()
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
 		}
+		sseMu.Lock()
 		writeSSE(w, ev)
 		flusher.Flush()
+		sseMu.Unlock()
 		return nil
 	}
 
@@ -234,21 +238,56 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if cfg, err := s.store.GetAgentConfig(); err == nil && strings.TrimSpace(cfg.SystemPrompt) != "" {
 		messages = append([]openclaw.ChatMessage{{Role: "system", Content: cfg.SystemPrompt}}, messages...)
 	}
+	// While the gateway stream runs, poll the transcript so tool activity
+	// (tool_call / tool_result) reaches the client live instead of only after
+	// the turn ends. Seen-set is shared with the final drain below, so every
+	// event is emitted exactly once even if the poll and the drain overlap.
+	seen := map[string]bool{}
+	toolCtx, cancelTools := context.WithCancel(r.Context())
+	defer cancelTools()
+	toolDone := make(chan struct{})
+	go func() {
+		defer close(toolDone)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-toolCtx.Done():
+				return
+			case <-ticker.C:
+				s.streamToolEvents(toolCtx, user, sessionKey, seen, func(ev openclaw.Event) {
+					s.ledgerEvent(user, sessionKey, ev)
+					sseMu.Lock()
+					writeSSE(w, ev)
+					flusher.Flush()
+					sseMu.Unlock()
+				})
+			}
+		}
+	}()
+
 	if err := s.clientFor(user).StreamChat(r.Context(), openclaw.ChatParams{
 		SessionKey: sessionKey,
 		Messages:   messages,
 	}, emit); err != nil {
 		streamErr = err
 	}
-
-	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey) {
+	// Stop the poller, then drain whatever tool events appeared after the last
+	// poll (or that the poller never saw because the stream ended quickly).
+	cancelTools()
+	<-toolDone
+	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, seen) {
 		s.ledgerEvent(user, sessionKey, ev)
+		sseMu.Lock()
 		writeSSE(w, ev)
 		flusher.Flush()
+		sseMu.Unlock()
 	}
 	if doneEvent != nil {
+		sseMu.Lock()
 		writeSSE(w, *doneEvent)
 		flusher.Flush()
+		sseMu.Unlock()
 	}
 	// Terminate the ledger turn: mark the assistant row done (incomplete when
 	// the stream failed / instance warming failed).
@@ -311,17 +350,45 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 	}
 }
 
+// streamToolEvents polls the gateway session transcript once and pushes any
+// tool_call / tool_result events not yet seen. The gateway's chat-completions
+// stream only carries text deltas (tool execution happens inside its agent
+// loop), so the transcript is the only live source of tool activity. Dedup by
+// type+callID keeps repeated polls idempotent on the SSE stream and in the
+// audit log.
+func (s *Server) streamToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool, push func(openclaw.Event)) {
+	raw, err := s.clientFor(user).GetHistory(ctx, sessionKey, 50)
+	if err != nil {
+		return
+	}
+	for _, ev := range parseHistoryTools(sessionKey, raw) {
+		key := ev.Type + ":" + ev.CallID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		push(ev)
+	}
+}
+
 // extractToolEvents reconstructs tool_call / tool_result events for a just
 // finished turn from the session transcript, and records them for audit (M5).
 // The gateway's /v1/chat/completions stream does not expose tool calls, so the
 // transcript is the authoritative source. Retries briefly to let the gateway
 // flush the transcript file after the turn ends.
-func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string) []openclaw.Event {
+func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []openclaw.Event {
 	var out []openclaw.Event
 	for attempt := 0; attempt < 4; attempt++ {
 		raw, err := s.clientFor(user).GetHistory(ctx, sessionKey, 50)
 		if err == nil {
-			out = parseHistoryTools(sessionKey, raw)
+			for _, ev := range parseHistoryTools(sessionKey, raw) {
+				key := ev.Type + ":" + ev.CallID
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				out = append(out, ev)
+			}
 			if len(out) > 0 {
 				break
 			}
@@ -330,11 +397,6 @@ func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string)
 		case <-time.After(500 * time.Millisecond):
 		case <-ctx.Done():
 			return nil
-		}
-	}
-	for i := range out {
-		if out[i].Type == openclaw.EventToolCall {
-			s.recordToolCall(user, out[i])
 		}
 	}
 	return out
@@ -358,11 +420,22 @@ func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
 	if err := json.Unmarshal(raw, &h); err != nil {
 		return nil
 	}
+	// Pair tool calls with their results by linear order: an assistant item
+	// carries N toolCall content blocks, and the following toolResult item
+	// carries N text blocks (the gateway transcript shape). The queue maps
+	// each result text back to the call that produced it, so events carry the
+	// real tool name and a stable callID (used for dedup on the SSE stream).
+	type pendingCall struct {
+		id, name string
+		args     json.RawMessage
+	}
 	var out []openclaw.Event
+	var pending []pendingCall
 	for _, it := range h.Items {
 		for _, c := range it.Content {
 			switch c.Type {
 			case "toolCall":
+				pending = append(pending, pendingCall{id: c.ID, name: c.Name, args: c.Arguments})
 				out = append(out, openclaw.Event{
 					Type:      openclaw.EventToolCall,
 					SessionID: sessionKey,
@@ -377,6 +450,20 @@ func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
 					Name:      "exec",
 					Output:    c.Text,
 				})
+			case "text":
+				// toolResult items carry their output as plain text blocks;
+				// pair each with the oldest unmatched tool call.
+				if it.Role == "toolResult" && len(pending) > 0 {
+					pc := pending[0]
+					pending = pending[1:]
+					out = append(out, openclaw.Event{
+						Type:      openclaw.EventToolResult,
+						SessionID: sessionKey,
+						Name:      pc.name,
+						CallID:    pc.id,
+						Output:    c.Text,
+					})
+				}
 			}
 		}
 	}
@@ -419,7 +506,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		s.recordToolCall(user, ev)
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.
-	s.extractToolEvents(r.Context(), user, sessionKey)
+	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, map[string]bool{}) {
+		if ev.Type == openclaw.EventToolCall {
+			s.recordToolCall(user, ev)
+		}
+	}
 	report, _ := s.store.AddReport(storeReport("inspect", "manual inspection", "inspect", started, content, err))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
