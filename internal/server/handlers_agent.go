@@ -30,8 +30,8 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAgentConfig serves GET/PUT /api/agent/config — the persisted Agent
-// 配置 desired state. systemPrompt is applied live to subsequent chat turns;
-// model/skills are stored preferences (applied on instance rebuild, PoC).
+// config desired state. systemPrompt is applied live to subsequent chat turns;
+// model/skills are stored preferences (applied on instance rebuild).
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -63,7 +63,8 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAgentStatus reports the live state of the caller's agent instance
-// (whether the Pod exists, its phase, uptime, idle TTL) for the Agent 配置页.
+// (whether the Pod exists, its phase, uptime, idle TTL) for the Agent config
+// page.
 func (s *Server) handleAgentStatus(w http.ResponseWriter, r *http.Request) {
 	user := s.userOf(r)
 	exists, phase, startedAt := s.mgr.InstanceStatus(r.Context(), user)
