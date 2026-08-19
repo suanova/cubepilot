@@ -24,14 +24,14 @@ command -v helm >/dev/null || { echo "helm required"; exit 1; }
 log "building Go binaries (host) + images"
 (cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/cubepilot-operator ./cmd/cubepilot-operator)
 (cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/cubepilot-api ./cmd/cubepilot-api)
-docker build -t cubepilot-agent:local    -f "$REPO_DIR/deploy/agent-image.Dockerfile"    "$REPO_DIR"
+docker build -t cubepilot-openclaw:local    -f "$REPO_DIR/deploy/openclaw-image.Dockerfile"    "$REPO_DIR"
 docker build -t cubepilot-operator:local -f "$REPO_DIR/deploy/operator-image.Dockerfile" "$REPO_DIR"
 docker build -t cubepilot-api:local      -f "$REPO_DIR/deploy/api-image.Dockerfile"      "$REPO_DIR"
 # Portal SPA — multi-stage node build → nginx (independent component, §9).
 docker build -t cubepilot-web:local      -f "$REPO_DIR/web/Dockerfile"                  "$REPO_DIR/web"
 
 log "loading images into kind ($KIND_CLUSTER)"
-kind load docker-image cubepilot-agent:local cubepilot-operator:local cubepilot-api:local cubepilot-web:local --name "$KIND_CLUSTER"
+kind load docker-image cubepilot-openclaw:local cubepilot-operator:local cubepilot-api:local cubepilot-web:local --name "$KIND_CLUSTER"
 
 log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
@@ -78,7 +78,7 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-config \
 
 log "deploying components via Helm"
 helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
-  --set agents.image=cubepilot-agent:local \
+  --set agents.image=cubepilot-openclaw:local \
   --set operator.image=cubepilot-operator:local \
   --set api.image=cubepilot-api:local \
   --set web.image=cubepilot-web:local
