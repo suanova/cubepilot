@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CubePilot setup: build images, load into kind, create shared Secrets and
-# RBAC. Requires: docker, kind (cluster "cube"), kubectl, jq.
+# deploy components via Helm. Requires: docker, kind (cluster "cube"),
+# kubectl, jq, helm.
 #
 # The LLM/gateway configuration is extracted from the host's existing
 # ~/.openclaw/openclaw.json at runtime (never committed to the repo).
@@ -17,6 +18,7 @@ command -v docker >/dev/null || { echo "docker required"; exit 1; }
 command -v kind >/dev/null || { echo "kind required"; exit 1; }
 command -v kubectl >/dev/null || { echo "kubectl required"; exit 1; }
 command -v jq >/dev/null || { echo "jq required"; exit 1; }
+command -v helm >/dev/null || { echo "helm required"; exit 1; }
 [ -f "$HOST_CONFIG" ] || { echo "missing $HOST_CONFIG"; exit 1; }
 
 log "building Go binaries (host) + images"
@@ -33,7 +35,6 @@ kind load docker-image cubepilot-agent:local cubepilot-operator:local cubepilot-
 
 log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f "$REPO_DIR/deploy/rbac.yaml"
 
 log "installing platform CRDs (design §3: Agent / AgentInstance / Capability / TaskTemplate / Task / TaskRun)"
 kubectl apply -f "$REPO_DIR/config/crd/bases/"
@@ -75,8 +76,12 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-config \
   --from-literal=gatewayToken="$GATEWAY_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-log "deploying operator + api"
-kubectl apply -f "$REPO_DIR/deploy/service.yaml"
+log "deploying components via Helm"
+helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
+  --set agents.image=cubepilot-agent:local \
+  --set operator.image=cubepilot-operator:local \
+  --set api.image=cubepilot-api:local \
+  --set web.image=cubepilot-web:local
 
 log "done. expose the portal with:"
 log "  kubectl -n $NAMESPACE port-forward svc/cubepilot 8080:8080"

@@ -1,0 +1,17 @@
+CubePilot installed.
+
+Components:
+  operator  {{ .Values.operator.name }}   (control plane, leader election)
+  api       {{ .Values.api.name }}        (REST/SSE + metadata store)
+  web       {{ .Values.web.name }}        (Vue SPA, nginx)
+
+Access the portal:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/cubepilot 8080:8080
+  open http://127.0.0.1:8080
+
+Notes:
+- Platform CRDs were installed from crds/ at install time. Helm does NOT
+  upgrade CRDs; update them with:
+    kubectl apply -f config/crd/bases/
+- The openclaw-config and agent-kubeconfig secrets are created out-of-band
+  (scripts/setup.sh extracts LLM credentials from the host OpenClaw config).
