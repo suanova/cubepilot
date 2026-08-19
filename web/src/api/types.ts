@@ -12,6 +12,7 @@ export interface HistoryMessage {
     type: 'text' | 'toolCall'
     text?: string
     name?: string
+    id?: string
     arguments?: unknown
   }>
 }
@@ -100,11 +101,14 @@ export interface SSEToolCall {
   type: 'tool_call'
   session_id: string
   name: string
+  call_id?: string
   arguments: string
 }
 export interface SSEToolResult {
   type: 'tool_result'
   session_id: string
+  call_id?: string
+  name?: string
   output: string
 }
 export interface SSEMessageDelta {
