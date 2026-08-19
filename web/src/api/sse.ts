@@ -1,20 +1,13 @@
 // SSE streaming helper — reads a fetch Response body chunk by chunk and
 // parses `event:`/`data:` blocks (POST SSE cannot use EventSource).
+//
+// If the stream ends (or the connection dies) before a terminal message_done
+// event arrives, a synthetic message_done carrying an error is emitted so the
+// caller can always reset pending UI state instead of spinning forever.
 import type { SSEEvent } from './types'
 
-function parseSSEBlock(raw: string, onEvent: (name: string, ev: SSEEvent) => void): void {
-  let ev = 'message'
-  let data = ''
-  for (const line of raw.split('\n')) {
-    if (line.startsWith('event:')) ev = line.slice(6).trim()
-    else if (line.startsWith('data:')) data += line.slice(5).trim()
-  }
-  if (!data) return
-  try {
-    onEvent(ev, JSON.parse(data) as SSEEvent)
-  } catch {
-    /* malformed frame — ignore */
-  }
+function emitDone(onEvent: (name: string, ev: SSEEvent) => void, error?: string) {
+  onEvent('message_done', { type: 'message_done', session_id: '', error: error || '' })
 }
 
 export async function streamSSE(
@@ -25,25 +18,46 @@ export async function streamSSE(
   const resp = await fetch(url, opts)
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
-    onEvent('message_done', {
-      type: 'message_done',
-      session_id: '',
-      error: `HTTP ${resp.status} ${text}`,
-    })
+    emitDone(onEvent, `HTTP ${resp.status} ${text}`)
     return
   }
   const reader = resp.body?.getReader()
-  if (!reader) return
+  if (!reader) {
+    emitDone(onEvent, 'streaming not supported')
+    return
+  }
   const decoder = new TextDecoder()
   let buf = ''
+  let sawDone = false
+  let streamError = ''
   for (;;) {
-    const r = await reader.read()
+    let r: ReadableStreamReadResult<Uint8Array>
+    try {
+      r = await reader.read()
+    } catch (e) {
+      streamError = String(e)
+      break
+    }
     if (r.done) break
     buf += decoder.decode(r.value, { stream: true })
     let idx: number
     while ((idx = buf.indexOf('\n\n')) >= 0) {
-      parseSSEBlock(buf.slice(0, idx), onEvent)
+      const block = buf.slice(0, idx)
       buf = buf.slice(idx + 2)
+      const dataLine = block.split('\n').find((l) => l.startsWith('data:'))
+      if (!dataLine) continue
+      try {
+        const ev = JSON.parse(dataLine.slice(5).trim()) as SSEEvent
+        if (ev.type === 'message_done') sawDone = true
+        onEvent(ev.type || 'message', ev)
+      } catch {
+        /* malformed frame — ignore */
+      }
     }
+  }
+  // Terminal event missing (connection dropped / server died mid-stream):
+  // synthesize one so the caller can reset its state.
+  if (!sawDone) {
+    emitDone(onEvent, streamError || 'connection closed before the turn finished')
   }
 }
