@@ -1,0 +1,84 @@
+# API — Portal REST/SSE + JSON metadata store. Stateless except the single
+# RWO PVC → single replica today; shared storage enables replicas > 1
+# (design §9 / §11.1).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.api.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Values.api.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.api.name }}
+        {{- include "cubepilot.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccounts.api }}
+      # Container runs as `node` (uid 1000); make the data PVC writable.
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: {{ .Values.api.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            {{- include "cubepilot.agentEnv" . | nindent 12 }}
+            - name: CUBEPILOT_DATA_DIR
+              value: {{ .Values.api.dataDir }}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.api.dataDir }}
+          {{- with .Values.api.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.api.name }}-data
+---
+# Metadata store for tasks / reports / audit / agent config (JSON "tables").
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.api.name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.api.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.api.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.api.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: {{ .Values.api.name }}
+  ports:
+    - port: 8080
+      targetPort: 8080

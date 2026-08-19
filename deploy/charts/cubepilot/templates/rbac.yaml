@@ -1,47 +1,38 @@
-# CubePilot RBAC (design doc §9 / §11.1: components separated, RBAC
-# minimized per component).
-#
-#   cubepilot-operator : the control plane. Manages per-user
-#                        Pods/PVCs/Services in the namespace, the
-#                        leader-election Lease, and the platform CRDs
-#                        (Agent / AgentInstance / Capability / TaskTemplate /
-#                        Task / TaskRun — cluster-scoped, design §3).
-#   cubepilot-api      : the Portal/API. Reads the platform CRDs only
-#                        (never writes — the operator owns the control plane);
-#                        no pod permissions.
-#   cubepilot-agent    : the identity each per-user agent Pod uses for
-#                        `kubectl` (cluster-scoped, intentionally broad for
-#                        now — the production contract is per-user minimal
-#                        RBAC, FR-M3-001).
+# RBAC (design §9 / §11.1: components separated, RBAC minimized per
+# component). ClusterRoles use fixed names — single-instance per cluster;
+# operator owns the control plane, api reads CRDs only, agent is broad for
+# now (FR-M3-001 per-user minimal RBAC is the production contract).
 #
 # 巡检（FR-M4-007）以创建者身份执行、权限与创建者一致（design §5.4 / FR-M4 授权
-# 约定）——不设专用只读凭据；只读由巡检模板行为约束 + RBAC 兜底，残留风险与
-# 「创建者派生只读凭据」加固项（阶段二、Q-002）记入设计文档 §5.4/§13。
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cubepilot-operator
-  namespace: cubepilot
+# 约定）——不设专用只读凭据；只读由巡检模板行为约束 + RBAC 兜底。
+
+# --- ServiceAccounts ---
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: cubepilot-api
-  namespace: cubepilot
+  name: {{ .Values.serviceAccounts.operator }}
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: cubepilot-agent
-  namespace: cubepilot
+  name: {{ .Values.serviceAccounts.api }}
+  namespace: {{ .Release.Namespace }}
 ---
-# Operator: manage per-user Pods/PVCs/Services within the namespace plus the
-# leader-election Lease (design §3.3: IM 单副本起步, 控制器化后随框架升 2 副本).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccounts.agent }}
+  namespace: {{ .Release.Namespace }}
+
+# --- Operator: namespaced resources + leader-election Lease + events ---
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: cubepilot-operator
-  namespace: cubepilot
+  name: {{ .Values.operator.name }}
+  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: [""]
     resources: ["pods", "persistentvolumeclaims", "services"]
@@ -56,23 +47,23 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: cubepilot-operator
-  namespace: cubepilot
+  name: {{ .Values.operator.name }}
+  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: cubepilot-operator
+  name: {{ .Values.operator.name }}
 subjects:
   - kind: ServiceAccount
-    name: cubepilot-operator
-    namespace: cubepilot
+    name: {{ .Values.serviceAccounts.operator }}
+    namespace: {{ .Release.Namespace }}
+
+# --- Operator: cluster-scoped platform CRDs (full CRUD + status) ---
 ---
-# Platform CRDs are cluster-scoped (design §3). The operator needs full CRUD
-# on the platform CRs + their status subresources; the API needs read-only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cubepilot-operator-crds
+  name: {{ .Values.operator.name }}-crds
 rules:
   - apiGroups: ["assistant.suanova.io"]
     resources: ["agents", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns"]
@@ -87,22 +78,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cubepilot-operator-crds
+  name: {{ .Values.operator.name }}-crds
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cubepilot-operator-crds
+  name: {{ .Values.operator.name }}-crds
 subjects:
   - kind: ServiceAccount
-    name: cubepilot-operator
-    namespace: cubepilot
+    name: {{ .Values.serviceAccounts.operator }}
+    namespace: {{ .Release.Namespace }}
+
+# --- API: read-only platform CRDs (capability catalog discovery) ---
 ---
-# API: read-only access to the platform CRDs + CRD schemas (capability
-# catalog discovery). No pod/lease permissions.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cubepilot-api
+  name: {{ .Values.api.name }}
 rules:
   - apiGroups: ["assistant.suanova.io"]
     resources: ["agents", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns"]
@@ -114,22 +105,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cubepilot-api
+  name: {{ .Values.api.name }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cubepilot-api
+  name: {{ .Values.api.name }}
 subjects:
   - kind: ServiceAccount
-    name: cubepilot-api
-    namespace: cubepilot
+    name: {{ .Values.serviceAccounts.api }}
+    namespace: {{ .Release.Namespace }}
+
+# --- Agent: read cluster state, write pods (broad for now, FR-M3-001) ---
 ---
-# Agent instances: read cluster state, write pods (current scope — broad;
-# FR-M3-001 per-user minimal RBAC is the production contract).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cubepilot-agent
+  name: {{ .Values.serviceAccounts.agent }}
 rules:
   - apiGroups: [""]
     resources: ["nodes", "namespaces", "events", "persistentvolumeclaims"]
@@ -148,12 +139,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cubepilot-agent
+  name: {{ .Values.serviceAccounts.agent }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cubepilot-agent
+  name: {{ .Values.serviceAccounts.agent }}
 subjects:
   - kind: ServiceAccount
-    name: cubepilot-agent
-    namespace: cubepilot
+    name: {{ .Values.serviceAccounts.agent }}
+    namespace: {{ .Release.Namespace }}

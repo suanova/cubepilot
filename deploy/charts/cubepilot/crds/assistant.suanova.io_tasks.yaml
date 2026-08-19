@@ -1,0 +1,134 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: tasks.assistant.suanova.io
+spec:
+  group: assistant.suanova.io
+  names:
+    kind: Task
+    listKind: TaskList
+    plural: tasks
+    singular: task
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.templateRef
+      name: Template
+      type: string
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.creator
+      name: Creator
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      type: string
+    - jsonPath: .spec.enabled
+      name: Enabled
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Task is a task instance (design §3.3.3) — the "object" of the task domain:
+          who owns it, when it runs, which Agent executes it. The scheduler reads
+          Task CRDs and writes TaskRun (written with the platform identity, credential
+          minimization).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TaskSpec is a task instance (design §3.3.3) — whose task, when it runs.
+              It links the
+              execution subject (agentRef → Agent) with the task content (templateRef →
+              TaskTemplate); creator decides the execution identity.
+            properties:
+              agentRef:
+                default: agent-for-cloud
+                description: |-
+                  AgentRef points to the Agent definition that executes the task
+                  (default agent-for-cloud). Design §3.3.3: which Agent executes it.
+                type: string
+              creator:
+                description: |-
+                  Creator is the task creator; execution identity = creator (RBAC matches
+                  the creator).
+                type: string
+              cron:
+                description: Cron is the 5-field cron expression (trigger=cron).
+                type: string
+              enabled:
+                default: true
+                description: Enabled gates firing (false = paused).
+                type: boolean
+              instruction:
+                description: Instruction is the inline prompt (used when TemplateRef
+                  is empty).
+                type: string
+              params:
+                additionalProperties:
+                  type: string
+                description: Params overrides template parameter defaults.
+                type: object
+              templateRef:
+                description: |-
+                  TemplateRef points to the TaskTemplate (optional: inline instruction
+                  tasks are also allowed, phase-one compatibility).
+                type: string
+              trigger:
+                description: Trigger is manual | cron.
+                type: string
+            required:
+            - creator
+            - trigger
+            type: object
+          status:
+            description: TaskStatus is the observed state of a Task.
+            properties:
+              lastRunTime:
+                description: LastRunTime is the last successful scheduling time.
+                format: date-time
+                type: string
+              lastStatus:
+                description: LastStatus is the last run outcome (success | failed).
+                type: string
+              lastTaskRunName:
+                description: LastTaskRunName is the most recent TaskRun created for
+                  this Task.
+                type: string
+              nextRunTime:
+                description: NextRunTime is the computed next fire time.
+                format: date-time
+                type: string
+              phase:
+                description: Phase is Ready / Paused.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

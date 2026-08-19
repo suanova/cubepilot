@@ -1,0 +1,11 @@
+apiVersion: v2
+name: cubepilot
+description: CubeStack intelligent assistant — operator (platform controllers), API (REST/SSE), and web portal (Vue SPA), with per-user OpenClaw agent instances.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - cubestack
+  - cubepilot
+  - assistant
+  - openclaw

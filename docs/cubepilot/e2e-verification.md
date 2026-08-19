@@ -7,7 +7,7 @@
 ## 环境
 
 - kind 集群：`cube`（单 control-plane 节点）
-- 助手服务：`deploy/service.yaml`，**2 副本**（多副本 Active/Standby，lease 选主）
+- 助手服务：`deploy/charts/cubepilot` Helm chart，operator/api/web 三组件 + 按组件 RBAC（api 只读 CRD，operator 全量 CRUD + lease）
 - 每用户实例：`agent-<user>`（对话/巡检共用，创建者身份，SA `cubepilot-agent`）
 - 数据：每用户 PVC `data-<user>` 1Gi；元数据 JSON 存后端 PVC
 

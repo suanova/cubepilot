@@ -1,0 +1,179 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: capabilities.assistant.suanova.io
+spec:
+  group: assistant.suanova.io
+  names:
+    kind: Capability
+    listKind: CapabilityList
+    plural: capabilities
+    singular: capability
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.target.kind
+      name: Target
+      type: string
+    - jsonPath: .status.valid
+      name: Valid
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Capability is the capability catalog entry (design §3.3.1). It answers
+          "what an Agent can use" — atomic thin overrides bound to CRDs and domain knowledge.
+          Generic tools are platform-provided and need no registration.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CapabilitySpec is a platform capability (design §3.3.1). Generic tools
+              (list-kinds / describe-kind / resource-manager / kubectl-raw) are
+              platform-provided and NOT registered as Capabilities — zero registration.
+            properties:
+              agents:
+                description: 'Agents restricts visibility: empty = visible to all
+                  agents.'
+                items:
+                  type: string
+                type: array
+              contentRef:
+                description: ContentRef points to external content (ConfigMap) for
+                  large content.
+                type: string
+              description:
+                description: Description explains when to use this capability.
+                type: string
+              files:
+                description: Files are small inline scripts (domain).
+                items:
+                  description: CapabilityFile is a small inline file of a domain capability.
+                  properties:
+                    content:
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - content
+                  - name
+                  type: object
+                type: array
+              instructions:
+                description: Instructions is the domain knowledge instruction (inline
+                  default).
+                type: string
+              override:
+                description: |-
+                  Override marks an atomic capability as an overlay (not a fresh
+                  definition). Required for atomic.
+                type: boolean
+              ownerModule:
+                description: OwnerModule is the owning platform module (e.g. training).
+                type: string
+              security:
+                description: Security is the atomic security overlay.
+                properties:
+                  confirmWrites:
+                    description: ConfirmWrites forces HITL for writes (phase 2; phase
+                      1 writes pass).
+                    type: boolean
+                  denyOperations:
+                    description: DenyOperations disables operations even if the CRD
+                      supports them.
+                    items:
+                      type: string
+                    type: array
+                  level:
+                    description: Level is the coarse access level (L0/L1).
+                    type: string
+                type: object
+              semantics:
+                description: Semantics is the atomic semantic overlay.
+                properties:
+                  description:
+                    type: string
+                  examples:
+                    items:
+                      type: string
+                    type: array
+                  title:
+                    type: string
+                type: object
+              target:
+                description: Target binds an atomic capability to a CRD.
+                properties:
+                  group:
+                    type: string
+                  kind:
+                    type: string
+                  version:
+                    type: string
+                required:
+                - group
+                - kind
+                - version
+                type: object
+              title:
+                description: Title is the display title.
+                type: string
+              type:
+                description: Type is atomic (CRD thin override) or domain (domain
+                  knowledge).
+                type: string
+              uses:
+                description: Uses orchestrates generic/atomic/MCP capabilities (domain
+                  only).
+                items:
+                  type: string
+                type: array
+            required:
+            - type
+            type: object
+          status:
+            description: CapabilityStatus is the observed state of a Capability.
+            properties:
+              message:
+                description: Message carries the validation detail.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed.
+                format: int64
+                type: integer
+              valid:
+                description: |-
+                  Valid reports whether the registration passed validation (target CRD
+                  exists with schema; fail-fast).
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
