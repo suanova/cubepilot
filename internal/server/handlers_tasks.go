@@ -210,7 +210,11 @@ func (s *Server) streamCollect(ctx context.Context, user, sessionKey, prompt str
 		}
 		return nil
 	})
-	s.extractToolEvents(ctx, user, sessionKey)
+	for _, ev := range s.extractToolEvents(ctx, user, sessionKey, map[string]bool{}) {
+		if ev.Type == openclaw.EventToolCall {
+			s.recordToolCall(user, ev)
+		}
+	}
 	if err != nil {
 		return buf.String(), err
 	}
