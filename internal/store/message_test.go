@@ -14,14 +14,14 @@ func TestAppendAndListMessages(t *testing.T) {
 	}
 
 	// Append a user message and an assistant delta.
-	um, err := s.AppendMessage(Message{ConversationID: "conv-1", User: "u1", Role: "user", Content: "你好"})
+	um, err := s.AppendMessage(Message{ConversationID: "conv-1", User: "u1", Role: "user", Content: "hello"})
 	if err != nil {
 		t.Fatalf("AppendMessage user: %v", err)
 	}
 	if um.ID == "" || um.CreatedAt.IsZero() {
 		t.Fatalf("message missing id/timestamp: %+v", um)
 	}
-	am, err := s.AppendMessage(Message{ConversationID: "conv-1", User: "u1", Role: "assistant", EventType: "message_delta", Content: "你好！"})
+	am, err := s.AppendMessage(Message{ConversationID: "conv-1", User: "u1", Role: "assistant", EventType: "message_delta", Content: "hello!"})
 	if err != nil {
 		t.Fatalf("AppendMessage assistant: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestAppendAndListMessages(t *testing.T) {
 	if msgs[0].Role != "user" || msgs[1].Role != "assistant" {
 		t.Fatalf("order wrong: %+v", msgs)
 	}
-	if msgs[1].EventType != "message_delta" || msgs[1].Content != "你好！" {
+	if msgs[1].EventType != "message_delta" || msgs[1].Content != "hello!" {
 		t.Fatalf("assistant row wrong: %+v", msgs[1])
 	}
 	_ = am

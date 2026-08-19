@@ -35,8 +35,8 @@ spec:
       openAPIV3Schema:
         description: |-
           AgentInstance is the runtime instance of an Agent for one user (design §3.2).
-          It is reconciled by the Instance Manager controller: 拉起 / 自愈 / 闲置回收 /
-          数据目录 GC. The instance key is user + agent (每用户每 Agent 单实例、单写者).
+          It is reconciled by the Instance Manager controller: provision / self-heal / idle reclaim /
+          data-directory GC. The instance key is user + agent (one instance per user per agent, single-writer).
         properties:
           apiVersion:
             description: |-
@@ -69,7 +69,7 @@ spec:
                 items:
                   description: |-
                     CredentialSpec is one typed downstream credential of an instance
-                    (design §4.4: identity = 我是谁; credentials[] = 我如何认证到下游).
+                    (design §4.4: identity = who I am; credentials[] = how I authenticate to downstreams).
                     The actual secret is platform-managed; refs only, never plaintext.
                   properties:
                     endpoint:

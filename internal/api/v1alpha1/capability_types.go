@@ -4,7 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CapabilityType is the capability layer (design §3.3.1 三层能力模型).
+// CapabilityType is the capability layer (design §3.3.1 three-layer model).
 type CapabilityType string
 
 const (
@@ -16,8 +16,8 @@ const (
 	CapabilityDomain CapabilityType = "domain"
 )
 
-// CapabilityTarget binds an atomic capability to a CRD (design §3.3.1:
-// 登记时平台校验存在 + schema, fail-fast).
+// CapabilityTarget binds an atomic capability to a CRD (design §3.3.1: the
+// platform validates the target exists + schema at registration, fail-fast).
 type CapabilityTarget struct {
 	Group   string `json:"group"`
 	Version string `json:"version"`
@@ -25,7 +25,7 @@ type CapabilityTarget struct {
 }
 
 // CapabilitySemantics is the LLM-facing semantic overlay of an atomic
-// capability (design §3.3.1: 只改 LLM 看到的语义).
+// capability (design §3.3.1: changes only the semantics the LLM sees).
 type CapabilitySemantics struct {
 	Title       string   `json:"title,omitempty"`
 	Description string   `json:"description,omitempty"`
@@ -33,7 +33,7 @@ type CapabilitySemantics struct {
 }
 
 // CapabilitySecurity is the security overlay of an atomic capability
-// (design §3.3.1: 只改安全).
+// (design §3.3.1: changes only security).
 type CapabilitySecurity struct {
 	// DenyOperations disables operations even if the CRD supports them.
 	// +optional
@@ -120,7 +120,8 @@ type CapabilityStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Capability is the capability catalog entry (design §3.3.1). It answers
-// "Agent 能用什么" — atomic thin overrides bound to CRDs and domain knowledge.
+// "what an Agent can use" — atomic thin overrides bound to CRDs and domain
+// knowledge.
 // Generic tools are platform-provided and need no registration.
 type Capability struct {
 	metav1.TypeMeta   `json:",inline"`

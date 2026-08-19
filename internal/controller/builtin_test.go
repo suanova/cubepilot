@@ -22,7 +22,8 @@ func testScheme(t *testing.T) *runtime.Scheme {
 }
 
 // TestBuiltinAgentShape verifies the builtin agent-for-cloud definition
-// (设计 §3.1: builtin: true, 每用户自动实例化, 不可删除; model[0] primary).
+// (design §3.1: builtin: true, auto-instantiated per user, non-deletable;
+// model[0] primary).
 func TestBuiltinAgentShape(t *testing.T) {
 	agent := BuiltinAgent()
 	if agent.Name != "agent-for-cloud" {
@@ -42,7 +43,8 @@ func TestBuiltinAgentShape(t *testing.T) {
 	}
 }
 
-// TestInstanceNameFor verifies instance key = user + agent (设计 §3.2), with
+// TestInstanceNameFor verifies the instance key = user + agent (design §3.2),
+// with
 // DNS-1123 sanitization.
 func TestInstanceNameFor(t *testing.T) {
 	cases := []struct{ user, agent, want string }{
@@ -59,7 +61,7 @@ func TestInstanceNameFor(t *testing.T) {
 
 // TestBootstrapEnsure verifies the builtin bootstrap creates the Agent,
 // Capabilities, TaskTemplate and per-user instances idempotently
-// (设计 §3.1 / §5.3: 内置 agent 每用户自动实例化).
+// (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -95,7 +97,7 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("daily-inspection template not created: %v", err)
 	}
 
-	// Per-user instances exist (每用户自动实例化).
+	// Per-user instances exist (auto-instantiated per user).
 	var insts v1alpha1.AgentInstanceList
 	if err := cl.List(context.Background(), &insts); err != nil {
 		t.Fatalf("list instances: %v", err)

@@ -1,8 +1,8 @@
-# CubePilot · Agent Runtime 事件映射表（E1 契约 PoC 回填）
+# CubePilot · Agent Runtime 事件映射表（E1 契约实测回填）
 
 > 对应模块设计文档 §4.1（扩展点一：Agent Runtime Adapter）「契约冻结与验证」验收⑥：
 > 事件映射表（OpenClaw 原生事件 → 8 类 SSE）定稿。
-> 本文档由阶段一 PoC 实测回填，2026-08-17 与 `internal/openclaw/events.go` 同步。
+> 本文档由阶段一实测回填，2026-08-17 与 `internal/openclaw/events.go` 同步。
 
 ## 1. 契约
 
@@ -88,7 +88,7 @@ exec approval，`allowed-once / rejected` 回执，见
 - 保留策略：`Instance Manager` 数据目录 GC（72h 滑动窗口，§5.1/§10）+
   `store.GCExpiredMessages`（账本行同步清理）。
 
-## 4. PoC 验收对照（§4.1 清单 ①~⑥）
+## 4. 验收对照（§4.1 清单 ①~⑥）
 
 | # | 验收项 | 结果 | 证据 |
 |---|---|---|---|
@@ -99,4 +99,4 @@ exec approval，`allowed-once / rejected` 回执，见
 | ⑤ | 事件流捕获同步 → Message 账本 → 历史渲染 / 换 runtime 播种 | ✅ | `ledgerEvent` 转发路径落账；`/ledger`、`/seed` 端点 |
 | ⑥ | 事件映射表定稿 | ✅ | 本文档 |
 
-> 端到端验证记录见 `docs/cubepilot/poc-e2e-verification.md`（随验证执行回填）。
+> 端到端验证记录见 `docs/cubepilot/e2e-verification.md`（随验证执行回填）。

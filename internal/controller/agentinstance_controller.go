@@ -1,9 +1,12 @@
 // Package controller implements the CubePilot platform controllers
 // (design doc CubePilot-Cloud-for-Agents-Design.md §4.1): the AgentInstance
-// controller (Instance Manager 控制器化) and the builtin-resource bootstrap.
+// controller (the Instance Manager, controller-based) and the builtin-resource
+// bootstrap.
 //
-// 设计 §4.1: Instance Manager 控制器化 — AgentInstance CRD + controller-runtime
-// (v0.2 §13 备选落地), spec.runtime 区分多运行时; 常驻与回收策略由 CR spec 声明。
+// Design §4.1: the Instance Manager is controller-based — AgentInstance CRD +
+// controller-runtime (v0.2 §13 chosen implementation); spec.runtime
+// distinguishes multiple runtimes; resident and reclaim policies are declared
+// by the CR spec.
 package controller
 
 import (
@@ -28,13 +31,13 @@ import (
 )
 
 // finalizerName protects the instance's data directory PVC until the
-// AgentInstance is fully removed (设计 §3.2 数据目录 GC / 回收).
+// AgentInstance is fully removed (design §3.2 data-directory GC / reclaim).
 const finalizerName = "assistant.suanova.io/agentinstance"
 
 // AgentInstanceReconciler reconciles AgentInstance objects: it ensures the
 // per-user agent Pod + Service + data PVC exist and are healthy, and updates
 // the instance status (phase / podName / pvcName / conditions). This is the
-// controller-runtime incarnation of the Instance Manager (设计 §4.1).
+// controller-runtime incarnation of the Instance Manager (design §4.1).
 type AgentInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -90,7 +93,8 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 			fmt.Sprintf("runtime %q not supported by phase-one controller", agent.Spec.Runtime))
 	}
 
-	// Ensure PVC / Service / Pod exist (拉起 + 自愈; 常驻策略由 spec 声明).
+	// Ensure PVC / Service / Pod exist (provision + self-heal; the resident
+	// policy is declared by the spec).
 	spec := k8s.AgentSpec{
 		Namespace:    r.Cfg.Namespace,
 		Image:        r.Cfg.AgentImage,
@@ -101,7 +105,8 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	podName := k8s.ResourceName("agent", inst.Name)
 	svcName := podName
 
-	// PVC (data directory, 真源 = 实例数据目录; 设计 §3.4 平台零持有).
+	// PVC (data directory; source of truth = instance data directory; design
+	// §3.4 the platform holds zero agent data).
 	pvc := spec.DataPVCFor(pvcName, inst.Name, size)
 	if err := r.ensurePVC(ctx, pvc); err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "", "pvc: "+err.Error())
@@ -167,7 +172,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		}
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
-	// Reconcile periodically to self-heal missing pods (常驻自愈).
+	// Reconcile periodically to self-heal missing pods (resident self-heal).
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
@@ -185,7 +190,8 @@ func (r *AgentInstanceReconciler) agentFor(ctx context.Context, name string) (*v
 	return &agent, nil
 }
 
-// finalize removes the instance's data directory PVC (数据目录随实例删除回收).
+// finalize removes the instance's data directory PVC (the data directory is
+// reclaimed when the instance is deleted).
 func (r *AgentInstanceReconciler) finalize(ctx context.Context, inst *v1alpha1.AgentInstance) error {
 	pvcName, _ := inst.EffectiveDataVolume()
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: r.Cfg.Namespace}}

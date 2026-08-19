@@ -12,7 +12,7 @@ type InstancePhase string
 const (
 	// InstanceCreating means resources are being provisioned.
 	InstanceCreating InstancePhase = "Creating"
-	// InstanceWarm means the instance is running and ready (常驻).
+	// InstanceWarm means the instance is running and ready (resident).
 	InstanceWarm InstancePhase = "Warm"
 	// InstanceIdle means the instance is idle (on-demand mode, phase 2).
 	InstanceIdle InstancePhase = "Idle"
@@ -23,7 +23,8 @@ const (
 )
 
 // CredentialSpec is one typed downstream credential of an instance
-// (design §4.4: identity = 我是谁; credentials[] = 我如何认证到下游).
+// (design §4.4: identity = who I am; credentials[] = how I authenticate to
+// downstreams).
 // The actual secret is platform-managed; refs only, never plaintext.
 type CredentialSpec struct {
 	// Target is the downstream system: k8s | prometheus | harbor | llm | itsm | ...
@@ -62,8 +63,8 @@ type IdentitySpec struct {
 	PrincipalRef PrincipalRef `json:"principalRef"`
 }
 
-// DataVolumeSpec is the per-instance data directory (design §3.2: 每实例独立
-// PVC, 默认 1 GiB; 真源 = 数据目录).
+// DataVolumeSpec is the per-instance data directory (design §3.2: per-instance
+// PVC, default 1 GiB; source of truth = data directory).
 type DataVolumeSpec struct {
 	// PVC is the per-instance PVC name (platform-generated when empty).
 	// +optional
@@ -73,8 +74,8 @@ type DataVolumeSpec struct {
 	Size string `json:"size,omitempty"`
 }
 
-// LifecycleSpec is the instance lifecycle policy (design §3.2: resident 常驻
-// 阶段一内置 agent; on-demand 阶段二用户自建).
+// LifecycleSpec is the instance lifecycle policy (design §3.2: resident for the
+// phase-one builtin agent; on-demand for phase-two user-created agents).
 type LifecycleSpec struct {
 	// Strategy is resident | on-demand (default resident).
 	// +kubebuilder:default=resident
@@ -157,8 +158,9 @@ type AgentInstanceStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentInstance is the runtime instance of an Agent for one user (design §3.2).
-// It is reconciled by the Instance Manager controller: 拉起 / 自愈 / 闲置回收 /
-// 数据目录 GC. The instance key is user + agent (每用户每 Agent 单实例、单写者).
+// It is reconciled by the Instance Manager controller: provision / self-heal /
+// idle reclaim / data-directory GC. The instance key is user + agent (one
+// instance per user per agent, single-writer).
 type AgentInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

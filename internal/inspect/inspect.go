@@ -43,5 +43,5 @@ func Run(ctx context.Context, oc *openclaw.Client, sessionKey string, onEvent fu
 }
 
 // Prompt returns the fixed inspection prompt (also used as the preset for the
-// 集群健康巡检 task template on the tasks page).
+// cluster-health-inspection task template on the tasks page).
 func Prompt() string { return prompt }

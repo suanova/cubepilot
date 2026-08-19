@@ -1,14 +1,17 @@
 // Package metrics exposes the phase-one /metrics endpoint with the five
-// instrumentation families required by the design doc §9 (可观测性):
+// instrumentation families required by the design doc §9 (observability):
 //
-//   - dialogue: 会话数 / 消息数 / 首 Token 延迟 / 回复总延迟 / 流式中断率
-//   - agent:    工具调用次数 / 成功率 / L0/L1 分布
-//   - cost:     LLM Token 消耗（输入/输出）
-//   - ops:      任务执行时长 / 异常项分布
-//   - pool:     活跃/预热/回收实例数、冷启动时长、重建率
+//   - dialogue: session count / message count / first-token latency / total
+//     reply latency / stream interruption rate
+//   - agent:    tool-call count / success rate / L0-L1 distribution
+//   - cost:     LLM token consumption (input/output)
+//   - ops:      task execution duration / abnormal-item distribution
+//   - pool:     active/warm/reclaimed instance count, cold-start latency,
+//     rebuild rate
 //
-// 采集与面板展示后置（NFR-011）; phase one exposes a text exposition endpoint
-// and in-process counters updated by the assistant service.
+// Collection and dashboard presentation are deferred (NFR-011); phase one
+// exposes a text exposition endpoint and in-process counters updated by the
+// assistant service.
 package metrics
 
 import (
