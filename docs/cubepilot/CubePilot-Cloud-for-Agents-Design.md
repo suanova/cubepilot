@@ -807,7 +807,7 @@ Portal 对话 / 配置 / 观测 / 审计（与内置 agent 同一套入口）
 | E6（新） | Agent 定义与注册 | 平台层 | 内置 Agent 列表 | Agent Registry（发布 / 版本 / 审核 / 模板市场） |
 | E7（新） | Agent Identity | 平台层 | 用户身份（现状） | user + service 双模式，范围化凭据派生 |
 | E8（新） | Agent Evaluation | 平台层 | — | 任务完成度 / 工具选择 / 安全评测（阶段三） |
-| E9（新） | 模型接入与 fallback | 平台层 | 平台内置推理池 + 平台外端点配置（模型无关 FR-M2-003） | 运行时 model fallback（阶段二 PoC 验证）→ 多模型路由（FR-M2-010，阶段三） |
+| E9（新） | 模型接入与 fallback | 平台层 | 平台内置推理池 + 平台外端点配置（模型无关 FR-M2-003） | 运行时 model fallback（阶段二技术验证）→ 多模型路由（FR-M2-010，阶段三） |
 
 ## 7.2 演进路径
 
@@ -820,7 +820,7 @@ Portal 对话 / 配置 / 观测 / 审计（与内置 agent 同一套入口）
              Agent / AgentInstance / AgentIdentity CRD（IM → Operator）
              Agent Registry（审核发布）· 工具层 Policy/HITL（Gateway 统一）
              用户自建 Agent（模板化 + 配额 + 配置托管）· Agent 级 AgentOps
-             模型接入完善：运行时 model fallback（PoC 验证后落地）
+             模型接入完善：运行时 model fallback（技术验证后落地）
     │
     └──► 阶段三：平台化与智能演进
              代码托管（container）· Agent Evaluation · 多 Agent · 模板市场
@@ -876,20 +876,20 @@ Portal 对话 / 配置 / 观测 / 审计（与内置 agent 同一套入口）
 
 # 10. 待解决问题
 
-- **Agent / AgentInstance CRD 形态与 Instance Manager 控制器化落地**：`AgentInstance` CRD 的 `spec.runtime` 区分多运行时；内置 agent 的「每用户自动实例化」由平台控制器生成（`builtin: true` → 用户创建时自动 reconcile 实例），实现细节 PoC 验证（v0.2 §13 待定项收敛）。
-- **Agent 定义参数化与用户自建流程**：Agent 模板（参数化 instructions / tools）的 Schema 设计；用户创建 Agent 的 UI / API 流程与审核链（阶段二 PoC）。
+- **Agent / AgentInstance CRD 形态与 Instance Manager 控制器化落地**：`AgentInstance` CRD 的 `spec.runtime` 区分多运行时；内置 agent 的「每用户自动实例化」由平台控制器生成（`builtin: true` → 用户创建时自动 reconcile 实例），实现细节经技术验证收敛（v0.2 §13 待定项收敛）。
+- **Agent 定义参数化与用户自建流程**：Agent 模板（参数化 instructions / tools）的 Schema 设计；用户创建 Agent 的 UI / API 流程与审核链（阶段二落地）。
 - **自定义 Agent 代码托管边界**：container 形态的镜像审核、沙箱强化、资源限制的具体基线（阶段三前置研究）。
-- **AgentIdentity `service` 模式**：服务身份与 Keycloak / K8s RBAC 的映射、凭据轮换与吊销语义；`service` 模式下实例 key / 作用域需重定义（`user + agent` 不适用，§3.2）（阶段二 PoC）。
+- **AgentIdentity `service` 模式**：服务身份与 Keycloak / K8s RBAC 的映射、凭据轮换与吊销语义；`service` 模式下实例 key / 作用域需重定义（`user + agent` 不适用，§3.2）（阶段二技术验证）。
 - **Agent Evaluation 引入时机**：内置 agent 评测集范围、用户自建 Agent 上线门槛（阶段三）。
 - **配额模型**：每用户自定义 Agent 数默认值、全平台实例上限与 Infra 容量关系（NFR-015 细化）。
-- **Model fallback 契约与运行时能力映射**：OpenClaw / Hermes 原生 model fallback 的触发条件（失败/超时/限流）、切换粒度与事件暴露需 PoC 实测后回填；DeepSeek-Harness 是否支持待验证；Adapter 进入契约（模型配置注入）与返回契约（模型切换观测）并入 v0.2 §4.1 PoC 验证清单。
+- **Model fallback 契约与运行时能力映射**：OpenClaw / Hermes 原生 model fallback 的触发条件（失败/超时/限流）、切换粒度与事件暴露需实测后回填；DeepSeek-Harness 是否支持待验证；Adapter 进入契约（模型配置注入）与返回契约（模型切换观测）并入 v0.2 §4.1 验证清单。
 - **自定义模型凭据托管**：external 端点 API Key 的托管 / 注入 / 轮换语义、与用户失效联动、egress 白名单（NFR-004 扩展：external LLM 端点入白名单）。
 - **凭据类型清单与 target 映射**：阶段二接入 Prometheus / Loki / Harbor / ITSM 等下游时，`credentials[].target/type` 枚举范围、各类型 Secret 结构、以及 `model[].apiKeyRef` 收敛到 `credentials` 机制的迁移语义（§4.4）。
 - **共享凭据的审计与轮换**：定义级共享凭据（组织统一模型网关）的使用方审计（哪些 Agent / 实例 / 用户）、轮换对存量实例的影响与滚动更新、个人凭据覆盖共享凭据的语义（§4.4）。
-- **llm 凭据绑定的校验**：`credentials[].modelRef` / `endpoint` 与 `spec.model[]` 的解析规则（显式绑定、唯一 external 隐式绑定、歧义拒绝）与缺省行为 PoC 验证（§4.4）。
+- **llm 凭据绑定的校验**：`credentials[].modelRef` / `endpoint` 与 `spec.model[]` 的解析规则（显式绑定、唯一 external 隐式绑定、歧义拒绝）与缺省行为经技术验证（§4.4）。
 - **Task 的 `agentRef` 语义**：巡检绑定用户自建 Agent 时的权限边界（以创建者身份 vs service 身份）需与 FR-M4 授权约定对齐。
 - **「平台零持有 agent 数据」在 1:N（多 Agent）下的验证**：每 Agent 独立 PVC + 会话接回 / 配置写路径 / trajectory 溯源，在用户自建 Agent 场景复测（v0.2 §13 验证清单扩展）。
-- **generic 工具实现**：`list-kinds` / `describe-kind` / `resource-manager`（动态查 CRD schema + 校验 data + 渲染）的具体实现与「先 describe 再操作 / 动态 schema 注入」的填参精度方案（阶段一 PoC，§4.2.2）。
+- **generic 工具实现**：`list-kinds` / `describe-kind` / `resource-manager`（动态查 CRD schema + 校验 data + 渲染）的具体实现与「先 describe 再操作 / 动态 schema 注入」的填参精度方案（阶段一，§4.2.2）。
 - **atomic 薄覆盖合并规则**：`override` + `target` 与自动生成工具的合并（semantics / security 覆盖、同名冲突检测、target 校验 fail-fast）、以及 CRD 删除后悬空检测（§3.3.1）。
 - **工具集变更治理**：CRD 增删改 → generic 工具集自动变化的通知 / 审计（哪些 Agent 受影响、工具集快照），防止 Agent 行为意外漂移（§3.3.1）。
 

@@ -9,8 +9,8 @@ import (
 )
 
 // TestToolSetForAgent verifies the effective tool set computation
-// (设计 §3.3.1: generic 工具默认可用; Agent.tools[] 只引用 Capability;
-// Capability.agents[] 决定可见子集).
+// (design §3.3.1: generic tools are available by default; Agent.tools[] only
+// references Capabilities; Capability.agents[] decides the visible subset).
 func TestToolSetForAgent(t *testing.T) {
 	agent := &v1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
@@ -51,8 +51,8 @@ func TestToolSetForAgent(t *testing.T) {
 }
 
 // TestValidateCapability verifies the registration validation rules
-// (设计 §3.3.1: atomic 必须 override+target; domain 必须 instructions;
-// target 指向的 CRD 不存在 → fail-fast).
+// (design §3.3.1: atomic must have override+target; domain must have
+// instructions; a missing target CRD → fail-fast).
 func TestValidateCapability(t *testing.T) {
 	c := &Catalog{schemas: map[string]*CRDSchema{
 		"dev.suanova.io/DevEnvironment": {

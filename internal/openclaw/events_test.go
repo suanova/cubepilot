@@ -14,7 +14,7 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"kubectl get\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" pods -A\"}}]}}]}\n\n" +
-		"data: {\"choices\":[{\"delta\":{\"content\":\"共发现 2 个异常 Pod。\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Found 2 abnormal Pods.\"}}]}\n\n" +
 		"data: [DONE]\n\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +33,7 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 	var got []Event
 	err := c.StreamChat(t.Context(), ChatParams{
 		SessionKey: "conv-abc",
-		Messages:   []ChatMessage{{Role: "user", Content: "查一下异常 Pod"}},
+		Messages:   []ChatMessage{{Role: "user", Content: "check abnormal pods"}},
 	}, func(e Event) error {
 		got = append(got, e)
 		return nil

@@ -1,7 +1,7 @@
-# CubePilot PoC 端到端验证记录
+# CubePilot 端到端验证记录
 
 > 验证日期：2026-08-17（kind 集群 `cube`，K8s v1.36.1，OpenClaw agent 镜像 `cubepilot-agent:local`）
-> 对应设计文档 §4.1 PoC 验收清单 ①~⑥ 与 §5.2/§5.4/§3.3/§9 关键机制。
+> 对应设计文档 §4.1 验证清单 ①~⑥ 与 §5.2/§5.4/§3.3/§9 关键机制。
 > 事件映射契约见 [agent-runtime-event-mapping.md](./agent-runtime-event-mapping.md)。
 
 ## 环境
@@ -90,5 +90,5 @@
 
 - 阶段二：HITL（`confirm_pending/confirm_resolved` 契约 + `requireApproval` 钩子）、Message 表作为正式持久层、能力目录按 RBAC 可见范围动态加载。
 - 调度器多副本故障转移演练（kill leader → standby 接管）未做破坏性测试，仅验证了 lease 唯一性。
-- Agent Runtime Adapter 接口契约（§4.1）已由本 PoC 回填事件映射表，正式冻结待阶段二 HITL 事件补全后。
-- 阶段二待办：atomic Capability 薄覆盖 CRD 落地（平台域 CRD 未在 PoC 集群部署）、Capability 状态校验循环（`status.valid` 写入）、TaskRun 报告详情持久化到平台存储。
+- Agent Runtime Adapter 接口契约（§4.1）已由本轮实测回填事件映射表，正式冻结待阶段二 HITL 事件补全后。
+- 阶段二待办：atomic Capability 薄覆盖 CRD 落地（平台域 CRD 未在验证集群部署）、Capability 状态校验循环（`status.valid` 写入）、TaskRun 报告详情持久化到平台存储。

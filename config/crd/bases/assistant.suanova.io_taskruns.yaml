@@ -41,7 +41,7 @@ spec:
       openAPIV3Schema:
         description: |-
           TaskRun is the execution report (design §3.3.4) — written by the scheduler
-          with the platform identity, completing the 模板 → 任务 → 执行报告 闭环.
+          with the platform identity, completing the template → task → run report loop.
         properties:
           apiVersion:
             description: |-
@@ -96,7 +96,8 @@ spec:
           status:
             description: |-
               TaskRunStatus is the execution report written by the scheduler with the
-              platform identity (design §3.3.4: 平台身份写入, Agent 实例与用户凭据不直接写 CRD).
+              platform identity (design §3.3.4: written with the platform identity; Agent
+              instances and user credentials never write CRDs directly).
             properties:
               conditions:
                 description: Conditions carries detail (Inspected=True etc).
@@ -169,7 +170,7 @@ spec:
                 items:
                   description: |-
                     FindingItem is one structured finding of an inspection-style report
-                    (design §3.3.4: category / level / finding / evidence 链).
+                    (design §3.3.4: category / level / finding / evidence chain).
                   properties:
                     category:
                       description: Category is the finding category (pod / node /
@@ -180,7 +181,7 @@ spec:
                         excerpt + ts).
                       items:
                         description: 'EvidenceEntry is one piece of evidence (design
-                          §3.3.4: 证据链).'
+                          §3.3.4: evidence chain).'
                         properties:
                           command:
                             type: string

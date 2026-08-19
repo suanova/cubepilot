@@ -7,10 +7,11 @@
 //	         thin overlays bound to a CRD (never touch fields);
 //	domain  — Capability (type: domain + uses[] + instructions), domain knowledge.
 //
-// The generic layer is the "runtime 自动懂平台" 落地点: the platform reads all
+// The generic layer is where "the runtime understands the platform
+// automatically" lands: the platform reads all
 // CRD schemas at startup and serves them to the LLM via list-kinds /
 // describe-kind; resource-manager validates data against the CRD schema and
-// renders manifests mechanically (schema-driven, 零猜测).
+// renders manifests mechanically (schema-driven, zero guessing).
 package capability
 
 import (
@@ -38,11 +39,13 @@ const (
 	ToolKubectlRaw      = "kubectl-raw"
 )
 
-// GenericTools are the always-available generic tools (设计 §3.3.1 generic 层).
+// GenericTools are the always-available generic tools (design §3.3.1 generic
+// layer).
 var GenericTools = []string{ToolListKinds, ToolDescribeKind, ToolResourceManager, ToolKubectlRaw}
 
-// CRDSchema is one discovered CRD's schema (design §3.3.1: 平台启动读全部 CRD
-// schema 缓存; list-kinds / describe-kind 动态发现即用).
+// CRDSchema is one discovered CRD's schema (design §3.3.1: the platform
+// reads all CRD schemas into a cache at startup; list-kinds / describe-kind
+// discover them dynamically on use).
 type CRDSchema struct {
 	Group   string `json:"group"`
 	Version string `json:"version"`
@@ -57,7 +60,8 @@ type CRDSchema struct {
 }
 
 // Catalog is the platform's capability catalog: discovered CRD schemas plus
-// the registered Capability CRs. It answers "Agent 能用什么" (设计 §3.1).
+// the registered Capability CRs. It answers "what an Agent can use" (design
+// §3.1).
 type Catalog struct {
 	discovery discovery.DiscoveryInterface
 	dynamic   dynamic.Interface
@@ -68,7 +72,8 @@ type Catalog struct {
 }
 
 // NewCatalog builds a Catalog over the given REST config. The CRD schema table
-// is lazily loaded (design §4.2.1: 平台启动读全部 CRD schema 缓存).
+// is lazily loaded (design §4.2.1: the platform reads all CRD schemas into a
+// cache at startup).
 func NewCatalog(cfg *rest.Config) (*Catalog, error) {
 	disc, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
@@ -86,8 +91,9 @@ func NewCatalog(cfg *rest.Config) (*Catalog, error) {
 	}, nil
 }
 
-// Refresh re-discovers the CRD schema table (generic 工具集变更治理: CRD 增删改
-// → 工具集自动变; 设计 §3.3.1 工具集变更治理).
+// Refresh re-discovers the CRD schema table (generic toolset change
+// governance: CRD add/update/delete → the toolset changes automatically;
+// design §3.3.1 toolset change governance).
 func (c *Catalog) Refresh(ctx context.Context) error {
 	list, err := c.discovery.ServerPreferredResources()
 	if err != nil {
@@ -152,8 +158,9 @@ func (c *Catalog) FindKind(kind string) *CRDSchema {
 	return nil
 }
 
-// ValidateCapability validates a Capability registration (设计 §3.3.1:
-// target 指向的 CRD 不存在 / 无 schema → 登记校验 fail-fast).
+// ValidateCapability validates a Capability registration (design §3.3.1:
+// the target CRD does not exist / has no schema → registration validation
+// fails fast).
 func (c *Catalog) ValidateCapability(cap *v1alpha1.Capability) error {
 	switch cap.Spec.Type {
 	case v1alpha1.CapabilityAtomic:
@@ -184,7 +191,8 @@ func (c *Catalog) ValidateCapability(cap *v1alpha1.Capability) error {
 // ToolSetForAgent computes the effective tool set for an Agent definition:
 // generic tools are always available; the agent's tools[] references
 // Capabilities (atomic + domain) whose visibility (spec.agents[]) admits the
-// agent (设计 §3.3.1: Capability.agents[] 与 RBAC 共同决定可见子集).
+// agent (design §3.3.1: Capability.agents[] and RBAC jointly decide the
+// visible subset).
 func ToolSetForAgent(agent *v1alpha1.Agent, caps []v1alpha1.Capability) []string {
 	set := map[string]bool{}
 	for _, t := range GenericTools {
@@ -260,7 +268,8 @@ func (c *Catalog) Get(ctx context.Context, kind, namespace, name string) (*unstr
 	return ri.Get(ctx, name, metav1.GetOptions{})
 }
 
-// Create applies one instance of a CRD kind (write path; phase-one 直放).
+// Create applies one instance of a CRD kind (write path; phase-one passes
+// through directly).
 func (c *Catalog) Create(ctx context.Context, kind, namespace string, obj map[string]any) (*unstructured.Unstructured, error) {
 	s := c.FindKind(kind)
 	if s == nil {

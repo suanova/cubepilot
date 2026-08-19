@@ -91,7 +91,7 @@ flowchart TB
 |---|---|---|---|
 | FR-M1-001 | 会话管理 CRUD（绑定操作者身份；`tenant/project` 字段预留，多租户就绪后启用） | 增删改查可用 | 一 |
 | FR-M1-002 | 会话归属隔离（多用户体系就绪后按用户/租户隔离） | 跨用户访问返回 403 | 二 |
-| FR-M1-003 | 流式消息推送，包含 8 类事件：`message_start / agent_thinking / tool_call / tool_result / confirm_pending / confirm_resolved / message_delta / message_done`（`confirm_*` 随一期命令执行审批按需启用，完整 HITL 流程阶段二）；事件契约随运行时实测定型、PoC 前不冻结（映射不足时降级为 `message_delta / message_done / tool_call / tool_result` 4 类最少必要事件） | 客户端依次收到全部事件（一期 6 类 + 按命令执行审批情况收到 confirm 事件；契约降级时 4 类最少必要事件） | 一 |
+| FR-M1-003 | 流式消息推送，包含 8 类事件：`message_start / agent_thinking / tool_call / tool_result / confirm_pending / confirm_resolved / message_delta / message_done`（`confirm_*` 随一期命令执行审批按需启用，完整 HITL 流程阶段二）；事件契约随运行时实测定型、集成验证前不冻结（映射不足时降级为 `message_delta / message_done / tool_call / tool_result` 4 类最少必要事件） | 客户端依次收到全部事件（一期 6 类 + 按命令执行审批情况收到 confirm 事件；契约降级时 4 类最少必要事件） | 一 |
 | FR-M1-004 | 消息历史查询：按游标（cursor）向上滚动加载（一期仅保留近期 48~72 小时历史，不长期存储） | 滚动加载历史不重不漏 | 一 |
 | FR-M1-005 | 上下文组装：平台侧要素（操作者身份、能力目录 FR-M3-006、确认规则〔阶段二起〕）为实例级配置、启动时加载；每次请求仅动态组装新消息与会话引用——执行上下文（历史窗口 / 超窗压缩摘要 FR-M1-010）由 Agent 运行时维护，平台不重传历史 | 上下文含平台侧要素；新消息经会话引用路由至对应会话并正确续接 | 一 |
 | FR-M1-006 | 会话限制：200 轮/会话、空闲 24h inactive；保留窗口超期即清理（消息内容保留窗见 FR-M1-004，不设归档） | 超限被拒、状态正确迁移 | 二 |
@@ -273,7 +273,7 @@ flowchart TB
 
 | 编号 | 问题 | 涉及需求 | 优先级 |
 |---|---|---|---|
-| Q-001 | 助手 LLM 选型已确认（最低 DeepSeek V4 Flash 同级、默认 W8A8/FP8，见 §1.1 #1）；剩余：64G 沐曦 C500 上 W8A8/FP8 部署的软件栈（MXMACA + vLLM/SGLang）POC 验证 | FR-M6-003、NFR-016 | 高 |
+| Q-001 | 助手 LLM 选型已确认（最低 DeepSeek V4 Flash 同级、默认 W8A8/FP8，见 §1.1 #1）；剩余：64G 沐曦 C500 上 W8A8/FP8 部署的软件栈（MXMACA + vLLM/SGLang）技术验证 | FR-M6-003、NFR-016 | 高 |
 | Q-002 | 用户凭据注入与轮换机制实现方式 | FR-M6-001、FR-M3-001 | 高 |
 | Q-003 | 命令执行审批与 Portal/CLI 审批提示的适配验证 | FR-M3-001、FR-M3-002/003 | 高 |
 | Q-004 | 确认规则初始内容评审（哪些命令/资源需确认） | FR-M3-002 | 中 |

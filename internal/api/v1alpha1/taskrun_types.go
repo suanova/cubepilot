@@ -28,7 +28,7 @@ type TaskRef struct {
 }
 
 // FindingItem is one structured finding of an inspection-style report
-// (design §3.3.4: category / level / finding / evidence 链).
+// (design §3.3.4: category / level / finding / evidence chain).
 type FindingItem struct {
 	// Category is the finding category (pod / node / gpu / storage / ...).
 	Category string `json:"category,omitempty"`
@@ -41,7 +41,7 @@ type FindingItem struct {
 	Evidence []EvidenceEntry `json:"evidence,omitempty"`
 }
 
-// EvidenceEntry is one piece of evidence (design §3.3.4: 证据链).
+// EvidenceEntry is one piece of evidence (design §3.3.4: evidence chain).
 type EvidenceEntry struct {
 	Command string `json:"command,omitempty"`
 	Output  string `json:"output,omitempty"`
@@ -49,7 +49,8 @@ type EvidenceEntry struct {
 }
 
 // TaskRunStatus is the execution report written by the scheduler with the
-// platform identity (design §3.3.4: 平台身份写入, Agent 实例与用户凭据不直接写 CRD).
+// platform identity (design §3.3.4: written with the platform identity;
+// Agent instances and user credentials never write CRDs directly).
 type TaskRunStatus struct {
 	// Phase is Pending / Running / Completed / Failed / Cancelled.
 	Phase TaskRunPhase `json:"phase,omitempty"`
@@ -116,7 +117,8 @@ type TaskRunSpec struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // TaskRun is the execution report (design §3.3.4) — written by the scheduler
-// with the platform identity, completing the 模板 → 任务 → 执行报告 闭环.
+// with the platform identity, completing the template → task → run report
+// loop.
 type TaskRun struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

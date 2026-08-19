@@ -1,4 +1,4 @@
-// Package schedule is a minimal 5-field cron parser used by the PoC task
+// Package schedule is a minimal 5-field cron parser used by the task
 // scheduler (FR-M4). Supported syntax per field: "*", "*/n", numbers, and
 // comma-separated lists of those. Standard minute/hour/dom/month/dow order.
 package schedule
@@ -102,7 +102,7 @@ func (c Cron) matches(t time.Time) bool {
 }
 
 // NextAfter returns the next fire time strictly after t (minute precision).
-// It walks minute-by-minute with a ~1-year cap — fine at PoC task counts.
+// It walks minute-by-minute with a ~1-year cap — fine at these task counts.
 func (c Cron) NextAfter(t time.Time) time.Time {
 	next := t.Truncate(time.Minute).Add(time.Minute)
 	for i := 0; i < 366*24*60; i++ {

@@ -9,8 +9,9 @@ import (
 type AgentRuntime string
 
 const (
-	// DefaultAgentName is the builtin platform agent (设计 §5.1: agent-for-cloud
-	// 是平台预置的第一个 Agent, 每用户自动实例化, 不可删除).
+	// DefaultAgentName is the builtin platform agent (design §5.1:
+	// agent-for-cloud is the first platform-preset Agent, auto-instantiated per
+	// user, and non-deletable).
 	DefaultAgentName = "agent-for-cloud"
 
 	// RuntimeOpenClaw is the default runtime (OpenClaw gateway).
@@ -20,7 +21,8 @@ const (
 )
 
 // IdentityMode is how an agent instance derives its platform-side identity
-// (design doc §4.4: user = 以用户身份执行; service = 独立服务身份, phase 2+).
+// (design doc §4.4: user = run as the user identity; service = independent
+// service identity, phase 2+).
 type IdentityMode string
 
 const (
@@ -32,10 +34,11 @@ const (
 
 // ModelSpec is one entry of the ordered model array of an Agent definition.
 // model[0] is the primary model; model[1:] are the fallback chain (design doc
-// §3.1 FR-M2-003: 模型无关, 支持自定义大模型; fallback 视运行时能力).
+// §3.1 FR-M2-003: model-agnostic, supports custom LLMs; fallback depends on
+// runtime capability).
 type ModelSpec struct {
-	// Provider is "platform" (内置推理池) or "external" (OpenAI-compatible
-	// endpoint; endpoint + apiKeyRef required).
+	// Provider is "platform" (builtin inference pool) or "external"
+	// (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
 	Provider string `json:"provider"`
 	// Name is the model name (and the key for selectedModel on instances).
 	Name string `json:"name"`
@@ -49,7 +52,8 @@ type ModelSpec struct {
 }
 
 // AgentIdentitySpec declares the identity mode and scope an agent runs with
-// (design doc §3.1: 定义声明「以什么身份模式运行、需要什么权限范围」).
+// (design doc §3.1: the definition declares the identity mode and the
+// permission scope it needs).
 type AgentIdentitySpec struct {
 	// Mode is user | service (default user).
 	// +kubebuilder:default=user

@@ -35,8 +35,9 @@ func (s AgentSpec) DataPVC(user string) *corev1.PersistentVolumeClaim {
 	return s.DataPVCFor(s.pvcName(user), user, "1Gi")
 }
 
-// DataPVCFor builds a per-instance data PVC (设计 §3.2: 每实例独立 PVC,
-// 真源 = 实例数据目录; 默认 1Gi). Name/labels follow the instance identity.
+// DataPVCFor builds a per-instance data PVC (design §3.2: one PVC per
+// instance, source of truth = instance data directory; default 1Gi).
+// Name/labels follow the instance identity.
 func (s AgentSpec) DataPVCFor(name, instance string, size string) *corev1.PersistentVolumeClaim {
 	if size == "" {
 		size = "1Gi"
@@ -106,7 +107,8 @@ func (s AgentSpec) Pod(user string) *corev1.Pod {
 // PodFor builds the per-user OpenClaw gateway Pod for an agent instance.
 // Config is injected from the shared openclaw-config Secret (subPath over the
 // PVC); kubeconfig from the shared agent-kubeconfig Secret; mutable state lives
-// in the per-instance data PVC (设计 §3.4: 平台零持有 agent 私有数据).
+// in the per-instance data PVC (design §3.4: the platform holds zero
+// agent-private data).
 func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 	port := s.Port
 	labels := map[string]string{AgentLabelApp: "true"}

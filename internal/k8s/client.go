@@ -72,8 +72,8 @@ func ResourceName(prefix, user string) string {
 	return prefix + "-" + Sanitize(user)
 }
 
-// InstanceName builds the AgentInstance name for (user, agent) — 实例 key =
-// user + agent (设计 §3.2). Both segments are sanitized to DNS-1123.
+// InstanceName builds the AgentInstance name for (user, agent) — the instance
+// key is user + agent (design §3.2). Both segments are sanitized to DNS-1123.
 func InstanceName(user, agent string) string {
 	return Sanitize(user) + "-" + Sanitize(agent)
 }

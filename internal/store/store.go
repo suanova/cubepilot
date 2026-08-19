@@ -1,6 +1,7 @@
-// Package store persists CubePilot PoC metadata (scheduled tasks, run reports,
+// Package store persists CubePilot platform metadata (scheduled tasks, run
+// reports,
 // audit entries, agent config) as JSON files on the backend PVC — the "tables"
-// (元数据表) approach chosen over CRDs for phase one.
+// approach chosen over CRDs for phase one.
 package store
 
 import (
@@ -68,8 +69,9 @@ type SkillToggle struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 }
-// Message is one ledger row captured from the SSE stream (design doc §4.1
-// 会话真源: 平台为消息历史真源, 事件流捕获 event-sourcing). Rows are written
+// Message is one ledger row captured from the SSE stream (design doc §4.1:
+// the platform is the source of truth for message history, captured via
+// event-sourcing on the stream). Rows are written
 // on the forwarding path as user messages and tool_call / tool_result /
 // message_delta / message_done events flow through the assistant service.
 type Message struct {
@@ -151,7 +153,7 @@ func (s *Store) ListMessages(conversationID string, limit int) ([]Message, error
 }
 
 // GCExpiredMessages prunes ledger rows older than the retention window
-// (design §5.1 48~72h 滑动窗口). Returns the number of rows removed.
+// (design §5.1 48~72h sliding window). Returns the number of rows removed.
 func (s *Store) GCExpiredMessages(window time.Duration) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +177,7 @@ func (s *Store) GCExpiredMessages(window time.Duration) (int, error) {
 	return removed, nil
 }
 
-// AgentConfig is the persisted Agent 配置 desired state (FR-M2-005 subset).
+// AgentConfig is the persisted Agent config desired state (FR-M2-005 subset).
 type AgentConfig struct {
 	Model        string        `json:"model"`
 	SystemPrompt string        `json:"systemPrompt"`

@@ -1,6 +1,7 @@
 // Package audit classifies tool calls seen on the agent stream into the M5
-// audit model (L0 只读直放 / L1 写操作). Phase one executes writes directly
-// (stage-1 写直放), so entries are recorded with status "executed".
+// audit model (L0 read-only passthrough / L1 write operation). Phase one
+// executes writes directly (stage-1 write passthrough), so entries are
+// recorded with status "executed".
 package audit
 
 import (
@@ -10,7 +11,7 @@ import (
 	"github.com/suanova/cubepilot/internal/store"
 )
 
-// readOnlyKubectlVerbs are treated as L0 (只读).
+// readOnlyKubectlVerbs are treated as L0 (read-only).
 var readOnlyKubectlVerbs = map[string]bool{
 	"get": true, "describe": true, "logs": true, "top": true,
 	"api-resources": true, "api-versions": true, "version": true,

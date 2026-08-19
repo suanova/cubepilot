@@ -18,16 +18,16 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// BuiltinAgentName is the preset platform agent (设计 §5.1: agent-for-cloud 是
-// 平台预置的第一个 Agent, 每用户自动实例化, 不可删除).
+// BuiltinAgentName is the preset platform agent (design §5.1: agent-for-cloud
+// is the first platform-preset Agent, auto-instantiated per user, non-deletable).
 const BuiltinAgentName = "agent-for-cloud"
 
 // BuiltinTaskTemplateName is the preset inspection task template
-// (设计 §3.3.2 预置巡检模板 daily-inspection).
+// (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
 
 // BuiltinCapabilities are the preset domain capabilities the builtin agent
-// references (design §3.3.1 domain 层; 模块必须登记).
+// references (design §3.3.1 domain layer; modules must register).
 var BuiltinCapabilities = []string{"cluster-inspection"}
 
 // BuiltinAgent returns the builtin agent-for-cloud definition (design §3.1).
@@ -67,8 +67,8 @@ func BuiltinAgent() *v1alpha1.Agent {
 }
 
 // BuiltinCapabilityDefinitions returns the preset domain capabilities
-// (design §3.3.1 domain 示例: cluster-inspection 按「查节点 → 查 Pod → 查事件
-// → 分级」巡检).
+// (design §3.3.1 domain example: cluster-inspection inspects by checking
+// nodes → Pods → events → grading).
 func BuiltinCapabilityDefinitions() []*v1alpha1.Capability {
 	return []*v1alpha1.Capability{
 		{
@@ -129,7 +129,8 @@ func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
 // BuiltinBootstrapReconciler reconciles the builtin platform objects: the
 // agent-for-cloud Agent definition, the preset Capabilities and the
 // daily-inspection TaskTemplate. It also instantiates the builtin agent for
-// every configured user (每用户自动实例化, 设计 §3.1 / §5.3), reconciling the
+// every configured user (auto-instantiated per user, design §3.1 / §5.3),
+// reconciling the
 // AgentInstance CRs on every tick (idempotent: already-present objects are
 // left untouched; missing ones are created).
 type BuiltinBootstrapReconciler struct {
@@ -170,7 +171,8 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinTaskTemplate()); err != nil {
 		return err
 	}
-	// 4. Per-user builtin agent instances (每用户自动实例化; 常驻).
+	// 4. Per-user builtin agent instances (auto-instantiated per user;
+	// resident).
 	for _, user := range r.Cfg.Users {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
@@ -216,9 +218,9 @@ func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj cl
 	return nil
 }
 
-// InstanceNameFor builds the AgentInstance name for (user, agent) — 实例 key =
-// user + agent (设计 §3.2). Both segments are DNS-1123 sanitized (consistent
-// with the k8s package resource naming).
+// InstanceNameFor builds the AgentInstance name for (user, agent) — the
+// instance key is user + agent (design §3.2). Both segments are DNS-1123
+// sanitized (consistent with the k8s package resource naming).
 func InstanceNameFor(user, agent string) string {
 	return k8s.Sanitize(user) + "-" + k8s.Sanitize(agent)
 }
