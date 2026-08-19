@@ -136,7 +136,7 @@ cubepilot-ui        静态前端（nginx/CDN），可选——现阶段可继续
 | 日志适配器 | `cmd/cubepilot/logr_adapter.go` → `internal/logrlog`（operator/api 共用） |
 | deploy | 拆 `cubepilot-operator` + `cubepilot-api` 两个 Deployment；Service `cubepilot` 指向 api；operator 加 headless Service |
 | RBAC | 三 SA 按组件最小化：`cubepilot-operator`（namespace pod/pvc/svc 写 + lease + events + CRD 全量）、`cubepilot-api`（CRD 只读）、`cubepilot-agent`（现状通配） |
-| 镜像 | `deploy/service-image.Dockerfile` → `api-image.Dockerfile` + `operator-image.Dockerfile`；`scripts/setup.sh` 构建/加载两镜像 |
+| 镜像 | ~~`deploy/service-image.Dockerfile`~~ → `api-image.Dockerfile` + `operator-image.Dockerfile` + `openclaw-image.Dockerfile`（agent 运行时镜像按运行时命名，见文末 §9）；`scripts/setup.sh` 构建/加载四镜像 |
 | 验证 | `go build ./...` + `go vet ./...` + `go test ./...` 全绿 |
 
 ### 遗留（下一轮）
@@ -193,3 +193,18 @@ cubepilot-ui        静态前端（nginx/CDN），可选——现阶段可继续
 
 - chart 未含 liveness probe、resources 默认值（values 留空 `{}`）、Ingress/域名入口——随部署演进补。
 - `helm upgrade` 后 CRD 变更不自动应用（Helm 语义），发布流程需配套 CRD 更新步骤。
+
+---
+
+## 9. Agent 镜像按运行时命名（2026-08-19 追加）
+
+`cubepilot-agent` 作为镜像名有歧义（暗示"唯一 agent 运行时"，但实为 OpenClaw 封装）。按运行时命名，为将来 Hermes 预留并列位置。
+
+| 项 | 结果 |
+|---|---|
+| 镜像名 | `cubepilot-agent:local` → **`cubepilot-openclaw:local`**（将来 Hermes 可并列 `cubepilot-hermes:local`） |
+| Dockerfile | `deploy/agent-image.Dockerfile` → **`deploy/openclaw-image.Dockerfile`**（git mv） |
+| 配置默认值 | `internal/config/config.go`：`CUBEPILOT_AGENT_IMAGE` 默认值改（env 键保留，语义"agent 镜像"） |
+| chart | `values.yaml` 加 `agents.runtime: openclaw` 字段（阶段一固定；将来 runtime 参数化选镜像）；`agents.image` 值更新 |
+| 身份保留 | SA `cubepilot-agent`、Pod label `cubepilot-agent: "true"`、agent-kubeconfig 注释——**不动**（身份与运行时解耦：将来 Hermes 实例也用同一 SA） |
+| 实测 | kind 集群：新镜像构建/加载 → helm upgrade → 删旧 agent Pod → 控制器用新镜像重建（PVC 保留）→ 实例 Warm → SSE 对话全链路通（message_start→thinking→delta→done），agent status 显示 `gatewayImage: cubepilot-openclaw:local` |

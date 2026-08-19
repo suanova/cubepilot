@@ -66,7 +66,7 @@ func Load() Config {
 	cfg := Config{
 		Listen:         getenv("CUBEPILOT_LISTEN", ":8080"),
 		Namespace:      getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "cubepilot-agent:local"),
+		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "cubepilot-openclaw:local"),
 		GatewayToken:   os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
 		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
 		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),

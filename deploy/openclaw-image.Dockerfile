@@ -1,4 +1,6 @@
-# CubePilot agent image: OpenClaw gateway + kubectl + capability catalog.
+# CubePilot agent runtime image (OpenClaw): gateway + kubectl + capability
+# catalog. Named after the runtime (openclaw) so a future runtime (e.g.
+# hermes) can ship as a sibling image without ambiguity.
 # Loaded into the kind cluster by scripts/setup.sh and run as a per-user Pod.
 FROM openclaw:local
 
