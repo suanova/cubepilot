@@ -128,6 +128,8 @@ status:
 
 允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → Service 重新合并 `ResolvedAgentConfig` → `AgentRuntime.updateConfig()` 热生效；OpenClaw 不支持热更新时退化为 Pod 重启（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
+**实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
+
 ## 3.3 模型目录 (Model)
 
 `Model` 是平台级的 LLM 模型目录，由管理员维护。Agent 模板和实例通过名字引用，不与具体端点或凭据耦合——端点与凭据在 Model 对象内，平台托管、不落明文。
@@ -139,14 +141,21 @@ metadata:
   name: deepseek-chat                 # 目录名，被 selectedModel / defaultModel 引用
 spec:
   displayName: DeepSeek Chat
-  provider: external                  # platform（内置推理池）| external（OpenAI 兼容端点）
-  endpoint: https://api.example.com/v1   # external 必填；platform 留空
-  credentialRef: cubepilot/cred-llm-org  # external 必填 → 平台托管 Secret（apiKey）
+  provider: platform                  # platform（平台托管推理）| external（OpenAI 兼容端点）
+  endpoint: https://inference.example.com/v1  # 统一可填；platform 留空 = 内置运行时模型
+  credentialRef: cubepilot/cred-llm-org  # external 必填；platform 可选（无鉴权端点可省）→ 平台托管 Secret（apiKey）
 status:
   phase: Available                    # Available / Unreachable（controller 注册时探测）
 ```
 
-平台预置 `deepseek-v4-flash`（`provider: platform`）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（external 探测 `endpoint` + `credentialRef`）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
+**provider 语义（统一探测闭环）**：
+- `platform` = 平台托管的推理能力。两种形态：
+  - **内置运行时模型**（`endpoint` 留空，如预置的 `deepseek-v4-flash`）：运行时镜像内部解析，无端点可探测 → 直接 `Available`。
+  - **手动部署的推理服务**（`endpoint` 填写）：管理员把已部署好的服务登记进目录，controller 与 external 一样探测连通性。
+- `external` = OpenAI 兼容端点：`endpoint` + `credentialRef` 必填，controller 探测 `GET {endpoint}/models`（带凭据），2xx/3xx → `Available`，失败/401 → `Unreachable`。
+- 探测不通过的模型 `status.phase = Unreachable`，实例不可选用（fail-closed，绝不静默回退）。
+
+平台预置 `deepseek-v4-flash`（`provider: platform`、无 endpoint）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（有 endpoint 一律探测）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
 
 新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（通过 `AgentRuntime.updateConfig()` 热生效或 Pod 重启——见 §3.2）。
 

@@ -51,6 +51,22 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 	if err := r.Get(ctx, req.NamespacedName, &task); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Manual-run annotation: the API marks POST /api/tasks/{id}/run by setting
+	// cubepilot/manual-run=<RFC3339>; fire once (even when paused — an
+	// explicit manual run is a user action, matching the pre-CRD behavior) and
+	// clear the annotation so a reconcile retry cannot fire it twice (design
+	// §3.5: the API never writes TaskRuns — the scheduler owns execution).
+	if ts, ok := task.Annotations[v1alpha1.TaskManualRunAnnotation]; ok && strings.TrimSpace(ts) != "" {
+		if err := r.fire(ctx, &task, "manual"); err != nil {
+			log.Printf("scheduler: task %s manual fire: %v", task.Name, err)
+		}
+		patch := client.MergeFrom(task.DeepCopy())
+		delete(task.Annotations, v1alpha1.TaskManualRunAnnotation)
+		if err := r.Patch(ctx, &task, patch); err != nil {
+			log.Printf("scheduler: clear manual-run annotation %s: %v", task.Name, err)
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if !task.Enabled() {
 		r.patchPaused(ctx, &task)
 		return ctrl.Result{}, nil
@@ -120,29 +136,21 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 	}
 }
 
-// fire executes a due task: creates a TaskRun (Pending → Running), runs the
-// agent turn, and writes the report (Completed / Failed) — written with the
-// platform identity.
+// fire executes a due task: resolves the template (and the revisions actually
+// used — design §3.5), creates a TaskRun (Pending → Running), runs the agent
+// turn, and writes the report (Completed / Failed) with the platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
-	run := NewTaskRun(task, trigger)
-	if err := r.Create(ctx, run); err != nil {
-		return fmt.Errorf("create taskrun: %w", err)
-	}
-	// Mark Running.
-	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = v1alpha1.TaskRunRunning
-	now := metav1.Now()
-	run.Status.StartedAt = &now
-	if err := r.Status().Patch(ctx, run, patch); err != nil {
-		log.Printf("scheduler: patch running %s: %v", run.Name, err)
-	}
-
-	// Resolve the prompt: template instruction + params interpolation.
+	// Resolve the prompt + revisions before creating the run: the TaskRun
+	// records the template/capability revisions actually used for audit and
+	// rollback (design §3.5 / §7).
 	prompt := task.Spec.Instruction
+	templateRev, capabilityRev := "", ""
 	if task.Spec.TemplateRef != "" {
 		var tpl v1alpha1.TaskTemplate
 		if err := r.Get(ctx, types.NamespacedName{Name: task.Spec.TemplateRef}, &tpl); err == nil {
 			prompt = renderTemplate(tpl.Spec.Instruction, task.Spec.Params)
+			templateRev = tpl.Revision()
+			capabilityRev = r.capabilityRevisions(ctx, tpl.Spec.Capabilities)
 		} else {
 			log.Printf("scheduler: template %s: %v (falling back to inline)", task.Spec.TemplateRef, err)
 		}
@@ -151,10 +159,29 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		prompt = task.Spec.Instruction
 	}
 
+	run := NewTaskRun(task, trigger)
+	if err := r.Create(ctx, run); err != nil {
+		return fmt.Errorf("create taskrun: %w", err)
+	}
+	// Mark Running. Note: TaskRun has a status subresource, so the create
+	// response carries an empty status — the revision fields pre-set on `run`
+	// are NOT persisted by Create. Set the full status here in one patch
+	// (revisions included) so the run records what was actually executed
+	// (design §3.5/§7: template/capability revision resolved at run time).
+	patch := client.MergeFrom(run.DeepCopy()) // base = create response (empty status)
+	run.Status.Phase = v1alpha1.TaskRunRunning
+	now := metav1.Now()
+	run.Status.StartedAt = &now
+	run.Status.TemplateRevision = templateRev
+	run.Status.CapabilityRevision = capabilityRev
+	if err := r.Status().Patch(ctx, run, patch); err != nil {
+		log.Printf("scheduler: patch running %s: %v", run.Name, err)
+	}
+
 	// Run through the creator's agent instance (inspection runs with the
 	// creator's identity, §5.4).
 	sessionKey := fmt.Sprintf("task-%s-%s", task.Name, run.Name)
-	content, runErr := r.Runner.RunTask(ctx, task.Spec.Creator, sessionKey, prompt)
+	content, runErr := r.Runner.RunTask(ctx, task.Spec.Owner, sessionKey, prompt)
 
 	// Write the TaskRun report with the platform identity.
 	finishPatch := client.MergeFrom(run.DeepCopy())
@@ -193,6 +220,24 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	return runErr
 }
 
+// capabilityRevisions resolves the current revisions of the named
+// capabilities (design §3.5: resolved at run time, recorded on the TaskRun).
+// Entries are formatted "name@rev" (rev = immutable spec content hash);
+// missing capabilities are skipped (the run itself will fail closed via the
+// agent if the capability is actually required).
+func (r *ReconcileScheduler) capabilityRevisions(ctx context.Context, names []string) string {
+	var revs []string
+	for _, name := range names {
+		var cap v1alpha1.Capability
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &cap); err != nil {
+			log.Printf("scheduler: capability %s: %v (revision skipped)", name, err)
+			continue
+		}
+		revs = append(revs, name+"@"+cap.Revision())
+	}
+	return strings.Join(revs, ", ")
+}
+
 // NewTaskRun builds the TaskRun skeleton (design §3.3.4: creatorTaskRef links
 // back to the Task; written with the platform identity). TaskRun is a
 // cluster-scoped CRD, so no
@@ -209,7 +254,7 @@ func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
 		},
 		Spec: v1alpha1.TaskRunSpec{
 			Type:    "inspection",
-			Creator: task.Spec.Creator,
+			Owner:   task.Spec.Owner,
 			Trigger: trigger,
 			CreatorTaskRef: v1alpha1.TaskRef{
 				Name: task.Name,

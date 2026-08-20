@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +29,21 @@ func (s *Server) userOf(r *http.Request) string {
 	return s.cfg.DefaultUser
 }
 
-func (s *Server) clientFor(user string) *openclaw.Client {
-	return openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+// clientFor returns the OpenClaw client for a user's agent instance, with the
+// effective selectedModel applied (design §3.2/§3.3: selectedModel → Model
+// catalog → x-openclaw-model per-request override; fail-closed when the
+// selected model is missing/unavailable). The error is non-nil only when the
+// user explicitly selected a model that is missing or Unreachable — callers
+// that generate content must surface it; read-only callers may ignore it
+// (the override only affects chat turns, not session/history reads).
+func (s *Server) clientFor(user string) (*openclaw.Client, error) {
+	c := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+	if model, err := s.mgr.SelectedModelFor(context.Background(), user); err != nil {
+		return c, err
+	} else if model != "" {
+		c.SetModel(model)
+	}
+	return c, nil
 }
 
 // handleSessions lists the OpenClaw sessions for the current user.
@@ -39,7 +53,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
-	sessions, err := s.clientFor(user).ListSessions(r.Context())
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Read-only path: the selectedModel override does not affect session
+		// listing — proceed with the runtime default model.
+		s.logf("model resolution for %s: %v", user, cerr)
+		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+	}
+	sessions, err := client.ListSessions(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -60,7 +81,13 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
-	history, err := s.clientFor(user).GetHistory(r.Context(), sessionKey, 200)
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Read-only path: history reads are not affected by the model override.
+		s.logf("model resolution for %s: %v", user, cerr)
+		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+	}
+	history, err := client.GetHistory(r.Context(), sessionKey, 200)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -138,7 +165,15 @@ func (s *Server) handleSeed(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"seeded": 0})
 		return
 	}
-	err = s.clientFor(user).StreamChat(r.Context(), openclaw.ChatParams{
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Fail-closed: re-seeding a runtime must not silently switch models
+		// (the seeded session continues the conversation; a different model
+		// would change behavior mid-conversation).
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
+		return
+	}
+	err = client.StreamChat(r.Context(), openclaw.ChatParams{
 		SessionKey: sessionKey,
 		Messages:   chat,
 	}, func(openclaw.Event) error { return nil })
@@ -273,7 +308,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if err := s.clientFor(user).StreamChat(r.Context(), openclaw.ChatParams{
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Fail-closed: never silently run with a different model than the user
+		// selected — surface the misconfiguration on the stream instead.
+		s.logf("model resolution for %s: %v", user, cerr)
+		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: cerr.Error()})
+		cancelTools()
+		<-toolDone
+		return
+	}
+	if err := client.StreamChat(r.Context(), openclaw.ChatParams{
 		SessionKey: sessionKey,
 		Messages:   messages,
 	}, emit); err != nil {
@@ -370,7 +415,13 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 // type+callID keeps repeated polls idempotent on the SSE stream and in the
 // audit log.
 func (s *Server) streamToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool, push func(openclaw.Event)) {
-	raw, err := s.clientFor(user).GetHistory(ctx, sessionKey, 50)
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Read-only poller: the model override does not affect history reads.
+		s.logf("model resolution for %s: %v", user, cerr)
+		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+	}
+	raw, err := client.GetHistory(ctx, sessionKey, 50)
 	if err != nil {
 		return
 	}
@@ -392,7 +443,13 @@ func (s *Server) streamToolEvents(ctx context.Context, user, sessionKey string, 
 func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []openclaw.Event {
 	var out []openclaw.Event
 	for attempt := 0; attempt < 4; attempt++ {
-		raw, err := s.clientFor(user).GetHistory(ctx, sessionKey, 50)
+		client, cerr := s.clientFor(user)
+		if cerr != nil {
+			// Read-only drain: the model override does not affect history reads.
+			s.logf("model resolution for %s: %v", user, cerr)
+			client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+		}
+		raw, err := client.GetHistory(ctx, sessionKey, 50)
 		if err == nil {
 			for _, ev := range parseHistoryTools(sessionKey, raw) {
 				key := ev.Type + ":" + ev.CallID
@@ -497,6 +554,39 @@ func (s *Server) recordToolCall(user string, ev openclaw.Event) {
 	metrics.Inc("cubepilot_tool_calls_total", "level="+entry.Level, 1)
 }
 
+// storeReport builds a severity-counted report from one run's output (used by
+// the one-shot /api/inspect path; scheduled-task reports are TaskRun CRs).
+func storeReport(taskID, taskName, trigger string, started time.Time, content string, runErr error) store.Report {
+	status := "success"
+	if runErr != nil {
+		status = "failed"
+		content = content + "\n\n[run error] " + runErr.Error()
+	}
+	return store.Report{
+		TaskID:     taskID,
+		TaskName:   taskName,
+		Trigger:    trigger,
+		Status:     status,
+		StartedAt:  started,
+		FinishedAt: time.Now(),
+		Content:    content,
+		P0:         countSeverity(content, "P0"),
+		P1:         countSeverity(content, "P1"),
+		P2:         countSeverity(content, "P2"),
+	}
+}
+
+// countSeverity counts distinct severity findings in a report. Structured
+// reports list each finding under a header like "### P1 Important — …", so
+// count those first; fall back to counting bare mentions for free-text reports.
+func countSeverity(content, sev string) int {
+	header := regexp.MustCompile(`(?m)^#{1,4}\s*` + sev + `\b`)
+	if n := len(header.FindAllString(content, -1)); n > 0 {
+		return n
+	}
+	return strings.Count(content, sev)
+}
+
 // handleInspect runs a basic cluster inspection and returns the report as JSON.
 // The run is also persisted as a report (taskID "inspect") with audit entries.
 // Run the inspection with the creator's identity and the creator's
@@ -515,7 +605,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionKey := "inspect-" + uuid.NewString()[:8]
 	started := time.Now()
-	content, err := inspect.Run(r.Context(), s.clientFor(user), sessionKey, func(ev openclaw.Event) {
+	client, cerr := s.clientFor(user)
+	if cerr != nil {
+		// Fail-closed: an inspection must run with the user's selected model,
+		// never silently with a different one.
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
+		return
+	}
+	content, err := inspect.Run(r.Context(), client, sessionKey, func(ev openclaw.Event) {
 		s.recordToolCall(user, ev)
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.

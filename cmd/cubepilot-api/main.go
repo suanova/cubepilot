@@ -71,7 +71,6 @@ func main() {
 	mgrInstances := instances.New(cr, cfg)
 
 	srv := server.New(cfg, mgrInstances, st, catalog, cr)
-	srv.StartLegacyScheduler(ctx)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,

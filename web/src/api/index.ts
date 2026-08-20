@@ -58,8 +58,27 @@ export const api = {
   listAgents: () => apiFetch<{ agents: PlatformObject[] }>('/api/agents').then((d) => d.agents),
   listInstances: () =>
     apiFetch<{ instances: PlatformObject[] }>('/api/instances').then((d) => d.instances),
+  createInstance: (body: { agentRef?: string; selectedModel?: string }) =>
+    apiFetch<{ instance: PlatformObject }>('/api/instances', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((d) => d.instance),
   listCapabilities: () =>
     apiFetch<{ capabilities: PlatformObject[] }>('/api/capabilities').then((d) => d.capabilities),
+  listModels: () => apiFetch<{ models: PlatformObject[] }>('/api/models').then((d) => d.models),
+  createModel: (body: {
+    displayName: string
+    provider: string
+    endpoint?: string
+    credentialRef?: string
+    modelId?: string
+  }) =>
+    apiFetch<{ model: PlatformObject }>('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((d) => d.model),
   listTaskRuns: () =>
     apiFetch<{ taskruns: PlatformObject[] }>('/api/taskruns').then((d) => d.taskruns),
 }

@@ -23,19 +23,6 @@ const (
 	maxMessages = 5000
 )
 
-// Task is a scheduled (or manual) AI task (FR-M4).
-type Task struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Prompt     string     `json:"prompt"`
-	Schedule   string     `json:"schedule"` // 5-field cron; empty = manual only
-	Enabled    bool       `json:"enabled"`
-	Creator    string     `json:"creator"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
-	LastStatus string     `json:"lastStatus,omitempty"` // success | failed
-}
-
 // Report is one execution record of a task (or of /api/inspect).
 type Report struct {
 	ID         string    `json:"id"`
@@ -69,6 +56,7 @@ type SkillToggle struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 }
+
 // Message is one ledger row captured from the SSE stream (design doc §4.1:
 // the platform is the source of truth for message history, captured via
 // event-sourcing on the stream). Rows are written
@@ -78,7 +66,7 @@ type Message struct {
 	ID             string          `json:"id"`
 	ConversationID string          `json:"conversationId"`
 	User           string          `json:"user"`
-	Role           string          `json:"role"` // user | assistant | tool | system
+	Role           string          `json:"role"`                // user | assistant | tool | system
 	EventType      string          `json:"eventType,omitempty"` // tool_call | tool_result | message_delta | message_done
 	Content        string          `json:"content,omitempty"`
 	ToolCalls      json.RawMessage `json:"toolCalls,omitempty"`
@@ -245,91 +233,6 @@ func (s *Store) save(name string, v any) error {
 	return os.Rename(tmp, filepath.Join(s.dir, name))
 }
 
-// ---- tasks ----
-
-// ListTasks returns all tasks newest-first.
-func (s *Store) ListTasks() ([]Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tasks []Task
-	if err := s.file("tasks.json", &tasks, false); err != nil {
-		return nil, err
-	}
-	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
-	return tasks, nil
-}
-
-// GetTask returns one task by ID.
-func (s *Store) GetTask(id string) (Task, error) {
-	tasks, err := s.ListTasks()
-	if err != nil {
-		return Task{}, err
-	}
-	for _, t := range tasks {
-		if t.ID == id {
-			return t, nil
-		}
-	}
-	return Task{}, fmt.Errorf("task %s not found", id)
-}
-
-// CreateTask persists a new task and returns it with ID/timestamps filled in.
-func (s *Store) CreateTask(t Task) (Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tasks []Task
-	if err := s.file("tasks.json", &tasks, false); err != nil {
-		return Task{}, err
-	}
-	t.ID = shortID("t")
-	t.CreatedAt = time.Now()
-	tasks = append(tasks, t)
-	if err := s.save("tasks.json", tasks); err != nil {
-		return Task{}, err
-	}
-	return t, nil
-}
-
-// UpdateTask applies fn to the task with the given ID and persists the list.
-func (s *Store) UpdateTask(id string, fn func(*Task)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tasks []Task
-	if err := s.file("tasks.json", &tasks, false); err != nil {
-		return err
-	}
-	for i := range tasks {
-		if tasks[i].ID == id {
-			fn(&tasks[i])
-			return s.save("tasks.json", tasks)
-		}
-	}
-	return fmt.Errorf("task %s not found", id)
-}
-
-// DeleteTask removes a task.
-func (s *Store) DeleteTask(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tasks []Task
-	if err := s.file("tasks.json", &tasks, false); err != nil {
-		return err
-	}
-	kept := tasks[:0]
-	found := false
-	for _, t := range tasks {
-		if t.ID == id {
-			found = true
-			continue
-		}
-		kept = append(kept, t)
-	}
-	if !found {
-		return fmt.Errorf("task %s not found", id)
-	}
-	return s.save("tasks.json", kept)
-}
-
 // ---- reports ----
 
 // AddReport appends a report, capping the collection at maxReports.
@@ -349,28 +252,6 @@ func (s *Store) AddReport(r Report) (Report, error) {
 		return Report{}, err
 	}
 	return r, nil
-}
-
-// ListReports returns reports newest-first, optionally filtered by task ID.
-func (s *Store) ListReports(taskID string) ([]Report, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var reports []Report
-	if err := s.file("reports.json", &reports, false); err != nil {
-		return nil, err
-	}
-	out := reports[:0]
-	if taskID != "" {
-		filtered := make([]Report, 0, len(reports))
-		for _, r := range reports {
-			if r.TaskID == taskID {
-				filtered = append(filtered, r)
-			}
-		}
-		out = filtered
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
-	return out, nil
 }
 
 // ---- audit ----

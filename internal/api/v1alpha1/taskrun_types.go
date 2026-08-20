@@ -63,6 +63,14 @@ type TaskRunStatus struct {
 	// Content is the full natural-language report text.
 	// +optional
 	Content string `json:"content,omitempty"`
+	// TemplateRevision is the TaskTemplate revision actually used for this run
+	// (design §3.5: resolved at run time, recorded for audit/rollback).
+	// +optional
+	TemplateRevision string `json:"templateRevision,omitempty"`
+	// CapabilityRevision is the capability revision actually used for this run
+	// (design §3.5: resolved at run time, recorded for audit/rollback).
+	// +optional
+	CapabilityRevision string `json:"capabilityRevision,omitempty"`
 	// Conditions carries detail (Inspected=True etc).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -98,8 +106,9 @@ type TaskRunSpec struct {
 	// TaskName is the display name of the task (denormalized).
 	// +optional
 	TaskName string `json:"taskName,omitempty"`
-	// Creator is the task creator (execution identity).
-	Creator string `json:"creator,omitempty"`
+	// Owner is the task owner (execution identity; derived from the Task's
+	// owner — design §3.5).
+	Owner string `json:"owner,omitempty"`
 	// Trigger is cron | manual.
 	// +optional
 	Trigger string `json:"trigger,omitempty"`

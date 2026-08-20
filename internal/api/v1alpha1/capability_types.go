@@ -143,3 +143,11 @@ type CapabilityList struct {
 func init() {
 	SchemeBuilder.Register(&Capability{}, &CapabilityList{})
 }
+
+// Revision returns an immutable content fingerprint of the capability spec
+// (design §3.4/§3.5: TaskRuns record the capability revision actually used at
+// run time for audit/rollback). Content hash — deterministic across object
+// re-creation, spec-only (status updates never change the revision).
+func (c *Capability) Revision() string {
+	return specRevision(c.Spec)
+}

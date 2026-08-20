@@ -51,7 +51,12 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
 #    - exec "full/off" = write-direct (phase one, no HITL)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-jq '
+# Default backend model for agent gateways. Empty = inherit the host config's
+# .agents.defaults.model.primary untouched (recommended; the Model catalog,
+# not the host config, is the long-term source — §3.3). Set CUBEPILOT_DEFAULT_MODEL
+# to force a specific primary (e.g. deepseek-v4-flash).
+DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
+jq --arg dm "$DEFAULT_MODEL" '
   del(.mcp.servers, .channels, .plugins)
   | .gateway.http = (.gateway.http // {})
   | .gateway.http.endpoints = (.gateway.http.endpoints // {})
@@ -59,8 +64,7 @@ jq '
   | .gateway.http.endpoints.chatCompletions.enabled = true
   | .agents.defaults.workspace = "/opt/cubepilot/workspace"
   | .agents.defaults.model = (.agents.defaults.model // {})
-  | .agents.defaults.model.primary = "cuberouter/glm-5.1"
-  | .models.providers.cuberouter.models = (.models.providers.cuberouter.models + [{"id":"glm-5.1","name":"GLM 5.1"}] | unique_by(.id))
+  | if ($dm != "") then .agents.defaults.model.primary = $dm else . end
   | .tools.exec = (.tools.exec // {})
   | .tools.exec.security = "full"
   | .tools.exec.ask = "off"

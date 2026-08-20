@@ -26,8 +26,8 @@ spec:
       openAPIV3Schema:
         description: |-
           TaskTemplate is a parameterized task template (design §3.3.2) — template ≠
-          instance ≠ run: TaskTemplate (what to do) ≠ Task (whose task, when it runs) ≠
-          TaskRun (run report).
+          instance ≠ run: TaskTemplate (what to do) ≠ Task (whose task, when it runs)
+          ≠ TaskRun (run report).
         properties:
           apiVersion:
             description: |-
@@ -49,9 +49,21 @@ spec:
           spec:
             description: |-
               TaskTemplateSpec is a parameterized task template (design §3.3.2) — the
-              template
-              (what to do), the "class" of tasks. Preloaded: daily-inspection.
+              template (what to do), the "class" of tasks. Preloaded: daily-inspection.
             properties:
+              capabilities:
+                description: |-
+                  Capabilities declares the capabilities the task needs (design §3.5:
+                  resolved at execution time against the current versions; the actual
+                  revisions used are recorded on the TaskRun).
+                items:
+                  type: string
+                type: array
+              defaultCron:
+                description: |-
+                  DefaultCron is the creation-wizard default schedule hint (design §3.5:
+                  the Task's own cron wins).
+                type: string
               defaults:
                 description: Defaults are the default trigger settings.
                 properties:

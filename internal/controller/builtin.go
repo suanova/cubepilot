@@ -30,6 +30,28 @@ const BuiltinTaskTemplateName = "daily-inspection"
 // references (design §3.3.1 domain layer; modules must register).
 var BuiltinCapabilities = []string{"cluster-inspection"}
 
+// BuiltinModels returns the preset platform model catalog entries
+// (design §3.3: platform preloads deepseek-v4-flash etc; admins add more via
+// `kubectl apply` a Model CRD — no running instance is touched).
+func BuiltinModels() []*v1alpha1.Model {
+	return []*v1alpha1.Model{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "deepseek-v4-flash",
+				Labels: map[string]string{
+					"app.kubernetes.io/part-of": "cubepilot",
+					"cubepilot/builtin":         "true",
+				},
+			},
+			Spec: v1alpha1.ModelSpec{
+				DisplayName: "DeepSeek V4 Flash",
+				Provider:    v1alpha1.ModelProviderPlatform,
+				ModelID:     "deepseek/deepseek-v4-flash",
+			},
+		},
+	}
+}
+
 // BuiltinAgent returns the builtin agent-for-cloud definition (design §3.1).
 func BuiltinAgent() *v1alpha1.Agent {
 	builtin := true
@@ -45,13 +67,13 @@ func BuiltinAgent() *v1alpha1.Agent {
 			DisplayName: "平台管理助手",
 			Description: "管理 CubeStack 平台的默认助手（ChatOps + 巡检 + 报告）",
 			Runtime:     v1alpha1.RuntimeOpenClaw,
-			Model: []v1alpha1.ModelSpec{
+			Model: []v1alpha1.AgentModelSpec{
 				{Provider: "platform", Name: "deepseek-v4-flash"},
 			},
 			Instructions: "你是 CubeStack 平台的智能助手（agent-for-cloud）。" +
 				"通过 kubectl 查询与操作集群资源；只读操作直接执行，" +
 				"写操作先说明动作与影响范围再执行。巡检与报告使用结构化输出。",
-			Tools: BuiltinCapabilities,
+			Tools:  BuiltinCapabilities,
 			Memory: &v1alpha1.MemorySpec{Enabled: true},
 			Identity: &v1alpha1.AgentIdentitySpec{
 				Mode:  v1alpha1.IdentityModeUser,
@@ -118,6 +140,8 @@ func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
 				Level: "cluster-read",
 				Note:  "全集群巡检需创建者具备集群级只读权限",
 			},
+			Capabilities: []string{"cluster-inspection"},
+			DefaultCron:  "0 2 * * *",
 			Defaults: &v1alpha1.TaskTemplateDefaults{
 				Trigger: v1alpha1.TaskTriggerCron,
 				Cron:    "0 2 * * *",
@@ -139,7 +163,7 @@ type BuiltinBootstrapReconciler struct {
 	Cfg    config.Config
 }
 
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents;capabilities;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents;capabilities;tasktemplates;agentinstances;tasks;taskruns;models,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents/status;agentinstances/status;tasks/status;taskruns/status,verbs=get;update;patch
 
 // Reconcile ensures the builtin objects exist (create-if-missing).
@@ -157,6 +181,12 @@ func (r *BuiltinBootstrapReconciler) Ensure(ctx context.Context) error {
 }
 
 func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
+	// 0. Model catalog (design §3.3).
+	for _, m := range BuiltinModels() {
+		if err := r.createIfMissing(ctx, m); err != nil {
+			return err
+		}
+	}
 	// 1. Agent definition.
 	if err := r.createIfMissing(ctx, BuiltinAgent()); err != nil {
 		return err
