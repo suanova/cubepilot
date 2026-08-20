@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -27,8 +28,15 @@ const BuiltinAgentName = "agent-for-cloud"
 const BuiltinTaskTemplateName = "daily-inspection"
 
 // BuiltinCapabilities are the preset domain capabilities the builtin agent
-// references (design §3.3.1 domain layer; modules must register).
-var BuiltinCapabilities = []string{"cluster-inspection"}
+// references (design §3.3.1 domain layer). Generated from the embedded
+// SKILL.md files: the agent gets exactly the skills the platform ships.
+var BuiltinCapabilities = func() []string {
+	names, err := presetCapabilityNames()
+	if err != nil {
+		return []string{"cluster-inspection"}
+	}
+	return names
+}()
 
 // BuiltinModels returns the preset platform model catalog entries
 // (design §3.3: platform preloads deepseek-v4-flash etc; admins add more via
@@ -91,29 +99,8 @@ func BuiltinAgent() *v1alpha1.Agent {
 	}
 }
 
-// BuiltinCapabilityDefinitions returns the preset domain capabilities
-// (design §3.3.1 domain example: cluster-inspection inspects by checking
-// nodes → Pods → events → grading).
-func BuiltinCapabilityDefinitions() []*v1alpha1.Capability {
-	return []*v1alpha1.Capability{
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster-inspection"},
-			Spec: v1alpha1.CapabilitySpec{
-				Type:        v1alpha1.CapabilityDomain,
-				Title:       "集群智能巡检",
-				Description: "按「查节点 → 查异常 Pod → 查事件 → 分级归因」巡检集群健康",
-				OwnerModule: "platform",
-				Uses:        []string{"resource-manager", "kubectl-platform"},
-				Instructions: `对当前 Kubernetes 集群执行一次只读巡检：
-1. 检查节点 Ready 与压力（kubectl get nodes）；
-2. 查找异常 Pod（CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled）；
-3. 查看最近集群事件；
-按 P0/P1/P2 分级输出结构化报告，每项附证据链（命令 + 输出摘录）。
-只读操作，禁止任何写操作；被 RBAC 拒绝时如实说明，不重试被拒操作。`,
-			},
-		},
-	}
-}
+// BuiltinCapabilityDefinitions is generated from the embedded SKILL.md files
+// (see skill_source.go) — one source of truth for preset domain capabilities.
 
 // BuiltinTaskTemplate returns the preset daily-inspection template
 // (design §3.3.2).
@@ -194,8 +181,12 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinAgent()); err != nil {
 		return err
 	}
-	// 2. Domain capabilities.
-	for _, cap := range BuiltinCapabilityDefinitions() {
+	// 2. Domain capabilities (generated from embedded SKILL.md).
+	caps, err := BuiltinCapabilityDefinitions()
+	if err != nil {
+		return fmt.Errorf("capability definitions: %w", err)
+	}
+	for _, cap := range caps {
 		if err := r.createIfMissing(ctx, cap); err != nil {
 			return err
 		}

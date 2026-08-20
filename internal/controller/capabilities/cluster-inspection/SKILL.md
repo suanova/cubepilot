@@ -1,5 +1,5 @@
 ---
-name: inspection
+name: cluster-inspection
 description: 集群健康巡检：检查节点/Pod/事件，发现异常并按 P0/P1/P2 分级输出报告
 ---
 
