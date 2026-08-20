@@ -1,17 +1,17 @@
 // Package server exposes the CubePilot Portal and REST/SSE API, routing chat
 // turns to per-user OpenClaw instances via the Instance Manager. Instance
 // state comes from AgentInstance CRs; the server also serves the platform
-// objects (Agent / Capability / Task / TaskRun) over the API (design doc
-// CubePilot-Cloud-for-Agents-Design.md §2.1). The API process is stateless
-// except for the JSON metadata store (single replica, RWO PVC).
+// objects (Agent / Capability / Model / Task / TaskRun) over the API (design
+// CubePilot-Cloud-for-Agents-Simplified-Design.md §2.1). The API process is
+// stateless except for the JSON metadata store (message ledger / audit /
+// inspect reports / agent config) on a single RWO PVC. Task scheduling is
+// owned by the operator's CRD scheduler — the API never runs cron loops.
 package server
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -54,31 +54,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agents/", s.handleAgentByID)
 	mux.HandleFunc("/api/instances", s.handleInstances)
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)
 	return logRequests(mux)
 }
 
-// StartLegacyScheduler launches the FR-M4 cron loop over the JSON task store.
-// The API process runs a single replica today (RWO metadata PVC), so there is
-// no leader gate; the CRD scheduler in the operator owns the platform Task
-// CRs and runs with leader election.
-func (s *Server) StartLegacyScheduler(ctx context.Context) {
-	go func() {
-		tick := time.NewTicker(30 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				s.runDue(ctx)
-			}
-		}
-	}()
-}
-
+// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed}.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):

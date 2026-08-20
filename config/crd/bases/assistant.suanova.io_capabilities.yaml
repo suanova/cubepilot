@@ -32,7 +32,8 @@ spec:
       openAPIV3Schema:
         description: |-
           Capability is the capability catalog entry (design §3.3.1). It answers
-          "what an Agent can use" — atomic thin overrides bound to CRDs and domain knowledge.
+          "what an Agent can use" — atomic thin overrides bound to CRDs and domain
+          knowledge.
           Generic tools are platform-provided and need no registration.
         properties:
           apiVersion:

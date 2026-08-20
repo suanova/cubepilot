@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Agent config view — model / system prompt / instance status / skills (FR-M2-005).
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api'
 import type { AgentConfig, AgentStatus } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
@@ -11,6 +11,7 @@ const toast = useToastStore()
 const cfg = ref<AgentConfig>({})
 const status = ref<AgentStatus | null>(null)
 const skills = ref<Array<{ name: string; enabled: boolean }>>([])
+const provisioning = ref(false)
 
 const SKILL_LABELS: Record<string, string> = {
   'kubectl-platform': '平台资源操作',
@@ -19,12 +20,79 @@ const SKILL_LABELS: Record<string, string> = {
   inspection: '智能巡检',
 }
 
-const MODELS = [
-  'cuberouter/glm-5.1',
-  'cuberouter/glm-5.2',
-  'cuberouter/kimi-k3',
-  'cuberouter/kimi-k2.7-code',
-]
+// Model catalog (design §3.3): loaded from /api/models; only Available
+// models are selectable. The select value is the Model catalog name, which
+// the backend resolves to the backend model id.
+const models = ref<Array<{ name: string; displayName: string; phase: string; provider: string; endpoint: string }>>([])
+const availableModels = computed(() => models.value.filter((m) => m.phase !== 'Unreachable'))
+
+// Add-model dialog (design §3.3: administrators add model catalog entries;
+// platform = manually deployed inference, external = OpenAI-compatible).
+const modelDialogOpen = ref(false)
+const modelForm = ref({
+  displayName: '',
+  provider: 'external',
+  endpoint: '',
+  credentialRef: '',
+  modelId: '',
+})
+const modelSaving = ref(false)
+
+function openModelDialog() {
+  modelForm.value = { displayName: '', provider: 'external', endpoint: '', credentialRef: '', modelId: '' }
+  modelDialogOpen.value = true
+}
+
+async function createModel() {
+  if (!modelForm.value.displayName.trim()) {
+    toast.show('模型名称必填')
+    return
+  }
+  modelSaving.value = true
+  try {
+    await api.createModel(modelForm.value)
+    toast.show('模型已添加 · 控制器探测后将变为可用')
+    modelDialogOpen.value = false
+    await loadModels()
+  } catch (e) {
+    toast.show('添加失败：' + e)
+  } finally {
+    modelSaving.value = false
+  }
+}
+
+async function loadModels() {
+  try {
+    const list = await api.listModels()
+    models.value = list.map((m) => ({
+      name: m.metadata?.name ?? '',
+      displayName: String(m.spec?.displayName ?? m.metadata?.name ?? ''),
+      phase: String(m.status?.phase ?? ''),
+      provider: String(m.spec?.provider ?? ''),
+      endpoint: String(m.spec?.endpoint ?? ''),
+    }))
+    // Keep a stale selection visible (it may belong to an Unreachable model).
+    if (cfg.value.model && !models.value.some((m) => m.name === cfg.value.model)) {
+      models.value.push({ name: cfg.value.model, displayName: cfg.value.model, phase: 'Unreachable', provider: '', endpoint: '' })
+    }
+  } catch (e) {
+    console.error('loadModels', e)
+  }
+}
+
+async function provisionInstance() {
+  if (provisioning.value) return
+  provisioning.value = true
+  try {
+    const inst = await api.createInstance({ agentRef: 'agent-for-cloud', selectedModel: cfg.value.model || undefined })
+    toast.show(inst.metadata?.name ? '实例已创建 · 控制器正在拉起 Pod' : '实例已创建 · 控制器正在拉起 Pod')
+    await loadAgentView()
+  } catch (e) {
+    toast.show('开通失败：' + e)
+  } finally {
+    provisioning.value = false
+  }
+}
 
 async function loadAgentView() {
   try {
@@ -32,6 +100,7 @@ async function loadAgentView() {
     cfg.value = c
     status.value = st
     skills.value = c.skills || []
+    await loadModels()
   } catch (e) {
     console.error('loadAgentView', e)
   }
@@ -74,8 +143,9 @@ onMounted(loadAgentView)
             <div class="field">
               <label class="label">助手 LLM 模型</label>
               <select v-model="cfg.model" class="input" aria-label="选择模型">
-                <option v-for="m in MODELS" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.displayName || m.name }}<template v-if="m.phase === 'Unreachable'">（不可用）</template></option>
               </select>
+              <button class="btn" style="margin-top: 8px; width: 100%" @click="openModelDialog">＋ 添加模型</button>
             </div>
             <div class="field" style="margin-bottom: 0">
               <label class="label">Agent 运行时</label>
@@ -109,6 +179,7 @@ onMounted(loadAgentView)
               <div class="inst"><div class="k">空闲回收</div><div class="v">{{ status?.idleTTLMinutes ? status.idleTTLMinutes + ' min' : '—' }}</div></div>
               <div class="inst"><div class="k">数据卷</div><div class="v" style="font-size: 12px"><span class="mono">data-{{ status?.user }}</span></div></div>
             </div>
+            <button v-if="!status?.exists" class="btn primary" style="margin-top: 12px; width: 100%" :disabled="provisioning" @click="provisionInstance">{{ provisioning ? '开通中…' : '开通我的实例' }}</button>
           </div>
         </div>
         <div class="card">
@@ -161,6 +232,51 @@ onMounted(loadAgentView)
           </div>
         </template>
         <div v-else style="color: var(--muted); padding: 8px 0">暂无登记能力</div>
+      </div>
+    </div>
+
+    <!-- 添加模型弹窗（管理员 · 设计 §3.3） -->
+    <div v-if="modelDialogOpen" class="modal-overlay open" role="dialog" aria-modal="true" @mousedown.self="modelDialogOpen = false">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="modal-title">添加模型</span>
+          <button class="modal-close" aria-label="关闭" @click="modelDialogOpen = false">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div>
+            <label class="label">模型名称（显示名）</label>
+            <input v-model="modelForm.displayName" class="input" placeholder="例如：DeepSeek V3 内部部署" aria-label="模型名称" />
+          </div>
+          <div>
+            <label class="label">提供方式</label>
+            <div class="radio-row" role="radiogroup" aria-label="提供方式">
+              <button type="button" class="radio" :class="{ active: modelForm.provider === 'platform' }" role="radio" :aria-checked="modelForm.provider === 'platform'" @click="modelForm.provider = 'platform'">平台部署（内置/手动）</button>
+              <button type="button" class="radio" :class="{ active: modelForm.provider === 'external' }" role="radio" :aria-checked="modelForm.provider === 'external'" @click="modelForm.provider = 'external'">外部兼容端点</button>
+            </div>
+          </div>
+          <div>
+            <label class="label">端点（OpenAI 兼容 Base URL）<span v-if="modelForm.provider === 'external'" style="color: var(--danger)"> · 必填</span></label>
+            <input v-model="modelForm.endpoint" class="input mono" placeholder="https://inference.example.com/v1" aria-label="端点" />
+          </div>
+          <div v-if="modelForm.provider === 'external'">
+            <label class="label">凭据 Secret（credentialRef · 平台管理）</label>
+            <input v-model="modelForm.credentialRef" class="input mono" placeholder="model-credential" aria-label="凭据引用" />
+          </div>
+          <div>
+            <label class="label">后端模型 ID（可选 · 留空 = 运行时默认）</label>
+            <input v-model="modelForm.modelId" class="input mono" placeholder="deepseek/deepseek-v4-flash" aria-label="后端模型 ID" />
+          </div>
+          <div class="notice">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>
+            <span>添加后控制器会探测端点连通性，Available 后才能被实例选用；external 需先在集群中创建凭据 Secret（key: <span class="mono">apiKey</span>）。</span>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="modelDialogOpen = false">取消</button>
+          <button class="btn primary" :disabled="modelSaving" @click="createModel">{{ modelSaving ? '提交中…' : '添加模型' }}</button>
+        </div>
       </div>
     </div>
   </div>

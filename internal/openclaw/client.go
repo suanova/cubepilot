@@ -21,6 +21,7 @@ import (
 type Client struct {
 	baseURL string
 	token   string
+	model   string // optional backend model override (x-openclaw-model)
 	http    *http.Client
 }
 
@@ -32,6 +33,14 @@ func New(baseURL, token string) *Client {
 		token:   token,
 		http:    &http.Client{Timeout: 0}, // streaming responses are long-lived
 	}
+}
+
+// SetModel sets the backend model override sent as x-openclaw-model on chat
+// requests (empty = use the agent's normal configured model). Overrides are
+// per-request hot-effective: no instance restart needed (design §3.2
+// selectedModel → AgentRuntime.updateConfig 热生效).
+func (c *Client) SetModel(model string) {
+	c.model = model
 }
 
 // ChatMessage is a single chat turn message.
@@ -51,12 +60,15 @@ type ChatParams struct {
 // as the OpenAI-compatible SSE stream is decoded. It always emits a terminal
 // message_done event (even on error).
 func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error {
-	model := p.Model
-	if model == "" {
-		model = "openclaw/default"
+	// The request body always carries the agent target (gateway validates it
+	// as `openclaw` or `openclaw/<agentId>`); the backend model override goes
+	// through the x-openclaw-model header only.
+	target := p.Model
+	if target == "" {
+		target = "openclaw/default"
 	}
 	body, err := json.Marshal(map[string]any{
-		"model":    model,
+		"model":    target,
 		"stream":   true,
 		"messages": p.Messages,
 	})
@@ -73,6 +85,12 @@ func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) 
 	req.Header.Set("Accept", "text/event-stream")
 	if p.SessionKey != "" {
 		req.Header.Set("x-openclaw-session-key", p.SessionKey)
+	}
+	// Backend model override: the body keeps the agent target; x-openclaw-model
+	// switches the backend provider/model for this turn (shared-secret callers
+	// may use it directly, hot override without a restart).
+	if c.model != "" {
+		req.Header.Set("x-openclaw-model", c.model)
 	}
 
 	resp, err := c.http.Do(req)

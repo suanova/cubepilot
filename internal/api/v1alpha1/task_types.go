@@ -29,14 +29,10 @@ type TaskSpec struct {
 	// Params overrides template parameter defaults.
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
-	// AgentRef points to the Agent definition that executes the task
-	// (default agent-for-cloud). Design §3.3.3: which Agent executes it.
-	// +kubebuilder:default=agent-for-cloud
-	// +optional
-	AgentRef string `json:"agentRef,omitempty"`
-	// Creator is the task creator; execution identity = creator (RBAC matches
-	// the creator).
-	Creator string `json:"creator"`
+	// Owner is the task owner; execution identity = owner (RBAC matches the
+	// owner; the per-user instance is derived from it — design §3.5: phase
+	// one has one agent-for-cloud instance per user, no agentInstanceRef).
+	Owner string `json:"owner"`
 	// Trigger is manual | cron.
 	Trigger TaskTriggerKind `json:"trigger"`
 	// Cron is the 5-field cron expression (trigger=cron).
@@ -71,8 +67,7 @@ type TaskStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
-// +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".spec.agentRef"
-// +kubebuilder:printcolumn:name="Creator",type="string",JSONPath=".spec.creator"
+// +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
 // +kubebuilder:printcolumn:name="Trigger",type="string",JSONPath=".spec.trigger"
 // +kubebuilder:printcolumn:name="Enabled",type="boolean",JSONPath=".spec.enabled"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -102,6 +97,17 @@ type TaskList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Task `json:"items"`
 }
+
+// Annotation keys on Task (not CRD schema — Portal/operator coordination).
+const (
+	// TaskDisplayNameAnnotation carries the human-facing task name (the CR
+	// name is DNS-1123 and may be sanitized/lossy for CJK input).
+	TaskDisplayNameAnnotation = "cubepilot/display-name"
+	// TaskManualRunAnnotation is set by the API on POST /api/tasks/{id}/run;
+	// the operator's scheduler fires the task once (trigger=manual) and
+	// removes the annotation. Value = RFC3339 timestamp (idempotency key).
+	TaskManualRunAnnotation = "cubepilot/manual-run"
+)
 
 func init() {
 	SchemeBuilder.Register(&Task{}, &TaskList{})

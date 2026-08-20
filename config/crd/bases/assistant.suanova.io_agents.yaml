@@ -92,11 +92,19 @@ spec:
                 description: |-
                   Model is the ordered model array (allowlist). model[0] = primary;
                   model[1:] = fallback chain. Instances select within this list.
+                  Deprecated transition shape — see AgentModelSpec; the Model catalog
+                  (§3.3) is the long-term source.
                 items:
                   description: |-
-                    ModelSpec is one entry of the ordered model array of an Agent definition.
-                    model[0] is the primary model; model[1:] are the fallback chain (design doc
-                    §3.1 FR-M2-003: model-agnostic, supports custom LLMs; fallback depends on runtime capability).
+                    AgentModelSpec is one entry of the ordered model array of an Agent
+                    definition (design §3.1 FR-M2-003: model-agnostic, supports custom LLMs;
+                    fallback depends on runtime capability).
+
+                    Deprecated transition shape: the simplified design (§3.3) replaces the
+                    inline array with the platform Model catalog — AgentTemplate references
+                    models by name (defaultModel / availableModels) and AgentInstance picks
+                    via selectedModel. The array is kept for phase-one compatibility and
+                    removed when the Model catalog is wired end to end.
                   properties:
                     apiKeyRef:
                       description: |-
@@ -113,8 +121,8 @@ spec:
                       type: string
                     provider:
                       description: |-
-                        Provider is "platform" (builtin inference pool) or "external" (OpenAI-compatible
-                        endpoint; endpoint + apiKeyRef required).
+                        Provider is "platform" (builtin inference pool) or "external"
+                        (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
                       type: string
                   required:
                   - name

@@ -23,6 +23,28 @@ spec:
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           env:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}
+            - name: CUBEPILOT_METRICS_ADDR
+              value: {{ .Values.operator.metricsAddr | quote }}
+            - name: CUBEPILOT_PROBE_ADDR
+              value: {{ .Values.operator.probeAddr | quote }}
+          ports:
+            - name: metrics
+              containerPort: 8082
+            - name: probe
+              containerPort: 8081
+          {{- if ne .Values.operator.probeAddr "0" }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probe
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probe
+            periodSeconds: 5
+          {{- end }}
           {{- with .Values.operator.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

@@ -59,6 +59,14 @@ type Config struct {
 	// DataDir is where platform metadata (tasks / reports / audit / agent config)
 	// is persisted as JSON files — backed by a PVC on the backend Pod.
 	DataDir string
+
+	// MetricsAddr is the bind address for the operator's controller-runtime
+	// metrics endpoint ("0" disables).
+	MetricsAddr string
+
+	// ProbeAddr is the bind address for the operator's health/ready probes
+	// ("0" disables).
+	ProbeAddr string
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -76,6 +84,8 @@ func Load() Config {
 		DefaultUser:    getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
 		AgentPort:      getInt("CUBEPILOT_AGENT_PORT", 18789),
 		DataDir:        getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
+		MetricsAddr:    getenv("CUBEPILOT_METRICS_ADDR", "0"),
+		ProbeAddr:      getenv("CUBEPILOT_PROBE_ADDR", "0"),
 	}
 	users := getenv("CUBEPILOT_USERS", "zhang.wei,li.ming")
 	for _, u := range strings.Split(users, ",") {

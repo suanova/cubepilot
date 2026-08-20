@@ -1,6 +1,11 @@
 # CubePilot · Agent 云平台设计（Cloud for Agents × Agents for Cloud）
 
-**文档状态：** Draft（新框架稿，待评审）
+> ⚠️ **DEPRECATED** — 本文档已被《CubePilot-Cloud-for-Agents-Simplified-Design.md》取代。
+> 新架构简化了：Task 仅按名引用模板（TaskRun 记录运行时的 template/capability revision）、
+> 模型收敛为平台 Model 目录（selectedModel → Model CRD）、数据真源明确（Task 只声明 who+when，
+> Scheduler 独占执行写入）。实现以新文档为准，本文件保留仅作演进历史参考。
+
+**文档状态：** Deprecated（已被 Simplified-Design 取代）
 **适用范围：** CubeStack 智算云平台 · CubePilot 模块（第一阶段 MVP 及后续演进）
 **产品名：** CubePilot（仓库 `cubepilot`）
 **文档版本：** v0.1

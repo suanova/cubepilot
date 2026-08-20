@@ -16,9 +16,10 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
@@ -56,8 +57,12 @@ func main() {
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}},
 		},
-		Metrics:                metricsserver.Options{BindAddress: "0"}, // the API process exposes /metrics
-		HealthProbeBindAddress: "0",
+		// Health/readiness probes and standard controller-runtime metrics
+		// (leader-election + reconcile counters). Ports are configurable via
+		// the chart; both default off so a single-replica control plane does
+		// not conflict with the API listener.
+		Metrics:                metricsserver.Options{BindAddress: cfg.MetricsAddr},
+		HealthProbeBindAddress: cfg.ProbeAddr,
 		// Leader election: the operator is the only component that elects.
 		// The scheduler fires non-idempotent actions (TaskRun creation +
 		// a real agent turn), so exactly one replica must run it (design
@@ -68,6 +73,15 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("controller manager: %v", err)
+	}
+
+	// Probes: /healthz and /readyz (controller-runtime built-ins, no auth;
+	// network-scoped by the chart's probes).
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		log.Fatalf("healthz: %v", err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		log.Fatalf("readyz: %v", err)
 	}
 
 	// Instance facade + task runner (direct OpenClaw gateway, no API process).
@@ -81,6 +95,12 @@ func main() {
 		Cfg:    cfg,
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("agentinstance controller: %v", err)
+	}
+	if err := (&controller.ModelReconciler{
+		Client: mgr.GetClient(),
+		Cfg:    cfg,
+	}).SetupWithManager(mgr); err != nil {
+		log.Fatalf("model controller: %v", err)
 	}
 	if err := (&controller.BuiltinBootstrapReconciler{
 		Client: mgr.GetClient(),

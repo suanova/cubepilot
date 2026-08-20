@@ -18,11 +18,8 @@ spec:
     - jsonPath: .spec.templateRef
       name: Template
       type: string
-    - jsonPath: .spec.agentRef
-      name: Agent
-      type: string
-    - jsonPath: .spec.creator
-      name: Creator
+    - jsonPath: .spec.owner
+      name: Owner
       type: string
     - jsonPath: .spec.trigger
       name: Trigger
@@ -61,22 +58,11 @@ spec:
             type: object
           spec:
             description: |-
-              TaskSpec is a task instance (design §3.3.3) — whose task, when it runs.
-              It links the
+              TaskSpec is a task instance (design §3.3.3) — whose task, when it runs. It
+              links the
               execution subject (agentRef → Agent) with the task content (templateRef →
               TaskTemplate); creator decides the execution identity.
             properties:
-              agentRef:
-                default: agent-for-cloud
-                description: |-
-                  AgentRef points to the Agent definition that executes the task
-                  (default agent-for-cloud). Design §3.3.3: which Agent executes it.
-                type: string
-              creator:
-                description: |-
-                  Creator is the task creator; execution identity = creator (RBAC matches
-                  the creator).
-                type: string
               cron:
                 description: Cron is the 5-field cron expression (trigger=cron).
                 type: string
@@ -87,6 +73,12 @@ spec:
               instruction:
                 description: Instruction is the inline prompt (used when TemplateRef
                   is empty).
+                type: string
+              owner:
+                description: |-
+                  Owner is the task owner; execution identity = owner (RBAC matches the
+                  owner; the per-user instance is derived from it — design §3.5: phase
+                  one has one agent-for-cloud instance per user, no agentInstanceRef).
                 type: string
               params:
                 additionalProperties:
@@ -102,7 +94,7 @@ spec:
                 description: Trigger is manual | cron.
                 type: string
             required:
-            - creator
+            - owner
             - trigger
             type: object
           status:

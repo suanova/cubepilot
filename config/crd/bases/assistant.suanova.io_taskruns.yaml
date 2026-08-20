@@ -41,7 +41,8 @@ spec:
       openAPIV3Schema:
         description: |-
           TaskRun is the execution report (design §3.3.4) — written by the scheduler
-          with the platform identity, completing the template → task → run report loop.
+          with the platform identity, completing the template → task → run report
+          loop.
         properties:
           apiVersion:
             description: |-
@@ -65,9 +66,6 @@ spec:
               TaskRunSpec is the execution report of a task (design §3.3.4). It is
               created and written by the scheduler with the platform identity.
             properties:
-              creator:
-                description: Creator is the task creator (execution identity).
-                type: string
               creatorTaskRef:
                 description: CreatorTaskRef links back to the owning Task.
                 properties:
@@ -78,6 +76,11 @@ spec:
                 required:
                 - name
                 type: object
+              owner:
+                description: |-
+                  Owner is the task owner (execution identity; derived from the Task's
+                  owner — design §3.5).
+                type: string
               scope:
                 description: Scope is the task scope (e.g. all).
                 type: string
@@ -96,9 +99,14 @@ spec:
           status:
             description: |-
               TaskRunStatus is the execution report written by the scheduler with the
-              platform identity (design §3.3.4: written with the platform identity; Agent
-              instances and user credentials never write CRDs directly).
+              platform identity (design §3.3.4: written with the platform identity;
+              Agent instances and user credentials never write CRDs directly).
             properties:
+              capabilityRevision:
+                description: |-
+                  CapabilityRevision is the capability revision actually used for this run
+                  (design §3.5: resolved at run time, recorded for audit/rollback).
+                type: string
               conditions:
                 description: Conditions carries detail (Inspected=True etc).
                 items:
@@ -220,6 +228,11 @@ spec:
                   total:
                     type: integer
                 type: object
+              templateRevision:
+                description: |-
+                  TemplateRevision is the TaskTemplate revision actually used for this run
+                  (design §3.5: resolved at run time, recorded for audit/rollback).
+                type: string
             type: object
         type: object
     served: true
