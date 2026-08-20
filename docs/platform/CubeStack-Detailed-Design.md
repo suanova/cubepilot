@@ -2246,7 +2246,7 @@ OpenClaw 作为平台智能运维 Agent，通过统一的工具接口访问 Kube
 
 - ChatOps
 
-![ChatGPT Image 2026年8月4日 23\_00\_06\.png](images/ChatGPT-Image-2026年8月4日-23_00_06.png)
+![ChatGPT Image 2026年8月4日 23\_00\_06\.png](images/ChatGPT-Image-2026-08-04-23_00_06.png)
 
 # 17\. 待解决问题
 
