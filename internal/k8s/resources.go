@@ -158,6 +158,34 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						},
 					},
 				},
+				// Expand the operator-rendered capability skills (ConfigMap)
+				// into the PVC workspace so the gateway loads them at startup.
+				// ConfigMap keys are flat files (<name> = full SKILL.md), so
+				// each is expanded to workspace/skills/<name>/SKILL.md — the
+				// layout OpenClaw discovers (up to 6 levels deep). The skills
+				// dir is cleared first so removed capabilities disappear too.
+				// This is the dynamic capability → runtime skill channel
+				// (design §3.3.1): the Capability CRD is the source of truth;
+				// a capability create/update rolls agent Pods and the fresh
+				// skills land here.
+				{
+					Name:    "sync-capability-skills",
+					Image:   s.Image,
+					Command: []string{"sh", "-c", "set -e; mkdir -p /mnt/data/workspace/skills; rm -rf /mnt/data/workspace/skills/*; for f in /capability-skills/*; do [ -f \"$f\" ] || continue; name=$(basename \"$f\"); mkdir -p \"/mnt/data/workspace/skills/$name\"; cp \"$f\" \"/mnt/data/workspace/skills/$name/SKILL.md\"; done"},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "data", MountPath: "/mnt/data"},
+						{Name: "skills", MountPath: "/capability-skills"},
+					},
+					SecurityContext: &corev1.SecurityContext{
+						RunAsNonRoot:             boolPtr(true),
+						RunAsUser:                int64Ptr(1000),
+						RunAsGroup:               int64Ptr(1000),
+						AllowPrivilegeEscalation: boolPtr(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+				},
 			},
 			Containers: []corev1.Container{{
 				Name:    "gateway",
@@ -182,7 +210,6 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
 					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/openclaw.json"},
-					{Name: "OPENCLAW_WORKSPACE_DIR", Value: "/opt/cubepilot/workspace"},
 					{Name: "OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS", Value: "1"},
 					{
 						Name: "OPENCLAW_GATEWAY_TOKEN",
@@ -196,8 +223,9 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				},
 				Ports: []corev1.ContainerPort{{ContainerPort: port}},
 				VolumeMounts: []corev1.VolumeMount{
+					// The workspace is the default ~/.openclaw/workspace (= PVC
+					// root / workspace subdir); no explicit mount or env needed.
 					{Name: "data", MountPath: "/home/node/.openclaw"},
-					{Name: "data", MountPath: "/opt/cubepilot/workspace", SubPath: "workspace"},
 					{Name: "config", MountPath: "/home/node/.openclaw/openclaw.json", SubPath: "openclaw.json"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
@@ -233,6 +261,14 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					Name: "scratch",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: "skills",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: SkillsConfigMapName},
+						},
 					},
 				},
 			},

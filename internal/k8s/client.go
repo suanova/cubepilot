@@ -19,6 +19,10 @@ const (
 	ServiceAccountName   = "cubepilot-agent"
 	AgentLabelApp        = "cubepilot-agent"
 	AgentLabelUser       = "cubepilot/user"
+	// SkillsConfigMapName carries the rendered capability skills (operator
+	// renders Capability CRDs → SKILL.md; agent Pods expand it into
+	// workspace/skills/<name>/SKILL.md at startup).
+	SkillsConfigMapName = "capability-skills"
 )
 
 // NewClient returns a clientset using in-cluster config when available, otherwise

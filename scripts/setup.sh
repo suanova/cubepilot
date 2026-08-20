@@ -47,7 +47,9 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
 
 # 2. openclaw-config: host LLM config, adjusted for the agent Pod runtime.
 #    - enable the OpenAI-compatible chat endpoint (agent loop over HTTP)
-#    - point the workspace at the baked-in capability catalog
+#    - workspace = default ~/.openclaw/workspace (= PVC root, seeded by the
+#      seed-workspace initContainer; capabilities flow in dynamically via the
+#      capability ConfigMap, see internal/controller/capability_skills.go)
 #    - exec "full/off" = write-direct (phase one, no HITL)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -62,7 +64,6 @@ jq --arg dm "$DEFAULT_MODEL" '
   | .gateway.http.endpoints = (.gateway.http.endpoints // {})
   | .gateway.http.endpoints.chatCompletions = (.gateway.http.endpoints.chatCompletions // {})
   | .gateway.http.endpoints.chatCompletions.enabled = true
-  | .agents.defaults.workspace = "/opt/cubepilot/workspace"
   | .agents.defaults.model = (.agents.defaults.model // {})
   | if ($dm != "") then .agents.defaults.model.primary = $dm else . end
   | .tools.exec = (.tools.exec // {})

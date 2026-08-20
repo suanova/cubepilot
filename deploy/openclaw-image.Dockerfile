@@ -13,12 +13,14 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/kubectl \
     && rm -rf /var/lib/apt/lists/*
 
-# Capability catalog + persona live OUTSIDE the per-user PVC mount point
-# (/home/node/.openclaw), so the PVC never shadows them. The Pod sets
-# OPENCLAW_WORKSPACE_DIR=/opt/cubepilot/workspace; OpenClaw loads SOUL.md /
-# AGENTS.md and skills/<name>/SKILL.md from there. Owned by `node` so the
-# gateway (running as node) can read and write bootstrap files like TOOLS.md.
+# Workspace persona (AGENTS.md / SOUL.md) is baked in as the seed for the
+# per-instance PVC: the seed-workspace initContainer copies it to the PVC on
+# first start, where the gateway keeps it writable (TOOLS.md etc).
+#
+# Capability skills are NOT baked in anymore: they flow dynamically via the
+# capability-skills ConfigMap (Capability CRD -> operator render -> agent Pod
+# initContainer expand; a capability create/update rolls the agent Pods).
+# This is the dynamic capability → runtime skill channel (design §3.3.1).
 COPY --chown=node:node workspace/ /opt/cubepilot/workspace/
-COPY --chown=node:node capabilities/ /opt/cubepilot/workspace/skills/
 
 USER node
