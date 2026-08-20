@@ -32,7 +32,7 @@ func (r *Runner) RunTask(ctx context.Context, creator, sessionKey, prompt string
 	if err := r.mgr.Ensure(ctx, creator); err != nil {
 		return "", fmt.Errorf("instance warming failed: %w", err)
 	}
-	client := openclaw.New(r.mgr.BaseURL(creator), r.token)
+	client := openclaw.New(r.mgr.BaseURL(creator), r.token) // openclaw.AgentRuntime
 	// Apply the creator's selectedModel the same way the chat path does
 	// (design §3.2/§3.3: fail-closed on an unavailable selection).
 	if model, err := r.mgr.SelectedModelFor(ctx, creator); err != nil {
