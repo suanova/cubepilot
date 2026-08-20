@@ -8,6 +8,7 @@ import (
 )
 
 func int64Ptr(v int64) *int64 { return &v }
+func boolPtr(v bool) *bool    { return &v }
 
 // AgentSpec carries the inputs shared by the per-user agent resources. The
 // user identity is passed per call (each resource builder takes a user).
@@ -123,13 +124,59 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: ServiceAccountName,
-			// The image runs as the `node` user (uid/gid 1000); make the mounted
-			// PVC group-writable so it can persist sessions (FR-M2-004).
-			SecurityContext: &corev1.PodSecurityContext{FSGroup: int64Ptr(1000)},
+			// Instance minimum privilege (design §6): non-root, seccomp
+			// RuntimeDefault, drop ALL capabilities. The image runs as the
+			// `node` user (uid/gid 1000); FSGroup makes the mounted PVC
+			// group-writable so it can persist sessions (FR-M2-004).
+			SecurityContext: &corev1.PodSecurityContext{
+				FSGroup:            int64Ptr(1000),
+				RunAsNonRoot:       boolPtr(true),
+				SeccompProfile:     &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+				SupplementalGroups: []int64{1000},
+			},
+			InitContainers: []corev1.Container{
+				// Seed the workspace from the image's read-only layer into the
+				// per-instance PVC (design §3.6: runtime caches live on the
+				// instance PVC, not the image). The gateway maintains files in
+				// the workspace (e.g. TOOLS.md) — under readOnlyRootFilesystem
+				// the image layer is not writable, so the workspace must be on
+				// the PVC.
+				{
+					Name:    "seed-workspace",
+					Image:   s.Image,
+					Command: []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "data", MountPath: "/mnt/data"},
+					},
+					SecurityContext: &corev1.SecurityContext{
+						RunAsNonRoot:             boolPtr(true),
+						RunAsUser:                int64Ptr(1000),
+						RunAsGroup:               int64Ptr(1000),
+						AllowPrivilegeEscalation: boolPtr(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+				},
+			},
 			Containers: []corev1.Container{{
 				Name:    "gateway",
 				Image:   s.Image,
 				Command: []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
+				// The gateway needs a writable scratch dir (node caches, temp
+				// files) but the rest of the filesystem is read-only. RunAsUser
+				// is explicit because the image declares a non-numeric user
+				// (node) — kubelet cannot verify non-root from a name alone.
+				SecurityContext: &corev1.SecurityContext{
+					RunAsNonRoot:             boolPtr(true),
+					RunAsUser:                int64Ptr(1000),
+					RunAsGroup:               int64Ptr(1000),
+					ReadOnlyRootFilesystem:   boolPtr(true),
+					AllowPrivilegeEscalation: boolPtr(false),
+					Capabilities: &corev1.Capabilities{
+						Drop: []corev1.Capability{"ALL"},
+					},
+				},
 				Env: []corev1.EnvVar{
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
@@ -150,8 +197,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				Ports: []corev1.ContainerPort{{ContainerPort: port}},
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "data", MountPath: "/home/node/.openclaw"},
+					{Name: "data", MountPath: "/opt/cubepilot/workspace", SubPath: "workspace"},
 					{Name: "config", MountPath: "/home/node/.openclaw/openclaw.json", SubPath: "openclaw.json"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
+					{Name: "scratch", MountPath: "/tmp"},
 				},
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler: corev1.ProbeHandler{
@@ -178,6 +227,12 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					Name: "kubeconfig",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{SecretName: KubeconfigSecretName},
+					},
+				},
+				{
+					Name: "scratch",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},

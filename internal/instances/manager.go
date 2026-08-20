@@ -147,20 +147,48 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 }
 
 // SelectedModelFor resolves the effective backend model id for a user's
-// agent instance (design §3.2/§3.3): instance.spec.selectedModel → Model
-// catalog → spec.modelId. Empty means "no override — use the runtime's
-// normal configured model". An explicitly selected model that is missing
-// from the catalog or Unreachable is an error (fail-closed, never a silent
-// fallback); an empty selection is not an error.
+// agent instance (design §3.2/§3.3): instance.spec.selectedModel → Agent
+// definition defaultModel/availableModels → Model catalog → spec.modelId.
+// Empty means "no override — use the runtime's normal configured model".
+// An explicitly selected model that is missing from the catalog, outside the
+// agent's availableModels, or Unreachable is an error (fail-closed, never a
+// silent fallback); an empty selection is not an error.
 func (m *Manager) SelectedModelFor(ctx context.Context, user string) (string, error) {
 	var inst v1alpha1.AgentInstance
 	if err := m.cr.Get(ctx, types.NamespacedName{Name: k8s.InstanceName(user, v1alpha1.DefaultAgentName)}, &inst); err != nil {
 		return "", nil // not provisioned yet — runtime default
 	}
+
+	// Resolve the agent definition for the defaultModel/availableModels
+	// constraints (§3.1). A missing definition falls back to no constraints.
+	var agent v1alpha1.Agent
+	if inst.Spec.AgentRef != "" {
+		_ = m.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.AgentRef}, &agent)
+	}
+
 	selected := inst.Spec.SelectedModel
 	if selected == "" {
-		return "", nil // no explicit selection — runtime default
+		selected = agent.Spec.DefaultModel
 	}
+	if selected == "" {
+		return "", nil // no explicit selection and no agent default — runtime default
+	}
+
+	// The selected model must be within the agent's availableModels allowlist
+	// when one is declared (§3.1: availableModels = subset of the catalog).
+	if len(agent.Spec.AvailableModels) > 0 {
+		allowed := false
+		for _, name := range agent.Spec.AvailableModels {
+			if name == selected {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return "", fmt.Errorf("model %q not in agent %q availableModels", selected, inst.Spec.AgentRef)
+		}
+	}
+
 	var model v1alpha1.Model
 	if err := m.cr.Get(ctx, types.NamespacedName{Name: selected}, &model); err != nil {
 		return "", fmt.Errorf("model %q not in catalog: %v", selected, err)

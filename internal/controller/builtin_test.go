@@ -32,6 +32,15 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.Registry == nil || !agent.Spec.Registry.Builtin {
 		t.Error("builtin flag missing")
 	}
+	if agent.Spec.DefaultModel != "deepseek-v4-flash" {
+		t.Errorf("defaultModel = %q, want deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
+	}
+	if len(agent.Spec.AvailableModels) != 1 || agent.Spec.AvailableModels[0] != "deepseek-v4-flash" {
+		t.Errorf("availableModels = %v, want [deepseek-v4-flash]", agent.Spec.AvailableModels)
+	}
+	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
+		t.Errorf("confirmPolicy = %q, want confirm-writes (design §3.1)", agent.Spec.ConfirmPolicy)
+	}
 	if len(agent.Spec.Model) == 0 || agent.Spec.Model[0].Name == "" {
 		t.Error("primary model missing")
 	}

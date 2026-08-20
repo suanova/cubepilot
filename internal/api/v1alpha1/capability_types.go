@@ -32,20 +32,6 @@ type CapabilitySemantics struct {
 	Examples    []string `json:"examples,omitempty"`
 }
 
-// CapabilitySecurity is the security overlay of an atomic capability
-// (design §3.3.1: changes only security).
-type CapabilitySecurity struct {
-	// DenyOperations disables operations even if the CRD supports them.
-	// +optional
-	DenyOperations []string `json:"denyOperations,omitempty"`
-	// ConfirmWrites forces HITL for writes (phase 2; phase 1 writes pass).
-	// +optional
-	ConfirmWrites bool `json:"confirmWrites,omitempty"`
-	// Level is the coarse access level (L0/L1).
-	// +optional
-	Level string `json:"level,omitempty"`
-}
-
 // CapabilityFile is a small inline file of a domain capability.
 type CapabilityFile struct {
 	Name    string `json:"name"`
@@ -74,9 +60,6 @@ type CapabilitySpec struct {
 	// Semantics is the atomic semantic overlay.
 	// +optional
 	Semantics *CapabilitySemantics `json:"semantics,omitempty"`
-	// Security is the atomic security overlay.
-	// +optional
-	Security *CapabilitySecurity `json:"security,omitempty"`
 	// Uses orchestrates generic/atomic/MCP capabilities (domain only).
 	// +optional
 	Uses []string `json:"uses,omitempty"`

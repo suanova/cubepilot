@@ -96,6 +96,20 @@ type QuotaSpec struct {
 	MaxInstancesPerUser int32 `json:"maxInstancesPerUser,omitempty"`
 }
 
+// ConfirmPolicy is the agent-level confirmation policy for write/high-risk
+// operations (design §3.1: policy is agent-level so different agents may reuse
+// the same Capability with different confirmation rules).
+type ConfirmPolicy string
+
+const (
+	// ConfirmPolicyNone means no confirmation is required (reads and writes
+	// both pass through).
+	ConfirmPolicyNone ConfirmPolicy = "none"
+	// ConfirmPolicyConfirmWrites requires user confirmation for write
+	// operations (reads pass through). This is the default.
+	ConfirmPolicyConfirmWrites ConfirmPolicy = "confirm-writes"
+)
+
 // AgentSpec defines what an Agent is: model, instructions, tools (capability
 // refs), memory, identity, policy and registry metadata (design §3.1).
 // It is the "class": shared by all instances, versioned, user-independent.
@@ -113,6 +127,19 @@ type AgentSpec struct {
 	// Deprecated transition shape — see AgentModelSpec; the Model catalog
 	// (§3.3) is the long-term source.
 	Model []AgentModelSpec `json:"model,omitempty"`
+	// DefaultModel references the Model catalog (§3.3) entry used when an
+	// instance does not select a model explicitly. Empty = runtime default.
+	// +optional
+	DefaultModel string `json:"defaultModel,omitempty"`
+	// AvailableModels optionally limits the selectable Model catalog entries
+	// (§3.3) for instances of this agent. Empty = all catalog entries.
+	// +optional
+	AvailableModels []string `json:"availableModels,omitempty"`
+	// ConfirmPolicy is the agent-level confirmation policy for write
+	// operations (default confirm-writes).
+	// +kubebuilder:default=confirm-writes
+	// +optional
+	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
 	// Instructions is the default system prompt (definition-level default;
 	// instances may override within capability bounds).
 	// +optional
@@ -163,6 +190,14 @@ type Agent struct {
 
 	Spec   AgentSpec   `json:"spec,omitempty"`
 	Status AgentStatus `json:"status,omitempty"`
+}
+
+// Revision returns an immutable content fingerprint of the Agent definition
+// (design §3.1: template changes generate an immutable revision for audit and
+// rollback). Content hash — deterministic across object re-creation, spec-only
+// (status updates never change the revision).
+func (in *Agent) Revision() string {
+	return specRevision(in.Spec)
 }
 
 // +kubebuilder:object:root=true

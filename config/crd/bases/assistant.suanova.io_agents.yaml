@@ -58,6 +58,24 @@ spec:
               refs), memory, identity, policy and registry metadata (design §3.1).
               It is the "class": shared by all instances, versioned, user-independent.
             properties:
+              availableModels:
+                description: |-
+                  AvailableModels optionally limits the selectable Model catalog entries
+                  (§3.3) for instances of this agent. Empty = all catalog entries.
+                items:
+                  type: string
+                type: array
+              confirmPolicy:
+                default: confirm-writes
+                description: |-
+                  ConfirmPolicy is the agent-level confirmation policy for write
+                  operations (default confirm-writes).
+                type: string
+              defaultModel:
+                description: |-
+                  DefaultModel references the Model catalog (§3.3) entry used when an
+                  instance does not select a model explicitly. Empty = runtime default.
+                type: string
               description:
                 description: Description explains what the agent does.
                 type: string

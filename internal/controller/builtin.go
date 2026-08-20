@@ -64,9 +64,12 @@ func BuiltinAgent() *v1alpha1.Agent {
 			},
 		},
 		Spec: v1alpha1.AgentSpec{
-			DisplayName: "平台管理助手",
-			Description: "管理 CubeStack 平台的默认助手（ChatOps + 巡检 + 报告）",
-			Runtime:     v1alpha1.RuntimeOpenClaw,
+			DisplayName:     "平台管理助手",
+			Description:     "管理 CubeStack 平台的默认助手（ChatOps + 巡检 + 报告）",
+			Runtime:         v1alpha1.RuntimeOpenClaw,
+			DefaultModel:    "deepseek-v4-flash",
+			AvailableModels: []string{"deepseek-v4-flash"},
+			ConfirmPolicy:   v1alpha1.ConfirmPolicyConfirmWrites,
 			Model: []v1alpha1.AgentModelSpec{
 				{Provider: "platform", Name: "deepseek-v4-flash"},
 			},
