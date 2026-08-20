@@ -6,7 +6,7 @@
 **架构理念：** 平台能力 API 化，AI Agent 只做编排与决策，不直接操作底层资源
 **文档版本：** v0.2
 
-> **本文档定位**：设计层文档，描述 CubePilot 的模块架构与关键机制，与 [《功能需求细化文档 v0.5》](./CubeStack-平台智能助手-CubePilot-功能需求细化文档.md) 对齐（需求编号 `FR-M{域}-{序号}` / `NFR-{序号}`），是唯一的设计文档。实现层面的方案取舍（kubectl 直连、Instance Manager、kubeconfig 注入、工具双通道、HITL 双方案等）在 §4 核心扩展点中作为预留点集中说明。
+> **本文档定位**：设计层文档，描述 CubePilot 的模块架构与关键机制，与 [《功能需求细化文档 v0.5》](./CubePilot-Functional-Requirements.md) 对齐（需求编号 `FR-M{域}-{序号}` / `NFR-{序号}`），是唯一的设计文档。实现层面的方案取舍（kubectl 直连、Instance Manager、kubeconfig 注入、工具双通道、HITL 双方案等）在 §4 核心扩展点中作为预留点集中说明。
 
 ---
 
@@ -426,7 +426,7 @@ stateDiagram-v2
 
 ## 5.7 各模块 AI Agent 能力与对接设计
 
-> 对应需求 [§8](./CubeStack-平台智能助手-CubePilot-功能需求细化文档.md)。CubePilot 是共享 Agent 基座 + 通用能力，各业务模块的 AI Agent 能力由模块自身承接、经基座对接机制暴露给 Agent；本节定义对接架构，各模块能力的完整清单与分阶段映射见需求 §8.4/§8.5，不在此重复。
+> 对应需求 [§8](./CubePilot-Functional-Requirements.md)。CubePilot 是共享 Agent 基座 + 通用能力，各业务模块的 AI Agent 能力由模块自身承接、经基座对接机制暴露给 Agent；本节定义对接架构，各模块能力的完整清单与分阶段映射见需求 §8.4/§8.5，不在此重复。
 
 ### 5.7.1 对接机制（通用 4 步）
 

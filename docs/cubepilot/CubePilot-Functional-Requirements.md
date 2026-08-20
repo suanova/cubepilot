@@ -252,7 +252,7 @@ flowchart TB
 
 需求 → 设计章节映射。文档链接可点击跳转。
 
-| 需求 | [模块设计文档 v0.2](./CubeStack-平台智能助手-CubePilot-模块设计文档.md) |
+| 需求 | [模块设计文档 v0.2](./CubePilot-Module-Design.md) |
 |---|---|
 | M1 对话域 | §5.1 |
 | M2 Agent 域 | §5.2, §4.1 |
@@ -265,7 +265,7 @@ flowchart TB
 | 可观测性 NFR-011~014 | §9 |
 | 容量 NFR-015~017 | §10 |
 
-**平台需求文档**：参见 [AI 智算云服务平台软件-需求文档](../platform/AI智算云服务平台软件-需求文档.md) §4 AI 智能体（模块定位）、§9 运维管理（AI Operations）、§11 多租户与安全；**平台交付三阶段**见 [智算云平台详细设计文档](../platform/CubeStack-智算云平台详细设计文档.md) §18 阶段目标。
+**平台需求文档**：参见 [AI 智算云服务平台软件-需求文档](../platform/AI-Cloud-Service-Platform-Requirements.md) §4 AI 智能体（模块定位）、§9 运维管理（AI Operations）、§11 多租户与安全；**平台交付三阶段**见 [智算云平台详细设计文档](../platform/CubeStack-Detailed-Design.md) §18 阶段目标。
 
 ---
 
