@@ -100,9 +100,10 @@ spec:
     你是 CubeStack 平台管理助手。优先使用已登记能力；
     不确定资源或权限时先解释并请求用户澄清。
   capabilities: [dev-environment, inference-service, cluster-inspection]
+  confirmPolicy: confirm-writes            # 确认策略：写操作需用户确认（读直放）
 ```
 
-模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。
+模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **Agent 层而非 Capability 层**：不同 Agent 复用同一 Capability 时可有不同确认策略；Capability 只承载语义、不携带权限/确认字段（权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + ToolExecutor 统一执行）。
 
 ## 3.2 AgentInstance
 
@@ -175,10 +176,10 @@ Agent
 | 层 | 是否为 CRD | 解决的问题 | 模块工作量 |
 |---|---|---|---|
 | generic | 否，平台内置 | `list-kinds`、`describe-kind`、`resource-manager` 通用 CRUD | 无 |
-| atomic | `Capability` | 补充特定 CRD 的名称、说明、示例、禁止操作和确认规则 | 可选的薄 YAML |
+| atomic | `Capability` | 补充特定 CRD 的名称、说明、示例（纯语义） | 可选的薄 YAML |
 | domain | `Capability` | 巡检、诊断、推荐等领域流程 | 指令/Skill，必要时少量脚本 |
 
-generic 是默认能力：ToolExecutor 使用实例 owner 的 kubeconfig 发现其可见资源，并以相同身份执行。RBAC 是授权边界；平台不必为每个新 CRD 登记工具。generic 写操作遵循统一确认默认值，atomic Capability 可对目标资源追加更严格的 deny/confirm 规则。
+generic 是默认能力：ToolExecutor 使用实例 owner 的 kubeconfig 发现其可见资源，并以相同身份执行。RBAC 是授权边界；平台不必为每个新 CRD 登记工具。写操作是否需确认由 Agent 的 `confirmPolicy`（§3.1）决定；Capability 不携带权限/确认字段。
 
 **atomic 示例：**
 
@@ -194,9 +195,6 @@ spec:
     title: 开发环境管理
     description: 按自然语言创建、查询或删除开发环境。
     examples: ["创建一个 4 核 16G、1 张 A100 的 PyTorch 环境"]
-  security:
-    denyOperations: []
-    confirmWrites: true
 ```
 
 **domain 示例：**
@@ -311,7 +309,7 @@ interface AgentRuntime {
 
 ## 5.1 定位
 
-ToolExecutor 是 Runtime 与下游系统之间的本地执行边界，随 Agent Pod 部署。当前由 OpenClaw 的 generic 工具和 Skill 调用受控脚本、`kubectl` 或已登记的 MCP 客户端，不引入独立网络 Gateway。
+ToolExecutor 是 Runtime 与下游系统之间的本地执行边界，作为 **Agent Pod 内的独立 sidecar 容器**部署。kubeconfig 等凭据**只挂给 ToolExecutor 容器**；Runtime 容器不持有 kubectl、凭据或 shell，只能通过 localhost 窄接口调用它——从结构上保证 Runtime 无法绕过 ToolExecutor 直接触碰下游。当前由 OpenClaw 的 generic 工具和 Skill 经此接口调用受控脚本、`kubectl` 或已登记的 MCP 客户端，不引入独立网络 Gateway。
 
 ```text
 OpenClaw generic 工具 / Skill
@@ -329,7 +327,7 @@ OpenClaw generic 工具 / Skill
 - Kubernetes 调用使用实例所有者的最小权限短期凭据，禁止集群管理员凭据。
 - Kubernetes API 使用用户凭据；Kubernetes RBAC 和资源归属校验是最终授权边界。
 - `kubectl-raw` 不作为默认能力；如确有必要，仅允许 token 化 argv、动词和 flag 白名单，并默认要求确认。
-- generic 写操作使用统一确认默认值；atomic/domain Capability 可以追加更严格的 deny/confirm 规则。确认拒绝或超时即失败，Executor 不重试被拒操作。
+- 确认策略由 Agent 的 `confirmPolicy` 决定（默认写操作需确认），ToolExecutor 统一执行；确认拒绝或超时即失败，Executor 不重试被拒操作。
 - 每次调用生成 AgentInstance、Capability、操作、目标、结果摘要和时间等审计事件。
 
 ## 5.3 通用资源发现与执行
@@ -441,13 +439,13 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 | 层 | 是什么 | 谁提供 | 模块要做什么 |
 |---|---|---|---|
 | generic | `list-kinds` / `describe-kind` / `resource-manager` 通用 CRUD + `kubectl-raw` 逃生门 | 平台内置 | 零登记 |
-| atomic 薄覆盖 | 绑定某 CRD，只补语义 / 安全，不碰字段 | 模块可选 | 几行 YAML |
+| atomic 薄覆盖 | 绑定某 CRD，只补语义，不碰字段 | 模块可选 | 几行 YAML |
 | domain | 领域知识（`uses[]` 编排 + 指令 + 脚本） | 模块必须 | 指令 / Skill |
 
 ## A.2 atomic 薄覆盖：override + target，不碰字段
 
-`type: atomic` 的 Capability 只覆盖两个维度：`semantics`（何时用 / 用户话怎么映射）与
-`security`（deny / confirm），不定义字段——`parameters` 永远来自目标 CRD 的 OpenAPI schema + 平台注入。
+`type: atomic` 的 Capability 只覆盖一个维度：`semantics`（何时用 / 用户话怎么映射），
+不定义字段、也不携带权限/确认规则——`parameters` 永远来自目标 CRD 的 OpenAPI schema + 平台注入；权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + ToolExecutor 统一执行。
 
 - `override: true` 标记这是覆盖层，不是全新定义；
 - `target`（group / version / kind）登记时平台校验 CRD 存在 + schema 可用，fail-fast；
