@@ -97,6 +97,15 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("daily-inspection template not created: %v", err)
 	}
 
+	// Model catalog entries exist (design §3.3: platform preloads models).
+	var models v1alpha1.ModelList
+	if err := cl.List(context.Background(), &models); err != nil {
+		t.Fatalf("list models: %v", err)
+	}
+	if len(models.Items) != len(BuiltinModels()) {
+		t.Errorf("models = %d, want %d", len(models.Items), len(BuiltinModels()))
+	}
+
 	// Per-user instances exist (auto-instantiated per user).
 	var insts v1alpha1.AgentInstanceList
 	if err := cl.List(context.Background(), &insts); err != nil {

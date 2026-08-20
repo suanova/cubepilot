@@ -31,6 +31,11 @@ type RequiredPermissions struct {
 }
 
 // TaskTemplateDefaults are the default trigger settings of a template.
+//
+// Deprecated: the simplified design (§3.5) moves scheduling to the Task
+// (Task.cron) and keeps only a creation-wizard hint on the template — see
+// TaskTemplateSpec.DefaultCron. Kept only for compatibility; remove with the
+// JSON store migration.
 type TaskTemplateDefaults struct {
 	Trigger TaskTriggerKind `json:"trigger,omitempty"`
 	Cron    string          `json:"cron,omitempty"`
@@ -51,6 +56,15 @@ type TaskTemplateSpec struct {
 	// RequiredPermissions is the permission hint.
 	// +optional
 	RequiredPermissions *RequiredPermissions `json:"requiredPermissions,omitempty"`
+	// Capabilities declares the capabilities the task needs (design §3.5:
+	// resolved at execution time against the current versions; the actual
+	// revisions used are recorded on the TaskRun).
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty"`
+	// DefaultCron is the creation-wizard default schedule hint (design §3.5:
+	// the Task's own cron wins).
+	// +optional
+	DefaultCron string `json:"defaultCron,omitempty"`
 	// Defaults are the default trigger settings.
 	// +optional
 	Defaults *TaskTemplateDefaults `json:"defaults,omitempty"`
@@ -82,4 +96,12 @@ type TaskTemplateList struct {
 
 func init() {
 	SchemeBuilder.Register(&TaskTemplate{}, &TaskTemplateList{})
+}
+
+// Revision returns an immutable content fingerprint of the template spec
+// (design §3.5: the TaskRun records the template revision actually used at
+// run time). A content hash is deterministic, survives object re-creation,
+// and lets an auditor compare "what ran" across runs.
+func (t *TaskTemplate) Revision() string {
+	return specRevision(t.Spec)
 }

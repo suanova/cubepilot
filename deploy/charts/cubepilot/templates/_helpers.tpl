@@ -29,4 +29,6 @@ config.Load() (internal/config), so they receive the same environment.
   value: {{ .Values.agents.gcWatermark | quote }}
 - name: CUBEPILOT_USERS
   value: {{ .Values.agents.users | quote }}
+- name: CUBEPILOT_REPLICAS
+  value: {{ .Values.operator.replicas | quote }}
 {{- end -}}

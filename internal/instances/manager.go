@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	readyTimeout   = 60 * time.Second
+	readyTimeout     = 60 * time.Second
 	reachableTimeout = 30 * time.Second
 )
 
@@ -100,7 +100,7 @@ func (m *Manager) TouchFor(k AgentKey) {
 }
 
 // Ensure guarantees a healthy agent instance for the default agent of user
-// (legacy signature; delegates to EnsureFor).
+// (delegates to EnsureFor).
 func (m *Manager) Ensure(ctx context.Context, user string) error {
 	return m.EnsureFor(ctx, AgentKey{User: user, Agent: v1alpha1.DefaultAgentName})
 }
@@ -144,6 +144,34 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 			}
 		}
 	}
+}
+
+// SelectedModelFor resolves the effective backend model id for a user's
+// agent instance (design §3.2/§3.3): instance.spec.selectedModel → Model
+// catalog → spec.modelId. Empty means "no override — use the runtime's
+// normal configured model". An explicitly selected model that is missing
+// from the catalog or Unreachable is an error (fail-closed, never a silent
+// fallback); an empty selection is not an error.
+func (m *Manager) SelectedModelFor(ctx context.Context, user string) (string, error) {
+	var inst v1alpha1.AgentInstance
+	if err := m.cr.Get(ctx, types.NamespacedName{Name: k8s.InstanceName(user, v1alpha1.DefaultAgentName)}, &inst); err != nil {
+		return "", nil // not provisioned yet — runtime default
+	}
+	selected := inst.Spec.SelectedModel
+	if selected == "" {
+		return "", nil // no explicit selection — runtime default
+	}
+	var model v1alpha1.Model
+	if err := m.cr.Get(ctx, types.NamespacedName{Name: selected}, &model); err != nil {
+		return "", fmt.Errorf("model %q not in catalog: %v", selected, err)
+	}
+	if model.Status.Phase == v1alpha1.ModelUnreachable {
+		return "", fmt.Errorf("model %q unavailable: %s", selected, model.Status.Message)
+	}
+	if model.Spec.ModelID == "" {
+		return "", nil // platform default, no override
+	}
+	return model.Spec.ModelID, nil
 }
 
 // InstanceStatus reports whether the user's agent instance exists and its

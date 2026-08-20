@@ -32,11 +32,16 @@ const (
 	IdentityModeService IdentityMode = "service"
 )
 
-// ModelSpec is one entry of the ordered model array of an Agent definition.
-// model[0] is the primary model; model[1:] are the fallback chain (design doc
-// §3.1 FR-M2-003: model-agnostic, supports custom LLMs; fallback depends on
-// runtime capability).
-type ModelSpec struct {
+// AgentModelSpec is one entry of the ordered model array of an Agent
+// definition (design §3.1 FR-M2-003: model-agnostic, supports custom LLMs;
+// fallback depends on runtime capability).
+//
+// Deprecated transition shape: the simplified design (§3.3) replaces the
+// inline array with the platform Model catalog — AgentTemplate references
+// models by name (defaultModel / availableModels) and AgentInstance picks
+// via selectedModel. The array is kept for phase-one compatibility and
+// removed when the Model catalog is wired end to end.
+type AgentModelSpec struct {
 	// Provider is "platform" (builtin inference pool) or "external"
 	// (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
 	Provider string `json:"provider"`
@@ -105,7 +110,9 @@ type AgentSpec struct {
 	Runtime AgentRuntime `json:"runtime,omitempty"`
 	// Model is the ordered model array (allowlist). model[0] = primary;
 	// model[1:] = fallback chain. Instances select within this list.
-	Model []ModelSpec `json:"model,omitempty"`
+	// Deprecated transition shape — see AgentModelSpec; the Model catalog
+	// (§3.3) is the long-term source.
+	Model []AgentModelSpec `json:"model,omitempty"`
 	// Instructions is the default system prompt (definition-level default;
 	// instances may override within capability bounds).
 	// +optional

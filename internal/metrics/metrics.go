@@ -42,8 +42,8 @@ type Registry struct {
 // New returns an empty registry.
 func New() *Registry {
 	return &Registry{
-		counters:    map[string]map[string]int64{},
-		gauges:      map[string]int64{},
+		counters:     map[string]map[string]int64{},
+		gauges:       map[string]int64{},
 		firstTokenMs: map[string][]int64{},
 		turnMs:       map[string][]int64{},
 	}

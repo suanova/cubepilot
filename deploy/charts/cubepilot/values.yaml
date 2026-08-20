@@ -29,8 +29,11 @@ secrets:
 # --- operator (control plane, leader election, no HTTP/PVC) --------------
 operator:
   name: cubepilot-operator
-  replicas: 1
+  replicas: 2
   image: cubepilot-operator:local
+  # controller-runtime metrics + health/ready probes ("0" disables).
+  metricsAddr: :8082
+  probeAddr: :8081
   resources: {}
   nodeSelector: {}
   tolerations: []

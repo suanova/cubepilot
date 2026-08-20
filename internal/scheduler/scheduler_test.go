@@ -64,8 +64,7 @@ func dueTask(created time.Time) *v1alpha1.Task {
 		},
 		Spec: v1alpha1.TaskSpec{
 			TemplateRef: "daily-inspection",
-			AgentRef:    "agent-for-cloud",
-			Creator:     "zhang.wei",
+			Owner:       "zhang.wei",
 			Trigger:     v1alpha1.TaskTriggerCron,
 			Cron:        "* * * * *", // every minute → deterministically due
 			Enabled:     &enabled,
