@@ -58,6 +58,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)
+	// Internal (cluster-only) endpoints — the agent-side supervisor pulls
+	// its resolved config here; not exposed through the Portal.
+	mux.HandleFunc("/internal/agents/", s.handleInternalAgentConfig)
 	return logRequests(mux)
 }
 

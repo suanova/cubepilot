@@ -13,14 +13,19 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/kubectl \
     && rm -rf /var/lib/apt/lists/*
 
+# The agent-pod supervisor: pulls the resolved agent config (internal API),
+# renders skills into the PVC workspace, and runs the OpenClaw gateway as a
+# child process (graceful restart on config change — never a pod delete).
+# Built on the host: CGO_ENABLED=0 GOOS=linux go build -o bin/cubepilot-supervisor ./cmd/cubepilot-supervisor
+COPY bin/cubepilot-supervisor /usr/local/bin/cubepilot-supervisor
+
 # Workspace persona (AGENTS.md / SOUL.md) is baked in as the seed for the
 # per-instance PVC: the seed-workspace initContainer copies it to the PVC on
 # first start, where the gateway keeps it writable (TOOLS.md etc).
 #
 # Capability skills are NOT baked in anymore: they flow dynamically via the
-# capability-skills ConfigMap (Capability CRD -> operator render -> agent Pod
-# initContainer expand; a capability create/update rolls the agent Pods).
-# This is the dynamic capability → runtime skill channel (design §3.3.1).
+# resolved agent config (Capability CRD → operator resolver → internal API →
+# supervisor renders into workspace/skills).
 COPY --chown=node:node workspace/ /opt/cubepilot/workspace/
 
 USER node

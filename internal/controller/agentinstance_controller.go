@@ -100,6 +100,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		Image:        r.Cfg.AgentImage,
 		GatewayToken: r.Cfg.GatewayToken,
 		Port:         int32(r.Cfg.AgentPort),
+		AgentUser:    inst.Spec.Owner,
 	}
 	pvcName, size := inst.EffectiveDataVolume()
 	podName := k8s.ResourceName("agent", inst.Name)

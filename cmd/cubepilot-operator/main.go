@@ -109,12 +109,6 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("builtin bootstrap controller: %v", err)
 	}
-	if err := (&controller.CapabilitySkillsReconciler{
-		Client: mgr.GetClient(),
-		Cfg:    cfg,
-	}).SetupWithManager(mgr); err != nil {
-		log.Fatalf("capability-skills controller: %v", err)
-	}
 	if err := (&scheduler.ReconcileScheduler{
 		Client: mgr.GetClient(),
 		Cfg:    cfg,
