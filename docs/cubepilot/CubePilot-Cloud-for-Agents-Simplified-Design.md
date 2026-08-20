@@ -408,6 +408,55 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 - 审计索引能否满足排障，同时不复制 Agent 私有会话。
 - PVC 容量、水位清理与实例重建后的会话恢复。
 
+## 8.4 实现状态与已知取舍（阶段一落地记录）
+
+> 本节记录简化设计在阶段一实现中的实际状态：已完成项、与正文描述的有意偏差、
+> 以及后续阶段的演进清单。实现仓库：cubePilot（operator / api / web / agent supervisor）。
+
+### 已对齐（阶段一已实现并验证）
+
+- **对象模型**：Agent / AgentInstance / Model / Capability / TaskTemplate / Task / TaskRun
+  全部 CRD 化，status subresource + printcolumn；模板、实例、执行三态分离（§3.5）。
+- **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409
+  （§3.2）。
+- **模型目录闭环**：`Model` CRD + 探测控制器；platform 无 endpoint 直通 `Available`、
+  有 endpoint 统一探测；external 必填；fail-closed（§3.3）。
+- **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链
+  `instance.selectedModel → agent.defaultModel → availableModels 白名单 → Model 目录`，
+  任一步失败即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效（优于设计文档的
+  updateConfig / pod 重启）。
+- **模板与执行分离**：TaskRun 记录 `templateRevision` / `capabilityRevision`（内容
+  sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
+- **统一事件契约**：message_start / delta / tool_call / tool_result / message_done /
+  confirm_* 全套实现（§4）。
+- **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions /
+  GetHistory），concrete client 实现，编译期断言（§4）。
+- **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、
+  readOnlyRootFilesystem、emptyDir /tmp（§6 / 附录B「实例最小权限」条目）。
+- **观测**：healthz / readyz / metrics / readiness 全绿（§8.1）。
+
+### 已知取舍（现实现与设计文字的有意偏差，已选其一，不再当作缺口）
+
+1. **ToolExecutor 组件（§5）不存在独立进程/服务**：现以「agent pod 内 OpenClaw 执行 +
+   API 从 SSE 流捕获审计」替代。generic 工具仅是名称常量，真正的校验/审计/执行边界在
+   平台 Agent 运行时内。阶段一可接受；阶段二引入集中 Tool 网关（Policy / HITL）时再落地独立组件。
+2. **存储不采用 PostgreSQL / Redis（§2 mermaid）**：实现为 CRD/对象存储 + 每实例
+   RWO PVC，与 §3.6 文字「CRD/控制面数据库」一致。§2 图为历史参考，以 §3.6 为准。
+3. **TaskRun 不冗余记录 Agent 实例名（§7「至少记录」）**：实现按 §3.5 从 owner 推导
+   （阶段一单实例每用户，推导无歧义）。多实例每用户时改为显式记录。
+4. **身份用 `X-CubePilot-User` 请求头模拟（附录 B 标「一」）**：OIDC 属外部依赖，
+   阶段二引入 Keycloak 后替换；模拟身份可审计、单一来源。
+5. **egress 白名单未实施**：与模型凭据/外部端点管控绑定（表B「模型凭据」行），阶段二随
+   模型凭据统一治理落地。
+
+### 阶段二演进清单（已知偏差的后续归属）
+
+- 集中 Tool Gateway（§5 ToolExecutor 独立组件 + 统一 Policy + HITL）。
+- Keycloak OIDC 鉴权替换 `X-CubePilot-User`（附录 B）。
+- 模型凭据托管、轮换与 egress 白名单（附录 B）。
+- 确认护栏落地：写/高危操作 HITL（确认策略已进入对象模型，执行侧未接入）。
+- 多实例/多 agent 形态，TaskRun 显式记录 Agent。
+
 ---
 
 # 9. 演进方向
