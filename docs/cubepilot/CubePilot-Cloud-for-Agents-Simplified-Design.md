@@ -32,7 +32,7 @@
 2. 每用户一个实例：`(user, agent-for-cloud)` 对应一个 Runtime Pod 和一个 PVC。
 3. 一个 Runtime 接口、一个实现：平台依赖 `AgentRuntime`，当前唯一实现是 `OpenClawRuntime`。
 4. 工具在 Runtime Pod 内执行：`ToolExecutor` 直接调用 `kubectl` 或专用客户端。
-5. 保留三层能力：generic 自动发现，atomic 补语义/安全，domain 承载领域知识与 Skills。
+5. 保留三层能力：generic 自动发现，atomic 补语义，domain 承载领域知识与脚本。
 6. 声明配置在控制面，私有状态在 PVC：PVC 不作为 Agent 配置真源。
 
 ---
@@ -160,16 +160,15 @@ status:
 
 新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（通过 `AgentRuntime.updateConfig()` 热生效或 Pod 重启——见 §3.2）。
 
-## 3.4 Capability、Skill 与 MCP
+## 3.4 Capability 与 MCP
 
-三者不是替换关系：Capability 是平台治理和 Agent 可见性模型，Skill 是 Runtime 使用的知识/脚本包，MCP 是外部工具的接入协议。
+Capability 是平台治理和 Agent 可见性模型；MCP 是外部工具的接入协议。Skill 不是独立对象——它是 domain Capability 内容在 Runtime 侧的呈现（见下文）。
 
 ```text
 Agent
   → generic 工具：动态发现 CRD、通用 CRUD、kubectl-raw（可选）
-  → Capability(atomic)：为一个 CRD 追加语义与安全规则
-  → Capability(domain)：领域知识，引用 generic / atomic / MCP 工具
-       → Skill：指令、受控脚本、参考资料
+  → Capability(atomic)：为一个 CRD 追加语义（不碰字段、不带安全）
+  → Capability(domain)：领域知识，内联指令/脚本，编排 generic / atomic / MCP 工具
        → MCP：Prometheus、ITSM 等外部系统工具
 ```
 
@@ -177,7 +176,7 @@ Agent
 |---|---|---|---|
 | generic | 否，平台内置 | `list-kinds`、`describe-kind`、`resource-manager` 通用 CRUD | 无 |
 | atomic | `Capability` | 补充特定 CRD 的名称、说明、示例（纯语义） | 可选的薄 YAML |
-| domain | `Capability` | 巡检、诊断、推荐等领域流程 | 指令/Skill，必要时少量脚本 |
+| domain | `Capability` | 巡检、诊断、推荐等领域流程 | 内联指令 + 少量脚本 |
 
 generic 是默认能力：ToolExecutor 使用实例 owner 的 kubeconfig 发现其可见资源，并以相同身份执行。RBAC 是授权边界；平台不必为每个新 CRD 登记工具。写操作是否需确认由 Agent 的 `confirmPolicy`（§3.1）决定；Capability 不携带权限/确认字段。
 
@@ -207,13 +206,12 @@ metadata:
 spec:
   type: domain
   uses: [resource-manager, kubectl-raw]
-  skillRef: cluster-inspection@4
   instructions: |
     以只读方式检查节点、GPU、异常 Pod、PVC 和平台组件；
     对每项异常附上证据并按 P0/P1/P2 分类。
 ```
 
-Skill 不新增一个控制面对象：它是 domain Capability 的内容包，可内联，也可引用不可变 ConfigMap/镜像文件。Skill 包含 `SKILL.md`、受控脚本和参考资料；Runtime 只加载当前 Capability 显式引用的 Skill。MCP 是 ToolExecutor 的一种外部执行实现，Capability 可在 `uses[]` 中引用已注册的 MCP 工具。
+「Skill」不新增一个控制面对象，也不是独立概念：它就是 domain Capability 的内联内容（`instructions` + 可选 `files`）在 Runtime 侧的呈现。平台注入 `ResolvedAgentConfig` 时，把这段内联内容渲染成 Runtime 需要的形态（如 OpenClaw 的 SKILL.md）；Runtime 只加载当前 Capability 显式引用的内容。MCP 是 ToolExecutor 的一种外部执行实现，Capability 可在 `uses[]` 中引用已注册的 MCP 工具。
 
 ## 3.5 TaskTemplate、Task 与 TaskRun
 
@@ -309,10 +307,10 @@ interface AgentRuntime {
 
 ## 5.1 定位
 
-ToolExecutor 是 Runtime 与下游系统之间的本地执行边界，作为 **Agent Pod 内的独立 sidecar 容器**部署。kubeconfig 等凭据**只挂给 ToolExecutor 容器**；Runtime 容器不持有 kubectl、凭据或 shell，只能通过 localhost 窄接口调用它——从结构上保证 Runtime 无法绕过 ToolExecutor 直接触碰下游。当前由 OpenClaw 的 generic 工具和 Skill 经此接口调用受控脚本、`kubectl` 或已登记的 MCP 客户端，不引入独立网络 Gateway。
+ToolExecutor 是 Runtime 与下游系统之间的本地执行边界，作为 **Agent Pod 内的独立 sidecar 容器**部署。kubeconfig 等凭据**只挂给 ToolExecutor 容器**；Runtime 容器不持有 kubectl、凭据或 shell，只能通过 localhost 窄接口调用它——从结构上保证 Runtime 无法绕过 ToolExecutor 直接触碰下游。当前由 OpenClaw 的 generic 工具和 domain Capability 的脚本经此接口调用受控脚本、`kubectl` 或已登记的 MCP 客户端，不引入独立网络 Gateway。
 
 ```text
-OpenClaw generic 工具 / Skill
+OpenClaw generic 工具 / domain 脚本
   → ToolExecutor.execute(toolOrCapability, operation, input)
   → 输入与资源范围校验 / 确认 / 审计事件
   → kubectl 或专用客户端（argv 直执行，无 shell）
@@ -323,7 +321,7 @@ OpenClaw generic 工具 / Skill
 
 ## 5.2 执行约束
 
-- 加载平台内置 generic 工具，以及 `ResolvedAgentConfig` 允许的 atomic/domain Capability 与其 Skill。
+- 加载平台内置 generic 工具，以及 `ResolvedAgentConfig` 允许的 atomic/domain Capability（domain 的内联指令/脚本）。
 - Kubernetes 调用使用实例所有者的最小权限短期凭据，禁止集群管理员凭据。
 - Kubernetes API 使用用户凭据；Kubernetes RBAC 和资源归属校验是最终授权边界。
 - `kubectl-raw` 不作为默认能力；如确有必要，仅允许 token 化 argv、动词和 flag 白名单，并默认要求确认。
@@ -342,7 +340,7 @@ resource-manager {kind, action, data}
 kubectl-raw      可选逃生门；仅允许白名单 argv，默认要求确认
 ```
 
-`resource-manager` 不需要为每个 CRD 编写专用代码。它以同一用户 kubeconfig 完成 discovery 与执行，因此无权限资源会由 API Server 拒绝。atomic Capability 只是 generic 工具的薄覆盖，不替换其字段 Schema 或执行器；domain Capability 则为多步问题提供领域知识和 Skill。
+`resource-manager` 不需要为每个 CRD 编写专用代码。它以同一用户 kubeconfig 完成 discovery 与执行，因此无权限资源会由 API Server 拒绝。atomic Capability 只是 generic 工具的薄覆盖，不替换其字段 Schema 或执行器；domain Capability 则为多步问题提供领域知识和脚本。
 
 ---
 
@@ -440,7 +438,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 |---|---|---|---|
 | generic | `list-kinds` / `describe-kind` / `resource-manager` 通用 CRUD + `kubectl-raw` 逃生门 | 平台内置 | 零登记 |
 | atomic 薄覆盖 | 绑定某 CRD，只补语义，不碰字段 | 模块可选 | 几行 YAML |
-| domain | 领域知识（`uses[]` 编排 + 指令 + 脚本） | 模块必须 | 指令 / Skill |
+| domain | 领域知识（`uses[]` 编排 + 内联指令 + 脚本） | 模块必须 | 内联指令 / 脚本 |
 
 ## A.2 atomic 薄覆盖：override + target，不碰字段
 
