@@ -17,6 +17,26 @@ import (
 	"time"
 )
 
+// AgentRuntime is the narrow runtime interface the platform depends on
+// (design §4: start/stop/chat/runTask/updateConfig/health). Phase one only
+// needs the chat and session/history read surface; lifecycle methods are
+// added when a second runtime arrives or the gateway lifecycle moves
+// in-process. *Client implements this interface — depend on the interface,
+// not the concrete type.
+type AgentRuntime interface {
+	// SetModel overrides the backend model for subsequent chat turns
+	// (empty = use the agent's normal configured model).
+	SetModel(model string)
+	// StreamChat runs one agent turn and emits mapped events.
+	StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error
+	// ListSessions lists the gateway sessions.
+	ListSessions(ctx context.Context) ([]Session, error)
+	// GetHistory returns the raw session transcript.
+	GetHistory(ctx context.Context, sessionKey string, limit int) (json.RawMessage, error)
+}
+
+var _ AgentRuntime = (*Client)(nil)
+
 // Client is an authenticated HTTP client for one OpenClaw gateway.
 type Client struct {
 	baseURL string

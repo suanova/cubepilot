@@ -36,7 +36,7 @@ func (s *Server) userOf(r *http.Request) string {
 // user explicitly selected a model that is missing or Unreachable — callers
 // that generate content must surface it; read-only callers may ignore it
 // (the override only affects chat turns, not session/history reads).
-func (s *Server) clientFor(user string) (*openclaw.Client, error) {
+func (s *Server) clientFor(user string) (openclaw.AgentRuntime, error) {
 	c := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
 	if model, err := s.mgr.SelectedModelFor(context.Background(), user); err != nil {
 		return c, err

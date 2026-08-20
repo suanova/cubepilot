@@ -98,23 +98,6 @@ spec:
               ownerModule:
                 description: OwnerModule is the owning platform module (e.g. training).
                 type: string
-              security:
-                description: Security is the atomic security overlay.
-                properties:
-                  confirmWrites:
-                    description: ConfirmWrites forces HITL for writes (phase 2; phase
-                      1 writes pass).
-                    type: boolean
-                  denyOperations:
-                    description: DenyOperations disables operations even if the CRD
-                      supports them.
-                    items:
-                      type: string
-                    type: array
-                  level:
-                    description: Level is the coarse access level (L0/L1).
-                    type: string
-                type: object
               semantics:
                 description: Semantics is the atomic semantic overlay.
                 properties:
