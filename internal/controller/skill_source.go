@@ -16,9 +16,9 @@ import (
 // capabilitiesFS embeds the preset capability SKILL.md files. Each
 // capabilities/<name>/SKILL.md is the single source of truth for one preset
 // domain capability: the bootstrap renders it into a Capability CRD, and the
-// capability-skills controller renders CRDs back into SKILL.md for the agent
-// runtimes (design §3.3.1: Capability is the platform truth, the runtime
-// skill is its OpenClaw presentation).
+// resolver/supervisor renders the CRD back into a runtime skill (design
+// §3.3.1: Capability is the platform truth, the runtime skill is its OpenClaw
+// presentation).
 //
 //go:embed capabilities/*/SKILL.md
 var capabilitiesFS embed.FS
@@ -90,9 +90,8 @@ func presetCapabilityNames() ([]string, error) {
 
 // BuiltinCapabilityDefinitions returns the preset domain capabilities
 // generated from the embedded SKILL.md files. The Capability CRD carries the
-// platform semantics (title/description/instructions); the same content is
-// what capability-skills renders back into the runtime skill — one source,
-// two presentations.
+// platform semantics (title/description/instructions); the resolver renders
+// the CRD back into the runtime skill — one source, two presentations.
 func BuiltinCapabilityDefinitions() ([]*v1alpha1.Capability, error) {
 	names, err := presetCapabilityNames()
 	if err != nil {

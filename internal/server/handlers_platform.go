@@ -350,6 +350,25 @@ func (s *Server) handleKinds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"kinds": s.catalog.Schemas()})
 }
 
+// handleInternalAgentConfig serves the resolved agent config for the agent
+// supervisor (internal API, cluster-only): GET /internal/agents/{user}/config.
+// The supervisor polls this to render skills and detect reloads; the response
+// is the immutable ResolvedAgentConfig (revision = change signal).
+func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/internal/agents/")
+	user, tail, ok := strings.Cut(rest, "/")
+	if !ok || tail != "config" || user == "" {
+		http.NotFound(w, r)
+		return
+	}
+	cfg, err := s.mgr.ResolvedConfigForUser(r.Context(), user)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
 // ---- shared helpers ----
 
 func (s *Server) listCapabilities(ctx context.Context) ([]v1alpha1.Capability, error) {

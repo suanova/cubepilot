@@ -22,6 +22,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/resolver"
 )
 
 const (
@@ -38,6 +39,8 @@ type Manager struct {
 	ns   string
 	port int32
 
+	resolve *resolver.Resolver
+
 	mu     sync.Mutex
 	active map[string]time.Time // agentKey -> last activity
 }
@@ -45,11 +48,12 @@ type Manager struct {
 // New constructs a Manager backed by the controller-runtime client (CRD path).
 func New(cr client.Client, cfg config.Config) *Manager {
 	return &Manager{
-		cr:     cr,
-		cfg:    cfg,
-		ns:     cfg.Namespace,
-		port:   int32(cfg.AgentPort),
-		active: map[string]time.Time{},
+		cr:      cr,
+		cfg:     cfg,
+		ns:      cfg.Namespace,
+		port:    int32(cfg.AgentPort),
+		resolve: resolver.New(cr),
+		active:  map[string]time.Time{},
 	}
 }
 
@@ -154,52 +158,19 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 // agent's availableModels, or Unreachable is an error (fail-closed, never a
 // silent fallback); an empty selection is not an error.
 func (m *Manager) SelectedModelFor(ctx context.Context, user string) (string, error) {
-	var inst v1alpha1.AgentInstance
-	if err := m.cr.Get(ctx, types.NamespacedName{Name: k8s.InstanceName(user, v1alpha1.DefaultAgentName)}, &inst); err != nil {
-		return "", nil // not provisioned yet — runtime default
+	cfg, err := m.resolve.ResolveForUser(ctx, user)
+	if err != nil {
+		return "", err
 	}
+	return cfg.SelectedModel, nil
+}
 
-	// Resolve the agent definition for the defaultModel/availableModels
-	// constraints (§3.1). A missing definition falls back to no constraints.
-	var agent v1alpha1.Agent
-	if inst.Spec.AgentRef != "" {
-		_ = m.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.AgentRef}, &agent)
-	}
-
-	selected := inst.Spec.SelectedModel
-	if selected == "" {
-		selected = agent.Spec.DefaultModel
-	}
-	if selected == "" {
-		return "", nil // no explicit selection and no agent default — runtime default
-	}
-
-	// The selected model must be within the agent's availableModels allowlist
-	// when one is declared (§3.1: availableModels = subset of the catalog).
-	if len(agent.Spec.AvailableModels) > 0 {
-		allowed := false
-		for _, name := range agent.Spec.AvailableModels {
-			if name == selected {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return "", fmt.Errorf("model %q not in agent %q availableModels", selected, inst.Spec.AgentRef)
-		}
-	}
-
-	var model v1alpha1.Model
-	if err := m.cr.Get(ctx, types.NamespacedName{Name: selected}, &model); err != nil {
-		return "", fmt.Errorf("model %q not in catalog: %v", selected, err)
-	}
-	if model.Status.Phase == v1alpha1.ModelUnreachable {
-		return "", fmt.Errorf("model %q unavailable: %s", selected, model.Status.Message)
-	}
-	if model.Spec.ModelID == "" {
-		return "", nil // platform default, no override
-	}
-	return model.Spec.ModelID, nil
+// ResolvedConfigForUser returns the fully-resolved agent configuration for a
+// user's default instance (AgentTemplate + AgentInstance + Model catalog +
+// Capabilities merged). It is the artifact the agent-side supervisor pulls
+// via the internal API to render runtime skills and detect reloads.
+func (m *Manager) ResolvedConfigForUser(ctx context.Context, user string) (*resolver.ResolvedAgentConfig, error) {
+	return m.resolve.ResolveForUser(ctx, user)
 }
 
 // InstanceStatus reports whether the user's agent instance exists and its
