@@ -94,7 +94,7 @@ metadata:
 spec:
   runtime: openclaw
   displayName: 平台管理助手
-  defaultModel: deepseek-v4-flash            # 引用 Model 目录名（§3.5）
+  defaultModel: deepseek-v4-flash            # 引用 Model 目录名（§3.3）
   # availableModels: []                      # 可选：限定可选模型清单；缺省 = 目录全部可用
   instructions: |
     你是 CubeStack 平台管理助手。优先使用已登记能力；
@@ -116,7 +116,7 @@ metadata:
 spec:
   owner: zhang.wei
   templateRef: agent-for-cloud              # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
-  selectedModel: deepseek-v4-flash         # 从 Model 目录（§3.5）中选择；切换后经 updateConfig 热生效
+  selectedModel: deepseek-v4-flash         # 从 Model 目录（§3.3）中选择；切换后经 updateConfig 热生效
   enabledCapabilities: [dev-environment, inference-service, cluster-inspection]
   userInstructions: "回答尽量简洁，使用中文。"
   dataVolume: { pvc: pvc-zhang-wei-agent-for-cloud }
@@ -128,7 +128,29 @@ status:
 
 允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → Service 重新合并 `ResolvedAgentConfig` → `AgentRuntime.updateConfig()` 热生效；OpenClaw 不支持热更新时退化为 Pod 重启（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
-## 3.3 Capability、Skill 与 MCP
+## 3.3 模型目录 (Model)
+
+`Model` 是平台级的 LLM 模型目录，由管理员维护。Agent 模板和实例通过名字引用，不与具体端点或凭据耦合——端点与凭据在 Model 对象内，平台托管、不落明文。
+
+```yaml
+apiVersion: assistant.suanova.io/v1alpha1
+kind: Model
+metadata:
+  name: deepseek-chat                 # 目录名，被 selectedModel / defaultModel 引用
+spec:
+  displayName: DeepSeek Chat
+  provider: external                  # platform（内置推理池）| external（OpenAI 兼容端点）
+  endpoint: https://api.example.com/v1   # external 必填；platform 留空
+  credentialRef: cubepilot/cred-llm-org  # external 必填 → 平台托管 Secret（apiKey）
+status:
+  phase: Available                    # Available / Unreachable（controller 注册时探测）
+```
+
+平台预置 `deepseek-v4-flash`（`provider: platform`）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（external 探测 `endpoint` + `credentialRef`）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
+
+新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（通过 `AgentRuntime.updateConfig()` 热生效或 Pod 重启——见 §3.2）。
+
+## 3.4 Capability、Skill 与 MCP
 
 三者不是替换关系：Capability 是平台治理和 Agent 可见性模型，Skill 是 Runtime 使用的知识/脚本包，MCP 是外部工具的接入协议。
 
@@ -186,9 +208,9 @@ spec:
 
 Skill 不新增一个控制面对象：它是 domain Capability 的内容包，可内联，也可引用不可变 ConfigMap/镜像文件。Skill 包含 `SKILL.md`、受控脚本和参考资料；Runtime 只加载当前 Capability 显式引用的 Skill。MCP 是 ToolExecutor 的一种外部执行实现，Capability 可在 `uses[]` 中引用已注册的 MCP 工具。
 
-## 3.4 TaskTemplate、Task 与 TaskRun
+## 3.5 TaskTemplate、Task 与 TaskRun
 
-三者同构「模板 ≠ 实例 ≠ 执行」：`TaskTemplate` 是参数化、可复用的任务定义；`Task` 是用户绑定模板与调度的实例；`TaskRun` 是一次不可变执行记录。
+三者同构「模板 ≠ 实例 ≠ 执行」：`TaskTemplate` 定义「做什么」（参数化、可复用）；`Task` 定义「谁 + 何时做」（用户绑定模板与调度）；`TaskRun` 记录「这次做得怎么样」（一次不可变执行记录）。
 
 ```yaml
 apiVersion: assistant.suanova.io/v1alpha1
@@ -200,11 +222,12 @@ spec:
   instruction: |
     以只读方式巡检集群（get/list/watch/logs）：检查节点 Ready 与压力、
     GPU 健康、异常 Pod、PVC 使用率与平台组件；异常附证据链并按 P0/P1/P2 分级；禁止写操作。
+    巡检范围：{{scope}}。
   paramsSchema:
-    - { name: scope, type: string, default: all, enum: [all, node-pool, project] }
+    - { name: scope, default: all, enum: [all, node-pool, project] }
   requiredPermissions: { level: cluster-read }
-  defaults: { cron: "0 2 * * *" }
-  capabilities: [cluster-inspection]      # 声明所需能力（revision 由 Task 创建时固化）
+  capabilities: [cluster-inspection]      # 声明任务所需能力（执行时解析当前版本）
+  defaultCron: "0 2 * * *"                # 创建向导的默认调度提示；以 Task.cron 为准
 ```
 
 ```yaml
@@ -214,47 +237,43 @@ metadata:
   name: zhang-wei-daily-inspection
 spec:
   owner: zhang.wei
-  templateRef: daily-inspection
-  params: { scope: all }                   # 只覆盖 paramsSchema 允许的参数
-  agentInstanceRef: zhang-wei-agent-for-cloud
-  cron: "0 2 * * *"
-  capabilitySnapshot: [cluster-inspection@4]  # 创建时固化的能力 revision
+  templateRef: daily-inspection           # 引用模板名（不钉版，下次执行用当前版本）
+  params: { scope: all }                  # 只覆盖 paramsSchema 允许的参数
+  cron: "0 2 * * *"                       # 或 manual（手动触发）
+  enabled: true
 ```
-
-创建 Task 时固化 `capabilitySnapshot`；`params` 只能覆盖模板 `paramsSchema` 允许的参数。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
-
-## 3.5 模型目录 (Model)
-
-`Model` 是平台级的 LLM 模型目录，由管理员维护。Agent 模板和实例通过名字引用，不与具体端点或凭据耦合——端点与凭据在 Model 对象内，平台托管、不落明文。
 
 ```yaml
 apiVersion: assistant.suanova.io/v1alpha1
-kind: Model
+kind: TaskRun
 metadata:
-  name: deepseek-chat                 # 目录名，被 selectedModel / defaultModel 引用
+  name: zhang-wei-daily-inspection-20260820-020001
 spec:
-  displayName: DeepSeek Chat
-  provider: external                  # platform（内置推理池）| external（OpenAI 兼容端点）
-  endpoint: https://api.example.com/v1   # external 必填；platform 留空
-  credentialRef: cubepilot/cred-llm-org  # external 必填 → 平台托管 Secret（apiKey）
+  creatorTaskRef: { name: zhang-wei-daily-inspection, uid: "…" }
+  trigger: cron                           # cron | manual
 status:
-  phase: Available                    # Available / Unreachable（controller 注册时探测）
+  phase: Completed                        # Pending → Running → Completed / Failed
+  startedAt: "2026-08-20T02:00:01Z"
+  finishedAt: "2026-08-20T02:02:30Z"
+  templateRevision: 7                     # 运行时解析：本次实际用到的模板版本
+  capabilityRevision: 4                   # 运行时解析：本次实际用到的 capability/skill 版本
+  summary: { p0: 0, p1: 1, p2: 3 }
+  content: "巡检报告全文……"
+  error: ""                               # 失败原因
 ```
 
-平台预置 `deepseek-v4-flash`（`provider: platform`）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（external 探测 `endpoint` + `credentialRef`）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
-
-新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（通过 `AgentRuntime.updateConfig()` 热生效或 Pod 重启——见 §3.2）。
+模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 `capabilitySnapshot`**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `agent-for-cloud` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
 
 ## 3.6 数据真源
 
 | 数据 | 真源 | 说明 |
 |---|---|---|
-| Template、Instance、Capability、TaskTemplate、Task、TaskRun | CRD / 控制面数据库 | 声明配置、版本、生命周期、报告 |
-| Model | CRD / 控制面数据库 | 平台模型目录，管理员维护 |
+| AgentTemplate、AgentInstance、Model、Capability、TaskTemplate、Task、TaskRun | CRD / 控制面数据库 | 声明配置、版本、生命周期、报告 |
 | 会话、消息、记忆、Runtime 缓存 | 实例 PVC | Agent 私有数据，不复制到平台业务表 |
-| 工具调用索引、确认决定、运行指标 | 平台数据库 / 日志 | 平台自产治理数据，不保存完整私有会话副本 |
+| 工具调用索引、确认决定 | 平台数据库 | 平台自产治理数据；为 Trajectory 的最小投影，不保存完整私有会话副本 |
+| 运行指标 | 监控模块 / 日志 | 平台只产生并暴露，存储/查询/告警交监控 |
 
-启动时，Service 将 Template、Instance、Capability 和 Model 合并为不可变 `ResolvedAgentConfig` 注入 Runtime；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
+启动时，Service 将 AgentTemplate、AgentInstance、Model 和 Capability 合并为不可变 `ResolvedAgentConfig` 注入 Runtime；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
 
 ---
 
@@ -336,12 +355,12 @@ kubectl-raw      可选逃生门；仅允许白名单 argv，默认要求确认
 
 Scheduler 只负责触发与记录，不拥有用户资源权限。
 
-1. 到点后读取 Task（含 `templateRef` 引用的 TaskTemplate 与 `capabilitySnapshot` 快照）并检查 owner 状态。
+1. 到点后读取 Task，解析 `templateRef` 指向的 TaskTemplate 与当前 Capability，并检查 owner 状态。
 2. 确认实例可用，调用 `AgentRuntime.runTask`。
-3. Runtime 通过同一 ToolExecutor 执行 generic 工具及 Task 快照允许的 Capability。
+3. Runtime 通过同一 ToolExecutor 执行 generic 工具及模板声明的 Capability（按当前版本）。
 4. Scheduler 以平台身份写入 TaskRun；Runtime 不需要 CRD 写权限。
 
-TaskRun 至少记录：Task UID、AgentInstance、Template revision、Capability revision、开始/结束时间、状态、报告摘要、证据引用和失败原因。完整私有会话仍保留在 PVC，需要长期留档时显式导出。
+TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时解析）、Capability revision（运行时解析）、开始/结束时间、状态、报告摘要、证据引用和失败原因。完整私有会话仍保留在 PVC，需要长期留档时显式导出。
 
 ---
 
@@ -406,7 +425,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision、Capability
 
 # 附录 A · 三层能力细节
 
-正文 §3.3 已给出三层能力骨架，此处补充与阶段一实现相关的细节，作为参考而非独立规范。
+正文 §3.4 已给出三层能力骨架，此处补充与阶段一实现相关的细节，作为参考而非独立规范。
 
 ## A.1 模块负担递减
 
