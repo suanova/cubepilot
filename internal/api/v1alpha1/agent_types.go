@@ -15,9 +15,9 @@ const (
 	DefaultAgentName = "agent-for-cloud"
 
 	// RuntimeOpenClaw is the default runtime (OpenClaw gateway).
-	RuntimeOpenClaw AgentRuntime = "openclaw"
+	RuntimeOpenClaw AgentRuntime = "OpenClaw"
 	// RuntimeHermes is a future runtime (phase 2+).
-	RuntimeHermes AgentRuntime = "hermes"
+	RuntimeHermes AgentRuntime = "Hermes"
 )
 
 // IdentityMode is how an agent instance derives its platform-side identity
@@ -118,8 +118,8 @@ type AgentSpec struct {
 	DisplayName string `json:"displayName,omitempty"`
 	// Description explains what the agent does.
 	Description string `json:"description,omitempty"`
-	// Runtime selects the runtime implementation (openclaw default).
-	// +kubebuilder:default=openclaw
+	// Runtime selects the runtime implementation (OpenClaw default).
+	// +kubebuilder:default=OpenClaw
 	// +optional
 	Runtime AgentRuntime `json:"runtime,omitempty"`
 	// Model is the ordered model array (allowlist). model[0] = primary;
@@ -144,11 +144,12 @@ type AgentSpec struct {
 	// instances may override within capability bounds).
 	// +optional
 	Instructions string `json:"instructions,omitempty"`
-	// Tools references Capabilities (atomic thin-overrides + domain skills).
-	// Generic tools (resource-manager / list-kinds / describe-kind) are
-	// platform-provided and always available — they are NOT listed here.
+	// Capabilities references Capabilities (atomic thin-overrides + domain
+	// skills) — design §3.1 `spec.capabilities`. Generic tools
+	// (resource-manager / list-kinds / describe-kind) are platform-provided
+	// and always available — they are NOT listed here.
 	// +optional
-	Tools []string `json:"tools,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Memory declares the memory capability.
 	// +optional
 	Memory *MemorySpec `json:"memory,omitempty"`

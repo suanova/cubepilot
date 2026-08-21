@@ -51,7 +51,7 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.Identity == nil || agent.Spec.Identity.Mode != v1alpha1.IdentityModeUser {
 		t.Error("identity mode should default to user")
 	}
-	if len(agent.Spec.Tools) == 0 {
+	if len(agent.Spec.Capabilities) == 0 {
 		t.Error("builtin agent should reference capabilities")
 	}
 }

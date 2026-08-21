@@ -198,7 +198,7 @@ func ToolSetForAgent(agent *v1alpha1.Agent, caps []v1alpha1.Capability) []string
 	for _, t := range GenericTools {
 		set[t] = true
 	}
-	for _, ref := range agent.Spec.Tools {
+	for _, ref := range agent.Spec.Capabilities {
 		for _, cap := range caps {
 			if cap.Name != ref {
 				continue
