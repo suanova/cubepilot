@@ -109,7 +109,7 @@ type TaskRunSpec struct {
 	// Owner is the task owner (execution identity; derived from the Task's
 	// owner — design §3.5).
 	Owner string `json:"owner,omitempty"`
-	// Trigger is cron | manual.
+	// Trigger is Manual | Cron.
 	// +optional
 	Trigger string `json:"trigger,omitempty"`
 }
