@@ -5,6 +5,7 @@ import (
 )
 
 // CapabilityType is the capability layer (design §3.3.1 three-layer model).
+// +kubebuilder:validation:Enum=Atomic;Domain
 type CapabilityType string
 
 const (

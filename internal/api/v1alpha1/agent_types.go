@@ -6,6 +6,7 @@ import (
 
 // AgentRuntime enumerates the supported agent runtime implementations
 // (design doc §3.1 `spec.runtime`, E1 Adapter).
+// +kubebuilder:validation:Enum=OpenClaw;Hermes
 type AgentRuntime string
 
 const (
@@ -99,6 +100,7 @@ type QuotaSpec struct {
 // ConfirmPolicy is the agent-level confirmation policy for write/high-risk
 // operations (design §3.1: policy is agent-level so different agents may reuse
 // the same Capability with different confirmation rules).
+// +kubebuilder:validation:Enum=None;ConfirmWrites
 type ConfirmPolicy string
 
 const (

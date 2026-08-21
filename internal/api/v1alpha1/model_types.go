@@ -8,6 +8,7 @@ import (
 // (design §3.3: platform = platform-managed inference, either a builtin
 // runtime model or a manually deployed endpoint; external =
 // OpenAI-compatible endpoint with platform-managed credential).
+// +kubebuilder:validation:Enum=Platform;External
 type ModelProvider string
 
 const (

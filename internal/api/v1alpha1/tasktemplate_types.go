@@ -5,6 +5,7 @@ import (
 )
 
 // TaskTriggerKind is how a task is triggered (design §3.3.3).
+// +kubebuilder:validation:Enum=Manual;Cron
 type TaskTriggerKind string
 
 const (
