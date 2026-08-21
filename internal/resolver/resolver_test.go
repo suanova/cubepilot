@@ -205,6 +205,26 @@ func TestResolveCapabilityScopedByAgents(t *testing.T) {
 	}
 }
 
+// TestResolveEnabledCapabilities verifies the instance-level capability
+// subset (design §3.2: the instance may restrict to enabledCapabilities;
+// empty = all visible).
+func TestResolveEnabledCapabilities(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.EnabledCapabilities = []string{"cluster-inspection"}
+	r := testResolver(t,
+		inst,
+		domainCap("cluster-inspection", "只读巡检集群。"),
+		domainCap("dev-environment", "开发环境管理。"),
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "cluster-inspection" {
+		t.Errorf("capabilities = %+v, want only cluster-inspection", cfg.Capabilities)
+	}
+}
+
 // TestResolveRevisionStable verifies the revision is a content hash: equal
 // inputs → equal revision; a capability change → different revision.
 func TestResolveRevisionStable(t *testing.T) {

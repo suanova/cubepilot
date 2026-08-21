@@ -6,14 +6,14 @@ import (
 )
 
 // InstancePhase is the lifecycle phase of an agent instance (design §3.2:
-// Creating / Warm / Idle / Reclaiming / Failed).
+// Ready when running, Idle when suspended, etc).
 type InstancePhase string
 
 const (
 	// InstanceCreating means resources are being provisioned.
 	InstanceCreating InstancePhase = "Creating"
-	// InstanceWarm means the instance is running and ready (resident).
-	InstanceWarm InstancePhase = "Warm"
+	// InstanceReady means the instance is running and ready (resident).
+	InstanceReady InstancePhase = "Ready"
 	// InstanceIdle means the instance is idle (on-demand mode, phase 2).
 	InstanceIdle InstancePhase = "Idle"
 	// InstanceReclaiming means the instance is being torn down.
@@ -110,19 +110,23 @@ type AgentInstanceSpec struct {
 	// Lifecycle overrides the definition default (within quota bounds).
 	// +optional
 	Lifecycle *LifecycleSpec `json:"lifecycle,omitempty"`
-	// Instructions optionally overrides the definition default system prompt.
+	// UserInstructions optionally appends user preferences to the definition
+	// default system prompt (design §3.2: appended after the template
+	// instructions; cannot remove or weaken security/identity bounds).
 	// +optional
-	Instructions string `json:"instructions,omitempty"`
-	// ToolOverrides optionally toggles tools declared by the Agent definition
-	// (subset visibility, FR-M2-005). Map key = tool name, value = enabled.
+	UserInstructions string `json:"userInstructions,omitempty"`
+	// EnabledCapabilities optionally restricts the domain capabilities the
+	// Agent definition declares (design §3.2: the instance may select a
+	// subset; empty = all declared). Atomic capabilities are overlays and
+	// are not filtered here.
 	// +optional
-	ToolOverrides map[string]bool `json:"toolOverrides,omitempty"`
+	EnabledCapabilities []string `json:"enabledCapabilities,omitempty"`
 }
 
 // AgentInstanceStatus is the observed state of an instance (design §3.2,
 // written by the Instance Manager controller — users do not edit it).
 type AgentInstanceStatus struct {
-	// Phase is Creating / Warm / Idle / Reclaiming / Failed.
+	// Phase is Creating / Ready / Idle / Reclaiming / Failed.
 	// +optional
 	Phase InstancePhase `json:"phase,omitempty"`
 	// PodName is the running agent Pod (empty when not running).

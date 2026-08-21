@@ -133,6 +133,15 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.AgentRef}, &def); err == nil {
 			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
 			cfg.Instructions = def.Spec.Instructions
+			// User instructions append after the definition instructions
+			// (design §3.2: 最终指令 = 平台安全与执行约束 + 模板指令 + 用户指令
+			// 依次组合；用户指令不能删除/削弱安全边界).
+			if ui := strings.TrimSpace(inst.Spec.UserInstructions); ui != "" {
+				if cfg.Instructions != "" {
+					cfg.Instructions += "\n\n"
+				}
+				cfg.Instructions += ui
+			}
 			// Model selection: instance override → agent default → none.
 			selected := inst.Spec.SelectedModel
 			if selected == "" {
@@ -152,10 +161,18 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	}
 
 	// Domain capabilities visible to this agent (empty Agents = visible to
-	// all; atomic capabilities are overlays, not skills).
+	// all; atomic capabilities are overlays, not skills). The instance may
+	// further restrict to an explicit enabledCapabilities subset (design
+	// §3.2); empty = all declared/all visible.
 	var caps v1alpha1.CapabilityList
 	if err := r.cr.List(ctx, &caps); err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
+	}
+	restrict := map[string]bool{}
+	if len(inst.Spec.EnabledCapabilities) > 0 {
+		for _, name := range inst.Spec.EnabledCapabilities {
+			restrict[name] = true
+		}
 	}
 	for i := range caps.Items {
 		cap := &caps.Items[i]
@@ -163,6 +180,9 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			continue
 		}
 		if len(cap.Spec.Agents) > 0 && !contains(cap.Spec.Agents, cfg.Agent) {
+			continue
+		}
+		if len(restrict) > 0 && !restrict[cap.Name] {
 			continue
 		}
 		cfg.Capabilities = append(cfg.Capabilities, ResolvedCapability{

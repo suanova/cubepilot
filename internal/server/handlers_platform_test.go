@@ -178,7 +178,7 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 		Spec: v1alpha1.TaskSpec{
 			Owner:   "li.ming",
 			Trigger: v1alpha1.TaskTriggerManual,
-			Enabled: boolPtr(true),
+			State:   v1alpha1.TaskStateEnabled,
 		},
 	}
 	wangTask := &v1alpha1.Task{
@@ -186,7 +186,7 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 		Spec: v1alpha1.TaskSpec{
 			Owner:   "wang.wu",
 			Trigger: v1alpha1.TaskTriggerManual,
-			Enabled: boolPtr(true),
+			State:   v1alpha1.TaskStateEnabled,
 		},
 	}
 	s := platformTestServer(t, liTask, wangTask)

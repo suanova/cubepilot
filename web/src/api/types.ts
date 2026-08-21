@@ -22,6 +22,7 @@ export interface Task {
   name: string
   prompt: string
   schedule: string
+  state: 'Enabled' | 'Paused'
   enabled: boolean
   creator: string
   createdAt: string

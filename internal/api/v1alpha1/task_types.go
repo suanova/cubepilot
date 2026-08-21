@@ -14,6 +14,16 @@ const (
 	TaskPhasePaused TaskPhase = "Paused"
 )
 
+// TaskState is the task enablement state (design §3.5: string enum, not bool).
+type TaskState string
+
+const (
+	// TaskStateEnabled means the task is scheduled and will fire.
+	TaskStateEnabled TaskState = "Enabled"
+	// TaskStatePaused means the task is paused (no firing).
+	TaskStatePaused TaskState = "Paused"
+)
+
 // TaskSpec is a task instance (design §3.3.3) — whose task, when it runs. It
 // links the
 // execution subject (agentRef → Agent) with the task content (templateRef →
@@ -33,15 +43,16 @@ type TaskSpec struct {
 	// owner; the per-user instance is derived from it — design §3.5: phase
 	// one has one agent-for-cloud instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
-	// Trigger is manual | cron.
+	// Trigger is Manual | Cron.
 	Trigger TaskTriggerKind `json:"trigger"`
-	// Cron is the 5-field cron expression (trigger=cron).
+	// Cron is the 5-field cron expression (trigger=Cron).
 	// +optional
 	Cron string `json:"cron,omitempty"`
-	// Enabled gates firing (false = paused).
-	// +kubebuilder:default=true
+	// State is the task enablement state (design §3.5: string enum, not
+	// bool): Enabled fires on schedule, Paused never fires.
+	// +kubebuilder:default=Enabled
 	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
+	State TaskState `json:"state,omitempty"`
 }
 
 // TaskStatus is the observed state of a Task.
@@ -69,7 +80,7 @@ type TaskStatus struct {
 // +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
 // +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
 // +kubebuilder:printcolumn:name="Trigger",type="string",JSONPath=".spec.trigger"
-// +kubebuilder:printcolumn:name="Enabled",type="boolean",JSONPath=".spec.enabled"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".spec.state"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Task is a task instance (design §3.3.3) — the "object" of the task domain:
@@ -84,9 +95,10 @@ type Task struct {
 	Status TaskStatus `json:"status,omitempty"`
 }
 
-// Enabled returns whether the task fires (default true).
+// Enabled returns whether the task fires (default Enabled; empty state is
+// treated as Enabled for backward compatibility with pre-CRD CRs).
 func (t *Task) Enabled() bool {
-	return t.Spec.Enabled == nil || *t.Spec.Enabled
+	return t.Spec.State == "" || t.Spec.State == TaskStateEnabled
 }
 
 // +kubebuilder:object:root=true
