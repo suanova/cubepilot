@@ -96,8 +96,10 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// Self-service provisioning: the instance owner is always the caller
 		// (never taken from the body), so a user can only create their own.
 		var body struct {
-			AgentRef      string `json:"agentRef"`
-			SelectedModel string `json:"selectedModel"`
+			AgentRef            string   `json:"agentRef"`
+			SelectedModel       string   `json:"selectedModel"`
+			EnabledCapabilities []string `json:"enabledCapabilities"`
+			UserInstructions    string   `json:"userInstructions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
@@ -142,8 +144,10 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 						UserRef: owner,
 					},
 				},
-				Lifecycle:     &v1alpha1.LifecycleSpec{Strategy: "resident"},
-				SelectedModel: strings.TrimSpace(body.SelectedModel),
+				Lifecycle:           &v1alpha1.LifecycleSpec{Strategy: "resident"},
+				SelectedModel:       strings.TrimSpace(body.SelectedModel),
+				EnabledCapabilities: body.EnabledCapabilities,
+				UserInstructions:    strings.TrimSpace(body.UserInstructions),
 			},
 		}
 		if err := s.cr.Create(r.Context(), inst); err != nil {
