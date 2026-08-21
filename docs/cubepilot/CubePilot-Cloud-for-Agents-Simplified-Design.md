@@ -31,8 +31,8 @@
 1. 一个内置模板：`agent-for-cloud`。
 2. 每用户一个实例：`(user, agent-for-cloud)` 对应一个 Runtime Pod 和一个 PVC。
 3. 一个 Runtime 接口、一个实现：平台依赖 `AgentRuntime`，当前唯一实现是 `OpenClawRuntime`。
-4. 工具在 Runtime Pod 内执行：`ToolExecutor` 直接调用 `kubectl` 或专用客户端。
-5. 保留三层能力：generic 自动发现，atomic 补语义，domain 承载领域知识与脚本。
+4. 工具统一经 **MCP Gateway** 执行（实现 `ToolExecutor` 接口）；MCP Gateway 阶段一未建，暂由 Runtime 直接 exec kubectl。
+5. 保留三层能力：generic 平台内置的 kubectl 执行 + schema 发现，atomic 补语义，domain 承载领域知识与脚本。
 6. 声明配置在控制面，私有状态在 PVC：PVC 不作为 Agent 配置真源。
 
 ---
@@ -48,17 +48,18 @@ flowchart TB
 
     subgraph RT["AgentInstance Runtime Pod"]
       OC["OpenClawRuntime\n对话 · 规划 · 汇总"]
-      TE["ToolExecutor\n校验 · 确认 · 审计 · 执行"]
       PVC["PVC\n会话 · 记忆 · 私有状态"]
-      OC --> TE
       OC <--> PVC
     end
 
-    TE --> K["Kubernetes API\n用户最小权限凭据"]
+    OC --> GW["MCP Gateway\n校验 · 确认 · 审计 · 执行"]
+    GW --> K["Kubernetes API\n用户最小权限凭据"]
     OC --> L["LLM Endpoint"]
     S --> DB["PostgreSQL / Redis\n平台元数据、任务、审计索引"]
     SCH --> DB
 ```
+
+> 阶段一尚未建设 MCP Gateway：上图中 `OC → GW → K` 暂由 `OC → K` 替代（OpenClaw 直接 exec kubectl，挂用户 kubeconfig，RBAC 兜底）；MCP Gateway 落地后切换，中间不建过渡组件。
 
 | 组件 | 职责 | 不负责什么 |
 |---|---|---|
@@ -66,7 +67,7 @@ flowchart TB
 | CubePilot Service | Agent 路由、SSE 转发、配置解析、实例查找 | 不执行 LLM 编排或 kubectl |
 | Instance Manager | 创建、停止、自愈 Pod；挂载 PVC 和凭据 | 不理解用户自然语言 |
 | `OpenClawRuntime` | 对话、规划、工具调用、回答 | 不决定 RBAC 或管理 Pod |
-| `ToolExecutor` | generic/Capability 校验、确认、审计、命令执行 | 不做 Agent 规划 |
+| MCP Gateway（`ToolExecutor` 接口实现） | 工具校验、确认、审计、命令执行 | 不做 Agent 规划；阶段一未建 |
 | Scheduler | 触发任务、调用实例、写入 TaskRun | 不持有用户资源权限 |
 
 ## 2.1 请求路径
@@ -74,8 +75,8 @@ flowchart TB
 1. Portal 通过 OIDC 认证，向 Service 发送消息。
 2. Service 定位用户实例；不存在或不健康时由 Instance Manager 拉起。
 3. Service 调用 `AgentRuntime.chat` 并转发统一事件流。
-4. Runtime 需要工具时调用本 Pod 的 ToolExecutor。
-5. Executor 按 generic/Capability 规则、用户身份和确认规则执行操作，返回结构化结果。
+4. Runtime 需要工具时经 MCP 调用 MCP Gateway（阶段一未建时直接 exec kubectl）。
+5. MCP Gateway 按 generic/Capability 规则、用户身份和确认规则执行操作，返回结构化结果。
 6. Runtime 汇总结果，将私有会话状态写入 PVC。
 
 ---
@@ -103,7 +104,7 @@ spec:
   confirmPolicy: confirm-writes            # 确认策略：写操作需用户确认（读直放）
 ```
 
-模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **Agent 层而非 Capability 层**：不同 Agent 复用同一 Capability 时可有不同确认策略；Capability 只承载语义、不携带权限/确认字段（权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + ToolExecutor 统一执行）。
+模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **Agent 层而非 Capability 层**：不同 Agent 复用同一 Capability 时可有不同确认策略；Capability 只承载语义、不携带权限/确认字段（权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + MCP Gateway 统一执行）。
 
 ## 3.2 AgentInstance
 
@@ -127,7 +128,7 @@ status:
   podName: agent-zhang-wei-agent-for-cloud
 ```
 
-允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → Service 重新合并 `ResolvedAgentConfig` → `AgentRuntime.updateConfig()` 热生效；OpenClaw 不支持热更新时退化为 Pod 重启（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
+允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → OpenClawRuntime 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
 **实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
 
@@ -158,7 +159,7 @@ status:
 
 平台预置 `deepseek-v4-flash`（`provider: platform`、无 endpoint）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（有 endpoint 一律探测）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
 
-新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（通过 `AgentRuntime.updateConfig()` 热生效或 Pod 重启——见 §3.2）。
+新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（由 OpenClawRuntime 重新解析并注入，见 §3.2/§4 配置注入）。
 
 ## 3.4 Capability 与 MCP
 
@@ -166,7 +167,7 @@ Capability 是平台治理和 Agent 可见性模型；MCP 是外部工具的接�
 
 ```text
 Agent
-  → generic 工具：动态发现 CRD、通用 CRUD、kubectl-raw（可选）
+  → generic 能力：kubectl 执行（受控）+ schema 发现
   → Capability(atomic)：为一个 CRD 追加语义（不碰字段、不带安全）
   → Capability(domain)：领域知识，内联指令/脚本，编排 generic / atomic / MCP 工具
        → MCP：Prometheus、ITSM 等外部系统工具
@@ -174,11 +175,11 @@ Agent
 
 | 层 | 是否为 CRD | 解决的问题 | 模块工作量 |
 |---|---|---|---|
-| generic | 否，平台内置 | `list-kinds`、`describe-kind`、`resource-manager` 通用 CRUD | 无 |
+| generic | 否，平台内置 | kubectl 执行（受控）+ schema 发现 | 无 |
 | atomic | `Capability` | 补充特定 CRD 的名称、说明、示例（纯语义） | 可选的薄 YAML |
 | domain | `Capability` | 巡检、诊断、推荐等领域流程 | 内联指令 + 少量脚本 |
 
-generic 是默认能力：ToolExecutor 使用实例 owner 的 kubeconfig 发现其可见资源，并以相同身份执行。RBAC 是授权边界；平台不必为每个新 CRD 登记工具。写操作是否需确认由 Agent 的 `confirmPolicy`（§3.1）决定；Capability 不携带权限/确认字段。
+generic 是默认能力：执行以实例 owner 的最小权限凭据进行，schema 发现见 §5.3；RBAC 是授权边界，平台不必为每个新 CRD 登记工具。写操作是否需确认由 Agent 的 `confirmPolicy`（§3.1）决定；Capability 不携带权限/确认字段。
 
 **atomic 示例：**
 
@@ -205,13 +206,13 @@ metadata:
   name: cluster-inspection
 spec:
   type: domain
-  uses: [resource-manager, kubectl-raw]
+  uses: []
   instructions: |
     以只读方式检查节点、GPU、异常 Pod、PVC 和平台组件；
     对每项异常附上证据并按 P0/P1/P2 分类。
 ```
 
-「Skill」不新增一个控制面对象，也不是独立概念：它就是 domain Capability 的内联内容（`instructions` + 可选 `files`）在 Runtime 侧的呈现。平台注入 `ResolvedAgentConfig` 时，把这段内联内容渲染成 Runtime 需要的形态（如 OpenClaw 的 SKILL.md）；Runtime 只加载当前 Capability 显式引用的内容。MCP 是 ToolExecutor 的一种外部执行实现，Capability 可在 `uses[]` 中引用已注册的 MCP 工具。
+「Skill」不新增一个控制面对象，也不是独立概念：它就是 domain Capability 的内联内容（`instructions` + 可选 `files`）在 Runtime 侧的呈现。平台注入 `ResolvedAgentConfig` 时，把这段内联内容渲染成 Runtime 需要的形态（如 OpenClaw 的 SKILL.md）；Runtime 只加载当前 Capability 显式引用的内容。MCP Gateway 是 ToolExecutor 接口的实现，Capability 可在 `uses[]` 中引用已注册的 MCP 工具。
 
 ## 3.5 TaskTemplate、Task 与 TaskRun
 
@@ -278,7 +279,7 @@ status:
 | 工具调用索引、确认决定 | 平台数据库 | 平台自产治理数据；为 Trajectory 的最小投影，不保存完整私有会话副本 |
 | 运行指标 | 监控模块 / 日志 | 平台只产生并暴露，存储/查询/告警交监控 |
 
-启动时，Service 将 AgentTemplate、AgentInstance、Model 和 Capability 合并为不可变 `ResolvedAgentConfig` 注入 Runtime；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
+启动时，OpenClawRuntime 将 AgentTemplate、AgentInstance、Model 和 Capability 合并为不可变 `ResolvedAgentConfig`，渲染成文件注入 Runtime（§4 配置注入）；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
 
 ---
 
@@ -299,54 +300,59 @@ interface AgentRuntime {
 
 统一事件：`message_start`、`message_delta`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`、`error`。
 
-`ResolvedAgentConfig` 包含模型端点、系统指令、可用 Capability、用户身份、凭据挂载位置、PVC 路径和 ToolExecutor 配置；不包含明文密钥。
+`ResolvedAgentConfig` 包含模型端点、系统指令、可用 Capability、用户身份、凭据挂载位置、PVC 路径和执行边界（MCP Gateway）配置；不包含明文密钥。
+
+`OpenClawRuntime`（`AgentRuntime` 接口的实现）以 sidecar 形式随 Agent Pod 部署，负责对话/规划/汇总与配置注入；工具执行统一委托 MCP Gateway（§5）。
+
+**配置注入**：OpenClaw 的 skill 与系统提示词以**文件**形式存于 workspace 目录（`SKILL.md` / `SOUL.md`），启动时扫描加载，并对该目录**文件监听、自动热重载**（无需重启）。因此「注入」= 把 `ResolvedAgentConfig` 渲染成文件、写入 PVC 上的 workspace 目录。
+
+- **主方案**：`OpenClawRuntime` 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Capability/Model，合并出 `ResolvedAgentConfig`，渲染为「每个 domain Capability 一个 `SKILL.md` + 系统提示词文件」写入 PVC workspace 目录；OpenClaw 启动读取、变更时文件监听自动重载。operator 只负责 Pod 生命周期，不参与 resolve。
+- **备选方案**：若不希望 sidecar 持有 CRD 读权限（或避免每 Pod 一个 watcher），改为 operator watch + resolve，经 gRPC 下发「写 skills」任务；sidecar 只写文件。
 
 ---
 
-# 5. ToolExecutor
+# 5. 执行边界：MCP Gateway（ToolExecutor 接口）
 
 ## 5.1 定位
 
-ToolExecutor 是 Runtime 与下游系统之间的本地执行边界，作为 **Agent Pod 内的独立 sidecar 容器**部署。kubeconfig 等凭据**只挂给 ToolExecutor 容器**；Runtime 容器不持有 kubectl、凭据或 shell，只能通过 localhost 窄接口调用它——从结构上保证 Runtime 无法绕过 ToolExecutor 直接触碰下游。当前由 OpenClaw 的 generic 工具和 domain Capability 的脚本经此接口调用受控脚本、`kubectl` 或已登记的 MCP 客户端，不引入独立网络 Gateway。
+`ToolExecutor` 是一个稳定接口（`execute`），其**最终实现是 MCP Gateway**——一个平台级组件，集中承接所有 Agent 的工具调用，做校验、确认、审计、执行：
 
 ```text
-OpenClaw generic 工具 / domain 脚本
-  → ToolExecutor.execute(toolOrCapability, operation, input)
-  → 输入与资源范围校验 / 确认 / 审计事件
-  → kubectl 或专用客户端（argv 直执行，无 shell）
-  → { success, data | error }
+Agent（OpenClaw）─MCP─► MCP Gateway ──► execute(toolOrCapability, operation, input)
+                            → 输入与资源范围校验 / 确认 / 审计事件
+                            → kubectl 或专用客户端（argv 直执行，无 shell）
+                            → { success, data | error }
 ```
 
-该接口保持稳定。未来若需要集中 MCP 接入、集中凭据托管或跨 Runtime 策略，可由远程 Gateway 实现同一接口，不改变 AgentRuntime 或 Capability 的调用语义。
+MCP Gateway 集中做 Policy/HITL、凭据托管、审计，是「平台负责执行、授权、记录」的落点；未来多 Runtime、多 Agent 都复用同一 Gateway，不改变 Agent 侧契约。
+
+**阶段一不建 MCP Gateway**：因此阶段一没有统一执行边界、没有 HITL、没有执行时的审计——kubectl 由 OpenClaw 直接 exec（挂用户 kubeconfig，RBAC 兜底）。这是临时缺口，MCP Gateway 落地后切换，中间不建过渡组件。
 
 ## 5.2 执行约束
 
 - 加载平台内置 generic 工具，以及 `ResolvedAgentConfig` 允许的 atomic/domain Capability（domain 的内联指令/脚本）。
 - Kubernetes 调用使用实例所有者的最小权限短期凭据，禁止集群管理员凭据。
 - Kubernetes API 使用用户凭据；Kubernetes RBAC 和资源归属校验是最终授权边界。
-- `kubectl-raw` 不作为默认能力；如确有必要，仅允许 token 化 argv、动词和 flag 白名单，并默认要求确认。
-- 确认策略由 Agent 的 `confirmPolicy` 决定（默认写操作需确认），ToolExecutor 统一执行；确认拒绝或超时即失败，Executor 不重试被拒操作。
+- kubectl 执行受控：token 化 argv、动词和 flag 白名单，写操作默认要求确认（阶段一为直接 exec，白名单/确认随 MCP Gateway 落地）。
+- 确认策略由 Agent 的 `confirmPolicy` 决定（默认写操作需确认），MCP Gateway 统一执行；确认拒绝或超时即失败，不重试被拒操作。
 - 每次调用生成 AgentInstance、Capability、操作、目标、结果摘要和时间等审计事件。
 
 ## 5.3 通用资源发现与执行
 
-generic 工具包含：
+执行走 kubectl（受控）：阶段一 OpenClaw 直接 exec kubectl（用户 kubeconfig，RBAC 兜底）；MCP Gateway 落地后收敛为受控执行（verb/flag 白名单 + 确认 + RBAC）。
 
-```text
-list-kinds       列出当前用户可发现的资源类型
-describe-kind    获取资源 Schema，帮助 Agent 正确填参
-resource-manager {kind, action, data}
-                 按 Schema 校验/渲染后执行通用 CRUD
-kubectl-raw      可选逃生门；仅允许白名单 argv，默认要求确认
-```
+schema 发现分两阶段：
 
-`resource-manager` 不需要为每个 CRD 编写专用代码。它以同一用户 kubeconfig 完成 discovery 与执行，因此无权限资源会由 API Server 拒绝。atomic Capability 只是 generic 工具的薄覆盖，不替换其字段 Schema 或执行器；domain Capability 则为多步问题提供领域知识和脚本。
+- **阶段一**：runtime Pod 挂**两个 kubeconfig**——用户 kubeconfig（操作）+ 平台只读 CRD kubeconfig（读 schema）。内置一个 skill 教 LLM：查 schema 用 `kubectl --kubeconfig=<只读CRD路径> get crd <kind> -o yaml`（或 `explain`），其余操作一律用默认用户 kubeconfig。
+- **最终**：MCP Gateway 用自身只读 CRD 权限 serve schema（`describe-kind`），Pod 内不再需要只读 CRD kubeconfig。
+
+资源类型列表由 LLM 用 `kubectl api-resources` 发现；字段校验由 API server 在 apply 时完成（可先 `--dry-run=server`）。atomic Capability 只是语义薄覆盖，不替换执行器；domain Capability 提供领域知识与脚本。
 
 ---
 
 # 6. 身份、凭据与隔离
 
-当前只支持**用户身份**：AgentInstance 的 `owner` 与 `identity.userRef` 必须一致，ToolExecutor 使用该用户派生的最小权限凭据。
+当前只支持**用户身份**：AgentInstance 的 `owner` 与 `identity.userRef` 必须一致，执行（MCP Gateway）使用该用户派生的最小权限凭据。
 
 - 用户被禁用、权限回收或凭据轮换时，Instance Manager 更新或撤销实例挂载的凭据。
 - TaskRun 在运行前再次校验身份和授权，不依赖创建任务时的权限。
@@ -362,7 +368,7 @@ Scheduler 只负责触发与记录，不拥有用户资源权限。
 
 1. 到点后读取 Task，解析 `templateRef` 指向的 TaskTemplate 与当前 Capability，并检查 owner 状态。
 2. 确认实例可用，调用 `AgentRuntime.runTask`。
-3. Runtime 通过同一 ToolExecutor 执行 generic 工具及模板声明的 Capability（按当前版本）。
+3. Runtime 通过 MCP Gateway 执行 generic 工具及模板声明的 Capability（按当前版本）。
 4. Scheduler 以平台身份写入 TaskRun；Runtime 不需要 CRD 写权限。
 
 TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时解析）、Capability revision（运行时解析）、开始/结束时间、状态、报告摘要、证据引用和失败原因。完整私有会话仍保留在 PVC，需要长期留档时显式导出。
@@ -393,7 +399,8 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 
 ## 8.3 待验证项
 
-- OpenClaw 是否稳定支持事件、任务执行和配置热更新接口。
+- OpenClaw 事件与任务执行接口的稳定性；skill 热重载已由源码确认走文件监听（`skills/runtime/refresh.ts`），需集成验证注入的 workspace 目录能被正确监听。
+- OpenClaw 作为 MCP client 连 MCP Gateway、并把工具调用透传给它的能力（阶段二 MCP Gateway 落地前须先验证）。
 - 用户最小权限短期凭据的生成、轮换和撤销。
 - Capability Schema 到受控 `kubectl` 参数/manifest 的转换与 dry-run。
 - 审计索引能否满足排障，同时不复制 Agent 私有会话。
@@ -436,34 +443,26 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 
 | 层 | 是什么 | 谁提供 | 模块要做什么 |
 |---|---|---|---|
-| generic | `list-kinds` / `describe-kind` / `resource-manager` 通用 CRUD + `kubectl-raw` 逃生门 | 平台内置 | 零登记 |
+| generic | kubectl 执行（受控）+ schema 发现 | 平台内置 | 零登记 |
 | atomic 薄覆盖 | 绑定某 CRD，只补语义，不碰字段 | 模块可选 | 几行 YAML |
 | domain | 领域知识（`uses[]` 编排 + 内联指令 + 脚本） | 模块必须 | 内联指令 / 脚本 |
 
 ## A.2 atomic 薄覆盖：override + target，不碰字段
 
 `type: atomic` 的 Capability 只覆盖一个维度：`semantics`（何时用 / 用户话怎么映射），
-不定义字段、也不携带权限/确认规则——`parameters` 永远来自目标 CRD 的 OpenAPI schema + 平台注入；权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + ToolExecutor 统一执行。
+不定义字段、也不携带权限/确认规则——`parameters` 永远来自目标 CRD 的 OpenAPI schema + 平台注入；权限由 RBAC 决定，确认由 Agent 的 `confirmPolicy` + MCP Gateway 统一执行。
 
 - `override: true` 标记这是覆盖层，不是全新定义；
 - `target`（group / version / kind）登记时平台校验 CRD 存在 + schema 可用，fail-fast；
-- 执行仍走通用执行器：`resource-manager{kind, action, data}` 查 schema → 校验 data → 渲染 manifest → exec kubectl。
+- 执行走 kubectl（受控）：LLM 按 schema 写 YAML → `kubectl apply`，API server 校验。
 
 ## A.3 加载策略（缓解工具爆炸）
 
 ```text
 ① group 分片：Agent 声明 groups + RBAC 过滤，上下文只放需要的模块
 ② 操作分片：读（get / list）常驻；写（create / delete / update）按需加载 + 默认确认
-③ 发现兜底：常驻 list-kinds / describe-kind / resource-manager，长尾 CRD 动态发现即用
+③ 发现兜底：schema 动态发现（阶段一只读 CRD kubeconfig / 最终 describe-kind），长尾 CRD 即用
 ```
-
-## A.4 两条腿：结构化 vs 逃生门
-
-| | 结构化（默认） | kubectl-raw（逃生门，默认关闭） |
-|---|---|---|
-| 参数 | `resource-manager` 的 kind + data（schema 校验） | `command` 自由命令串 |
-| 覆盖 | 任意 CRD 的 CRUD + 常见读 | 长尾（api-resources / explain / 子资源） |
-| 安全 | schema 校验 + RBAC；写默认确认 | token 化 argv + verb/flag 白名单直 exec，歧义 fail-closed |
 
 ---
 
