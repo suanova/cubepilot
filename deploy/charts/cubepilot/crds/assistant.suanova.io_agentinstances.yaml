@@ -115,6 +115,15 @@ spec:
                       in code).
                     type: string
                 type: object
+              enabledCapabilities:
+                description: |-
+                  EnabledCapabilities optionally restricts the domain capabilities the
+                  Agent definition declares (design §3.2: the instance may select a
+                  subset; empty = all declared). Atomic capabilities are overlays and
+                  are not filtered here.
+                items:
+                  type: string
+                type: array
               identity:
                 description: Identity is the platform-side identity (mode + principal).
                 properties:
@@ -137,10 +146,6 @@ spec:
                 - mode
                 - principalRef
                 type: object
-              instructions:
-                description: Instructions optionally overrides the definition default
-                  system prompt.
-                type: string
               lifecycle:
                 description: Lifecycle overrides the definition default (within quota
                   bounds).
@@ -164,13 +169,12 @@ spec:
                   SelectedModel optionally switches the model within the Agent definition
                   model[] allowlist (default model[0].name). FR-M2-005.
                 type: string
-              toolOverrides:
-                additionalProperties:
-                  type: boolean
+              userInstructions:
                 description: |-
-                  ToolOverrides optionally toggles tools declared by the Agent definition
-                  (subset visibility, FR-M2-005). Map key = tool name, value = enabled.
-                type: object
+                  UserInstructions optionally appends user preferences to the definition
+                  default system prompt (design §3.2: appended after the template
+                  instructions; cannot remove or weaken security/identity bounds).
+                type: string
             required:
             - agentRef
             - identity
@@ -252,7 +256,7 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: Phase is Creating / Warm / Idle / Reclaiming / Failed.
+                description: Phase is Creating / Ready / Idle / Reclaiming / Failed.
                 type: string
               podName:
                 description: PodName is the running agent Pod (empty when not running).

@@ -47,7 +47,7 @@ flowchart TB
     SCH["Scheduler\nTaskTemplate → Task → TaskRun"] --> DB
 
     subgraph RT["AgentInstance Runtime Pod"]
-      INJ["injector sidecar\n配置注入"]
+      INJ["supervisor（Pod 内）\n配置拉取与渲染"]
       OC["OpenClaw\n对话 · 规划 · 汇总"]
       PVC["PVC\n会话 · 记忆 · 私有状态"]
       INJ -- 写配置 --> PVC
@@ -68,7 +68,7 @@ flowchart TB
 | Portal/API | 认证、对话入口、配置、任务与报告查询 | 不持有 Agent 会话状态 |
 | CubePilot Service | Agent 路由、SSE 转发、chat/runTask 转发（OpenClaw 客户端）、实例查找 | 不执行 LLM 编排或 kubectl |
 | Instance Manager | 创建、停止、自愈 Pod；挂载 PVC 和凭据 | 不理解用户自然语言 |
-| injector sidecar | 配置注入：渲染 SKILL.md / 系统提示词写入 PVC | 不做 Agent 规划 |
+| supervisor（Pod 内） | 配置注入：拉取 ResolvedAgentConfig，渲染 SKILL.md / 系统提示词写入 PVC | 不做 Agent 规划 |
 | MCP Gateway（`ToolExecutor` 接口实现） | 工具校验、确认、审计、命令执行 | 不做 Agent 规划；阶段一未建 |
 | Scheduler | 触发任务、调用实例、写入 TaskRun | 不持有用户资源权限 |
 
@@ -130,7 +130,7 @@ status:
   podName: agent-zhang-wei-agent-for-cloud
 ```
 
-允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → injector sidecar 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
+允许覆盖的字段只有模型选择（`selectedModel`，候选集 = Model 目录；若模板指定 `availableModels` 则为其子集）、Capability 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → resolver 重新解析、supervisor 重新拉取并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
 **实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
 
@@ -161,7 +161,7 @@ status:
 
 平台预置 `deepseek-v4-flash`（`provider: Platform`、无 endpoint）等模型条目。管理员加新模型：`kubectl apply` 一个 Model CRD（或 Portal「模型管理」页填写名字、provider、endpoint、选已有 Secret）→ Controller 校验连通性（有 endpoint 一律探测）→ `status.phase = Available` → 用户立即可在 `selectedModel` 中选到。
 
-新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（由 injector sidecar 重新解析并注入，见 §3.2/§4 配置注入）。
+新增模型不动任何运行中实例；只有修改实例 `selectedModel` 才触发配置变更（由 resolver 重新解析、supervisor 重新拉取并注入，见 §3.2/§4 配置注入）。
 
 ## 3.4 Capability 与 MCP
 
@@ -281,7 +281,7 @@ status:
 | 工具调用索引、确认决定 | 平台数据库 | 平台自产治理数据；为 Trajectory 的最小投影，不保存完整私有会话副本 |
 | 运行指标 | 监控模块 / 日志 | 平台只产生并暴露，存储/查询/告警交监控 |
 
-启动时，injector sidecar 将 AgentTemplate、AgentInstance、Model 和 Capability 合并为不可变 `ResolvedAgentConfig`，渲染成文件注入 Runtime（§4 配置注入）；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
+启动时，resolver 将 AgentInstance、Agent 定义、Model 和 Capability 合并为不可变 `ResolvedAgentConfig`，supervisor 拉取后渲染成文件注入 Runtime（§4 配置注入）；其中 `selectedModel` 解析到 Model 目录中的端点与凭据引用（明文密钥只在 Secret 中）。PVC 不是配置真源。
 
 ---
 
@@ -304,12 +304,12 @@ interface AgentRuntime {
 
 `ResolvedAgentConfig` 包含模型端点、系统指令、可用 Capability、用户身份、凭据挂载位置、PVC 路径和执行边界（MCP Gateway）配置；不包含明文密钥。
 
-`AgentRuntime` 接口的实现分布在两处：**chat/runTask 由 Service 内的 OpenClaw 客户端（HTTP）转发**，**配置注入由 Pod 内的 injector sidecar 负责**，生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总。工具执行统一委托 MCP Gateway（§5）。
+`AgentRuntime` 接口的实现分布在两处：**chat/runTask 由 Service 内的 OpenClaw 客户端（HTTP）转发**，**配置注入由控制面 resolve + Pod 内的 supervisor 拉取渲染负责**，生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总。工具执行统一委托 MCP Gateway（§5）。
 
 **配置注入**：OpenClaw 的 skill 与系统提示词以**文件**形式存于 workspace 目录（`SKILL.md` / `SOUL.md`），启动时扫描加载，并对该目录**文件监听、自动热重载**（无需重启）。因此「注入」= 把 `ResolvedAgentConfig` 渲染成文件、写入 PVC 上的 workspace 目录。
 
-- **主方案**：injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Capability/Model，合并出 `ResolvedAgentConfig`，渲染为「每个 Domain Capability 一个 `SKILL.md` + 系统提示词文件」写入 PVC workspace 目录；OpenClaw 启动读取、变更时文件监听自动重载。operator 只负责 Pod 生命周期，不参与 resolve。
-- **备选方案**：若不希望 sidecar 持有 CRD 读权限（或避免每 Pod 一个 watcher），改为 operator watch + resolve，经 gRPC 下发「写 skills」任务；sidecar 只写文件。
+- **主方案（当前实现）**：**控制面 resolve + Pod 内 supervisor 拉取**。operator 的 resolver 把 AgentInstance + Agent 定义 + Model 目录 + Capability 合并为不可变 `ResolvedAgentConfig`（内容哈希 revision），API 经 `GET /internal/agents/{user}/config` 暴露；Pod 内的 supervisor（常驻主容器，非 initContainer）启动时拉取、渲染为「每个 Domain Capability 一个 `SKILL.md` + 系统提示词文件」写入 PVC workspace 目录，随后托管 OpenClaw gateway 子进程；revision 变化时优雅重启子进程（会话/记忆在 PVC，不丢失），skill 变更经 OpenClaw 文件监听热重载。operator 只负责 Pod 生命周期，不参与 resolve。
+- **备选方案**：改为 Pod 内 injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Capability/Model，自行合并 `ResolvedAgentConfig` 并写文件；代价是每 Pod 一个 watcher 且 sidecar 需持有 CRD 读权限。
 
 ---
 
@@ -427,6 +427,10 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
   updateConfig / pod 重启）。
 - **模板与执行分离**：TaskRun 记录 `templateRevision` / `capabilityRevision`（内容
   sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
+- **Task 状态为字符串枚举**：`spec.state: Enabled | Paused`（§3.5 明确不用 bool），
+  CRD default=Enabled；API 保留 `enabled` 兼容字段，web 以派生 `enabled` 展示。
+- **实例能力子集**：`AgentInstance.spec.enabledCapabilities` 限定 Domain 能力子集
+  （§3.2），resolver 过滤注入；空 = 全部声明能力。
 - **统一事件契约**：message_start / delta / tool_call / tool_result / message_done /
   confirm_* 全套实现（§4）。
 - **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions /
