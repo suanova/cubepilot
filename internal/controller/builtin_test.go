@@ -43,7 +43,7 @@ func TestBuiltinAgentShape(t *testing.T) {
 		t.Errorf("availableModels = %v, want [deepseek-v4-flash]", agent.Spec.AvailableModels)
 	}
 	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
-		t.Errorf("confirmPolicy = %q, want confirm-writes (design §3.1)", agent.Spec.ConfirmPolicy)
+		t.Errorf("confirmPolicy = %q, want ConfirmWrites (design §3.1)", agent.Spec.ConfirmPolicy)
 	}
 	if len(agent.Spec.Model) == 0 || agent.Spec.Model[0].Name == "" {
 		t.Error("primary model missing")

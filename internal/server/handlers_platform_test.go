@@ -144,7 +144,7 @@ func TestHandleModelsCreate(t *testing.T) {
 	h := s.Handler()
 
 	rec := doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "DeepSeek V3", "provider": "external",
+		"displayName": "DeepSeek V3", "provider": "External",
 		"endpoint": "https://api.example.com/v1", "credentialRef": "cred-llm",
 	})
 	if rec.Code != http.StatusCreated {
@@ -153,7 +153,7 @@ func TestHandleModelsCreate(t *testing.T) {
 
 	// Duplicate (same display name → same slug) → 409 + existing entry.
 	rec = doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "DeepSeek V3", "provider": "external",
+		"displayName": "DeepSeek V3", "provider": "External",
 		"endpoint": "https://api.example.com/v1", "credentialRef": "cred-llm",
 	})
 	if rec.Code != http.StatusConflict {
@@ -162,7 +162,7 @@ func TestHandleModelsCreate(t *testing.T) {
 
 	// External requires endpoint + credentialRef.
 	rec = doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "Bad", "provider": "external", "endpoint": "https://x/v1",
+		"displayName": "Bad", "provider": "External", "endpoint": "https://x/v1",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("missing credentialRef status = %d, want 400: %s", rec.Code, rec.Body.String())

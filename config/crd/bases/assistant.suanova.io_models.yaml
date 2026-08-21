@@ -84,8 +84,8 @@ spec:
                 type: string
               provider:
                 description: |-
-                  Provider is "platform" (platform-managed inference: builtin runtime
-                  model or manually deployed endpoint) or "external" (OpenAI-compatible
+                  Provider is "Platform" (platform-managed inference: builtin runtime
+                  model or manually deployed endpoint) or "External" (OpenAI-compatible
                   endpoint; endpoint + credentialRef required).
                 type: string
             required:

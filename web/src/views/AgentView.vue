@@ -31,7 +31,7 @@ const availableModels = computed(() => models.value.filter((m) => m.phase !== 'U
 const modelDialogOpen = ref(false)
 const modelForm = ref({
   displayName: '',
-  provider: 'external',
+  provider: 'External',
   endpoint: '',
   credentialRef: '',
   modelId: '',
@@ -39,7 +39,7 @@ const modelForm = ref({
 const modelSaving = ref(false)
 
 function openModelDialog() {
-  modelForm.value = { displayName: '', provider: 'external', endpoint: '', credentialRef: '', modelId: '' }
+  modelForm.value = { displayName: '', provider: 'External', endpoint: '', credentialRef: '', modelId: '' }
   modelDialogOpen.value = true
 }
 
@@ -252,15 +252,15 @@ onMounted(loadAgentView)
           <div>
             <label class="label">提供方式</label>
             <div class="radio-row" role="radiogroup" aria-label="提供方式">
-              <button type="button" class="radio" :class="{ active: modelForm.provider === 'platform' }" role="radio" :aria-checked="modelForm.provider === 'platform'" @click="modelForm.provider = 'platform'">平台部署（内置/手动）</button>
-              <button type="button" class="radio" :class="{ active: modelForm.provider === 'external' }" role="radio" :aria-checked="modelForm.provider === 'external'" @click="modelForm.provider = 'external'">外部兼容端点</button>
+              <button type="button" class="radio" :class="{ active: modelForm.provider === 'Platform' }" role="radio" :aria-checked="modelForm.provider === 'Platform'" @click="modelForm.provider = 'Platform'">平台部署（内置/手动）</button>
+              <button type="button" class="radio" :class="{ active: modelForm.provider === 'External' }" role="radio" :aria-checked="modelForm.provider === 'External'" @click="modelForm.provider = 'External'">外部兼容端点</button>
             </div>
           </div>
           <div>
-            <label class="label">端点（OpenAI 兼容 Base URL）<span v-if="modelForm.provider === 'external'" style="color: var(--danger)"> · 必填</span></label>
+            <label class="label">端点（OpenAI 兼容 Base URL）<span v-if="modelForm.provider === 'External'" style="color: var(--danger)"> · 必填</span></label>
             <input v-model="modelForm.endpoint" class="input mono" placeholder="https://inference.example.com/v1" aria-label="端点" />
           </div>
-          <div v-if="modelForm.provider === 'external'">
+          <div v-if="modelForm.provider === 'External'">
             <label class="label">凭据 Secret（credentialRef · 平台管理）</label>
             <input v-model="modelForm.credentialRef" class="input mono" placeholder="model-credential" aria-label="凭据引用" />
           </div>

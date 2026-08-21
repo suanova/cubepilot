@@ -34,7 +34,7 @@ export interface Report {
   id: string
   taskId: string
   taskName: string
-  trigger: 'cron' | 'manual' | 'inspect'
+  trigger: 'Cron' | 'Manual' | 'Inspect'
   status: 'success' | 'failed'
   startedAt: string
   finishedAt: string

@@ -621,7 +621,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 			s.recordToolCall(user, ev)
 		}
 	}
-	report, _ := s.store.AddReport(storeReport("inspect", "manual inspection", "inspect", started, content, err))
+	report, _ := s.store.AddReport(storeReport("inspect", "manual inspection", "Inspect", started, content, err))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
 		return

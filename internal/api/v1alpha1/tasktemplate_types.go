@@ -9,9 +9,9 @@ type TaskTriggerKind string
 
 const (
 	// TaskTriggerManual means the task runs on demand only.
-	TaskTriggerManual TaskTriggerKind = "manual"
+	TaskTriggerManual TaskTriggerKind = "Manual"
 	// TaskTriggerCron means the task runs on a cron schedule.
-	TaskTriggerCron TaskTriggerKind = "cron"
+	TaskTriggerCron TaskTriggerKind = "Cron"
 )
 
 // ParamSchema describes one task parameter (design §3.3.2 paramsSchema).

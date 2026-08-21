@@ -10,10 +10,10 @@ type CapabilityType string
 const (
 	// CapabilityAtomic is a thin override bound to a CRD: semantics + security
 	// only, never touches fields (parameters come from the CRD schema).
-	CapabilityAtomic CapabilityType = "atomic"
+	CapabilityAtomic CapabilityType = "Atomic"
 	// CapabilityDomain is domain knowledge: uses[] orchestration +
 	// instructions/scripts.
-	CapabilityDomain CapabilityType = "domain"
+	CapabilityDomain CapabilityType = "Domain"
 )
 
 // CapabilityTarget binds an atomic capability to a CRD (design §3.3.1: the

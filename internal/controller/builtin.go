@@ -79,7 +79,7 @@ func BuiltinAgent() *v1alpha1.Agent {
 			AvailableModels: []string{"deepseek-v4-flash"},
 			ConfirmPolicy:   v1alpha1.ConfirmPolicyConfirmWrites,
 			Model: []v1alpha1.AgentModelSpec{
-				{Provider: "platform", Name: "deepseek-v4-flash"},
+				{Provider: "Platform", Name: "deepseek-v4-flash"},
 			},
 			Instructions: "你是 CubeStack 平台的智能助手（agent-for-cloud）。" +
 				"通过 kubectl 查询与操作集群资源；只读操作直接执行，" +
