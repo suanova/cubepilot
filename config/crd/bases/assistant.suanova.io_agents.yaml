@@ -79,6 +79,9 @@ spec:
                 description: |-
                   ConfirmPolicy is the agent-level confirmation policy for write
                   operations (default ConfirmWrites).
+                enum:
+                - None
+                - ConfirmWrites
                 type: string
               defaultModel:
                 description: |-
@@ -190,6 +193,9 @@ spec:
                 default: OpenClaw
                 description: Runtime selects the runtime implementation (OpenClaw
                   default).
+                enum:
+                - OpenClaw
+                - Hermes
                 type: string
             type: object
           status:

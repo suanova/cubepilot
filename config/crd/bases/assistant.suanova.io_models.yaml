@@ -87,6 +87,9 @@ spec:
                   Provider is "Platform" (platform-managed inference: builtin runtime
                   model or manually deployed endpoint) or "External" (OpenAI-compatible
                   endpoint; endpoint + credentialRef required).
+                enum:
+                - Platform
+                - External
                 type: string
             required:
             - provider

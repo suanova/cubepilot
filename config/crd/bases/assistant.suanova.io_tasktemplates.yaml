@@ -72,6 +72,9 @@ spec:
                   trigger:
                     description: TaskTriggerKind is how a task is triggered (design
                       §3.3.3).
+                    enum:
+                    - Manual
+                    - Cron
                     type: string
                 type: object
               description:
