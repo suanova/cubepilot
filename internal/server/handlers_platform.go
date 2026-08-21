@@ -213,7 +213,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body.DisplayName = strings.TrimSpace(body.DisplayName)
-		body.Provider = strings.TrimSpace(strings.ToLower(body.Provider))
+		body.Provider = normalizeProvider(body.Provider)
 		body.Endpoint = strings.TrimSpace(body.Endpoint)
 		body.ModelID = strings.TrimSpace(body.ModelID)
 		if body.DisplayName == "" {
@@ -396,6 +396,21 @@ func (s *Server) getAgent(ctx context.Context, name string) (*v1alpha1.Agent, er
 // writeObjectJSON marshals a metav1 object's JSON for API responses.
 func writeObjectJSON(w http.ResponseWriter, status int, v any) {
 	writeJSON(w, status, v)
+}
+
+// normalizeProvider canonicalizes the model provider input: accepts both the
+// legacy lowercase values ("platform"/"external") and the canonical PascalCase
+// values ("Platform"/"External"), returning the canonical form. Unknown
+// values pass through unchanged so the caller's switch can reject them.
+func normalizeProvider(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "platform":
+		return string(v1alpha1.ModelProviderPlatform)
+	case "external":
+		return string(v1alpha1.ModelProviderExternal)
+	default:
+		return strings.TrimSpace(p)
+	}
 }
 
 var _ = metav1.Now

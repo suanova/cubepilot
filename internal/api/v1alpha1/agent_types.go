@@ -42,7 +42,7 @@ const (
 // via selectedModel. The array is kept for phase-one compatibility and
 // removed when the Model catalog is wired end to end.
 type AgentModelSpec struct {
-	// Provider is "platform" (builtin inference pool) or "external"
+	// Provider is "Platform" (builtin inference pool) or "External"
 	// (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
 	Provider string `json:"provider"`
 	// Name is the model name (and the key for selectedModel on instances).
@@ -104,10 +104,10 @@ type ConfirmPolicy string
 const (
 	// ConfirmPolicyNone means no confirmation is required (reads and writes
 	// both pass through).
-	ConfirmPolicyNone ConfirmPolicy = "none"
+	ConfirmPolicyNone ConfirmPolicy = "None"
 	// ConfirmPolicyConfirmWrites requires user confirmation for write
 	// operations (reads pass through). This is the default.
-	ConfirmPolicyConfirmWrites ConfirmPolicy = "confirm-writes"
+	ConfirmPolicyConfirmWrites ConfirmPolicy = "ConfirmWrites"
 )
 
 // AgentSpec defines what an Agent is: model, instructions, tools (capability
@@ -136,8 +136,8 @@ type AgentSpec struct {
 	// +optional
 	AvailableModels []string `json:"availableModels,omitempty"`
 	// ConfirmPolicy is the agent-level confirmation policy for write
-	// operations (default confirm-writes).
-	// +kubebuilder:default=confirm-writes
+	// operations (default ConfirmWrites).
+	// +kubebuilder:default=ConfirmWrites
 	// +optional
 	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
 	// Instructions is the default system prompt (definition-level default;

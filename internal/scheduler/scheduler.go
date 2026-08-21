@@ -57,7 +57,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 	// clear the annotation so a reconcile retry cannot fire it twice (design
 	// §3.5: the API never writes TaskRuns — the scheduler owns execution).
 	if ts, ok := task.Annotations[v1alpha1.TaskManualRunAnnotation]; ok && strings.TrimSpace(ts) != "" {
-		if err := r.fire(ctx, &task, "manual"); err != nil {
+		if err := r.fire(ctx, &task, "Manual"); err != nil {
 			log.Printf("scheduler: task %s manual fire: %v", task.Name, err)
 		}
 		patch := client.MergeFrom(task.DeepCopy())
@@ -84,7 +84,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 
 	// Fire the task (asynchronously — a long agent turn must not block the
 	// reconcile loop; the requeue keeps the loop alive for the next due time).
-	if err := r.fire(ctx, &task, "cron"); err != nil {
+	if err := r.fire(ctx, &task, "Cron"); err != nil {
 		log.Printf("scheduler: task %s fire: %v", task.Name, err)
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
