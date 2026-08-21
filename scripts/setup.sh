@@ -45,12 +45,10 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
   --from-file=config="$REPO_DIR/deploy/agent-kubeconfig.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 2. openclaw-config: host LLM config, adjusted for the agent Pod runtime.
-#    - enable the OpenAI-compatible chat endpoint (agent loop over HTTP)
-#    - workspace = default ~/.openclaw/workspace (= PVC root, seeded by the
-#      seed-workspace initContainer; capabilities flow in dynamically via the
-#      capability ConfigMap, see internal/controller/capability_skills.go)
-#    - exec "full/off" = write-direct (phase one, no HITL)
+# 2. openclaw-config: Pod 内 gateway 配置，**白名单提取**（只取模型凭据 +
+#    agent 运行所需字段，宿主专属字段（workspace/agents.list/mcp/channels/plugins）
+#    在结构上就不可能泄漏；宿主 ~/.openclaw/openclaw.json 仅作开发期凭据源，
+#    生产凭据治理见设计 §3.3 Model.credentialRef（阶段二）。
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 # Default backend model for agent gateways. Empty = inherit the host config's
@@ -59,18 +57,30 @@ trap 'rm -rf "$TMP"' EXIT
 # to force a specific primary (e.g. deepseek-v4-flash).
 DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
 jq --arg dm "$DEFAULT_MODEL" '
-  del(.mcp.servers, .channels, .plugins)
-  | .gateway.http = (.gateway.http // {})
-  | .gateway.http.endpoints = (.gateway.http.endpoints // {})
-  | .gateway.http.endpoints.chatCompletions = (.gateway.http.endpoints.chatCompletions // {})
-  | .gateway.http.endpoints.chatCompletions.enabled = true
-  | .agents.defaults.model = (.agents.defaults.model // {})
+  {
+    models: { providers: .models.providers },
+    agents: {
+      defaults: {
+        workspace: "/home/node/.openclaw/workspace",  # Pod 内 workspace（PVC，seed-workspace 初始化）
+        model: .agents.defaults.model,
+        models: .agents.defaults.models,
+        sandbox: .agents.defaults.sandbox,
+        memorySearch: .agents.defaults.memorySearch
+      }
+    },
+    gateway: {
+      mode: .gateway.mode,                      # local（gateway 启动必需，缺失会被安全机制拦截）
+      port: .gateway.port,                      # 18789（agent svc 目标端口）
+      bind: .gateway.bind,
+      controlUi: .gateway.controlUi,
+      http: { endpoints: { chatCompletions: { enabled: true } } }
+    },
+    tools: {
+      exec: { security: "full", ask: "off" },
+      sessions: { visibility: "all" }
+    }
+  }
   | if ($dm != "") then .agents.defaults.model.primary = $dm else . end
-  | .tools.exec = (.tools.exec // {})
-  | .tools.exec.security = "full"
-  | .tools.exec.ask = "off"
-  | .tools.sessions = (.tools.sessions // {})
-  | .tools.sessions.visibility = "all"
 ' "$HOST_CONFIG" > "$TMP/openclaw.json"
 
 GATEWAY_TOKEN="$(jq -r '.gateway.auth.token // empty' "$HOST_CONFIG")"
