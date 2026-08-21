@@ -24,9 +24,9 @@ spec:
     - jsonPath: .spec.trigger
       name: Trigger
       type: string
-    - jsonPath: .spec.enabled
-      name: Enabled
-      type: boolean
+    - jsonPath: .spec.state
+      name: State
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -64,12 +64,8 @@ spec:
               TaskTemplate); creator decides the execution identity.
             properties:
               cron:
-                description: Cron is the 5-field cron expression (trigger=cron).
+                description: Cron is the 5-field cron expression (trigger=Cron).
                 type: string
-              enabled:
-                default: true
-                description: Enabled gates firing (false = paused).
-                type: boolean
               instruction:
                 description: Instruction is the inline prompt (used when TemplateRef
                   is empty).
@@ -85,13 +81,19 @@ spec:
                   type: string
                 description: Params overrides template parameter defaults.
                 type: object
+              state:
+                default: Enabled
+                description: |-
+                  State is the task enablement state (design §3.5: string enum, not
+                  bool): Enabled fires on schedule, Paused never fires.
+                type: string
               templateRef:
                 description: |-
                   TemplateRef points to the TaskTemplate (optional: inline instruction
                   tasks are also allowed, phase-one compatibility).
                 type: string
               trigger:
-                description: Trigger is manual | cron.
+                description: Trigger is Manual | Cron.
                 type: string
             required:
             - owner

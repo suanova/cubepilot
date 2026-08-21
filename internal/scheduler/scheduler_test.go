@@ -56,7 +56,6 @@ func (f *fakeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt st
 }
 
 func dueTask(created time.Time) *v1alpha1.Task {
-	enabled := true
 	return &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "zhang-wei-daily-inspection",
@@ -67,7 +66,7 @@ func dueTask(created time.Time) *v1alpha1.Task {
 			Owner:       "zhang.wei",
 			Trigger:     v1alpha1.TaskTriggerCron,
 			Cron:        "* * * * *", // every minute → deterministically due
-			Enabled:     &enabled,
+			State:       v1alpha1.TaskStateEnabled,
 		},
 	}
 }
@@ -167,8 +166,7 @@ func TestRenderTemplate(t *testing.T) {
 // TestNextDue verifies the due computation: a paused/disabled task never due.
 func TestNextDueDisabled(t *testing.T) {
 	task := dueTask(time.Now().Add(-26 * time.Hour))
-	enabled := false
-	task.Spec.Enabled = &enabled
+	task.Spec.State = v1alpha1.TaskStatePaused
 	r := &ReconcileScheduler{}
 	if !task.Enabled() {
 		// Enabled() false → scheduler returns early; nextDue not consulted.

@@ -29,7 +29,8 @@ type taskDTO struct {
 	Name       string     `json:"name"`
 	Prompt     string     `json:"prompt"`
 	Schedule   string     `json:"schedule"`
-	Enabled    bool       `json:"enabled"`
+	State      string     `json:"state"`    // Enabled | Paused
+	Enabled    bool       `json:"enabled"`   // derived from State (wire compat)
 	Creator    string     `json:"creator"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
@@ -60,6 +61,7 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 		Prompt:     t.Spec.Instruction,
 		Schedule:   t.Spec.Cron,
 		Enabled:    t.Enabled(),
+		State:      string(t.Spec.State),
 		Creator:    t.Spec.Owner,
 		CreatedAt:  t.CreationTimestamp.Time,
 		LastRunAt:  taskTimePtr(t.Status.LastRunTime),
@@ -150,7 +152,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			Name     string `json:"name"`
 			Prompt   string `json:"prompt"`
 			Schedule string `json:"schedule"`
-			Enabled  *bool  `json:"enabled"`
+			State    string `json:"state"`
+			Enabled  *bool  `json:"enabled"` // deprecated wire compat
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
@@ -175,6 +178,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if body.Enabled != nil {
 			enabled = *body.Enabled
 		}
+		state := v1alpha1.TaskStateEnabled
+		if body.State != "" {
+			state = v1alpha1.TaskState(body.State)
+		} else if !enabled {
+			state = v1alpha1.TaskStatePaused
+		}
 		task := &v1alpha1.Task{
 			ObjectMeta: metav1.ObjectMeta{
 				// CR name must be DNS-1123; the human name lives in the
@@ -189,7 +198,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				Owner:       s.userOf(r),
 				Trigger:     trigger,
 				Cron:        body.Schedule,
-				Enabled:     &enabled,
+				State:       state,
 			},
 		}
 		if err := s.cr.Create(r.Context(), task); err != nil {
@@ -287,8 +296,11 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		patch := client.MergeFrom(task.DeepCopy())
-		enabled := !task.Enabled()
-		task.Spec.Enabled = &enabled
+		if task.Spec.State == v1alpha1.TaskStatePaused {
+			task.Spec.State = v1alpha1.TaskStateEnabled
+		} else {
+			task.Spec.State = v1alpha1.TaskStatePaused
+		}
 		if err := s.cr.Patch(r.Context(), &task, patch); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

@@ -130,7 +130,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	case err == nil:
 		switch {
 		case podReady(current):
-			status = v1alpha1.InstanceWarm
+			status = v1alpha1.InstanceReady
 			message = "instance ready"
 		case isFailed(current):
 			status = v1alpha1.InstanceFailed

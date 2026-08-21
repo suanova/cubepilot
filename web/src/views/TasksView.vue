@@ -154,7 +154,7 @@ async function createTask() {
   }
   const schedule = trigger.value === 'Cron' ? form.value.cron.trim() : ''
   try {
-    const task = await api.createTask({ name, prompt, schedule, enabled: true })
+    const task = await api.createTask({ name, prompt, schedule })
     dialogOpen.value = false
     form.value.name = ''
     toast.show(`任务「${name}」已创建 · 将以你的身份直接执行`)

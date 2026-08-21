@@ -26,7 +26,7 @@ export const api = {
 
   // Tasks (FR-M4)
   listTasks: () => apiFetch<{ tasks: Task[] }>('/api/tasks').then((d) => d.tasks),
-  createTask: (body: { name: string; prompt: string; schedule: string; enabled: boolean }) =>
+  createTask: (body: { name: string; prompt: string; schedule: string; state?: 'Enabled' | 'Paused' }) =>
     apiFetch<{ task: Task }>('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

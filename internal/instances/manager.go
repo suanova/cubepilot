@@ -140,7 +140,7 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 				continue
 			}
 			switch inst.Status.Phase {
-			case v1alpha1.InstanceWarm:
+			case v1alpha1.InstanceReady:
 				return nil
 			case v1alpha1.InstanceFailed:
 				// Let the controller heal; keep waiting (transient).
