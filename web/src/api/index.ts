@@ -58,7 +58,7 @@ export const api = {
   listAgents: () => apiFetch<{ agents: PlatformObject[] }>('/api/agents').then((d) => d.agents),
   listInstances: () =>
     apiFetch<{ instances: PlatformObject[] }>('/api/instances').then((d) => d.instances),
-  createInstance: (body: { agentRef?: string; selectedModel?: string }) =>
+  createInstance: (body: { agentRef?: string; selectedModel?: string; enabledCapabilities?: string[]; userInstructions?: string }) =>
     apiFetch<{ instance: PlatformObject }>('/api/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
