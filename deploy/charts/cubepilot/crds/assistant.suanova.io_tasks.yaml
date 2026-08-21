@@ -86,6 +86,9 @@ spec:
                 description: |-
                   State is the task enablement state (design §3.5: string enum, not
                   bool): Enabled fires on schedule, Paused never fires.
+                enum:
+                - Enabled
+                - Paused
                 type: string
               templateRef:
                 description: |-
@@ -94,6 +97,9 @@ spec:
                 type: string
               trigger:
                 description: Trigger is Manual | Cron.
+                enum:
+                - Manual
+                - Cron
                 type: string
             required:
             - owner

@@ -130,6 +130,9 @@ spec:
               type:
                 description: Type is atomic (CRD thin override) or domain (domain
                   knowledge).
+                enum:
+                - Atomic
+                - Domain
                 type: string
               uses:
                 description: Uses orchestrates generic/atomic/MCP capabilities (domain

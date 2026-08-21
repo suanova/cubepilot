@@ -15,6 +15,7 @@ const (
 )
 
 // TaskState is the task enablement state (design §3.5: string enum, not bool).
+// +kubebuilder:validation:Enum=Enabled;Paused
 type TaskState string
 
 const (

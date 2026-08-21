@@ -431,6 +431,14 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
   CRD default=Enabled；API 保留 `enabled` 兼容字段，web 以派生 `enabled` 展示。
 - **实例能力子集**：`AgentInstance.spec.enabledCapabilities` 限定 Domain 能力子集
   （§3.2），resolver 过滤注入；空 = 全部声明能力。
+- **用户指令接线**：`AgentInstance.spec.userInstructions` 追加到模板指令之后
+  （§3.2 组合顺序），resolver 合并进 `ResolvedAgentConfig.Instructions`。
+- **实例状态阶段**：`status.phase = Ready`（§3.2，与文档一致；旧 `Warm` 已废弃）。
+- **字段命名对齐**：Agent `spec.capabilities`（§3.1）、`spec.runtime: OpenClaw`
+  （§3.1）、Model `provider: Platform | External`（§3.3）。
+- **枚举值 CRD 校验**：六个枚举（runtime / provider / type / confirmPolicy /
+  trigger / task state）均带 `kubebuilder:validation:Enum`，非法值被 API server
+  拒绝（fail-fast，实测验证）。
 - **统一事件契约**：message_start / delta / tool_call / tool_result / message_done /
   confirm_* 全套实现（§4）。
 - **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions /
