@@ -84,7 +84,7 @@ func BuiltinAgent() *v1alpha1.Agent {
 			Instructions: "你是 CubeStack 平台的智能助手（agent-for-cloud）。" +
 				"通过 kubectl 查询与操作集群资源；只读操作直接执行，" +
 				"写操作先说明动作与影响范围再执行。巡检与报告使用结构化输出。",
-			Tools:  BuiltinCapabilities,
+			Capabilities: BuiltinCapabilities,
 			Memory: &v1alpha1.MemorySpec{Enabled: true},
 			Identity: &v1alpha1.AgentIdentitySpec{
 				Mode:  v1alpha1.IdentityModeUser,

@@ -15,7 +15,7 @@ func TestToolSetForAgent(t *testing.T) {
 	agent := &v1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
 		Spec: v1alpha1.AgentSpec{
-			Tools: []string{"cluster-inspection", "dev-environment"},
+			Capabilities: []string{"cluster-inspection", "dev-environment"},
 		},
 	}
 	caps := []v1alpha1.Capability{

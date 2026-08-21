@@ -65,6 +65,15 @@ spec:
                 items:
                   type: string
                 type: array
+              capabilities:
+                description: |-
+                  Capabilities references Capabilities (atomic thin-overrides + domain
+                  skills) — design §3.1 `spec.capabilities`. Generic tools
+                  (resource-manager / list-kinds / describe-kind) are platform-provided
+                  and always available — they are NOT listed here.
+                items:
+                  type: string
+                type: array
               confirmPolicy:
                 default: ConfirmWrites
                 description: |-
@@ -178,18 +187,10 @@ spec:
                     type: string
                 type: object
               runtime:
-                default: openclaw
-                description: Runtime selects the runtime implementation (openclaw
+                default: OpenClaw
+                description: Runtime selects the runtime implementation (OpenClaw
                   default).
                 type: string
-              tools:
-                description: |-
-                  Tools references Capabilities (atomic thin-overrides + domain skills).
-                  Generic tools (resource-manager / list-kinds / describe-kind) are
-                  platform-provided and always available — they are NOT listed here.
-                items:
-                  type: string
-                type: array
             type: object
           status:
             description: 'AgentStatus is the observed state of an Agent definition
