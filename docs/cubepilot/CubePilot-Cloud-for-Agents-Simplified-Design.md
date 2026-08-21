@@ -434,19 +434,19 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 - **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、
   readOnlyRootFilesystem、emptyDir /tmp（§6 / 附录B「实例最小权限」条目）。
 - **观测**：healthz / readyz / metrics / readiness 全绿（§8.1）。
+- **Skill 热重载**：OpenClaw（2026.7.1-2）对 `workspace/skills` 目录做文件监听（chokidar + 100ms 轮询兜底），Capability 变更经 resolver → supervisor 重写 SKILL.md 后自动热加载，无需重启 Pod（此前「skill 变更必须重启 Pod」的旧结论已随版本更新修正）。
 
 ### 已知取舍（现实现与设计文字的有意偏差，已选其一，不再当作缺口）
 
-1. **ToolExecutor 组件（§5）不存在独立进程/服务**：现以「agent pod 内 OpenClaw 执行 +
-   API 从 SSE 流捕获审计」替代。generic 工具仅是名称常量，真正的校验/审计/执行边界在
-   平台 Agent 运行时内。阶段一可接受；阶段二引入集中 Tool 网关（Policy / HITL）时再落地独立组件。
+1. **MCP Gateway（§5，ToolExecutor 接口的正式实现）阶段一未建**：kubectl 由 OpenClaw 直接 exec（挂用户 kubeconfig，RBAC 免底，无执行前校验/HITL）；审计由 API 从 SSE 流捕获 tool_call 事后记录，只能记录、不能阻断。这是明确接受的临时缺口；MCP Gateway 作为阶段二目标，落地时切换到受控执行，中间不建过渡组件。
 2. **存储不采用 PostgreSQL / Redis（§2 mermaid）**：实现为 CRD/对象存储 + 每实例
    RWO PVC，与 §3.6 文字「CRD/控制面数据库」一致。§2 图为历史参考，以 §3.6 为准。
 3. **TaskRun 不冗余记录 Agent 实例名（§7「至少记录」）**：实现按 §3.5 从 owner 推导
    （阶段一单实例每用户，推导无歧义）。多实例每用户时改为显式记录。
 4. **身份用 `X-CubePilot-User` 请求头模拟（附录 B 标「一」）**：OIDC 属外部依赖，
    阶段二引入 Keycloak 后替换；模拟身份可审计、单一来源。
-5. **egress 白名单未实施**：与模型凭据/外部端点管控绑定（表B「模型凭据」行），阶段二随
+5. **§5.3 双 kubeconfig 未实施**：现阶段 Pod 只挂一个用户 kubeconfig（操作与读 schema 同源，`kubectl explain/get crd` 以用户权限完成）；「用户无 CRD 读权限时挂只读 CRD kubeconfig」的场景登记阶段二，随 MCP Gateway / 凭据治理落地。
+6. **egress 白名单未实施**：与模型凭据/外部端点管控绑定（表B「模型凭据」行），阶段二随
    模型凭据统一治理落地。
 
 ### 阶段二演进清单（已知偏差的后续归属）
