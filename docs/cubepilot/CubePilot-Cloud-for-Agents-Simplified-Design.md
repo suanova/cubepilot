@@ -85,13 +85,13 @@ flowchart TB
 
 # 3. 核心对象与数据归属
 
-## 3.1 AgentTemplate
+## 3.1 Agent（模板）
 
-当前只有一个平台内置模板 `agent-for-cloud`。它不是完整 Agent Registry，也不是可由用户创建的市场对象。
+当前只有一个平台内置模板 `agent-for-cloud`。它不是完整 Agent Registry，也不是可由用户创建的市场对象。实现中该模板以 `Agent` CRD 承载（阶段二 Registry 化后再拆出独立 `AgentTemplate` 对象）。
 
 ```yaml
 apiVersion: assistant.suanova.io/v1alpha1
-kind: AgentTemplate
+kind: Agent
 metadata:
   name: agent-for-cloud
 spec:
@@ -119,12 +119,12 @@ metadata:
   name: zhang-wei-agent-for-cloud
 spec:
   owner: zhang.wei
-  templateRef: agent-for-cloud              # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
-  selectedModel: deepseek-v4-flash         # 从 Model 目录（§3.3）中选择；切换后经 updateConfig 热生效
+  agentRef: agent-for-cloud              # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
+  selectedModel: deepseek-v4-flash         # 从 Model 目录（§3.3）中选择；切换后经 resolver/supervisor 热生效
   enabledCapabilities: [dev-environment, inference-service, cluster-inspection]
   userInstructions: "回答尽量简洁，使用中文。"
   dataVolume: { pvc: pvc-zhang-wei-agent-for-cloud }
-  identity: { userRef: zhang.wei }
+  identity: { mode: user, principalRef: { userRef: zhang.wei } }
 status:
   phase: Ready
   podName: agent-zhang-wei-agent-for-cloud
@@ -147,7 +147,7 @@ spec:
   displayName: DeepSeek Chat
   provider: Platform                  # Platform（平台托管推理）| External（OpenAI 兼容端点）
   endpoint: https://inference.example.com/v1  # 统一可填；Platform 留空 = 内置运行时模型
-  credentialRef: { name: cred-llm-org, namespace: cubepilot }  # 引用平台托管 Secret（apiKey）；External 必填，Platform 可选
+  credentialRef: cubepilot/cred-llm-org  # 引用平台托管 Secret（apiKey，namespace/name 或 name）；External 必填，Platform 可选
 status:
   phase: Available                    # Available / Unreachable（controller 注册时探测）
 ```
@@ -247,7 +247,8 @@ spec:
   owner: zhang.wei
   templateRef: daily-inspection           # 引用模板名（不钉版，下次执行用当前版本）
   params: { scope: all }                  # 只覆盖 paramsSchema 允许的参数
-  cron: "0 2 * * *"                       # 或 Manual（手动触发）
+  trigger: Cron                           # Cron | Manual（手动触发）
+  cron: "0 2 * * *"
   state: Enabled                          # Enabled | Paused（字符串枚举，不用 bool）
 ```
 
@@ -276,7 +277,7 @@ status:
 
 | 数据 | 真源 | 说明 |
 |---|---|---|
-| AgentTemplate、AgentInstance、Model、Capability、TaskTemplate、Task、TaskRun | CRD / 控制面数据库 | 声明配置、版本、生命周期、报告 |
+| Agent（模板）、AgentInstance、Model、Capability、TaskTemplate、Task、TaskRun | CRD / 控制面数据库 | 声明配置、版本、生命周期、报告 |
 | 会话、消息、记忆、Runtime 缓存 | 实例 PVC | Agent 私有数据，不复制到平台业务表 |
 | 工具调用索引、确认决定 | 平台数据库 | 平台自产治理数据；为 Trajectory 的最小投影，不保存完整私有会话副本 |
 | 运行指标 | 监控模块 / 日志 | 平台只产生并暴露，存储/查询/告警交监控 |
@@ -309,7 +310,7 @@ interface AgentRuntime {
 **配置注入**：OpenClaw 的 skill 与系统提示词以**文件**形式存于 workspace 目录（`SKILL.md` / `SOUL.md`），启动时扫描加载，并对该目录**文件监听、自动热重载**（无需重启）。因此「注入」= 把 `ResolvedAgentConfig` 渲染成文件、写入 PVC 上的 workspace 目录。
 
 - **主方案（当前实现）**：**控制面 resolve + Pod 内 supervisor 拉取**。operator 的 resolver 把 AgentInstance + Agent 定义 + Model 目录 + Capability 合并为不可变 `ResolvedAgentConfig`（内容哈希 revision），API 经 `GET /internal/agents/{user}/config` 暴露；Pod 内的 supervisor（常驻主容器，非 initContainer）启动时拉取、渲染为「每个 Domain Capability 一个 `SKILL.md` + 系统提示词文件」写入 PVC workspace 目录，随后托管 OpenClaw gateway 子进程；revision 变化时优雅重启子进程（会话/记忆在 PVC，不丢失），skill 变更经 OpenClaw 文件监听热重载。operator 只负责 Pod 生命周期，不参与 resolve。
-- **备选方案**：改为 Pod 内 injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Capability/Model，自行合并 `ResolvedAgentConfig` 并写文件；代价是每 Pod 一个 watcher 且 sidecar 需持有 CRD 读权限。
+- **备选方案**：改为 Pod 内 injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 Agent/Capability/Model，自行合并 `ResolvedAgentConfig` 并写文件；代价是每 Pod 一个 watcher 且 sidecar 需持有 CRD 读权限。
 
 ---
 
