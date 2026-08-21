@@ -15,10 +15,10 @@ const (
 	// runtime model (no endpoint — the runtime resolves it internally) or a
 	// manually deployed inference service the admin registered here (endpoint
 	// set; probed like external).
-	ModelProviderPlatform ModelProvider = "platform"
+	ModelProviderPlatform ModelProvider = "Platform"
 	// ModelProviderExternal is an OpenAI-compatible endpoint: endpoint +
 	// credentialRef required (platform-managed Secret, never plaintext).
-	ModelProviderExternal ModelProvider = "external"
+	ModelProviderExternal ModelProvider = "External"
 )
 
 // ModelPhase is the observed availability of a model catalog entry
@@ -41,8 +41,8 @@ type ModelSpec struct {
 	// DisplayName is the human-facing model name.
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
-	// Provider is "platform" (platform-managed inference: builtin runtime
-	// model or manually deployed endpoint) or "external" (OpenAI-compatible
+	// Provider is "Platform" (platform-managed inference: builtin runtime
+	// model or manually deployed endpoint) or "External" (OpenAI-compatible
 	// endpoint; endpoint + credentialRef required).
 	Provider ModelProvider `json:"provider"`
 	// Endpoint is the OpenAI-compatible base URL. Required for external;

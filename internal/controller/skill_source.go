@@ -115,7 +115,7 @@ func BuiltinCapabilityDefinitions() ([]*v1alpha1.Capability, error) {
 				Type:         v1alpha1.CapabilityDomain,
 				Title:        skillTitle(body),
 				Description:  meta.Description,
-				OwnerModule:  "platform",
+				OwnerModule:  "Platform",
 				Instructions: body,
 			},
 		})

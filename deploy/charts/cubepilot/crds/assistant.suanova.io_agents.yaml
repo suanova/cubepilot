@@ -66,10 +66,10 @@ spec:
                   type: string
                 type: array
               confirmPolicy:
-                default: confirm-writes
+                default: ConfirmWrites
                 description: |-
                   ConfirmPolicy is the agent-level confirmation policy for write
-                  operations (default confirm-writes).
+                  operations (default ConfirmWrites).
                 type: string
               defaultModel:
                 description: |-
@@ -139,7 +139,7 @@ spec:
                       type: string
                     provider:
                       description: |-
-                        Provider is "platform" (builtin inference pool) or "external"
+                        Provider is "Platform" (builtin inference pool) or "External"
                         (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
                       type: string
                   required:

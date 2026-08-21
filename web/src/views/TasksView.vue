@@ -16,7 +16,7 @@ const reports = ref<Report[]>([])
 const running = ref(false)
 const tab = ref<'list' | 'templates'>('list')
 const dialogOpen = ref(false)
-const trigger = ref<'cron' | 'manual'>('cron')
+const trigger = ref<'Cron' | 'Manual'>('Cron')
 
 // create dialog form
 const form = ref({ name: '', prompt: '', cron: '0 2 * * *', template: 'inspect' })
@@ -152,7 +152,7 @@ async function createTask() {
     toast.show('请填写任务提示词')
     return
   }
-  const schedule = trigger.value === 'cron' ? form.value.cron.trim() : ''
+  const schedule = trigger.value === 'Cron' ? form.value.cron.trim() : ''
   try {
     const task = await api.createTask({ name, prompt, schedule, enabled: true })
     dialogOpen.value = false
@@ -253,11 +253,11 @@ onMounted(loadTasks)
       <div v-if="selectedTaskId" class="view-head" style="margin-bottom: 12px">
         <div>
           <div class="view-title" style="font-size: 15px">任务报告</div>
-          <div class="view-desc">{{ selectedReport ? selectedReport.taskName + ' · ' + (selectedReport.trigger === 'cron' ? '定时执行' : '手动执行') + ' · 报告为 Agent 真实输出' : '选择任务后展示其执行记录' }}</div>
+          <div class="view-desc">{{ selectedReport ? selectedReport.taskName + ' · ' + (selectedReport.trigger === 'Cron' ? '定时执行' : '手动执行') + ' · 报告为 Agent 真实输出' : '选择任务后展示其执行记录' }}</div>
         </div>
         <div style="display: flex; gap: 8px; align-items: center">
           <select v-model.number="reportIndex" class="input" style="width: auto" aria-label="选择报告运行" @change="selectedReport = reports[reportIndex] ?? null">
-            <option v-for="(r, i) in reports" :key="r.id" :value="i">{{ fmtTime(r.startedAt) }} · {{ r.trigger === 'cron' ? '定时' : (r.trigger === 'manual' ? '手动' : '巡检') }}{{ r.status === 'failed' ? ' · 失败' : '' }}</option>
+            <option v-for="(r, i) in reports" :key="r.id" :value="i">{{ fmtTime(r.startedAt) }} · {{ r.trigger === 'Cron' ? '定时' : (r.trigger === 'Manual' ? '手动' : '巡检') }}{{ r.status === 'failed' ? ' · 失败' : '' }}</option>
           </select>
           <button class="btn" @click="exportReport">
             <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>导出报告
@@ -289,7 +289,7 @@ onMounted(loadTasks)
           <div class="stat">
             <div class="stat-top"><span class="stat-label">运行状态</span></div>
             <div class="stat-value" style="font-size: 18px" :style="{ color: selectedReport.status === 'failed' ? 'var(--danger)' : 'var(--success)' }">{{ selectedReport.status === 'failed' ? '失败' : '成功' }}</div>
-            <div class="stat-sub">触发方式：{{ selectedReport.trigger === 'cron' ? '定时' : '手动' }}</div>
+            <div class="stat-sub">触发方式：{{ selectedReport.trigger === 'Cron' ? '定时' : '手动' }}</div>
           </div>
         </div>
 
@@ -368,11 +368,11 @@ onMounted(loadTasks)
           <div>
             <label class="label">触发方式</label>
             <div class="radio-row" role="radiogroup" aria-label="触发方式">
-              <button type="button" class="radio" :class="{ active: trigger === 'cron' }" role="radio" :aria-checked="trigger === 'cron'" @click="trigger = 'cron'">定时</button>
-              <button type="button" class="radio" :class="{ active: trigger === 'manual' }" role="radio" :aria-checked="trigger === 'manual'" @click="trigger = 'manual'">手动</button>
+              <button type="button" class="radio" :class="{ active: trigger === 'Cron' }" role="radio" :aria-checked="trigger === 'Cron'" @click="trigger = 'Cron'">定时</button>
+              <button type="button" class="radio" :class="{ active: trigger === 'Manual' }" role="radio" :aria-checked="trigger === 'Manual'" @click="trigger = 'Manual'">手动</button>
             </div>
           </div>
-          <div v-if="trigger === 'cron'" class="field" style="margin-bottom: 0">
+          <div v-if="trigger === 'Cron'" class="field" style="margin-bottom: 0">
             <label class="label">调度时间（Cron）· 留空 = 仅手动</label>
             <input v-model="form.cron" class="input mono" aria-label="调度时间" />
           </div>
