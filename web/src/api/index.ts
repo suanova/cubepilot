@@ -42,7 +42,7 @@ export const api = {
 
   // Audit (M5)
   listAudit: (limit = 400) =>
-    apiFetch<{ entries: AuditEntry[] }>(`/api/audit?limit=${limit}`).then((d) => d.entries),
+    apiFetch<{ entries: AuditEntry[] | null }>(`/api/audit?limit=${limit}`).then((d) => d.entries ?? []),
 
   // Agent config (FR-M2-005)
   agentConfig: () => apiFetch<{ config: AgentConfig }>('/api/agent/config').then((d) => d.config),
