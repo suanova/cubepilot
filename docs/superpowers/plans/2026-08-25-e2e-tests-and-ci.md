@@ -205,13 +205,13 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64"
-          chmod +x /usr/local/bin/kind
+          sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64"
+          sudo chmod +x /usr/local/bin/kind
 
       - name: Install kubectl
         run: |
           curl -fsSLO "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
-          install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
       - name: Install helm
         run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
