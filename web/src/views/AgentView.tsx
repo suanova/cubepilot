@@ -1,5 +1,5 @@
 // Agent config view -- model / system prompt / instance status / skills (FR-M2-005).
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/api'
 import type { AgentConfig, AgentStatus } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
@@ -12,19 +12,15 @@ const SKILL_LABELS: Record<string, string> = {
   inspection: 'Smart Inspection',
 }
 
-interface ModelRow {
+interface TemplateModel {
   name: string
-  displayName: string
-  phase: string
   provider: string
   endpoint: string
+  modelId: string
 }
 
 function CheckIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-}
-function CloseIcon() {
-  return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
 }
 function WarnIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>
@@ -38,38 +34,24 @@ export default function AgentView() {
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [skills, setSkills] = useState<Array<{ name: string; enabled: boolean }>>([])
   const [provisioning, setProvisioning] = useState(false)
-  const [models, setModels] = useState<ModelRow[]>([])
+  const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
+  const [defaultModel, setDefaultModel] = useState('')
 
-  // Add-model dialog state
-  const [modelDialogOpen, setModelDialogOpen] = useState(false)
-  const [modelForm, setModelForm] = useState({
-    displayName: '',
-    provider: 'External',
-    endpoint: '',
-    credentialRef: '',
-    modelId: '',
-  })
-  const [modelSaving, setModelSaving] = useState(false)
-
-  const availableModels = useMemo(() => models.filter((m) => m.phase !== 'Unreachable'), [models])
-
-  async function loadModels() {
+  async function loadTemplate() {
     try {
-      const list = await api.listModels()
-      const mapped = list.map((m) => ({
-        name: m.metadata?.name ?? '',
-        displayName: String(m.spec?.displayName ?? m.metadata?.name ?? ''),
-        phase: String(m.status?.phase ?? ''),
-        provider: String(m.spec?.provider ?? ''),
-        endpoint: String(m.spec?.endpoint ?? ''),
+      const list = await api.listAgentTemplates()
+      const tmpl = list[0]
+      if (!tmpl) return
+      const models: TemplateModel[] = ((tmpl.spec?.models || []) as Array<Record<string, string>>).map((m) => ({
+        name: String(m.name ?? ''),
+        provider: String(m.provider ?? ''),
+        endpoint: String(m.endpoint ?? ''),
+        modelId: String(m.modelId ?? ''),
       }))
-      // Keep a stale selection visible (it may belong to an Unreachable model).
-      if (cfg.model && !mapped.some((m) => m.name === cfg.model)) {
-        mapped.push({ name: cfg.model, displayName: cfg.model, phase: 'Unreachable', provider: '', endpoint: '' })
-      }
-      setModels(mapped)
+      setTemplateModels(models)
+      setDefaultModel(String(tmpl.spec?.defaultModel ?? ''))
     } catch (e) {
-      console.error('loadModels', e)
+      console.error('loadTemplate', e)
     }
   }
 
@@ -79,7 +61,7 @@ export default function AgentView() {
       setCfg(c)
       setStatus(st)
       setSkills(c.skills || [])
-      await loadModels()
+      await loadTemplate()
     } catch (e) {
       console.error('loadAgentView', e)
     }
@@ -90,34 +72,11 @@ export default function AgentView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function openModelDialog() {
-    setModelForm({ displayName: '', provider: 'External', endpoint: '', credentialRef: '', modelId: '' })
-    setModelDialogOpen(true)
-  }
-
-  async function createModel() {
-    if (!modelForm.displayName.trim()) {
-      showToast('Model name is required')
-      return
-    }
-    setModelSaving(true)
-    try {
-      await api.createModel(modelForm)
-      showToast('Model added - it becomes usable after the controller probes it')
-      setModelDialogOpen(false)
-      await loadModels()
-    } catch (e) {
-      showToast('Add failed: ' + e)
-    } finally {
-      setModelSaving(false)
-    }
-  }
-
   async function provisionInstance() {
     if (provisioning) return
     setProvisioning(true)
     try {
-      const inst = await api.createInstance({ agentRef: 'agent-for-cloud', selectedModel: cfg.model || undefined })
+      const inst = await api.createInstance({ templateRef: 'agent-for-cloud', selectedModel: cfg.model || undefined })
       showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
       await loadAgentView()
     } catch (e) {
@@ -158,7 +117,7 @@ export default function AgentView() {
           <div className="card">
             <div className="card-head">
               <span className="card-title">Model & Runtime</span>
-              <span className="card-hint">OpenAI-compatible endpoint - saved as preference, applied on instance rebuild</span>
+              <span className="card-hint">Models are inlined in the AgentTemplate - select from the template's models list</span>
             </div>
             <div className="card-pad">
               <div className="field">
@@ -169,16 +128,18 @@ export default function AgentView() {
                   value={cfg.model || ''}
                   onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value }))}
                 >
-                  {availableModels.map((m) => (
+                  <option value="">-- Runtime Default --</option>
+                  {templateModels.map((m) => (
                     <option key={m.name} value={m.name}>
-                      {m.displayName || m.name}
-                      {m.phase === 'Unreachable' ? ' (unavailable)' : ''}
+                      {m.name}{m.provider === 'External' ? ' (External)' : ' (Platform)'}
                     </option>
                   ))}
                 </select>
-                <button className="btn" style={{ marginTop: 8, width: '100%' }} onClick={openModelDialog}>
-                  + Add Model
-                </button>
+                {defaultModel && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                    Template default: {defaultModel}
+                  </div>
+                )}
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="label">Agent Runtime</label>
@@ -328,111 +289,6 @@ export default function AgentView() {
           )}
         </div>
       </div>
-
-      {modelDialogOpen && (
-        <div
-          className="modal-overlay open"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setModelDialogOpen(false)
-          }}
-        >
-          <div className="modal">
-            <div className="modal-head">
-              <span className="modal-title">Add Model</span>
-              <button className="modal-close" aria-label="Close" onClick={() => setModelDialogOpen(false)}>
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="modal-body">
-              <div>
-                <label className="label">Model Name (Display Name)</label>
-                <input
-                  className="input"
-                  placeholder="e.g. DeepSeek V3 internal deployment"
-                  aria-label="Model name"
-                  value={modelForm.displayName}
-                  onChange={(e) => setModelForm((f) => ({ ...f, displayName: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="label">Provisioning</label>
-                <div className="radio-row" role="radiogroup" aria-label="Provisioning">
-                  <button
-                    type="button"
-                    className={`radio ${modelForm.provider === 'Platform' ? 'active' : ''}`}
-                    role="radio"
-                    aria-checked={modelForm.provider === 'Platform'}
-                    onClick={() => setModelForm((f) => ({ ...f, provider: 'Platform' }))}
-                  >
-                    Platform Deployed (built-in/manual)
-                  </button>
-                  <button
-                    type="button"
-                    className={`radio ${modelForm.provider === 'External' ? 'active' : ''}`}
-                    role="radio"
-                    aria-checked={modelForm.provider === 'External'}
-                    onClick={() => setModelForm((f) => ({ ...f, provider: 'External' }))}
-                  >
-                    External Compatible Endpoint
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label className="label">
-                  Endpoint (OpenAI-compatible Base URL)
-                  {modelForm.provider === 'External' && <span style={{ color: 'var(--danger)' }}> - required</span>}
-                </label>
-                <input
-                  className="input mono"
-                  placeholder="https://inference.example.com/v1"
-                  aria-label="Endpoint"
-                  value={modelForm.endpoint}
-                  onChange={(e) => setModelForm((f) => ({ ...f, endpoint: e.target.value }))}
-                />
-              </div>
-              {modelForm.provider === 'External' && (
-                <div>
-                  <label className="label">Credential Secret (credentialRef - platform managed)</label>
-                  <input
-                    className="input mono"
-                    placeholder="model-credential"
-                    aria-label="Credential reference"
-                    value={modelForm.credentialRef}
-                    onChange={(e) => setModelForm((f) => ({ ...f, credentialRef: e.target.value }))}
-                  />
-                </div>
-              )}
-              <div>
-                <label className="label">Backend Model ID (optional - empty = runtime default)</label>
-                <input
-                  className="input mono"
-                  placeholder="deepseek/deepseek-v4-flash"
-                  aria-label="Backend model ID"
-                  value={modelForm.modelId}
-                  onChange={(e) => setModelForm((f) => ({ ...f, modelId: e.target.value }))}
-                />
-              </div>
-              <div className="notice">
-                <WarnIcon />
-                <span>
-                  After adding, the controller probes endpoint connectivity; the model becomes selectable only once Available. For external models, first create a credential Secret in the cluster (key:{' '}
-                  <span className="mono">apiKey</span>).
-                </span>
-              </div>
-            </div>
-            <div className="modal-foot">
-              <button className="btn" onClick={() => setModelDialogOpen(false)}>
-                Cancel
-              </button>
-              <button className="btn primary" disabled={modelSaving} onClick={createModel}>
-                {modelSaving ? 'Submitting...' : 'Add Model'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -10,9 +10,9 @@ import (
 type AgentRuntime string
 
 const (
-	// DefaultAgentName is the builtin platform agent (design §5.1:
-	// agent-for-cloud is the first platform-preset Agent, auto-instantiated per
-	// user, and non-deletable).
+	// DefaultAgentName is the builtin platform agent template (design §3.1:
+	// agent-for-cloud is the first platform-preset AgentTemplate,
+	// auto-instantiated per user, and non-deletable).
 	DefaultAgentName = "agent-for-cloud"
 
 	// RuntimeOpenClaw is the default runtime (OpenClaw gateway).
@@ -33,28 +33,48 @@ const (
 	IdentityModeService IdentityMode = "service"
 )
 
-// AgentModelSpec is one entry of the ordered model array of an Agent
-// definition (design §3.1 FR-M2-003: model-agnostic, supports custom LLMs;
-// fallback depends on runtime capability).
-//
-// Deprecated transition shape: the simplified design (§3.3) replaces the
-// inline array with the platform Model catalog -- AgentTemplate references
-// models by name (defaultModel / availableModels) and AgentInstance picks
-// via selectedModel. The array is kept for phase-one compatibility and
-// removed when the Model catalog is wired end to end.
-type AgentModelSpec struct {
-	// Provider is "Platform" (builtin inference pool) or "External"
-	// (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
-	Provider string `json:"provider"`
+// ModelProvider is how a model endpoint is provided
+// (design §3.3: platform = platform-managed inference pool; external =
+// OpenAI-compatible endpoint with platform-managed credential). Models are
+// inlined in the template -- there is no standalone Model CRD.
+// +kubebuilder:validation:Enum=Platform;External
+type ModelProvider string
+
+const (
+	// ModelProviderPlatform is the platform-managed inference pool: a builtin
+	// runtime model (no endpoint -- the runtime resolves it internally) or a
+	// manually deployed inference service the admin registered inline here
+	// (endpoint set).
+	ModelProviderPlatform ModelProvider = "Platform"
+	// ModelProviderExternal is an OpenAI-compatible endpoint: endpoint +
+	// credentialRef required (platform-managed Secret, never plaintext).
+	ModelProviderExternal ModelProvider = "External"
+)
+
+// TemplateModelSpec is one entry of the inline model list of an
+// AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD;
+// each entry carries name + provider + endpoint + credentialRef).
+type TemplateModelSpec struct {
 	// Name is the model name (and the key for selectedModel on instances).
 	Name string `json:"name"`
+	// Provider is "Platform" (platform-managed inference) or "External"
+	// (OpenAI-compatible endpoint; endpoint + credentialRef required).
+	Provider ModelProvider `json:"provider"`
 	// Endpoint is the OpenAI-compatible base URL; required for external.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
-	// APIKeyRef is a platform-managed Secret reference (shared default
-	// credential). References only -- never the key itself (design §4.4).
+	// CredentialRef is a platform-managed Secret reference (namespace/name or
+	// name) holding the apiKey; required for external. References only --
+	// never the key itself (design §4.4).
 	// +optional
-	APIKeyRef string `json:"apiKeyRef,omitempty"`
+	CredentialRef string `json:"credentialRef,omitempty"`
+	// ModelID is the backend model identifier passed to the LLM endpoint:
+	// for external it is the model name sent to the OpenAI-compatible
+	// endpoint; for platform it is the runtime-known model id (e.g.
+	// "deepseek/deepseek-v4-flash"). Empty for platform means "use the
+	// runtime's default model" (no override).
+	// +optional
+	ModelID string `json:"modelId,omitempty"`
 }
 
 // AgentIdentitySpec declares the identity mode and scope an agent runs with
@@ -72,14 +92,14 @@ type AgentIdentitySpec struct {
 
 // MemorySpec declares the agent's memory capability (design §3.1).
 type MemorySpec struct {
-	// Enabled toggles persistent memory for instances of this agent.
+	// Enabled toggles persistent memory for instances of this template.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 }
 
 // AgentRegistrySpec carries publish / visibility metadata (design §4.6).
 type AgentRegistrySpec struct {
-	// Builtin marks platform-preset agents (every user gets an instance
+	// Builtin marks platform-preset templates (every user gets an instance
 	// automatically; cannot be deleted).
 	// +optional
 	Builtin bool `json:"builtin,omitempty"`
@@ -91,15 +111,17 @@ type AgentRegistrySpec struct {
 
 // QuotaSpec caps resource usage of an agent (design §3.1 / NFR-015).
 type QuotaSpec struct {
-	// MaxInstancesPerUser caps instances per user for this agent (default 1).
+	// MaxInstancesPerUser caps instances per user for this template
+	// (default 1).
 	// +kubebuilder:default=1
 	// +optional
 	MaxInstancesPerUser int32 `json:"maxInstancesPerUser,omitempty"`
 }
 
-// ConfirmPolicy is the agent-level confirmation policy for write/high-risk
-// operations (design §3.1: policy is agent-level so different agents may reuse
-// the same Capability with different confirmation rules).
+// ConfirmPolicy is the template-level confirmation policy for write/high-risk
+// operations (design §3.1: the policy lives on the AgentTemplate, not on the
+// skill, so different templates reusing the same skill can have different
+// confirmation rules).
 // +kubebuilder:validation:Enum=None;ConfirmWrites
 type ConfirmPolicy string
 
@@ -112,46 +134,42 @@ const (
 	ConfirmPolicyConfirmWrites ConfirmPolicy = "ConfirmWrites"
 )
 
-// AgentSpec defines what an Agent is: model, instructions, tools (capability
-// refs), memory, identity, policy and registry metadata (design §3.1).
-// It is the "class": shared by all instances, versioned, user-independent.
-type AgentSpec struct {
-	// DisplayName is the human-facing agent name.
+// AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
+// tools (skill refs), memory, identity, policy and registry metadata
+// (design §3.1). It is the "class": shared by all instances, versioned,
+// user-independent.
+type AgentTemplateSpec struct {
+	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`
-	// Description explains what the agent does.
+	// Description explains what the template does.
 	Description string `json:"description,omitempty"`
 	// Runtime selects the runtime implementation (OpenClaw default).
 	// +kubebuilder:default=OpenClaw
 	// +optional
 	Runtime AgentRuntime `json:"runtime,omitempty"`
-	// Model is the ordered model array (allowlist). model[0] = primary;
-	// model[1:] = fallback chain. Instances select within this list.
-	// Deprecated transition shape -- see AgentModelSpec; the Model catalog
-	// (§3.3) is the long-term source.
-	Model []AgentModelSpec `json:"model,omitempty"`
-	// DefaultModel references the Model catalog (§3.3) entry used when an
-	// instance does not select a model explicitly. Empty = runtime default.
+	// DefaultModel is the model name from Models used when an instance does
+	// not select a model explicitly. Empty = no default / runtime default.
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
-	// AvailableModels optionally limits the selectable Model catalog entries
-	// (§3.3) for instances of this agent. Empty = all catalog entries.
+	// Models is the inline model list (design §3.3: models are inlined in the
+	// template -- no standalone Model CRD). The first entry is the primary;
+	// instances select within this list.
 	// +optional
-	AvailableModels []string `json:"availableModels,omitempty"`
-	// ConfirmPolicy is the agent-level confirmation policy for write
+	Models []TemplateModelSpec `json:"models,omitempty"`
+	// ConfirmPolicy is the template-level confirmation policy for write
 	// operations (default ConfirmWrites).
 	// +kubebuilder:default=ConfirmWrites
 	// +optional
 	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
 	// Instructions is the default system prompt (definition-level default;
-	// instances may override within capability bounds).
+	// instances may append within capability bounds).
 	// +optional
 	Instructions string `json:"instructions,omitempty"`
-	// Capabilities references Capabilities (atomic thin-overrides + domain
-	// skills) -- design §3.1 `spec.capabilities`. Generic tools
-	// (resource-manager / list-kinds / describe-kind) are platform-provided
-	// and always available -- they are NOT listed here.
+	// Skills references Skills (domain knowledge + controlled scripts),
+	// design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec + schema
+	// discovery) are platform-provided and always available -- NOT listed here.
 	// +optional
-	Capabilities []string `json:"capabilities,omitempty"`
+	Skills []string `json:"skills,omitempty"`
 	// Memory declares the memory capability.
 	// +optional
 	Memory *MemorySpec `json:"memory,omitempty"`
@@ -169,8 +187,9 @@ type AgentSpec struct {
 	Quotas *QuotaSpec `json:"quotas,omitempty"`
 }
 
-// AgentStatus is the observed state of an Agent definition (phase one: minimal).
-type AgentStatus struct {
+// AgentTemplateStatus is the observed state of an AgentTemplate definition
+// (phase one: minimal).
+type AgentTemplateStatus struct {
 	// ObservedGeneration is the most recent generation observed.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -184,34 +203,34 @@ type AgentStatus struct {
 // +kubebuilder:printcolumn:name="Builtin",type="boolean",JSONPath=".spec.registry.builtin"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Agent is the declarative definition of an agent (design doc §3.1) -- the
-// platform's first-class object. The builtin agent-for-cloud is the preset
-// first Agent; user-created agents are phase 2+.
-type Agent struct {
+// AgentTemplate is the declarative definition of an agent (design doc §3.1)
+// -- the platform's first-class object. The builtin agent-for-cloud is the
+// preset first template; user-created templates are phase 2+.
+type AgentTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AgentSpec   `json:"spec,omitempty"`
-	Status AgentStatus `json:"status,omitempty"`
+	Spec   AgentTemplateSpec   `json:"spec,omitempty"`
+	Status AgentTemplateStatus `json:"status,omitempty"`
 }
 
-// Revision returns an immutable content fingerprint of the Agent definition
+// Revision returns an immutable content fingerprint of the template
 // (design §3.1: template changes generate an immutable revision for audit and
-// rollback). Content hash -- deterministic across object re-creation, spec-only
-// (status updates never change the revision).
-func (in *Agent) Revision() string {
+// rollback). Content hash -- deterministic across object re-creation,
+// spec-only (status updates never change the revision).
+func (in *AgentTemplate) Revision() string {
 	return specRevision(in.Spec)
 }
 
 // +kubebuilder:object:root=true
 
-// AgentList contains a list of Agent.
-type AgentList struct {
+// AgentTemplateList contains a list of AgentTemplate.
+type AgentTemplateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Agent `json:"items"`
+	Items           []AgentTemplate `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&Agent{}, &AgentList{})
+	SchemeBuilder.Register(&AgentTemplate{}, &AgentTemplateList{})
 }

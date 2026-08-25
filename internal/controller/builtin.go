@@ -38,32 +38,24 @@ var BuiltinCapabilities = func() []string {
 	return names
 }()
 
-// BuiltinModels returns the preset platform model catalog entries
-// (design §3.3: platform preloads deepseek-v4-flash etc; admins add more via
-// `kubectl apply` a Model CRD -- no running instance is touched).
-func BuiltinModels() []*v1alpha1.Model {
-	return []*v1alpha1.Model{
+// BuiltinModels returns the preset inline model entries for the builtin
+// AgentTemplate (design §3.3: models are inlined in the template -- no
+// standalone Model CRD).
+func BuiltinModels() []v1alpha1.TemplateModelSpec {
+	return []v1alpha1.TemplateModelSpec{
 		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "deepseek-v4-flash",
-				Labels: map[string]string{
-					"app.kubernetes.io/part-of": "cubepilot",
-					"cubepilot/builtin":         "true",
-				},
-			},
-			Spec: v1alpha1.ModelSpec{
-				DisplayName: "DeepSeek V4 Flash",
-				Provider:    v1alpha1.ModelProviderPlatform,
-				ModelID:     "deepseek/deepseek-v4-flash",
-			},
+			Name:     "deepseek-v4-flash",
+			Provider: v1alpha1.ModelProviderPlatform,
+			ModelID:  "deepseek/deepseek-v4-flash",
 		},
 	}
 }
 
-// BuiltinAgent returns the builtin agent-for-cloud definition (design §3.1).
-func BuiltinAgent() *v1alpha1.Agent {
+// BuiltinAgentTemplate returns the builtin agent-for-cloud template
+// (design §3.1).
+func BuiltinAgentTemplate() *v1alpha1.AgentTemplate {
 	builtin := true
-	return &v1alpha1.Agent{
+	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: BuiltinAgentName,
 			Labels: map[string]string{
@@ -71,20 +63,17 @@ func BuiltinAgent() *v1alpha1.Agent {
 				"cubepilot/builtin":         "true",
 			},
 		},
-		Spec: v1alpha1.AgentSpec{
-			DisplayName:     "Platform Management Assistant",
-			Description:     "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
-			Runtime:         v1alpha1.RuntimeOpenClaw,
-			DefaultModel:    "deepseek-v4-flash",
-			AvailableModels: []string{"deepseek-v4-flash"},
-			ConfirmPolicy:   v1alpha1.ConfirmPolicyConfirmWrites,
-			Model: []v1alpha1.AgentModelSpec{
-				{Provider: "Platform", Name: "deepseek-v4-flash"},
-			},
+		Spec: v1alpha1.AgentTemplateSpec{
+			DisplayName:   "Platform Management Assistant",
+			Description:   "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
+			Runtime:       v1alpha1.RuntimeOpenClaw,
+			DefaultModel:  "deepseek-v4-flash",
+			Models:        BuiltinModels(),
+			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
-			Capabilities: BuiltinCapabilities,
+			Skills: BuiltinCapabilities,
 			Memory: &v1alpha1.MemorySpec{Enabled: true},
 			Identity: &v1alpha1.AgentIdentitySpec{
 				Mode:  v1alpha1.IdentityModeUser,
@@ -171,14 +160,8 @@ func (r *BuiltinBootstrapReconciler) Ensure(ctx context.Context) error {
 }
 
 func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
-	// 0. Model catalog (design §3.3).
-	for _, m := range BuiltinModels() {
-		if err := r.createIfMissing(ctx, m); err != nil {
-			return err
-		}
-	}
-	// 1. Agent definition.
-	if err := r.createIfMissing(ctx, BuiltinAgent()); err != nil {
+	// 1. AgentTemplate definition (with inline models, design §3.1/§3.3).
+	if err := r.createIfMissing(ctx, BuiltinAgentTemplate()); err != nil {
 		return err
 	}
 	// 2. Domain capabilities (generated from embedded SKILL.md).
@@ -204,8 +187,8 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 				Labels: map[string]string{"cubepilot/builtin": "true"},
 			},
 			Spec: v1alpha1.AgentInstanceSpec{
-				AgentRef: BuiltinAgentName,
-				Owner:    user,
+				TemplateRef: BuiltinAgentName,
+				Owner:       user,
 				Identity: v1alpha1.IdentitySpec{
 					Mode: v1alpha1.IdentityModeUser,
 					PrincipalRef: v1alpha1.PrincipalRef{
@@ -253,6 +236,6 @@ func InstanceNameFor(user, agent string) string {
 func (r *BuiltinBootstrapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("builtin-bootstrap").
-		For(&v1alpha1.Agent{}).
+		For(&v1alpha1.AgentTemplate{}).
 		Complete(r)
 }

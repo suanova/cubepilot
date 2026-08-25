@@ -29,7 +29,7 @@ func platformTestServer(t *testing.T, objs ...client.Object) *Server {
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.Model{}, &v1alpha1.TaskRun{}, &v1alpha1.AgentInstance{}, &v1alpha1.Task{}).
+		WithStatusSubresource(&v1alpha1.TaskRun{}, &v1alpha1.AgentInstance{}, &v1alpha1.Task{}).
 		WithObjects(objs...).
 		Build()
 	cfg := config.Config{DefaultUser: "zhang.wei"}
@@ -68,11 +68,11 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 func TestHandleInstancesOwnerScoped(t *testing.T) {
 	li := &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
-		Spec:       v1alpha1.AgentInstanceSpec{Owner: "li.ming", AgentRef: "agent-for-cloud"},
+		Spec:       v1alpha1.AgentInstanceSpec{Owner: "li.ming", TemplateRef: "agent-for-cloud"},
 	}
 	wang := &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "wang-wu-agent-for-cloud"},
-		Spec:       v1alpha1.AgentInstanceSpec{Owner: "wang.wu", AgentRef: "agent-for-cloud"},
+		Spec:       v1alpha1.AgentInstanceSpec{Owner: "wang.wu", TemplateRef: "agent-for-cloud"},
 	}
 	s := platformTestServer(t, li, wang)
 
@@ -102,12 +102,12 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 // caller's own instance (owner forced server-side), is idempotent, and
 // rejects unknown agent refs.
 func TestHandleInstancesCreate(t *testing.T) {
-	agent := &v1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}}
+	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}}
 	s := platformTestServer(t, agent)
 	h := s.Handler()
 
 	// Create.
-	rec := doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"agentRef": "agent-for-cloud"})
+	rec := doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "agent-for-cloud"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -119,7 +119,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 	}
 
 	// Idempotent repeat.
-	rec = doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"agentRef": "agent-for-cloud"})
+	rec = doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "agent-for-cloud"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("repeat status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -130,42 +130,10 @@ func TestHandleInstancesCreate(t *testing.T) {
 		t.Error("repeat create did not report alreadyExists")
 	}
 
-	// Unknown agent ref is rejected (no permanently-Failed instance).
-	rec = doReq(t, h, http.MethodPost, "/api/instances", "li.ming", map[string]any{"agentRef": "no-such-agent"})
+	// Unknown template ref is rejected (no permanently-Failed instance).
+	rec = doReq(t, h, http.MethodPost, "/api/instances", "li.ming", map[string]any{"templateRef": "no-such-template"})
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("unknown agent status = %d, want 400: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestHandleModelsCreate verifies POST /api/models returns 201 on create and
-// 409 with the existing entry on a duplicate name (slug collision).
-func TestHandleModelsCreate(t *testing.T) {
-	s := platformTestServer(t)
-	h := s.Handler()
-
-	rec := doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "DeepSeek V3", "provider": "External",
-		"endpoint": "https://api.example.com/v1", "credentialRef": "cred-llm",
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
-	}
-
-	// Duplicate (same display name -> same slug) -> 409 + existing entry.
-	rec = doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "DeepSeek V3", "provider": "External",
-		"endpoint": "https://api.example.com/v1", "credentialRef": "cred-llm",
-	})
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("duplicate status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
-
-	// External requires endpoint + credentialRef.
-	rec = doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
-		"displayName": "Bad", "provider": "External", "endpoint": "https://x/v1",
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("missing credentialRef status = %d, want 400: %s", rec.Code, rec.Body.String())
+		t.Errorf("unknown template status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
 

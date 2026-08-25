@@ -188,17 +188,17 @@ func (c *Catalog) ValidateCapability(cap *v1alpha1.Capability) error {
 	return nil
 }
 
-// ToolSetForAgent computes the effective tool set for an Agent definition:
-// generic tools are always available; the agent's tools[] references
-// Capabilities (atomic + domain) whose visibility (spec.agents[]) admits the
-// agent (design §3.3.1: Capability.agents[] and RBAC jointly decide the
-// visible subset).
-func ToolSetForAgent(agent *v1alpha1.Agent, caps []v1alpha1.Capability) []string {
+// ToolSetForAgent computes the effective tool set for an AgentTemplate
+// definition: generic tools are always available; the template's skills[]
+// references Capabilities (atomic + domain) whose visibility (spec.agents[])
+// admits the template (design §3.3.1: Capability.agents[] and RBAC jointly
+// decide the visible subset).
+func ToolSetForAgent(agent *v1alpha1.AgentTemplate, caps []v1alpha1.Capability) []string {
 	set := map[string]bool{}
 	for _, t := range GenericTools {
 		set[t] = true
 	}
-	for _, ref := range agent.Spec.Capabilities {
+	for _, ref := range agent.Spec.Skills {
 		for _, cap := range caps {
 			if cap.Name != ref {
 				continue
