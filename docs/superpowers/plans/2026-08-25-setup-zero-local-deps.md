@@ -74,7 +74,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JQ_FILE="$REPO_DIR/deploy/openclaw-config.jq"
 [ -f "$JQ_FILE" ] || { echo "missing $JQ_FILE"; exit 1; }
 
-PROVIDERS='{"deepseek":{"api":"sk-test","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"},{"id":"deepseek-chat","name":"DeepSeek Chat"}]}}'
+PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-test","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"},{"id":"deepseek-chat","name":"DeepSeek Chat"}]}}'
 
 out() { jq -n --argjson providers "$PROVIDERS" --arg defaultModel "$1" --arg token "$2" -f "$JQ_FILE"; }
 
@@ -445,7 +445,7 @@ Usage: scripts/setup.sh [flags]
 Required:
   CUBEPILOT_MODEL_PROVIDERS / --providers-json <json>
       The models.providers object (model provider credentials), e.g.
-      '{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com",
+      '{"deepseek":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://api.deepseek.com",
         "models":[{"id":"deepseek-v4-flash"}]}}'
       One provider is enough for testing.
 
@@ -662,7 +662,7 @@ with:
 
 ```bash
 # 1. Build images, create the kind cluster if needed, create Secrets, deploy
-CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/setup.sh
 
 # 2. Expose the Portal
@@ -739,7 +739,7 @@ Expected: prints `clean: ...` (the jq comment mentioning the script is the only 
 
 Run on a machine with docker (skip if unavailable):
 ```bash
-CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"<real key>","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"<real key>","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/setup.sh
 kubectl -n cubepilot get pods
 kubectl -n cubepilot port-forward svc/cubepilot 8080:8080 &
