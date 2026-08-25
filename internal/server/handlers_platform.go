@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -16,55 +15,55 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// ---- Agent definitions (design §3.1 / §4.6: Agent Registry phase one =
-// builtin list) ----
+// ---- AgentTemplate definitions (design §3.1 / §4.6: phase one = builtin
+// list) ----
 
-// handleAgents serves GET /api/agents -- the Agent Registry (phase one: the
-// builtin agent-for-cloud list; phase two opens user creation / review and
-// publish).
-func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+// handleAgentTemplates serves GET /api/agenttemplates -- the template
+// registry (phase one: the builtin agent-for-cloud list; phase two opens
+// user creation / review and publish).
+func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	if s.cr == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"agents": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"agentTemplates": []any{}})
 		return
 	}
-	var list v1alpha1.AgentList
+	var list v1alpha1.AgentTemplateList
 	if err := s.cr.List(r.Context(), &list); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": list.Items})
+	writeJSON(w, http.StatusOK, map[string]any{"agentTemplates": list.Items})
 }
 
-// handleAgentByID serves GET /api/agents/{name}.
-func (s *Server) handleAgentByID(w http.ResponseWriter, r *http.Request) {
+// handleAgentTemplateByID serves GET /api/agenttemplates/{name}.
+func (s *Server) handleAgentTemplateByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/agents/"), "/")
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/agenttemplates/"), "/")
 	if name == "" || s.cr == nil {
 		http.NotFound(w, r)
 		return
 	}
-	var agent v1alpha1.Agent
-	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &agent); err != nil {
+	var tmpl v1alpha1.AgentTemplate
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &tmpl); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
+	writeJSON(w, http.StatusOK, map[string]any{"agentTemplate": tmpl})
 }
 
-// ---- AgentInstance (design §3.2: instance list, one per user per agent)
+// ---- AgentInstance (design §3.2: instance list, one per user per template)
 // ----
 
 // handleInstances serves GET /api/instances (own instances only) and
 // POST /api/instances (self-service provisioning of the caller's own
 // AgentInstance CR; the operator's controller owns the Pod/PVC/Service
-// lifecycle). design §3.2: instance key = user + agent, one per user.
+// lifecycle). design §3.2: instance key = user + template, one per user.
 // Access control: the owner is always the caller -- both reads and writes
 // are scoped to the request identity (a user can never see or touch another
 // user's instance).
@@ -96,33 +95,34 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// Self-service provisioning: the instance owner is always the caller
 		// (never taken from the body), so a user can only create their own.
 		var body struct {
-			AgentRef            string   `json:"agentRef"`
-			SelectedModel       string   `json:"selectedModel"`
-			EnabledCapabilities []string `json:"enabledCapabilities"`
-			UserInstructions    string   `json:"userInstructions"`
+			TemplateRef     string   `json:"templateRef"`
+			SelectedModel   string   `json:"selectedModel"`
+			EnabledSkills   []string `json:"enabledSkills"`
+			UserInstructions string  `json:"userInstructions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
-		agentRef := strings.TrimSpace(body.AgentRef)
-		if agentRef == "" {
-			agentRef = v1alpha1.DefaultAgentName
+		templateRef := strings.TrimSpace(body.TemplateRef)
+		if templateRef == "" {
+			templateRef = v1alpha1.DefaultAgentName
 		}
-		// The Agent definition must exist (design §3.1: instances reference
-		// registered agents; an unknown ref would create a permanently Failed
-		// instance that the controller cannot converge).
-		var agent v1alpha1.Agent
-		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: agentRef}, &agent); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("unknown agent %q", agentRef)})
+		// The AgentTemplate definition must exist (design §3.1: instances
+		// reference registered templates; an unknown ref would create a
+		// permanently Failed instance that the controller cannot converge).
+		var tmpl v1alpha1.AgentTemplate
+		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: templateRef}, &tmpl); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("unknown template %q", templateRef)})
 			return
 		}
 		owner := s.userOf(r)
-		name := k8s.InstanceName(owner, agentRef)
+		name := k8s.InstanceName(owner, templateRef)
 
-		// Idempotent: an existing instance owned by the caller is returned as-is
-		// (the controller converges it; no duplicate Pod/PVC churn). An instance
-		// with the same name but a different owner is a conflict -- never leak it.
+		// Idempotent: an existing instance owned by the caller is returned
+		// as-is (the controller converges it; no duplicate Pod/PVC churn).
+		// An instance with the same name but a different owner is a conflict
+		// -- never leak it.
 		var existing v1alpha1.AgentInstance
 		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &existing); err == nil {
 			if existing.Spec.Owner != owner {
@@ -136,18 +136,18 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: v1alpha1.AgentInstanceSpec{
-				AgentRef: agentRef,
-				Owner:    owner,
+				TemplateRef:      templateRef,
+				Owner:            owner,
 				Identity: v1alpha1.IdentitySpec{
 					Mode: v1alpha1.IdentityModeUser,
 					PrincipalRef: v1alpha1.PrincipalRef{
 						UserRef: owner,
 					},
 				},
-				Lifecycle:           &v1alpha1.LifecycleSpec{Strategy: "resident"},
-				SelectedModel:       strings.TrimSpace(body.SelectedModel),
-				EnabledCapabilities: body.EnabledCapabilities,
-				UserInstructions:    strings.TrimSpace(body.UserInstructions),
+				Lifecycle:        &v1alpha1.LifecycleSpec{Strategy: "resident"},
+				SelectedModel:    strings.TrimSpace(body.SelectedModel),
+				EnabledSkills:    body.EnabledSkills,
+				UserInstructions: strings.TrimSpace(body.UserInstructions),
 			},
 		}
 		if err := s.cr.Create(r.Context(), inst); err != nil {
@@ -181,98 +181,6 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"capabilities": list.Items})
-}
-
-// ---- Model catalog (design §3.3: platform model directory, admin-maintained)
-// ----
-
-// handleModels serves GET /api/models -- the platform Model catalog CRs with
-// their probed availability (status.phase).
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	if s.cr == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		var list v1alpha1.ModelList
-		if err := s.cr.List(r.Context(), &list); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
-		writeJSON(w, http.StatusOK, map[string]any{"models": list.Items})
-	case http.MethodPost:
-		// Administrator adds a model catalog entry (design §3.3: admins add
-		// models by applying a Model CR; the Portal provides the same path).
-		var body struct {
-			DisplayName   string `json:"displayName"`
-			Provider      string `json:"provider"`
-			Endpoint      string `json:"endpoint"`
-			CredentialRef string `json:"credentialRef"`
-			ModelID       string `json:"modelId"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
-			return
-		}
-		body.DisplayName = strings.TrimSpace(body.DisplayName)
-		body.Provider = normalizeProvider(body.Provider)
-		body.Endpoint = strings.TrimSpace(body.Endpoint)
-		body.ModelID = strings.TrimSpace(body.ModelID)
-		if body.DisplayName == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "displayName is required"})
-			return
-		}
-		provider := v1alpha1.ModelProvider(body.Provider)
-		switch provider {
-		case v1alpha1.ModelProviderPlatform:
-			// platform: endpoint optional (empty = builtin runtime model).
-		case v1alpha1.ModelProviderExternal:
-			if body.Endpoint == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "external provider requires endpoint"})
-				return
-			}
-			if body.CredentialRef == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "external provider requires credentialRef"})
-				return
-			}
-		default:
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("provider must be %q or %q", v1alpha1.ModelProviderPlatform, v1alpha1.ModelProviderExternal)})
-			return
-		}
-		model := &v1alpha1.Model{
-			ObjectMeta: metav1.ObjectMeta{
-				// CR name must be DNS-1123; derive a stable slug from the
-				// display name (admin may also apply a Model CR directly).
-				Name: k8s.Sanitize(body.DisplayName),
-			},
-			Spec: v1alpha1.ModelSpec{
-				DisplayName:   body.DisplayName,
-				Provider:      provider,
-				Endpoint:      body.Endpoint,
-				CredentialRef: body.CredentialRef,
-				ModelID:       body.ModelID,
-			},
-		}
-		if err := s.cr.Create(r.Context(), model); err != nil {
-			// AlreadyExists: the slug collided with an existing entry (same or
-			// different display name) -- return the existing entry instead of a
-			// 500, so double-submit is harmless and name clashes are visible.
-			if apierrors.IsAlreadyExists(err) {
-				var existing v1alpha1.Model
-				if getErr := s.cr.Get(r.Context(), types.NamespacedName{Name: model.Name}, &existing); getErr == nil {
-					writeJSON(w, http.StatusConflict, map[string]any{"model": existing, "error": "model already exists"})
-					return
-				}
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusCreated, map[string]any{"model": model})
-	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or POST required"})
-	}
 }
 
 // ---- TaskRun (design §3.3.4: run report, written with the platform
@@ -386,35 +294,20 @@ func (s *Server) listCapabilities(ctx context.Context) ([]v1alpha1.Capability, e
 	return list.Items, nil
 }
 
-func (s *Server) getAgent(ctx context.Context, name string) (*v1alpha1.Agent, error) {
+func (s *Server) getAgentTemplate(ctx context.Context, name string) (*v1alpha1.AgentTemplate, error) {
 	if s.cr == nil {
 		return nil, fmt.Errorf("CRD path disabled")
 	}
-	var agent v1alpha1.Agent
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &agent); err != nil {
+	var tmpl v1alpha1.AgentTemplate
+	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &tmpl); err != nil {
 		return nil, err
 	}
-	return &agent, nil
+	return &tmpl, nil
 }
 
 // writeObjectJSON marshals a metav1 object's JSON for API responses.
 func writeObjectJSON(w http.ResponseWriter, status int, v any) {
 	writeJSON(w, status, v)
-}
-
-// normalizeProvider canonicalizes the model provider input: accepts both the
-// legacy lowercase values ("platform"/"external") and the canonical PascalCase
-// values ("Platform"/"External"), returning the canonical form. Unknown
-// values pass through unchanged so the caller's switch can reject them.
-func normalizeProvider(p string) string {
-	switch strings.ToLower(strings.TrimSpace(p)) {
-	case "platform":
-		return string(v1alpha1.ModelProviderPlatform)
-	case "external":
-		return string(v1alpha1.ModelProviderExternal)
-	default:
-		return strings.TrimSpace(p)
-	}
 }
 
 var _ = metav1.Now

@@ -60,7 +60,7 @@ spec:
             description: |-
               TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
               links the
-              execution subject (agentRef -> Agent) with the task content (templateRef ->
+              execution subject (templateRef -> Agent) with the task content (templateRef ->
               TaskTemplate); creator decides the execution identity.
             properties:
               cron:

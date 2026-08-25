@@ -12,10 +12,10 @@ import (
 // (design §3.3.1: generic tools are available by default; Agent.tools[] only
 // references Capabilities; Capability.agents[] decides the visible subset).
 func TestToolSetForAgent(t *testing.T) {
-	agent := &v1alpha1.Agent{
+	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
-		Spec: v1alpha1.AgentSpec{
-			Capabilities: []string{"cluster-inspection", "dev-environment"},
+		Spec: v1alpha1.AgentTemplateSpec{
+			Skills: []string{"cluster-inspection", "dev-environment"},
 		},
 	}
 	caps := []v1alpha1.Capability{

@@ -1,61 +1,68 @@
 # CubePilot 实现状态与设计对比（阶段一落地记录）
 
-> 本文记录 CubePilot 简化设计在阶段一实现中的实际状态：已完成项、与设计正文的有意偏差、以及后续阶段的演进清单。实现仓库：cubePilot（operator / api / web / agent supervisor）。设计正文见 [cubepilot-design.md](./cubepilot-design.md)。
+> 本文记录 CubePilot 简化设计在阶段一实现中的实际状态：已完成项、与设计正文(git 内的简体「cubepilot 简化设计」当前版)的有意偏差、以及后续演进清单。实现仓库：cubePilot（operator / api / web / agent supervisor）。设计正文见 [cubepilot-design.md](./cubepilot-design.md)。
 >
-> ⚠️ **本文为 2026-08 评审前的实现记录**；评审后设计方向已调整（删 Model CRD、skill 走镜像文件目录而非 CRD 内联、简单 HITL、可观测性验收后置、不做 trajectory），本文与设计正文的偏差待实现同步后更新。
+> 状态：已按当前代码与当前设计重新核对（2026-08-25）。本次更新：**Model CRD 已删除、Agent CRD 已对齐为 AgentTemplate（内联模型）**，两项结构性冲突已消除。
 
-## 已对齐（阶段一已实现并验证）
+## 已对齐（一期已实现并验证）
 
-- **对象模型**：Agent / AgentInstance / Model / Capability / TaskTemplate / Task / TaskRun
-  全部 CRD 化，status subresource + printcolumn；模板、实例、执行三态分离（设计 §3.5）。
-- **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409
-  （设计 §3.2）。
-- **模型目录闭环**：`Model` CRD + 探测控制器；platform 无 endpoint 直通 `Available`、
-  有 endpoint 统一探测；external 必填；fail-closed（设计 §3.3）。
-- **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链
-  `instance.selectedModel → agent.defaultModel → availableModels 白名单 → Model 目录`，
-  任一步失败即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效（优于设计文档的
-  updateConfig / pod 重启）。
-- **模板与执行分离**：TaskRun 记录 `templateRevision` / `capabilityRevision`（内容
-  sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
-- **Task 状态为字符串枚举**：`spec.state: Enabled | Paused`（设计 §3.5 明确不用 bool），
-  CRD default=Enabled；API 保留 `enabled` 兼容字段，web 以派生 `enabled` 展示。
-- **实例能力子集**：`AgentInstance.spec.enabledCapabilities` 限定 Domain 能力子集
-  （设计 §3.2），resolver 过滤注入；空 = 全部声明能力。
-- **用户指令接线**：`AgentInstance.spec.userInstructions` 追加到模板指令之后
-  （设计 §3.2 组合顺序），resolver 合并进 `ResolvedAgentConfig.Instructions`。
-- **实例状态阶段**：`status.phase = Ready`（设计 §3.2，与文档一致；旧 `Warm` 已废弃）。
-- **字段命名对齐**：Agent `spec.capabilities`（设计 §3.1）、`spec.runtime: OpenClaw`
-  （设计 §3.1）、Model `provider: Platform | External`（设计 §3.3）。
-- **枚举值 CRD 校验**：六个枚举（runtime / provider / type / confirmPolicy /
-  trigger / task state）均带 `kubebuilder:validation:Enum`，非法值被 API server
-  拒绝（fail-fast，实测验证）。
-- **统一事件契约**：message_start / delta / tool_call / tool_result / message_done /
-  confirm_* 全套实现（设计 §4）。
-- **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions /
-  GetHistory），concrete client 实现，编译期断言（设计 §4）。
-- **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、
-  readOnlyRootFilesystem、emptyDir /tmp（设计 §6 / 附录B「实例最小权限」条目）。
-- **观测**：healthz / readyz / metrics / readiness 全绿（设计 §8.1）。
-- **Skill 热重载**：OpenClaw（2026.7.1-2）对 `workspace/skills` 目录做文件监听（chokidar + 100ms 轮询兜底），Capability 变更经 resolver → supervisor 重写 SKILL.md 后自动热加载，无需重启 Pod（此前「skill 变更必须重启 Pod」的旧结论已随版本更新修正）。
+- **AgentTemplate 与实例分离**：AgentTemplate（`agent-for-cloud` 内置）+ AgentInstance（每用户）分离；实例引用模板名（`templateRef`，不钉版）；内置实例由 operator 启动时按 bootstrap 名单自动创建（设计 §3.1/§3.2）。**已对齐设计：Agent→AgentTemplate 重命名完成。**
+- **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.models`（每项 name + provider + endpoint + credentialRef + modelId），`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/models` 已删除。**
+- **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
+- **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel → template.defaultModel → template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效。
+- **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。
+- **实例状态阶段**：`status.phase` 六态（Creating/Ready/Idle/Reclaiming/Failed），Ready 为稳态（设计 §3.2）。
+- **模板与执行分离**：TaskTemplate / Task / TaskRun 三态分离；TaskRun 记录 `templateRevision` / `capabilityRevision`（内容 sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
+- **Task 状态字符串枚举**：`spec.state: Enabled | Paused`（自定义 bool），CRD default=Enabled。
+- **枚举值 CRD 校验**：六种枚举（runtime / provider / capability type / confirmPolicy / trigger / task state）均带 `kubebuilder:validation:Enum`。
+- **统一事件契约**：message_start / delta / tool_call / tool_result / message_done / error 全套实现（设计 §4）。confirm_* 仅定义、一期不 emit。
+- **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions / GetHistory），concrete client 实现。
+- **能力目录 + Skill 落盘**：能力分层（generic / domain），Capability CRD 登记；supervisor 把启用能力以 `SKILL.md` 渲染到实例 `workspace/skills/`；OpenClaw 文件监听热重载。
+- **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、readOnlyRootFS、emptyDir /tmp（设计 §6）。
+- **观测**：healthz / readyz / metrics / readiness 全绿。
+- **数据真源**：AgentTemplate / AgentInstance / Capability / TaskTemplate / Task / TaskRun 走 CRD；会话/记忆/运行时缓存走实例 PVC（设计 §3.6）。
 
-## 已知取舍（现实现与设计文字的有意偏差，已选其一，不再当作缺口）
+## 与当前设计的剩余结构性差异
 
-1. **MCP Gateway（设计 §5，ToolExecutor 接口的正式实现）阶段一未建**：kubectl 由 OpenClaw 直接 exec（挂用户 kubeconfig，RBAC 免底，无执行前校验/HITL）；审计由 API 从 SSE 流捕获 tool_call 事后记录，只能记录、不能阻断。这是明确接受的临时缺口；MCP Gateway 作为阶段二目标，落地时切换到受控执行，中间不建过渡组件。
-2. **存储不采用 PostgreSQL / Redis（设计 §2 mermaid）**：实现为 CRD/共享文件卷 + 每实例
-   RWO PVC，与设计 §3.6 文字「CRD/控制面数据库」一致。§2 图为历史参考，以 §3.6 为准。
-3. **TaskRun 不冗余记录 Agent 实例名（设计 §7「至少记录」）**：实现按设计 §3.5 从 owner 推导
-   （阶段一单实例每用户，推导无歧义）。多实例每用户时改为显式记录。
-4. **身份用 `X-CubePilot-User` 请求头模拟（附录 B 标「一」）**：OIDC 属外部依赖，
-   阶段二引入 Keycloak 后替换；模拟身份可审计、单一来源。
-5. **设计 §5.3 双 kubeconfig 未实施**：现阶段 Pod 只挂一个用户 kubeconfig（操作与读 schema 同源，`kubectl explain/get crd` 以用户权限完成）；「用户无 CRD 读权限时挂只读 CRD kubeconfig」的场景登记阶段二，随 MCP Gateway / 凭据治理落地。
-6. **egress 白名单未实施**：与模型凭据/外部端点管控绑定（表B「模型凭据」行），阶段二随
-   模型凭据统一治理落地。
+> 以下为设计已要求、但实现尚未同步的项。**请不要把设计文档改回旧版来迁就实现；实现应逐步对齐本节。**
 
-## 阶段二演进清单（已知偏差的后续归属）
+1. **技能市场（Skill CRD + 对象存储）未建**。
+   新设计 §3.4：能力分两层，skill 为多文件目录（SKILL.md + scripts/references），经「技能市场」发布/安装（`Skill` CRD 登记 + S3/对象存储 tar 包 + sha256 校验），`AgentTemplate.skills` 声明默认、实例 `enabledSkills` 用户子集。代码现状：**无 Skill CRD、无对象存储技能仓库**；仅内置 capabilities（SKILL.md 由 supervisor 从内嵌配置渲染到 `workspace/skills`）。→ 技能市场是设计一期明确验收项，**尚未实现**。
 
-- 集中 Tool Gateway（设计 §5 ToolExecutor 独立组件 + 统一 Policy + HITL）。
-- Keycloak OIDC 鉴权替换 `X-CubePilot-User`（附录 B）。
-- 模型凭据托管、轮换与 egress 白名单（附录 B）。
-- 确认护栏落地：写/高危操作 HITL（确认策略已进入对象模型，执行侧未接入）。
-- 多实例/多 agent 形态，TaskRun 显式记录 Agent。
+2. **简单 HITL ——设计一期要求，代码执行侧未接入**。
+   设计 §5：一期写操作**靠命令匹配（动词/资源白名单）命中即暂停确认的简单 HITL**（尽力而为）。代码现状：`confirmPolicy` 字段已进 AgentTemplate 对象模型（内置模板默认 `ConfirmWrites`），`confirm_pending`/`confirm_resolved` 事件已在合约定义，但**执行侧（OpenClaw exec kubectl 前）未接入命令匹配与暂停确认**。→ HITL 为设计一期交付项，实现侧缺口。
+
+3. **双 kubeconfig —— 设计 §5.3 要求，实现未做**。
+   设计 §5.1 等：schema 发现走「用户 kubeconfig(操作) + 平台只读 CRD kubeconfig(读 schema)」两把。代码现状：Pod 只挂一个用户 kubeconfig。→ 登记为待完成。
+
+4. **agentInstanceRef / 多实例显式记录**——阶段一每用户单实例从 owner 推导，符合设计 §3.5「不写 agentInstanceRef」；阶段二多 Agent 时再加回（现状一致）。
+
+## 已确认的有意取舍（非缺口）
+
+- **MCP Gateway**：阶段一不建（设计 §1.2/§5 阶段二统一执行边界），kubectl 由 OpenClaw 直接 exec。审计由 API 从 SSE 流捕获 tool_call 事后记录。
+- **存储**：不用 PostgreSQL/Redis，CRD/对象存储 + 每实例 RWO PVC（设计 §3.6 一致）。
+- **身份**：一期用 `X-CubePilot-User` 请求头模拟身份（OIDC 归阶段二 Keycloak）。
+- **可观测性**：验收不强制（设计 §8.1 预留即可）。
+
+## 本次对齐变更清单（2026-08-25）
+
+- **删除 Model CRD**：移除 `model_types.go`、`model_controller.go`、`model_controller_test.go`、`/api/models` 路由、Model CRD YAML、RBAC 中的 models 权限。
+- **Agent → AgentTemplate**：`agent_types.go` → `agenttemplate_types.go`，类型 `Agent`/`AgentSpec`/`AgentList` → `AgentTemplate`/`AgentTemplateSpec`/`AgentTemplateList`，`AgentModelSpec` → `TemplateModelSpec`。
+- **字段重命名**：`AgentInstanceSpec.AgentRef` → `TemplateRef`，`EnabledCapabilities` → `EnabledSkills`，`AgentSpec.Capabilities` → `AgentTemplateSpec.Skills`，`AgentSpec.Model` → `AgentTemplateSpec.Models`，`AgentSpec.AvailableModels` 删除（内联 models 替代）。
+- **内联模型**：`BuiltinModels()` 返回 `[]TemplateModelSpec`（不再创建独立 Model CR）；`BuiltinAgent()` → `BuiltinAgentTemplate()` 返回带内联 `Spec.Models` 的模板。
+- **resolver**：`resolveModel` 从 Model CRD 查询改为扫描 `AgentTemplate.Spec.Models` 内联清单。
+- **server**：路由 `/api/agents` → `/api/agenttemplates`，删除 `/api/models`，实例创建体 `agentRef` → `templateRef`。
+- **CRD YAML**：删除 `assistant.suanova.io_models.yaml`，重命名 `assistant.suanova.io_agents.yaml` → `assistant.suanova.io_agenttemplates.yaml`，更新 `assistant.suanova.io_agentinstances.yaml` 字段。
+- **RBAC**：去掉 models 权限，agents → agenttemplates。
+- **Web UI**：`AgentView.tsx` 去掉 Model 管理对话框（不再有独立 Model CRD），模型从 AgentTemplate 内联清单展示；`api/index.ts` 路由对齐。
+
+## 阶段二/演进清单（设计 §9 / 附录 B）
+
+- 集中 Tool/MCP Gateway（统一执行边界 + 完整 HITL + 审计）。
+- Keycloak OIDC 鉴权替换 `X-CubePilot-User`。
+- 模型凭据托管、轮换与 egress 白名单；两把 kubeconfig 补齐。
+- 技能市场完整落地（Skill CRD + 对象存储 + 发布/安装 + 用户私有技能 visibility）。
+- AgentTemplate/AgentInstance 版本化 Revision、用户自建模板、service 身份。
+- 多 Agent/多 Runtime 形态，TaskRun 显式记录 Agent；trajectory / 工具调用索引 / 确认决定。
+
+_注：非代码实现（文档/图表/计划）不在本文范围；设计文档本身未改动。_

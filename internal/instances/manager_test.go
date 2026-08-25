@@ -22,17 +22,18 @@ func testManager(t *testing.T, objs ...client.Object) *Manager {
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.Model{}, &v1alpha1.AgentInstance{}, &v1alpha1.Agent{}).
+		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
 		WithObjects(objs...).
 		Build()
 	return New(cl, config.Config{DefaultUser: "zhang.wei"})
 }
 
-func model(name string, phase v1alpha1.ModelPhase, modelID string) *v1alpha1.Model {
-	return &v1alpha1.Model{
+func template(name string, models []v1alpha1.TemplateModelSpec) *v1alpha1.AgentTemplate {
+	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       v1alpha1.ModelSpec{Provider: v1alpha1.ModelProviderPlatform, ModelID: modelID},
-		Status:     v1alpha1.ModelStatus{Phase: phase},
+		Spec: v1alpha1.AgentTemplateSpec{
+			Models: models,
+		},
 	}
 }
 
@@ -40,7 +41,7 @@ func instance(user, selected string) *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(user, v1alpha1.DefaultAgentName)},
 		Spec: v1alpha1.AgentInstanceSpec{
-			AgentRef:      v1alpha1.DefaultAgentName,
+			TemplateRef:   v1alpha1.DefaultAgentName,
 			Owner:         user,
 			SelectedModel: selected,
 		},
@@ -49,16 +50,18 @@ func instance(user, selected string) *v1alpha1.AgentInstance {
 
 // TestSelectedModelForResolvesDefault verifies the agent definition's
 // defaultModel applies when the instance has no explicit selection
-// (design §3.1: defaultModel -> catalog -> modelId).
+// (design §3.1: defaultModel -> inline models -> modelId).
 func TestSelectedModelForResolvesDefault(t *testing.T) {
-	agent := &v1alpha1.Agent{
+	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
-		Spec: v1alpha1.AgentSpec{
-			DefaultModel:    "deepseek-v4-flash",
-			AvailableModels: []string{"deepseek-v4-flash"},
+		Spec: v1alpha1.AgentTemplateSpec{
+			DefaultModel: "deepseek-v4-flash",
+			Models: []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+			},
 		},
 	}
-	m := testManager(t, agent, instance("li.ming", ""), model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"))
+	m := testManager(t, agent, instance("li.ming", ""))
 
 	got, err := m.SelectedModelFor(context.Background(), "li.ming")
 	if err != nil {
@@ -72,16 +75,17 @@ func TestSelectedModelForResolvesDefault(t *testing.T) {
 // TestSelectedModelForExplicit verifies an explicit instance selection wins
 // over the agent default (design §3.2: selectedModel overrides).
 func TestSelectedModelForExplicit(t *testing.T) {
-	agent := &v1alpha1.Agent{
+	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
-		Spec: v1alpha1.AgentSpec{
-			DefaultModel:    "deepseek-v4-flash",
-			AvailableModels: []string{"deepseek-v4-flash", "deepseek-chat"},
+		Spec: v1alpha1.AgentTemplateSpec{
+			DefaultModel: "deepseek-v4-flash",
+			Models: []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-chat", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-chat"},
+			},
 		},
 	}
-	m := testManager(t, agent, instance("li.ming", "deepseek-chat"),
-		model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"),
-		model("deepseek-chat", v1alpha1.ModelAvailable, "deepseek/deepseek-chat"))
+	m := testManager(t, agent, instance("li.ming", "deepseek-chat"))
 
 	got, err := m.SelectedModelFor(context.Background(), "li.ming")
 	if err != nil {
@@ -93,36 +97,21 @@ func TestSelectedModelForExplicit(t *testing.T) {
 }
 
 // TestSelectedModelForOutsideAllowlist verifies fail-closed: a selection
-// outside the agent's availableModels is an error, never a silent fallback.
+// outside the agent's inline models is an error, never a silent fallback.
 func TestSelectedModelForOutsideAllowlist(t *testing.T) {
-	agent := &v1alpha1.Agent{
+	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
-		Spec: v1alpha1.AgentSpec{
-			DefaultModel:    "deepseek-v4-flash",
-			AvailableModels: []string{"deepseek-v4-flash"},
+		Spec: v1alpha1.AgentTemplateSpec{
+			DefaultModel: "deepseek-v4-flash",
+			Models: []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+			},
 		},
 	}
-	m := testManager(t, agent, instance("li.ming", "glm-5.2"),
-		model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"),
-		model("glm-5.2", v1alpha1.ModelAvailable, "glm/glm-5.2"))
+	m := testManager(t, agent, instance("li.ming", "glm-5.2"))
 
 	if _, err := m.SelectedModelFor(context.Background(), "li.ming"); err == nil {
-		t.Error("selection outside availableModels should fail (fail-closed)")
-	}
-}
-
-// TestSelectedModelForUnreachable verifies fail-closed: an Unreachable model
-// is an error even when it is the agent default.
-func TestSelectedModelForUnreachable(t *testing.T) {
-	agent := &v1alpha1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
-		Spec:       v1alpha1.AgentSpec{DefaultModel: "deepseek-v4-flash", AvailableModels: []string{"deepseek-v4-flash"}},
-	}
-	m := testManager(t, agent, instance("li.ming", ""),
-		model("deepseek-v4-flash", v1alpha1.ModelUnreachable, "deepseek/deepseek-v4-flash"))
-
-	if _, err := m.SelectedModelFor(context.Background(), "li.ming"); err == nil {
-		t.Error("Unreachable model should fail (fail-closed)")
+		t.Error("selection outside inline models should fail (fail-closed)")
 	}
 }
 

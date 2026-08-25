@@ -34,12 +34,12 @@ type CredentialSpec struct {
 	// Ref is the platform-managed Secret reference (namespace/name or name).
 	Ref string `json:"ref"`
 	// ModelRef optionally binds an llm credential to a model entry in the
-	// Agent definition model[] (by name). Required when multiple external
+	// AgentTemplate models list (by name). Required when multiple external
 	// models exist; implicit when exactly one (design §4.4, fail-closed).
 	// +optional
 	ModelRef string `json:"modelRef,omitempty"`
 	// Endpoint optionally binds an llm credential by endpoint (matches
-	// model[].endpoint). Mutually exclusive with ModelRef.
+	// the model's endpoint). Mutually exclusive with ModelRef.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 }
@@ -87,12 +87,14 @@ type LifecycleSpec struct {
 	IdleTTLSeconds int64 `json:"idleTTLSeconds,omitempty"`
 }
 
-// AgentInstanceSpec is the runtime instance of an Agent definition for one
-// user (design §3.2). The instance key is `user + agent` -- one instance per
-// user per agent, single-writer.
+// AgentInstanceSpec is the runtime instance of an AgentTemplate definition for
+// one tenant (design §3.2). The instance key is `user + template` -- one
+// instance per user per template, single-writer.
 type AgentInstanceSpec struct {
-	// AgentRef points to the Agent definition (e.g. agent-for-cloud).
-	AgentRef string `json:"agentRef"`
+	// TemplateRef points to the AgentTemplate definition (e.g.
+	// agent-for-cloud). Not pinned to a revision -- template updates take
+	// effect on the next reconcile/restart (design §3.1/§3.2).
+	TemplateRef string `json:"templateRef"`
 	// Owner is the user the instance belongs to.
 	Owner string `json:"owner"`
 	// Identity is the platform-side identity (mode + principal).
@@ -100,14 +102,14 @@ type AgentInstanceSpec struct {
 	// Credentials are the typed downstream credentials.
 	// +optional
 	Credentials []CredentialSpec `json:"credentials,omitempty"`
-	// SelectedModel optionally switches the model within the Agent definition
-	// model[] allowlist (default model[0].name). FR-M2-005.
+	// SelectedModel optionally selects a model within the template's inline
+	// models list (overrides defaultModel). FR-M2-005 / design §3.2.
 	// +optional
 	SelectedModel string `json:"selectedModel,omitempty"`
 	// DataVolume is the per-instance data directory.
 	// +optional
 	DataVolume *DataVolumeSpec `json:"dataVolume,omitempty"`
-	// Lifecycle overrides the definition default (within quota bounds).
+	// Lifecycle overrides the definition defaults (within quota bounds).
 	// +optional
 	Lifecycle *LifecycleSpec `json:"lifecycle,omitempty"`
 	// UserInstructions optionally appends user preferences to the definition
@@ -115,12 +117,10 @@ type AgentInstanceSpec struct {
 	// instructions; cannot remove or weaken security/identity bounds).
 	// +optional
 	UserInstructions string `json:"userInstructions,omitempty"`
-	// EnabledCapabilities optionally restricts the domain capabilities the
-	// Agent definition declares (design §3.2: the instance may select a
-	// subset; empty = all declared). Atomic capabilities are overlays and
-	// are not filtered here.
+	// EnabledSkills optionally restricts the skills the AgentTemplate declares
+	// (design §3.2: the instance may enable a subset; empty = all declared).
 	// +optional
-	EnabledCapabilities []string `json:"enabledCapabilities,omitempty"`
+	EnabledSkills []string `json:"enabledSkills,omitempty"`
 }
 
 // AgentInstanceStatus is the observed state of an instance (design §3.2,
@@ -155,16 +155,16 @@ type AgentInstanceStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".spec.agentRef"
+// +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
 // +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Pod",type="string",JSONPath=".status.podName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// AgentInstance is the runtime instance of an Agent for one user (design §3.2).
-// It is reconciled by the Instance Manager controller: provision / self-heal /
-// idle reclaim / data-directory GC. The instance key is user + agent (one
-// instance per user per agent, single-writer).
+// AgentInstance is the runtime instance of an AgentTemplate for one user
+// (design §3.2). It is reconciled by the Instance Manager controller:
+// provision / self-heal / idle reclaim / data-directory GC. The instance key
+// is user + template (one instance per user per template, single-writer).
 type AgentInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

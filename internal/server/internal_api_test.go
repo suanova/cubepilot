@@ -11,14 +11,16 @@ import (
 	"github.com/suanova/cubepilot/internal/resolver"
 )
 
-func internalTestAgent(name string) *v1alpha1.Agent {
-	return &v1alpha1.Agent{
+func internalTestAgent(name string) *v1alpha1.AgentTemplate {
+	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha1.AgentSpec{
+		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel:    "deepseek-v4-flash",
-			AvailableModels: []string{"deepseek-v4-flash"},
-			ConfirmPolicy:   v1alpha1.ConfirmPolicyConfirmWrites,
-			Instructions:    "You are the platform assistant.",
+			Models: []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+			},
+			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
+			Instructions:  "You are the platform assistant.",
 		},
 	}
 }
@@ -27,17 +29,9 @@ func internalTestInstance(user, agentRef string) *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(user, agentRef)},
 		Spec: v1alpha1.AgentInstanceSpec{
-			AgentRef: agentRef,
-			Owner:    user,
+			TemplateRef: agentRef,
+			Owner:       user,
 		},
-	}
-}
-
-func internalTestModel(name, modelID string) *v1alpha1.Model {
-	return &v1alpha1.Model{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       v1alpha1.ModelSpec{Provider: v1alpha1.ModelProviderPlatform, ModelID: modelID},
-		Status:     v1alpha1.ModelStatus{Phase: v1alpha1.ModelAvailable},
 	}
 }
 
@@ -59,7 +53,6 @@ func TestInternalAgentConfig(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
 		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
 	)
 
@@ -108,7 +101,6 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	s1 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
 		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
 	)
 	rec1 := doReq(t, s1.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
@@ -117,7 +109,6 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	s2 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
 		internalTestCap("cluster-inspection", "Read-only cluster inspection - added one more check."),
 	)
 	rec2 := doReq(t, s2.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)

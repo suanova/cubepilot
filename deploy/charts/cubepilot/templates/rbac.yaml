@@ -38,8 +38,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "persistentvolumeclaims", "services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Secrets: the Model controller resolves credentialRef (platform-managed
-  # model credentials) to probe external endpoints (design §3.3).
+  # Secrets: the operator resolves credentialRef for external models
+  # inlined in AgentTemplate.spec.models (design §3.3: no standalone Model
+  # CRD; credentials are platform-managed Secret references).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
@@ -72,10 +73,10 @@ metadata:
   name: {{ .Values.operator.name }}-crds
 rules:
   - apiGroups: ["assistant.suanova.io"]
-    resources: ["agents", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns", "models"]
+    resources: ["agenttemplates", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["assistant.suanova.io"]
-    resources: ["agents/status", "agentinstances/status", "tasks/status", "taskruns/status", "capabilities/status", "models/status"]
+    resources: ["agenttemplates/status", "agentinstances/status", "tasks/status", "taskruns/status", "capabilities/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
@@ -94,11 +95,10 @@ subjects:
     name: {{ .Values.serviceAccounts.operator }}
     namespace: {{ .Release.Namespace }}
 
-# --- API: read-only platform CRDs + Task/Model/Instance writes (task facade:
+# --- API: read-only platform CRDs + Task/Instance writes (task facade:
 # the Portal creates/toggles/runs Tasks as CRs; the operator owns TaskRun
-# writes. Model catalog writes: administrators add models from the Portal.
-# Instance writes: users self-provision their own AgentInstance CR; the
-# operator owns the Pod/PVC/Service lifecycle) ---
+# writes. Instance writes: users self-provision their own AgentInstance CR;
+# the operator owns the Pod/PVC/Service lifecycle) ---
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -106,10 +106,10 @@ metadata:
   name: {{ .Values.api.name }}
 rules:
   - apiGroups: ["assistant.suanova.io"]
-    resources: ["agents", "capabilities", "tasktemplates", "taskruns"]
+    resources: ["agenttemplates", "capabilities", "tasktemplates", "taskruns"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["assistant.suanova.io"]
-    resources: ["tasks", "models", "agentinstances"]
+    resources: ["tasks", "agentinstances"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]

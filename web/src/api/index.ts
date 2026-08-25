@@ -55,10 +55,10 @@ export const api = {
   agentStatus: () => apiFetch<AgentStatus>('/api/agent/status'),
 
   // Platform objects (read-only CRD views)
-  listAgents: () => apiFetch<{ agents: PlatformObject[] }>('/api/agents').then((d) => d.agents),
+  listAgentTemplates: () => apiFetch<{ agentTemplates: PlatformObject[] }>('/api/agenttemplates').then((d) => d.agentTemplates),
   listInstances: () =>
     apiFetch<{ instances: PlatformObject[] }>('/api/instances').then((d) => d.instances),
-  createInstance: (body: { agentRef?: string; selectedModel?: string; enabledCapabilities?: string[]; userInstructions?: string }) =>
+  createInstance: (body: { templateRef?: string; selectedModel?: string; enabledSkills?: string[]; userInstructions?: string }) =>
     apiFetch<{ instance: PlatformObject }>('/api/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -66,19 +66,6 @@ export const api = {
     }).then((d) => d.instance),
   listCapabilities: () =>
     apiFetch<{ capabilities: PlatformObject[] }>('/api/capabilities').then((d) => d.capabilities),
-  listModels: () => apiFetch<{ models: PlatformObject[] }>('/api/models').then((d) => d.models),
-  createModel: (body: {
-    displayName: string
-    provider: string
-    endpoint?: string
-    credentialRef?: string
-    modelId?: string
-  }) =>
-    apiFetch<{ model: PlatformObject }>('/api/models', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then((d) => d.model),
   listTaskRuns: () =>
     apiFetch<{ taskruns: PlatformObject[] }>('/api/taskruns').then((d) => d.taskruns),
 }
