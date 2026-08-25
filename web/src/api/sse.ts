@@ -1,4 +1,4 @@
-// SSE streaming helper — reads a fetch Response body chunk by chunk and
+// SSE streaming helper -- reads a fetch Response body chunk by chunk and
 // parses `event:`/`data:` blocks (POST SSE cannot use EventSource).
 //
 // If the stream ends (or the connection dies) before a terminal message_done
@@ -51,7 +51,7 @@ export async function streamSSE(
         if (ev.type === 'message_done') sawDone = true
         onEvent(ev.type || 'message', ev)
       } catch {
-        /* malformed frame — ignore */
+        /* malformed frame -- ignore */
       }
     }
   }

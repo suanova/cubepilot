@@ -57,13 +57,13 @@ spec:
             description: |-
               ModelSpec is a platform-level LLM model catalog entry (design §3.3),
               maintained by administrators. Templates and instances reference models by
-              name — decoupled from endpoints and credentials, which live inside the
+              name -- decoupled from endpoints and credentials, which live inside the
               Model object (platform-managed, never plaintext).
             properties:
               credentialRef:
                 description: |-
                   CredentialRef is a platform-managed Secret reference (namespace/name or
-                  name) holding the apiKey; required for external. References only — never
+                  name) holding the apiKey; required for external. References only -- never
                   the key itself.
                 type: string
               displayName:

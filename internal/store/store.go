@@ -1,6 +1,6 @@
 // Package store persists CubePilot platform metadata (scheduled tasks, run
 // reports,
-// audit entries, agent config) as JSON files on the backend PVC — the "tables"
+// audit entries, agent config) as JSON files on the backend PVC -- the "tables"
 // approach chosen over CRDs for phase one.
 package store
 

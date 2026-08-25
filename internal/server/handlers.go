@@ -30,10 +30,10 @@ func (s *Server) userOf(r *http.Request) string {
 }
 
 // clientFor returns the OpenClaw client for a user's agent instance, with the
-// effective selectedModel applied (design §3.2/§3.3: selectedModel → Model
-// catalog → x-openclaw-model per-request override; fail-closed when the
+// effective selectedModel applied (design §3.2/§3.3: selectedModel -> Model
+// catalog -> x-openclaw-model per-request override; fail-closed when the
 // selected model is missing/unavailable). The error is non-nil only when the
-// user explicitly selected a model that is missing or Unreachable — callers
+// user explicitly selected a model that is missing or Unreachable -- callers
 // that generate content must surface it; read-only callers may ignore it
 // (the override only affects chat turns, not session/history reads).
 func (s *Server) clientFor(user string) (openclaw.AgentRuntime, error) {
@@ -56,7 +56,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	client, cerr := s.clientFor(user)
 	if cerr != nil {
 		// Read-only path: the selectedModel override does not affect session
-		// listing — proceed with the runtime default model.
+		// listing -- proceed with the runtime default model.
 		s.logf("model resolution for %s: %v", user, cerr)
 		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
 	}
@@ -96,7 +96,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(history)
 }
 
-// handleLedger serves GET /api/sessions/{key}/ledger — the platform-side
+// handleLedger serves GET /api/sessions/{key}/ledger -- the platform-side
 // message ledger rows for a conversation (design §4.1: the platform is the
 // source of truth for the session). This is the
 // authoritative history for rendering and cross-runtime recovery; it does not
@@ -120,7 +120,7 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"conversationId": sessionKey, "messages": msgs})
 }
 
-// handleSeed serves POST /api/sessions/{key}/seed — re-seeds a new runtime
+// handleSeed serves POST /api/sessions/{key}/seed -- re-seeds a new runtime
 // session from the platform ledger (design §4.1 runtime swap re-attach: the
 // platform ledger replays recent messages as the new runtime's session
 // context). The assistant service replays ledger
@@ -311,7 +311,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	client, cerr := s.clientFor(user)
 	if cerr != nil {
 		// Fail-closed: never silently run with a different model than the user
-		// selected — surface the misconfiguration on the stream instead.
+		// selected -- surface the misconfiguration on the stream instead.
 		s.logf("model resolution for %s: %v", user, cerr)
 		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: cerr.Error()})
 		cancelTools()
@@ -577,7 +577,7 @@ func storeReport(taskID, taskName, trigger string, started time.Time, content st
 }
 
 // countSeverity counts distinct severity findings in a report. Structured
-// reports list each finding under a header like "### P1 Important — …", so
+// reports list each finding under a header like "### P1 Important -- ...", so
 // count those first; fall back to counting bare mentions for free-text reports.
 func countSeverity(content, sev string) int {
 	header := regexp.MustCompile(`(?m)^#{1,4}\s*` + sev + `\b`)

@@ -107,7 +107,7 @@ type TaskRunSpec struct {
 	// +optional
 	TaskName string `json:"taskName,omitempty"`
 	// Owner is the task owner (execution identity; derived from the Task's
-	// owner — design §3.5).
+	// owner -- design §3.5).
 	Owner string `json:"owner,omitempty"`
 	// Trigger is Manual | Cron.
 	// +optional
@@ -125,8 +125,8 @@ type TaskRunSpec struct {
 // +kubebuilder:printcolumn:name="P2",type="integer",JSONPath=".status.summary.p2"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// TaskRun is the execution report (design §3.3.4) — written by the scheduler
-// with the platform identity, completing the template → task → run report
+// TaskRun is the execution report (design §3.3.4) -- written by the scheduler
+// with the platform identity, completing the template -> task -> run report
 // loop.
 type TaskRun struct {
 	metav1.TypeMeta   `json:",inline"`

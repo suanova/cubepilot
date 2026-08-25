@@ -91,7 +91,7 @@ func presetCapabilityNames() ([]string, error) {
 // BuiltinCapabilityDefinitions returns the preset domain capabilities
 // generated from the embedded SKILL.md files. The Capability CRD carries the
 // platform semantics (title/description/instructions); the resolver renders
-// the CRD back into the runtime skill — one source, two presentations.
+// the CRD back into the runtime skill -- one source, two presentations.
 func BuiltinCapabilityDefinitions() ([]*v1alpha1.Capability, error) {
 	names, err := presetCapabilityNames()
 	if err != nil {

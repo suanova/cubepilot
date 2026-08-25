@@ -3,7 +3,7 @@
 // instance, and writes the execution report as a TaskRun CRD with the
 // platform identity (design §3.3.4 / §5.4: the scheduler creates and writes
 // TaskRuns with the platform identity; Agent instances and user credentials
-// never write CRDs directly — credential minimization).
+// never write CRDs directly -- credential minimization).
 package scheduler
 
 import (
@@ -28,7 +28,7 @@ import (
 // collected text. Implemented by the server (which owns the Instance Manager
 // and the OpenClaw client wiring).
 type Runner interface {
-	// RunTask runs one task turn: prompt → agent instance → collected deltas.
+	// RunTask runs one task turn: prompt -> agent instance -> collected deltas.
 	RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error)
 }
 
@@ -52,10 +52,10 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	// Manual-run annotation: the API marks POST /api/tasks/{id}/run by setting
-	// cubepilot/manual-run=<RFC3339>; fire once (even when paused — an
+	// cubepilot/manual-run=<RFC3339>; fire once (even when paused -- an
 	// explicit manual run is a user action, matching the pre-CRD behavior) and
 	// clear the annotation so a reconcile retry cannot fire it twice (design
-	// §3.5: the API never writes TaskRuns — the scheduler owns execution).
+	// §3.5: the API never writes TaskRuns -- the scheduler owns execution).
 	if ts, ok := task.Annotations[v1alpha1.TaskManualRunAnnotation]; ok && strings.TrimSpace(ts) != "" {
 		if err := r.fire(ctx, &task, "Manual"); err != nil {
 			log.Printf("scheduler: task %s manual fire: %v", task.Name, err)
@@ -82,7 +82,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Fire the task (asynchronously — a long agent turn must not block the
+	// Fire the task (asynchronously -- a long agent turn must not block the
 	// reconcile loop; the requeue keeps the loop alive for the next due time).
 	if err := r.fire(ctx, &task, "Cron"); err != nil {
 		log.Printf("scheduler: task %s fire: %v", task.Name, err)
@@ -137,7 +137,7 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 }
 
 // fire executes a due task: resolves the template (and the revisions actually
-// used — design §3.5), creates a TaskRun (Pending → Running), runs the agent
+// used -- design §3.5), creates a TaskRun (Pending -> Running), runs the agent
 // turn, and writes the report (Completed / Failed) with the platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
 	// Resolve the prompt + revisions before creating the run: the TaskRun
@@ -164,7 +164,7 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		return fmt.Errorf("create taskrun: %w", err)
 	}
 	// Mark Running. Note: TaskRun has a status subresource, so the create
-	// response carries an empty status — the revision fields pre-set on `run`
+	// response carries an empty status -- the revision fields pre-set on `run`
 	// are NOT persisted by Create. Set the full status here in one patch
 	// (revisions included) so the run records what was actually executed
 	// (design §3.5/§7: template/capability revision resolved at run time).
@@ -284,7 +284,7 @@ func countSeverity(content, sev string) int {
 }
 
 func countSeverityTotal(content string) int {
-	// Total findings ≈ count of P0/P1/P2 lines (rough; the agent's structured
+	// Total findings ~= count of P0/P1/P2 lines (rough; the agent's structured
 	// report lists each finding under a header).
 	lines := strings.Split(content, "\n")
 	total := 0

@@ -1,4 +1,4 @@
-// HTTP client — every request carries the X-CubePilot-User header; the
+// HTTP client -- every request carries the X-CubePilot-User header; the
 // backend derives the operator identity from it (design §3.3.4).
 
 const USER_HEADER = 'X-CubePilot-User'

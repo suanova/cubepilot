@@ -9,7 +9,7 @@ import (
 	"github.com/suanova/cubepilot/internal/store"
 )
 
-// handleAudit serves GET /api/audit?limit=400 — newest-first M5 entries.
+// handleAudit serves GET /api/audit?limit=400 -- newest-first M5 entries.
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -29,7 +29,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
-// handleAgentConfig serves GET/PUT /api/agent/config — the persisted Agent
+// handleAgentConfig serves GET/PUT /api/agent/config -- the persisted Agent
 // config desired state. systemPrompt is applied live to subsequent chat turns;
 // model/skills are stored preferences (applied on instance rebuild).
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {

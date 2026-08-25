@@ -2,7 +2,7 @@
 // CubePilot-Cloud-for-Agents-Design.md §3): Agent / AgentInstance /
 // Capability / TaskTemplate / Task / TaskRun.
 //
-// Group: assistant.suanova.io — the platform-layer (Cloud for Agents) API.
+// Group: assistant.suanova.io -- the platform-layer (Cloud for Agents) API.
 
 // +kubebuilder:object:generate=true
 // +groupName=assistant.suanova.io

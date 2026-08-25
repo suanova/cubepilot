@@ -45,7 +45,7 @@ type CredentialSpec struct {
 }
 
 // PrincipalRef binds the instance to a concrete principal (design §3.2:
-// userRef for mode=user; serviceRef for mode=service — mutually exclusive).
+// userRef for mode=user; serviceRef for mode=service -- mutually exclusive).
 type PrincipalRef struct {
 	// UserRef binds a user identity (mode=user).
 	// +optional
@@ -88,7 +88,7 @@ type LifecycleSpec struct {
 }
 
 // AgentInstanceSpec is the runtime instance of an Agent definition for one
-// user (design §3.2). The instance key is `user + agent` — one instance per
+// user (design §3.2). The instance key is `user + agent` -- one instance per
 // user per agent, single-writer.
 type AgentInstanceSpec struct {
 	// AgentRef points to the Agent definition (e.g. agent-for-cloud).
@@ -124,7 +124,7 @@ type AgentInstanceSpec struct {
 }
 
 // AgentInstanceStatus is the observed state of an instance (design §3.2,
-// written by the Instance Manager controller — users do not edit it).
+// written by the Instance Manager controller -- users do not edit it).
 type AgentInstanceStatus struct {
 	// Phase is Creating / Ready / Idle / Reclaiming / Failed.
 	// +optional

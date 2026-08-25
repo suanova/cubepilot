@@ -1,4 +1,4 @@
-# CubePilot Helm values — default to the kind-cluster local images; override
+# CubePilot Helm values -- default to the kind-cluster local images; override
 # repository/tag for real registries.
 
 # --- shared ---------------------------------------------------------------
@@ -18,7 +18,7 @@ agents:
   gcWindow: 72h
   gcWatermark: "0.7"
 
-# Existing secrets to consume (created out-of-band, e.g. by scripts/setup.sh —
+# Existing secrets to consume (created out-of-band, e.g. by scripts/setup.sh --
 # they hold host-derived LLM/gateway credentials and are never templated).
 secrets:
   # openclaw.json (agent runtime config) + gatewayToken key.

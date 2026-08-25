@@ -1,4 +1,4 @@
-// Chat view — session list + thread + composer, SSE streaming from /api/messages.
+// Chat view -- session list + thread + composer, SSE streaming from /api/messages.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
@@ -120,7 +120,7 @@ export default function ChatView() {
   }, [])
 
   const chatTitle = (() => {
-    if (!currentSessionId) return '新会话'
+    if (!currentSessionId) return 'New conversation'
     const s = sessions.find((x) => x.sessionKey === currentSessionId)
     return s?.title || shortSession(currentSessionId)
   })()
@@ -158,7 +158,7 @@ export default function ChatView() {
       const items = await api.sessionHistory(id)
       renderHistory(items)
     } catch (e) {
-      setBubbles([{ kind: 'assistant', text: '历史加载失败：' + String(e), tools: [], toolResults: [], thinking: false }])
+      setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], toolResults: [], thinking: false }])
     } finally {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)
@@ -321,15 +321,15 @@ export default function ChatView() {
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
     switch (b.phase) {
       case 'thinking':
-        return `正在思考… ${secs}s`
+        return `Thinking... ${secs}s`
       case 'tools': {
         const n = b.tools.filter((t) => !t.done).length
-        return n > 0 ? `正在执行 ${n} 个工具… ${secs}s` : `整理工具结果・思考中… ${secs}s`
+        return n > 0 ? `Running ${n} tool(s)... ${secs}s` : `Collating tool results / thinking... ${secs}s`
       }
       case 'streaming':
-        return `正在输出回复… ${secs}s`
+        return `Streaming reply... ${secs}s`
       case 'done':
-        return '回答完成'
+        return 'Done'
     }
   }
 
@@ -339,9 +339,9 @@ export default function ChatView() {
         <div className="session-head">
           <div className="session-search">
             <SearchIcon />
-            <input value={sessionSearch} onChange={(e) => setSessionSearch(e.target.value)} placeholder="搜索会话" aria-label="搜索会话" />
+            <input value={sessionSearch} onChange={(e) => setSessionSearch(e.target.value)} placeholder="Search conversations" aria-label="Search conversations" />
           </div>
-          <button className="new-chat" aria-label="新建会话" onClick={newChat}>
+          <button className="new-chat" aria-label="New conversation" onClick={newChat}>
             <NewChatIcon />
           </button>
         </div>
@@ -369,7 +369,7 @@ export default function ChatView() {
           <div className="chat-head-main">
             <div className="chat-head-title">{chatTitle}</div>
             <div className="chat-head-meta">
-              {loadingHistory ? '加载历史中…' : currentSessionId ? '已加载历史 · 继续对话即可' : '尚未开始'}
+              {loadingHistory ? 'Loading history...' : currentSessionId ? 'History loaded - continue the conversation' : 'Not started yet'}
             </div>
           </div>
         </div>
@@ -399,9 +399,9 @@ export default function ChatView() {
                           <ToolIcon />
                           <span className="tool-cmd">{t.name}</span>
                           {!t.done && b.phase !== 'done' ? (
-                            <span className="pill accent">执行中…</span>
+                            <span className="pill accent">Running...</span>
                           ) : (
-                            <span className="pill neutral">已完成</span>
+                            <span className="pill neutral">Done</span>
                           )}
                         </div>
                         <div className="tool-body">
@@ -431,15 +431,15 @@ export default function ChatView() {
                       </div>
                     ))}
                     {b.text && <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>}
-                    {b.error && <div style={{ fontSize: 13, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>⚠ {b.error}</div>}
+                    {b.error && <div style={{ fontSize: 13, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>{b.error}</div>}
                   </div>
                 </div>
               ))
             ) : (
               <div className="thread-empty">
                 <EmptyChatIcon />
-                <div className="thread-empty-title">开始新的对话</div>
-                <div className="thread-empty-desc">在下方输入需求，CubePilot 会调用平台能力帮你排查、部署或查询资源。</div>
+                <div className="thread-empty-title">Start a new conversation</div>
+                <div className="thread-empty-desc">Type your request below; CubePilot will use platform capabilities to troubleshoot, deploy or query resources for you.</div>
               </div>
             )}
           </div>
@@ -450,8 +450,8 @@ export default function ChatView() {
             <textarea
               ref={inputEl}
               rows={1}
-              placeholder="输入指令，例如「查看 GPU 利用率」或「创建一个开发环境」…"
-              aria-label="输入消息"
+              placeholder="Type a command, e.g. `check GPU utilization` or `create a development environment`..."
+              aria-label="Message input"
               onInput={autoGrow}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -460,12 +460,12 @@ export default function ChatView() {
                 }
               }}
             />
-            <button className="send-btn" aria-label="发送" onClick={sendMessage}>
+            <button className="send-btn" aria-label="Send" onClick={sendMessage}>
               <SendIcon />
             </button>
           </div>
           <div className="composer-hint">
-            支持自然语言操作平台资源 · 输入 <span className="mono">@</span> 引用资源 · 阶段一写操作直放
+            Operate platform resources via natural language - type <span className="mono">@</span> to reference a resource - phase-one write operations pass through directly
           </div>
         </div>
       </div>

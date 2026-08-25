@@ -1,5 +1,5 @@
-# API — Portal REST/SSE + JSON metadata store. Stateless except the single
-# RWO PVC → single replica today; shared storage enables replicas > 1
+# API -- Portal REST/SSE + JSON metadata store. Stateless except the single
+# RWO PVC -> single replica today; shared storage enables replicas > 1
 # (design §9 / §11.1).
 apiVersion: apps/v1
 kind: Deployment

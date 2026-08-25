@@ -27,7 +27,7 @@ log "building Go binaries (host) + images"
 docker build -t cubepilot-openclaw:local    -f "$REPO_DIR/deploy/openclaw-image.Dockerfile"    "$REPO_DIR"
 docker build -t cubepilot-operator:local -f "$REPO_DIR/deploy/operator-image.Dockerfile" "$REPO_DIR"
 docker build -t cubepilot-api:local      -f "$REPO_DIR/deploy/api-image.Dockerfile"      "$REPO_DIR"
-# Portal SPA — multi-stage node build → nginx (independent component, §9).
+# Portal SPA -- multi-stage node build -> nginx (independent component, §9).
 docker build -t cubepilot-web:local      -f "$REPO_DIR/web/Dockerfile"                  "$REPO_DIR/web"
 
 log "loading images into kind ($KIND_CLUSTER)"
@@ -45,15 +45,17 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
   --from-file=config="$REPO_DIR/deploy/agent-kubeconfig.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 2. openclaw-config: Pod 内 gateway 配置，**白名单提取**（只取模型凭据 +
-#    agent 运行所需字段，宿主专属字段（workspace/agents.list/mcp/channels/plugins）
-#    在结构上就不可能泄漏；宿主 ~/.openclaw/openclaw.json 仅作开发期凭据源，
-#    生产凭据治理见设计 §3.3 Model.credentialRef（阶段二）。
+# 2. openclaw-config: in-Pod gateway config, **allowlist extraction** (only model
+#    credentials + fields the agent needs at runtime; host-only fields
+#    (workspace/agents.list/mcp/channels/plugins) cannot leak by construction;
+#    the host ~/.openclaw/openclaw.json is only a dev-time credential source,
+#    production credential governance lives in design §3.3 Model.credentialRef
+#    (phase two).
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 # Default backend model for agent gateways. Empty = inherit the host config's
 # .agents.defaults.model.primary untouched (recommended; the Model catalog,
-# not the host config, is the long-term source — §3.3). Set CUBEPILOT_DEFAULT_MODEL
+# not the host config, is the long-term source -- §3.3). Set CUBEPILOT_DEFAULT_MODEL
 # to force a specific primary (e.g. deepseek-v4-flash).
 DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
 jq --arg dm "$DEFAULT_MODEL" '
@@ -61,7 +63,7 @@ jq --arg dm "$DEFAULT_MODEL" '
     models: { providers: .models.providers },
     agents: {
       defaults: {
-        workspace: "/home/node/.openclaw/workspace",  # Pod 内 workspace（PVC，seed-workspace 初始化）
+        workspace: "/home/node/.openclaw/workspace",  # in-Pod workspace (PVC, seeded by seed-workspace)
         model: .agents.defaults.model,
         models: .agents.defaults.models,
         sandbox: .agents.defaults.sandbox,
@@ -69,8 +71,8 @@ jq --arg dm "$DEFAULT_MODEL" '
       }
     },
     gateway: {
-      mode: .gateway.mode,                      # local（gateway 启动必需，缺失会被安全机制拦截）
-      port: .gateway.port,                      # 18789（agent svc 目标端口）
+      mode: .gateway.mode,                      # local (required for gateway startup; the security mechanism blocks missing mode)
+      port: .gateway.port,                      # 18789 (agent svc target port)
       bind: .gateway.bind,
       controlUi: .gateway.controlUi,
       http: { endpoints: { chatCompletions: { enabled: true } } }

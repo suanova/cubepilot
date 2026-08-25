@@ -49,7 +49,7 @@ func instance(user, selected string) *v1alpha1.AgentInstance {
 
 // TestSelectedModelForResolvesDefault verifies the agent definition's
 // defaultModel applies when the instance has no explicit selection
-// (design §3.1: defaultModel → catalog → modelId).
+// (design §3.1: defaultModel -> catalog -> modelId).
 func TestSelectedModelForResolvesDefault(t *testing.T) {
 	agent := &v1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
@@ -127,7 +127,7 @@ func TestSelectedModelForUnreachable(t *testing.T) {
 }
 
 // TestSelectedModelForNoConfig verifies no instance / no selection / no
-// default → empty (runtime default), which is not an error.
+// default -> empty (runtime default), which is not an error.
 func TestSelectedModelForNoConfig(t *testing.T) {
 	m := testManager(t)
 	if _, err := m.SelectedModelFor(context.Background(), "nobody"); err != nil {

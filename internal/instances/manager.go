@@ -151,9 +151,9 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 }
 
 // SelectedModelFor resolves the effective backend model id for a user's
-// agent instance (design §3.2/§3.3): instance.spec.selectedModel → Agent
-// definition defaultModel/availableModels → Model catalog → spec.modelId.
-// Empty means "no override — use the runtime's normal configured model".
+// agent instance (design §3.2/§3.3): instance.spec.selectedModel -> Agent
+// definition defaultModel/availableModels -> Model catalog -> spec.modelId.
+// Empty means "no override -- use the runtime's normal configured model".
 // An explicitly selected model that is missing from the catalog, outside the
 // agent's availableModels, or Unreachable is an error (fail-closed, never a
 // silent fallback); an empty selection is not an error.

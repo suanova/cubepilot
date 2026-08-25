@@ -32,7 +32,7 @@ spec:
       openAPIV3Schema:
         description: |-
           Capability is the capability catalog entry (design §3.3.1). It answers
-          "what an Agent can use" — atomic thin overrides bound to CRDs and domain
+          "what an Agent can use" -- atomic thin overrides bound to CRDs and domain
           knowledge.
           Generic tools are platform-provided and need no registration.
         properties:
@@ -57,7 +57,7 @@ spec:
             description: |-
               CapabilitySpec is a platform capability (design §3.3.1). Generic tools
               (list-kinds / describe-kind / resource-manager / kubectl-raw) are
-              platform-provided and NOT registered as Capabilities — zero registration.
+              platform-provided and NOT registered as Capabilities -- zero registration.
             properties:
               agents:
                 description: 'Agents restricts visibility: empty = visible to all

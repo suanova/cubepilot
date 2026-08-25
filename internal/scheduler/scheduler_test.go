@@ -52,7 +52,7 @@ type fakeRunner struct {
 func (f *fakeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
 	f.gotUser = creator
 	f.gotPrompt = prompt
-	return "### P1 Important — inference pod CrashLoopBackOff\nEvidence: kubectl get pods", nil
+	return "### P1 Important -- inference pod CrashLoopBackOff\nEvidence: kubectl get pods", nil
 }
 
 func dueTask(created time.Time) *v1alpha1.Task {
@@ -65,7 +65,7 @@ func dueTask(created time.Time) *v1alpha1.Task {
 			TemplateRef: "daily-inspection",
 			Owner:       "zhang.wei",
 			Trigger:     v1alpha1.TaskTriggerCron,
-			Cron:        "* * * * *", // every minute → deterministically due
+			Cron:        "* * * * *", // every minute -> deterministically due
 			State:       v1alpha1.TaskStateEnabled,
 		},
 	}
@@ -80,8 +80,8 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	runner := &fakeRunner{}
 	cl := newFakeClient(t, scheme)
 
-	// Task due: created 2 minutes ago; every-minute cron → the next fire is
-	// already in the past → due on reconcile.
+	// Task due: created 2 minutes ago; every-minute cron -> the next fire is
+	// already in the past -> due on reconcile.
 	task := dueTask(time.Now().Add(-2 * time.Minute))
 	if err := cl.Create(context.Background(), task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -116,7 +116,7 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 		t.Errorf("runner creator = %q, want zhang.wei", runner.gotUser)
 	}
 	if !strings.Contains(runner.gotPrompt, "{{scope}}") {
-		// No params set → placeholder stays; instruction still rendered.
+		// No params set -> placeholder stays; instruction still rendered.
 		if !strings.Contains(runner.gotPrompt, "read-only") {
 			t.Errorf("prompt not rendered from template: %q", runner.gotPrompt)
 		}
@@ -169,7 +169,7 @@ func TestNextDueDisabled(t *testing.T) {
 	task.Spec.State = v1alpha1.TaskStatePaused
 	r := &ReconcileScheduler{}
 	if !task.Enabled() {
-		// Enabled() false → scheduler returns early; nextDue not consulted.
+		// Enabled() false -> scheduler returns early; nextDue not consulted.
 	} else {
 		t.Error("task should be disabled")
 	}

@@ -25,9 +25,9 @@ const (
 	TaskStatePaused TaskState = "Paused"
 )
 
-// TaskSpec is a task instance (design §3.3.3) — whose task, when it runs. It
+// TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
 // links the
-// execution subject (agentRef → Agent) with the task content (templateRef →
+// execution subject (agentRef -> Agent) with the task content (templateRef ->
 // TaskTemplate); creator decides the execution identity.
 type TaskSpec struct {
 	// TemplateRef points to the TaskTemplate (optional: inline instruction
@@ -41,7 +41,7 @@ type TaskSpec struct {
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
 	// Owner is the task owner; execution identity = owner (RBAC matches the
-	// owner; the per-user instance is derived from it — design §3.5: phase
+	// owner; the per-user instance is derived from it -- design §3.5: phase
 	// one has one agent-for-cloud instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
 	// Trigger is Manual | Cron.
@@ -84,7 +84,7 @@ type TaskStatus struct {
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".spec.state"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Task is a task instance (design §3.3.3) — the "object" of the task domain:
+// Task is a task instance (design §3.3.3) -- the "object" of the task domain:
 // who owns it, when it runs, which Agent executes it. The scheduler reads
 // Task CRDs and writes TaskRun (written with the platform identity, credential
 // minimization).
@@ -111,7 +111,7 @@ type TaskList struct {
 	Items           []Task `json:"items"`
 }
 
-// Annotation keys on Task (not CRD schema — Portal/operator coordination).
+// Annotation keys on Task (not CRD schema -- Portal/operator coordination).
 const (
 	// TaskDisplayNameAnnotation carries the human-facing task name (the CR
 	// name is DNS-1123 and may be sanitized/lossy for CJK input).

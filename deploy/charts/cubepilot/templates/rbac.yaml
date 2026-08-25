@@ -1,10 +1,11 @@
 # RBAC (design §9 / §11.1: components separated, RBAC minimized per
-# component). ClusterRoles use fixed names — single-instance per cluster;
+# component). ClusterRoles use fixed names -- single-instance per cluster;
 # operator owns the control plane, api reads CRDs only, agent is broad for
 # now (FR-M3-001 per-user minimal RBAC is the production contract).
 #
-# 巡检（FR-M4-007）以创建者身份执行、权限与创建者一致（design §5.4 / FR-M4 授权
-# 约定）——不设专用只读凭据；只读由巡检模板行为约束 + RBAC 兜底。
+# Inspection (FR-M4-007) runs as the creator with the creator's permissions
+# (design §5.4 / FR-M4 authorization) -- no dedicated read-only credentials;
+# read-only is enforced by the inspection template behavior + RBAC fallback.
 
 # --- ServiceAccounts ---
 ---
@@ -143,7 +144,7 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch"]
-  # Platform CRDs (DevEnvironment / InferenceService / ...) — current wildcard.
+  # Platform CRDs (DevEnvironment / InferenceService / ...) -- current wildcard.
   - apiGroups: ["assistant.suanova.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

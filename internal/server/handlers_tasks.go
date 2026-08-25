@@ -121,7 +121,7 @@ func taskRunToReport(taskName string, run v1alpha1.TaskRun) reportDTO {
 	return dto
 }
 
-// handleTasks serves GET (list) and POST (create) for /api/tasks — a thin
+// handleTasks serves GET (list) and POST (create) for /api/tasks -- a thin
 // CRD facade over Task CRs (design §3.5: Task = who + when; scheduling is
 // owned by the operator's ReconcileScheduler, the API never writes TaskRuns).
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +137,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Owner-scoped listing (design §3.5: Task carries its owner; a user
-		// sees only their own tasks — same isolation as instances).
+		// sees only their own tasks -- same isolation as instances).
 		me := s.userOf(r)
 		out := make([]taskDTO, 0, len(list.Items))
 		for _, t := range list.Items {

@@ -64,7 +64,7 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 }
 
 // TestHandleInstancesOwnerScoped verifies GET /api/instances returns only the
-// caller's own instances — even with a ?user= filter naming someone else.
+// caller's own instances -- even with a ?user= filter naming someone else.
 func TestHandleInstancesOwnerScoped(t *testing.T) {
 	li := &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
@@ -151,7 +151,7 @@ func TestHandleModelsCreate(t *testing.T) {
 		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
 
-	// Duplicate (same display name → same slug) → 409 + existing entry.
+	// Duplicate (same display name -> same slug) -> 409 + existing entry.
 	rec = doReq(t, h, http.MethodPost, "/api/models", "zhang.wei", map[string]any{
 		"displayName": "DeepSeek V3", "provider": "External",
 		"endpoint": "https://api.example.com/v1", "credentialRef": "cred-llm",
@@ -200,19 +200,19 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 		t.Errorf("li.ming sees %d tasks (%v), want only own", len(got.Tasks), got.Tasks)
 	}
 
-	// Delete another user's task → 403.
+	// Delete another user's task -> 403.
 	rec = doReq(t, h, http.MethodDelete, "/api/tasks/wang-wu-task-def", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user delete status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 
-	// Run another user's task → 403.
+	// Run another user's task -> 403.
 	rec = doReq(t, h, http.MethodPost, "/api/tasks/wang-wu-task-def/run", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user run status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 
-	// Reports of another user's task → 403.
+	// Reports of another user's task -> 403.
 	rec = doReq(t, h, http.MethodGet, "/api/tasks/wang-wu-task-def/reports", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user reports status = %d, want 403: %s", rec.Code, rec.Body.String())
@@ -240,7 +240,7 @@ func TestHandleTaskRunsOwnerScoped(t *testing.T) {
 		t.Errorf("li.ming sees %d runs (%v), want only own", len(got.TaskRuns), got.TaskRuns)
 	}
 
-	// Single-run fetch of another user's run → 403.
+	// Single-run fetch of another user's run -> 403.
 	rec = doReq(t, s.Handler(), http.MethodGet, "/api/taskruns/wang-wu-task-def-20260820-020000", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user taskrun status = %d, want 403: %s", rec.Code, rec.Body.String())

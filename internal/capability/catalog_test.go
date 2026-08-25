@@ -52,7 +52,7 @@ func TestToolSetForAgent(t *testing.T) {
 
 // TestValidateCapability verifies the registration validation rules
 // (design §3.3.1: atomic must have override+target; domain must have
-// instructions; a missing target CRD → fail-fast).
+// instructions; a missing target CRD -> fail-fast).
 func TestValidateCapability(t *testing.T) {
 	c := &Catalog{schemas: map[string]*CRDSchema{
 		"dev.suanova.io/DevEnvironment": {
@@ -73,21 +73,21 @@ func TestValidateCapability(t *testing.T) {
 		t.Errorf("valid atomic rejected: %v", err)
 	}
 
-	// Atomic without override → reject.
+	// Atomic without override -> reject.
 	noOverride := ok.DeepCopy()
 	noOverride.Spec.Override = false
 	if err := c.ValidateCapability(noOverride); err == nil {
 		t.Error("atomic without override accepted")
 	}
 
-	// Atomic targeting a missing CRD → fail-fast.
+	// Atomic targeting a missing CRD -> fail-fast.
 	badTarget := ok.DeepCopy()
 	badTarget.Spec.Target = &v1alpha1.CapabilityTarget{Group: "x.io", Kind: "Missing"}
 	if err := c.ValidateCapability(badTarget); err == nil {
 		t.Error("atomic with missing target accepted")
 	}
 
-	// Domain without instructions → reject.
+	// Domain without instructions -> reject.
 	dom := &v1alpha1.Capability{
 		ObjectMeta: metav1.ObjectMeta{Name: "d"},
 		Spec:       v1alpha1.CapabilitySpec{Type: v1alpha1.CapabilityDomain},
