@@ -28,7 +28,7 @@ secret.
   effect on already-created agent Pods.
 - R4. Deploy-phase assertions: kind cluster exists; namespace exists; the six
   chart CRDs exist (`agenttemplates`, `agentinstances`, `capabilities`, `tasks`,
-  `taskruns`, `tasktemplates` under `ai.cubestack.io`); secrets
+  `taskruns`, `tasktemplates` under `assistant.suanova.io`); secrets
   `openclaw-config` (keys `openclaw.json` + non-empty `gatewayToken`) and
   `agent-kubeconfig` exist; `cubepilot-operator`/`cubepilot-api`/`cubepilot-web`
   rollouts Ready; api `/healthz` returns 200; the portal (`svc/cubepilot`)
