@@ -59,7 +59,7 @@ documented in `--help`.
 
 | Env var / flag | Required | Default | Purpose |
 |---|---|---|---|
-| `CUBEPILOT_MODEL_PROVIDERS` / `--providers-json` | **yes** | — | The `models.providers` object verbatim, e.g. `{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com","models":[{...}]}}`. One provider is enough for testing. |
+| `CUBEPILOT_MODEL_PROVIDERS` / `--providers-json` | **yes** | — | The `models.providers` object verbatim, e.g. `{"deepseek":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://api.deepseek.com","models":[{...}]}}`. One provider is enough for testing. |
 | `CUBEPILOT_DEFAULT_MODEL` / `--default-model` | no | first provider's first model id | `agents.defaults.model.primary`, e.g. `deepseek/deepseek-v4-flash`. |
 | `CUBEPILOT_GATEWAY_TOKEN` / `--gateway-token` | no | `openssl rand -hex 32` | Shared gateway auth token; injected into the `openclaw-config` Secret as `gatewayToken` and into `openclaw.json`'s `gateway.auth.token`. Caller never needs to know it. |
 | `CUBEPILOT_KIND_CLUSTER` | no | `cube` | Kind cluster name (existing). |
