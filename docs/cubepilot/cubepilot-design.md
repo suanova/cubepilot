@@ -41,18 +41,23 @@
 
 ```mermaid
 flowchart TB
-    U["用户 / Portal / API"] --> S["CubePilot Service\n路由 · SSE · 配置"]
+    U["用户 / Portal / API"] --> S["CubePilot Service\n路由 · SSE · 配置 · 技能发布"]
     S --> IM["Instance Manager\n生命周期 · PVC"]
     S --> DB["平台元数据（CRD）"]
     SCH["Scheduler\nTaskTemplate → Task → TaskRun"] --> DB
 
     subgraph RT["AgentInstance Runtime Pod"]
-      INJ["injector sidecar\n配置注入 · skill 拉取"]
+      INJ["injector sidecar\n配置注入 · skill 读取/解压"]
       OC["OpenClaw\n对话 · 规划 · 汇总\n扫目录加载 skill · exec kubectl"]
       PVC["PVC\n会话 · 记忆 · 配置"]
       INJ -- 写配置 / 解压 skill --> PVC
       OC <--> PVC
     end
+
+    SK["技能仓库\n共享文件卷（CephFS RWX）"]
+    S -- 发布：写 skill tar --> SK
+    SK -- 安装：读 skill tar（只读挂载）--> INJ
+    INJ -- watch AgentInstance / Skill --> DB
 
     S -- chat/runTask --> OC
     SCH -- runTask --> OC
@@ -65,9 +70,9 @@ flowchart TB
 | 组件 | 职责 | 不负责什么 |
 |---|---|---|
 | Portal/API | 认证、对话入口（浮窗 + 独立 tab）、配置、任务与报告查询 | 不持有 Agent 会话状态 |
-| CubePilot Service | Agent 路由、SSE 转发、chat/runTask 转发（OpenClaw 客户端）、实例查找 | 不执行 LLM 编排或 kubectl |
+| CubePilot Service | Agent 路由、SSE 转发、chat/runTask 转发（OpenClaw 客户端）、实例查找、技能发布（写技能仓库 + Skill CRD） | 不执行 LLM 编排或 kubectl |
 | Instance Manager | 创建、停止、自愈 Pod；挂载 PVC 和凭据 | 不理解用户自然语言 |
-| injector sidecar | 配置注入、skill 拉取：watch CRD → 渲染配置 + 解压 skill 写 PVC | 不做 Agent 规划 |
+| injector sidecar | 配置注入、skill 读取：watch CRD → 从技能仓库读取 + 渲染配置 + 解压 skill 写 PVC | 不做 Agent 规划 |
 | OpenClaw 进程 | 对话/规划/汇总；扫目录加载 skill；exec kubectl（简单 HITL） | 不决定 RBAC 或管理 Pod |
 | Scheduler | 触发任务、调用实例、写入 TaskRun | 不持有用户资源权限 |
 
@@ -86,12 +91,12 @@ CubePilot 依赖平台安装时提供的 Ceph 存储：
 
 | 存储 | 用途 |
 |---|---|
-| S3 bucket（对象存储） | 技能仓库，存技能 tar 包（§3.4） |
+| 共享文件卷（CephFS，RWX） | 技能仓库，存技能 tar 包（§3.4） |
 | 文件型 StorageClass | 每实例数据 PVC（RWO，存会话/记忆/配置） |
 
 **平台安装时需提供**：
 
-- 一个 **S3 bucket**（如 `cubepilot-skills`）——技能仓库；
+- 一个**共享文件卷**（CephFS，RWX，如 `cubepilot-skills`）——技能仓库；
 - 一个**文件型 StorageClass**（如 `cubepilot-data`）——供每实例数据 PVC 使用。
 
 ---
@@ -182,7 +187,7 @@ harbor/
 
 ### 技能登记（Skill CRD）
 
-`Skill` CRD 登记「有什么技能、在哪、什么版本、谁可见」，内容在技能仓库（对象存储），不塞 CRD：
+`Skill` CRD 登记「有什么技能、在哪、什么版本、谁可见」，内容在技能仓库（共享文件卷），不塞 CRD：
 
 ```yaml
 apiVersion: ai.cubestack.io/v1alpha1
@@ -194,19 +199,25 @@ spec:
   description: 查询 / 清理 Harbor 镜像
   visibility: Platform            # Platform | Tenant | User
   source:
-    url: s3://cubepilot-skills/harbor/v1.tar.gz   # 含版本号，不可变
-    sha256: "..."                                  # 可选：内容校验/审计指纹，Portal 发布自动回填
+    type: Path                    # Path | S3（判别字段；阶段二启用对象存储时用 S3）
+    path: skills/harbor/v1.tar.gz # 仅 type=Path：共享文件卷内路径（相对挂载点），含版本号，不可变
+    s3:                           # 仅 type=S3（阶段二）：对象存储寻址
+      bucket: cubepilot-skills
+      key: harbor/v1.tar.gz
+    sha256: "..."                 # 与后端无关，内容校验/审计指纹，Portal 发布自动回填
 status:
   phase: Available                # Available | Unreachable
   conditions: [...]
 ```
 
-`source.sha256` 可选：Portal 拖拽上传时后端自动计算回填；手动 `kubectl apply` 可留空，此时以 `url` 中的版本号作为审计标识、完整性校验交给对象存储传输层。
+`source.type` 是判别字段（`Path | S3`），阶段一仅 `Path`；`path` 与 `s3` 是互斥臂字段，由 CEL 校验保证与 `type` 一致（`type=Path` 时必须有 `path` 且不能有 `s3`，反之亦然），非法组合被 API server 拒绝。`source.sha256` 可选：Portal 拖拽上传时后端自动计算回填；手动 `kubectl apply` 可留空，此时以 `path` 中的版本号作为审计标识、完整性校验交给共享文件卷传输层。
 
 ### 发布与安装
 
-- **发布（模块/管理员）**：Portal「技能管理」页拖拽上传 skill 目录 → 后端打包传对象存储 + 建 `Skill` CRD。
-- **安装（用户）**：Portal「技能市场」浏览搜索 → 点「安装」→ 后端把技能名加入该实例 `enabledSkills` → injector 拉取 tar 解压到 workspace/skills → OpenClaw 文件监听热加载。
+- **发布（模块/管理员）**：Portal「技能管理」页拖拽上传 skill 目录 → 后端打包写入技能仓库共享文件卷（先写临时文件再原子 rename）+ 建 `Skill` CRD。
+- **安装（用户）**：Portal「技能市场」浏览搜索 → 点「安装」→ 后端把技能名加入该实例 `enabledSkills` → injector 从共享文件卷（只读挂载）读取 tar 解压到 workspace/skills → OpenClaw 文件监听热加载。
+
+技能仓库后端（共享文件卷 ↔ 对象存储）对 `Skill` CRD 与加载流程透明，差异仅在 `source` 的寻址方式与 injector 取包方式（挂载点读取 vs 网络拉取）：切对象存储时改 `source.type` 为 `S3` 并填 `source.s3`，其余不变。阶段二放开用户私有技能、需要对象级 ACL 时可切回对象存储，不影响 CRD 与热重载。
 
 AgentTemplate 用 `skills: [...]` 声明默认启用，实例 `enabledSkills` 是用户启用的子集。阶段一只有平台级技能；用户私有技能（`visibility: User`）阶段二放开。
 
@@ -274,7 +285,7 @@ status:
 | 数据 | 真源 | 说明 |
 |---|---|---|
 | AgentTemplate、AgentInstance、Skill、TaskTemplate、Task、TaskRun | CRD / 控制面数据库 | 声明配置、版本、生命周期、报告 |
-| skill 内容（tar 包） | 技能仓库（对象存储） | 领域知识 + 受控脚本，经 Skill CRD 引用 |
+| skill 内容（tar 包） | 技能仓库（共享文件卷） | 领域知识 + 受控脚本，经 Skill CRD 引用 |
 | 会话、消息、记忆、Runtime 缓存 | 实例 PVC | Agent 私有数据，不复制到平台业务表 |
 | 运行指标 | 监控模块 / 日志 | 阶段一预留、验收不要求 |
 | 工具调用索引、确认决定、trajectory | —（阶段一不落） | 阶段二 MCP Gateway / 审计体系落地后引入 |
@@ -304,9 +315,9 @@ interface AgentRuntime {
 
 `AgentRuntime` 接口的实现：**chat/runTask 由 Service 内的 OpenClaw 客户端（HTTP）转发**，生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总、加载 skill、exec kubectl（§5）。
 
-**配置注入**：injector 负责把配置 + skill 内容落到 Pod 的 workspace——渲染系统提示词写 OpenClaw 配置、从技能仓库拉取启用 skill 的 tar 解压到 workspace/skills。OpenClaw 扫目录加载、文件监听热重载。
+**配置注入**：injector 负责把配置 + skill 内容落到 Pod 的 workspace——渲染系统提示词写 OpenClaw 配置、从技能仓库共享文件卷（只读挂载）读取启用 skill 的 tar 解压到 workspace/skills。OpenClaw 扫目录加载、文件监听热重载。
 
-- **主方案**：injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Skill，合并出 `ResolvedAgentConfig`，渲染系统提示词写配置、拉取启用 skill 解压到 workspace/skills。skill 变更经 OpenClaw 文件监听热重载；模型/提示词变更退化为重启 OpenClaw（会话/记忆在 PVC，不丢失）。operator 只负责 Pod 生命周期，不参与 resolve。
+- **主方案**：injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Skill，合并出 `ResolvedAgentConfig`，渲染系统提示词写配置、从技能仓库读取启用 skill 解压到 workspace/skills。skill 变更经 OpenClaw 文件监听热重载；模型/提示词变更退化为重启 OpenClaw（会话/记忆在 PVC，不丢失）。operator 只负责 Pod 生命周期，不参与 resolve。
 - **备选方案**：若不希望 sidecar 持有 CRD 读权限（或避免每 Pod 一个 watcher），改为 operator watch + resolve，经 HTTP API / gRPC 下发配置，sidecar 只拉取写文件。
 
 ---
@@ -483,7 +494,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 | 平台资源操作 | OpenClaw skill + exec kubectl（用户最小权限 + RBAC 兜底）+ schema 发现（两个 kubeconfig + 内置 skill） | **自然语言创建 DevEnvironment、部署 InferenceService、查异常 Pod / GPU / 资源状态**，越权被 RBAC 拒绝 |
 | 简单 HITL | 写操作命令匹配命中即确认（尽力而为，不保证防住变体） | 常见写操作（如 `kubectl delete`）有确认，变体可能漏网（接受） |
 | 定时巡检 | TaskTemplate/Task/TaskRun，预置 `daily-inspection` | 每日自动出 P0/P1/P2 巡检报告，附证据链 |
-| 技能市场与配置注入 | skill 经技能市场发布/安装（Skill CRD + 对象存储）；提示词/模型注入配置 | 模块发布技能、用户一键安装；改模型/提示词即时生效 |
+| 技能市场与配置注入 | skill 经技能市场发布/安装（Skill CRD + 共享文件卷）；提示词/模型注入配置 | 模块发布技能、用户一键安装；改模型/提示词即时生效 |
 
 ## 阶段一明确不做（缺口，待后续阶段补）
 

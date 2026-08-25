@@ -42,7 +42,7 @@
 ## 已知取舍（现实现与设计文字的有意偏差，已选其一，不再当作缺口）
 
 1. **MCP Gateway（设计 §5，ToolExecutor 接口的正式实现）阶段一未建**：kubectl 由 OpenClaw 直接 exec（挂用户 kubeconfig，RBAC 免底，无执行前校验/HITL）；审计由 API 从 SSE 流捕获 tool_call 事后记录，只能记录、不能阻断。这是明确接受的临时缺口；MCP Gateway 作为阶段二目标，落地时切换到受控执行，中间不建过渡组件。
-2. **存储不采用 PostgreSQL / Redis（设计 §2 mermaid）**：实现为 CRD/对象存储 + 每实例
+2. **存储不采用 PostgreSQL / Redis（设计 §2 mermaid）**：实现为 CRD/共享文件卷 + 每实例
    RWO PVC，与设计 §3.6 文字「CRD/控制面数据库」一致。§2 图为历史参考，以 §3.6 为准。
 3. **TaskRun 不冗余记录 Agent 实例名（设计 §7「至少记录」）**：实现按设计 §3.5 从 owner 推导
    （阶段一单实例每用户，推导无歧义）。多实例每用户时改为显式记录。
