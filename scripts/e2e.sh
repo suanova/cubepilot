@@ -54,14 +54,20 @@ trap cleanup EXIT
 
 step "verify api /healthz"
 kubectl -n "$NAMESPACE" port-forward svc/cubepilot-api 18081:8080 >/dev/null 2>&1 & PF_PIDS="$PF_PIDS $!"
-sleep 2
-curl -sf --max-time 10 http://127.0.0.1:18081/healthz >/dev/null || fail "cubepilot-api /healthz failed"
+for _ in $(seq 1 20); do
+  curl -sf --max-time 5 http://127.0.0.1:18081/healthz >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -sf --max-time 5 http://127.0.0.1:18081/healthz >/dev/null || fail "cubepilot-api /healthz failed"
 ok "api /healthz"
 
 step "verify portal serves HTML"
 kubectl -n "$NAMESPACE" port-forward svc/cubepilot 18080:8080 >/dev/null 2>&1 & PF_PIDS="$PF_PIDS $!"
-sleep 2
-curl -sf --max-time 10 http://127.0.0.1:18080/ | grep -qi '<html' || fail "portal did not serve HTML"
+for _ in $(seq 1 20); do
+  curl -sf --max-time 5 http://127.0.0.1:18080/ | grep -qi '<html' && break
+  sleep 1
+done
+curl -sf --max-time 5 http://127.0.0.1:18080/ | grep -qi '<html' || fail "portal did not serve HTML"
 ok "portal HTML"
 ok "deploy path verified"
 
@@ -84,7 +90,8 @@ curl -sN --max-time 300 -X POST "http://127.0.0.1:18080/api/messages" \
   -d "$BODY" > "$TMP/sse.out" || fail "chat POST failed"
 grep -q '^event: message_delta' "$TMP/sse.out" || fail "SSE missing message_delta"
 grep -q '^event: message_done' "$TMP/sse.out" || fail "SSE missing message_done"
-DONE_ERR="$(awk '/^event: message_done/{getline; print}' "$TMP/sse.out" | sed 's/^data: //' | jq -r '.error // ""')"
+DONE_ERR="$(awk '/^event: message_done/{f=1} f && /^data:/{print; exit}' "$TMP/sse.out" | sed 's/^data: //' | jq -r '.error // ""')" \
+  || fail "could not parse message_done payload"
 [ -z "$DONE_ERR" ] || fail "message_done carried an error: $DONE_ERR"
 ok "chat streamed a reply (message_delta -> message_done, no error)"
 
