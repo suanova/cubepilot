@@ -1,4 +1,4 @@
-# CubePilot development Makefile — a thin orchestration layer over the
+# CubePilot development Makefile -- a thin orchestration layer over the
 # existing tooling (go / npm / docker / helm). It does NOT replace
 # scripts/setup.sh (one-shot local deploy); it covers the per-task commands
 # developers run repeatedly.

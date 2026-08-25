@@ -1,4 +1,4 @@
-# Web — independent frontend component (design §9 / §11.1). Serves the built
+# Web -- independent frontend component (design §9 / §11.1). Serves the built
 # Vue SPA and reverse-proxies /api to the API service (web/nginx.conf).
 # Replicas > 1 is safe: the SPA is fully stateless.
 apiVersion: apps/v1
@@ -53,7 +53,7 @@ spec:
     - port: 80
       targetPort: 80
 ---
-# Portal entry — the web component (nginx) reverse-proxies /api to the API
+# Portal entry -- the web component (nginx) reverse-proxies /api to the API
 # service. Kept as a stable entry name for port-forward / Ingress.
 apiVersion: v1
 kind: Service

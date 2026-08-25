@@ -1,4 +1,4 @@
-// Audit view — tool invocation ledger with filters + CSV export (M5).
+// Audit view -- tool invocation ledger with filters + CSV export (M5).
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api'
 import type { AuditEntry } from '@/api/types'
@@ -43,16 +43,16 @@ export default function AuditView() {
     try {
       setEntries(await api.listAudit(400))
     } catch (e) {
-      showToast('审计加载失败：' + e)
+      showToast('Audit load failed: ' + e)
     }
   }
 
   function exportAuditCSV() {
     if (!entries.length) {
-      showToast('暂无审计记录可导出')
+      showToast('No audit records to export')
       return
     }
-    const rows = [['时间', '操作者', '会话', '工具', '命令', '级别', '状态']].concat(
+    const rows = [['Time', 'Operator', 'Session', 'Tool', 'Command', 'Level', 'Status']].concat(
       entries.map((e) => [
         new Date(e.ts).toISOString(),
         e.user,
@@ -78,69 +78,69 @@ export default function AuditView() {
     <div className="view active">
       <div className="view-head">
         <div>
-          <div className="view-title">审计</div>
-          <div className="view-desc">工具调用实时记录（M5）· 按用户 / 工具 / 级别筛选 · L0 只读直放 / L1 写操作</div>
+          <div className="view-title">Audit</div>
+          <div className="view-desc">Real-time tool invocation ledger (M5) - filter by user / tool / level - L0 read-only pass-through / L1 write operations</div>
         </div>
         <button className="btn primary" onClick={exportAuditCSV}>
           <ExportIcon />
-          导出 CSV
+          Export CSV
         </button>
       </div>
       <div className="card">
         <div className="card-pad audit-filters">
-          <select className="input" aria-label="操作者" value={fUser} onChange={(e) => setFUser(e.target.value)}>
-            <option value="">全部操作者</option>
+          <select className="input" aria-label="Operator" value={fUser} onChange={(e) => setFUser(e.target.value)}>
+            <option value="">All operators</option>
             {users.map((u) => (
               <option key={u} value={u}>
                 {u}
               </option>
             ))}
           </select>
-          <select className="input" aria-label="工具" value={fTool} onChange={(e) => setFTool(e.target.value)}>
-            <option value="">全部工具</option>
+          <select className="input" aria-label="Tool" value={fTool} onChange={(e) => setFTool(e.target.value)}>
+            <option value="">All tools</option>
             {tools.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>
             ))}
           </select>
-          <select className="input" aria-label="级别" value={fLevel} onChange={(e) => setFLevel(e.target.value)}>
-            <option value="">全部级别</option>
-            <option value="L0">L0 · 只读</option>
-            <option value="L1">L1 · 写操作</option>
+          <select className="input" aria-label="Level" value={fLevel} onChange={(e) => setFLevel(e.target.value)}>
+            <option value="">All levels</option>
+            <option value="L0">L0 - Read-only</option>
+            <option value="L1">L1 - Write operation</option>
           </select>
-          <select className="input" aria-label="状态" value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-            <option value="">全部状态</option>
-            <option value="executed">已执行</option>
-            <option value="failed">失败</option>
+          <select className="input" aria-label="Status" value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+            <option value="">All statuses</option>
+            <option value="executed">Executed</option>
+            <option value="failed">Failed</option>
           </select>
           <div className="search grow">
             <svg className="icon" style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
               <circle cx="11" cy="11" r="8" />
               <path d="M21 21l-4.35-4.35" />
             </svg>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索会话 / 参数…" aria-label="搜索审计记录" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search session / args..." aria-label="Search audit records" />
           </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table className="table">
             <thead>
               <tr>
-                <th>时间</th>
-                <th>操作者</th>
-                <th>会话</th>
-                <th>工具</th>
-                <th>参数摘要</th>
-                <th>级别</th>
-                <th>状态</th>
-                <th>结果</th>
+                <th>Time</th>
+                <th>Operator</th>
+                <th>Session</th>
+                <th>Tool</th>
+                <th>Args Summary</th>
+                <th>Level</th>
+                <th>Status</th>
+                <th>Result</th>
               </tr>
             </thead>
             <tbody>
               {!filtered.length && (
                 <tr>
                   <td colSpan={8} style={{ textAlign: 'center', color: 'var(--muted)', padding: 24 }}>
-                    {entries.length ? '无匹配记录' : '暂无审计记录 · 发起一次对话/巡检后自动写入'}
+                    {entries.length ? 'No matching records' : 'No audit records yet - they are written automatically after a chat or inspection run'}
                   </td>
                 </tr>
               )}
@@ -158,7 +158,7 @@ export default function AuditView() {
                   </td>
                   <td>
                     <span className={`pill ${e.status === 'executed' ? 'success' : 'danger'}`}>
-                      {e.status === 'executed' ? '已执行' : '失败'}
+                      {e.status === 'executed' ? 'Executed' : 'Failed'}
                     </span>
                   </td>
                   <td className="tnum" style={{ color: 'var(--muted)' }}>

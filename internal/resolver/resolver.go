@@ -1,7 +1,7 @@
 // Package resolver merges the per-instance effective configuration into a
 // single immutable artifact (design §3.2/§3.3): AgentTemplate + AgentInstance
-// + Model catalog + Capabilities → ResolvedAgentConfig. It is a pure function
-// over CRs — it never writes anything (no CRD updates, no ConfigMaps). The
+// + Model catalog + Capabilities -> ResolvedAgentConfig. It is a pure function
+// over CRs -- it never writes anything (no CRD updates, no ConfigMaps). The
 // agent-side supervisor pulls ResolvedAgentConfig via the internal API and
 // renders it into runtime form (skills etc.); the API and runner use the same
 // artifact for the selectedModel override.
@@ -23,7 +23,7 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// ResolvedCapability is the domain capability content an agent may use —
+// ResolvedCapability is the domain capability content an agent may use --
 // the skill source. The supervisor renders it into workspace/skills/<name>/.
 type ResolvedCapability struct {
 	Name         string                    `json:"name"`
@@ -36,10 +36,10 @@ type ResolvedCapability struct {
 }
 
 // ResolvedAgentConfig is the immutable, fully-resolved configuration for one
-// agent instance — the single artifact the runtime depends on. Revision is a
+// agent instance -- the single artifact the runtime depends on. Revision is a
 // content hash of everything else: any CR change (agent template, instance,
 // model, capability) produces a new revision, which is the supervisor's
-// "reload needed" signal. It is pure data — never persisted to CRDs or
+// "reload needed" signal. It is pure data -- never persisted to CRDs or
 // ConfigMaps.
 type ResolvedAgentConfig struct {
 	// Revision is the content fingerprint of the resolved config (12 hex).
@@ -65,13 +65,13 @@ type ResolvedAgentConfig struct {
 	Capabilities []ResolvedCapability `json:"capabilities,omitempty"`
 }
 
-// Empty reports whether the config is the zero default (no instance — the
+// Empty reports whether the config is the zero default (no instance -- the
 // runtime keeps its normal configured model and skills).
 func (c *ResolvedAgentConfig) Empty() bool {
 	return c.Instance == "" && c.Agent == "" && c.SelectedModel == ""
 }
 
-// fingerprint hashes the config contents (Revision excluded) — 12 hex, the
+// fingerprint hashes the config contents (Revision excluded) -- 12 hex, the
 // same scheme as v1alpha1 spec revisions, so revision strings are comparable
 // across objects and runs.
 func (c *ResolvedAgentConfig) fingerprint() string {
@@ -104,7 +104,7 @@ func (r *Resolver) ResolveForUser(ctx context.Context, user string) (*ResolvedAg
 // Resolve merges AgentTemplate + AgentInstance + Model catalog + Capabilities
 // for (user, agent). Fail-closed: an explicit selection that is outside the
 // agent's availableModels, missing from the catalog, or Unreachable is an
-// error — never a silent fallback. An empty selection (no instance, no
+// error -- never a silent fallback. An empty selection (no instance, no
 // explicit selection, no agent default) is not an error.
 func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAgentConfig, error) {
 	instanceName := k8s.InstanceName(user, agent)
@@ -113,7 +113,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	err := r.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return &ResolvedAgentConfig{}, nil // not provisioned — runtime default
+			return &ResolvedAgentConfig{}, nil // not provisioned -- runtime default
 		}
 		return nil, fmt.Errorf("get instance %s: %w", instanceName, err)
 	}
@@ -134,15 +134,17 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
 			cfg.Instructions = def.Spec.Instructions
 			// User instructions append after the definition instructions
-			// (design §3.2: 最终指令 = 平台安全与执行约束 + 模板指令 + 用户指令
-			// 依次组合；用户指令不能删除/削弱安全边界).
+			// (design §3.2: final instructions = platform safety & execution
+			// constraints + template instructions + user instructions, combined
+			// in order; user instructions cannot remove or weaken the safety
+			// boundary).
 			if ui := strings.TrimSpace(inst.Spec.UserInstructions); ui != "" {
 				if cfg.Instructions != "" {
 					cfg.Instructions += "\n\n"
 				}
 				cfg.Instructions += ui
 			}
-			// Model selection: instance override → agent default → none.
+			// Model selection: instance override -> agent default -> none.
 			selected := inst.Spec.SelectedModel
 			if selected == "" {
 				selected = def.Spec.DefaultModel
@@ -202,7 +204,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 
 // resolveModel validates the selection against the agent's availableModels
 // allowlist and the Model catalog, returning the effective backend model id.
-// Fail-closed: outside allowlist / not in catalog / Unreachable → error.
+// Fail-closed: outside allowlist / not in catalog / Unreachable -> error.
 func (r *Resolver) resolveModel(ctx context.Context, selected string, def v1alpha1.Agent) (string, error) {
 	if len(def.Spec.AvailableModels) > 0 && !contains(def.Spec.AvailableModels, selected) {
 		return "", fmt.Errorf("model %q not in agent %q availableModels", selected, def.Name)

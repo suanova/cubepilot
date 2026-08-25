@@ -9,18 +9,18 @@ import (
 	"github.com/suanova/cubepilot/internal/openclaw"
 )
 
-const prompt = `请对当前 Kubernetes 集群执行一次基础巡检：
-1. 查看节点状态（kubectl get nodes）；
-2. 查找所有命名空间中状态异常的 Pod（非 Running，如 CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled）；
-3. 查看最近的集群事件（kubectl get events -A）。
-将发现的异常按严重程度分级：P0 紧急 / P1 重要 / P2 一般，并用简体中文输出一份结构化巡检报告（含每项的证据）。
+const prompt = `Run a basic health inspection of the current Kubernetes cluster:
+1. Check node status (kubectl get nodes);
+2. Find abnormal Pods in all namespaces (not Running, e.g. CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled);
+3. Check recent cluster events (kubectl get events -A).
+Classify findings by severity: P0 critical / P1 important / P2 minor, and output a structured inspection report in Simplified Chinese (with evidence for each item).
 
-【可信度约束】
-- 每项发现必须附证据链：执行的命令 + 原始输出摘录 + 时间戳。
-- 无法确认的疑似发现必须标注「AI 疑似，需人工复核」，不得当作既定事实。
-- 同一异常不重复报告；噪声（偶发重启、非关键事件）过滤掉或归入 P2。
-- 本巡检为只读操作：只执行查询命令，禁止任何写操作（apply/delete/scale/create）。
-【只读提示】若你的凭据被 RBAC 拒绝，如实说明权限范围，不重试被拒操作。`
+[Credibility constraints]
+- Every finding must include an evidence chain: executed command + excerpt of raw output + timestamp.
+- Suspected findings that cannot be confirmed must be marked "AI suspicion, manual review required", and must not be treated as established facts.
+- Do not report the same issue repeatedly; filter out noise (occasional restarts, non-critical events) or classify it as P2.
+- This inspection is read-only: only run query commands; any write operation (apply/delete/scale/create) is forbidden.
+[Read-only note] If your credentials are rejected by RBAC, state the actual permission scope and do not retry rejected operations.`
 
 // Run executes the inspection prompt against the given agent instance and
 // returns the agent's final natural-language report text. onEvent (optional)

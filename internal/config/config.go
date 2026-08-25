@@ -57,7 +57,7 @@ type Config struct {
 	AgentPort int
 
 	// DataDir is where platform metadata (tasks / reports / audit / agent config)
-	// is persisted as JSON files — backed by a PVC on the backend Pod.
+	// is persisted as JSON files -- backed by a PVC on the backend Pod.
 	DataDir string
 
 	// MetricsAddr is the bind address for the operator's controller-runtime

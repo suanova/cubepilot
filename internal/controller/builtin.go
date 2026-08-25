@@ -40,7 +40,7 @@ var BuiltinCapabilities = func() []string {
 
 // BuiltinModels returns the preset platform model catalog entries
 // (design §3.3: platform preloads deepseek-v4-flash etc; admins add more via
-// `kubectl apply` a Model CRD — no running instance is touched).
+// `kubectl apply` a Model CRD -- no running instance is touched).
 func BuiltinModels() []*v1alpha1.Model {
 	return []*v1alpha1.Model{
 		{
@@ -72,8 +72,8 @@ func BuiltinAgent() *v1alpha1.Agent {
 			},
 		},
 		Spec: v1alpha1.AgentSpec{
-			DisplayName:     "平台管理助手",
-			Description:     "管理 CubeStack 平台的默认助手（ChatOps + 巡检 + 报告）",
+			DisplayName:     "Platform Management Assistant",
+			Description:     "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
 			Runtime:         v1alpha1.RuntimeOpenClaw,
 			DefaultModel:    "deepseek-v4-flash",
 			AvailableModels: []string{"deepseek-v4-flash"},
@@ -81,9 +81,9 @@ func BuiltinAgent() *v1alpha1.Agent {
 			Model: []v1alpha1.AgentModelSpec{
 				{Provider: "Platform", Name: "deepseek-v4-flash"},
 			},
-			Instructions: "你是 CubeStack 平台的智能助手（agent-for-cloud）。" +
-				"通过 kubectl 查询与操作集群资源；只读操作直接执行，" +
-				"写操作先说明动作与影响范围再执行。巡检与报告使用结构化输出。",
+			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
+				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
+				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
 			Capabilities: BuiltinCapabilities,
 			Memory: &v1alpha1.MemorySpec{Enabled: true},
 			Identity: &v1alpha1.AgentIdentitySpec{
@@ -100,7 +100,7 @@ func BuiltinAgent() *v1alpha1.Agent {
 }
 
 // BuiltinCapabilityDefinitions is generated from the embedded SKILL.md files
-// (see skill_source.go) — one source of truth for preset domain capabilities.
+// (see skill_source.go) -- one source of truth for preset domain capabilities.
 
 // BuiltinTaskTemplate returns the preset daily-inspection template
 // (design §3.3.2).
@@ -114,21 +114,21 @@ func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
 			},
 		},
 		Spec: v1alpha1.TaskTemplateSpec{
-			DisplayName: "每日集群巡检",
-			Description: "预置巡检：节点 / Pod / 存储 / 平台组件 + AI 智能巡检",
-			Instruction: `以只读方式巡检集群（get/list/watch/logs）：
-1. 检查节点 Ready 与压力（Disk / Mem / PID）
-2. 检查 GPU 健康与利用率（nvidia.com/gpu）
-3. 检查异常 Pod（CrashLoopBackOff / Pending / ImagePullBackOff / OOM）
-4. 检查存储（PVC 使用率）
-5. 检查平台组件健康（Harbor / Keycloak / Prometheus）
-发现异常附证据链，按 P0/P1/P2 分级；禁止任何写操作。`,
+			DisplayName: "Daily Cluster Inspection",
+			Description: "Preset inspection: nodes / Pods / storage / platform components + AI smart inspection",
+			Instruction: `Inspect the cluster in read-only mode (get/list/watch/logs):
+1. Check node Ready status and pressure (Disk / Mem / PID)
+2. Check GPU health and utilization (nvidia.com/gpu)
+3. Check abnormal Pods (CrashLoopBackOff / Pending / ImagePullBackOff / OOM)
+4. Check storage (PVC usage)
+5. Check platform component health (Harbor / Keycloak / Prometheus)
+Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
 				{Name: "scope", Type: "string", Default: "all", Enum: []string{"all", "node-pool", "project"}},
 			},
 			RequiredPermissions: &v1alpha1.RequiredPermissions{
 				Level: "cluster-read",
-				Note:  "全集群巡检需创建者具备集群级只读权限",
+				Note:  "Full-cluster inspection requires the creator to have cluster-level read permission",
 			},
 			Capabilities: []string{"cluster-inspection"},
 			DefaultCron:  "0 2 * * *",
@@ -228,7 +228,7 @@ func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj cl
 		key.Namespace = obj.GetNamespace()
 	}
 	if err := r.Get(ctx, key, obj.DeepCopyObject().(client.Object)); err == nil {
-		return nil // already present — leave untouched (idempotent)
+		return nil // already present -- leave untouched (idempotent)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -242,7 +242,7 @@ func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj cl
 	return nil
 }
 
-// InstanceNameFor builds the AgentInstance name for (user, agent) — the
+// InstanceNameFor builds the AgentInstance name for (user, agent) -- the
 // instance key is user + agent (design §3.2). Both segments are DNS-1123
 // sanitized (consistent with the k8s package resource naming).
 func InstanceNameFor(user, agent string) string {

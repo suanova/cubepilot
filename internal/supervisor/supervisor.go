@@ -1,10 +1,10 @@
 // Package supervisor implements the agent-pod-side runtime supervisor: it
 // pulls the resolved agent config from the platform internal API, renders
 // domain capabilities into the OpenClaw workspace as skills, and manages the
-// OpenClaw gateway process (graceful restart on config change — the pod is
+// OpenClaw gateway process (graceful restart on config change -- the pod is
 // never deleted, so sessions/PVC/IP survive). It is the "agent supervisor"
-// of the final architecture: CRDs declare → operator resolves → supervisor
-// renders → OpenClaw executes.
+// of the final architecture: CRDs declare -> operator resolves -> supervisor
+// renders -> OpenClaw executes.
 package supervisor
 
 import (
@@ -123,14 +123,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 // poll fetches the resolved config and applies it (renders skills, records
 // the revision). It reports whether the gateway must restart (revision
 // changed). The gateway loads skills at startup, so a config change requires
-// a graceful restart — never a pod delete: sessions/PVC/IP survive.
+// a graceful restart -- never a pod delete: sessions/PVC/IP survive.
 func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	cfg, err := s.fetchConfig(ctx)
 	if err != nil {
 		return false, err
 	}
 	if cfg.Empty() {
-		// No instance config yet — the gateway runs with its runtime
+		// No instance config yet -- the gateway runs with its runtime
 		// defaults; nothing to render.
 		return false, nil
 	}
@@ -143,9 +143,9 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.current == cfg.Revision {
-		return false, nil // no change — skills are current
+		return false, nil // no change -- skills are current
 	}
-	log.Printf("supervisor: config revision %s → %s", s.current, cfg.Revision)
+	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
 	if err := s.renderSkills(ctx, cfg); err != nil {
 		return false, fmt.Errorf("render skills: %w", err)
 	}
@@ -254,7 +254,7 @@ func (s *Supervisor) stopGateway() {
 	s.cmd = nil
 }
 
-// restartGateway gracefully restarts the gateway process (SIGTERM → wait →
+// restartGateway gracefully restarts the gateway process (SIGTERM -> wait ->
 // start). The pod and its PVC/IP survive; only the process is recycled.
 func (s *Supervisor) restartGateway(ctx context.Context) error {
 	s.stopGateway()

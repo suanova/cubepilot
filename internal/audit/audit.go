@@ -22,7 +22,7 @@ var readOnlyKubectlVerbs = map[string]bool{
 var writeShellTokens = []string{"rm ", "rm\t", "mv ", "dd ", "mkfs", "shutdown", "reboot", "kill ", ">"}
 
 // Entry builds the audit entry for a tool_call event (name + JSON arguments).
-// Phase one only observes the exec tool, whose arguments carry {"command": …}.
+// Phase one only observes the exec tool, whose arguments carry {"command": ...}.
 func Entry(user, sessionID, tool, argsJSON string) store.AuditEntry {
 	command := extractCommand(argsJSON)
 	return store.AuditEntry{

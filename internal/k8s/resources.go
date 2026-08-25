@@ -18,7 +18,7 @@ type AgentSpec struct {
 	GatewayToken string
 	Port         int32
 	// AgentUser is the instance owner (the supervisor's CUBEPILOT_AGENT_USER
-	// — it pulls the resolved config for exactly this user).
+	// -- it pulls the resolved config for exactly this user).
 	AgentUser string
 }
 
@@ -141,7 +141,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				// Seed the workspace from the image's read-only layer into the
 				// per-instance PVC (design §3.6: runtime caches live on the
 				// instance PVC, not the image). The gateway maintains files in
-				// the workspace (e.g. TOOLS.md) — under readOnlyRootFilesystem
+				// the workspace (e.g. TOOLS.md) -- under readOnlyRootFilesystem
 				// the image layer is not writable, so the workspace must be on
 				// the PVC.
 				{
@@ -166,7 +166,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				// The supervisor is pid 1: it pulls the resolved agent config
 				// (internal API), renders skills into the PVC workspace, and
 				// runs the OpenClaw gateway as a child process. Config changes
-				// trigger a graceful gateway restart — the pod is never
+				// trigger a graceful gateway restart -- the pod is never
 				// deleted, so sessions/PVC/IP survive (final architecture).
 				Name:    "supervisor",
 				Image:   s.Image,
@@ -174,7 +174,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				// The supervisor needs a writable scratch dir (node caches, temp
 				// files) but the rest of the filesystem is read-only. RunAsUser
 				// is explicit because the image declares a non-numeric user
-				// (node) — kubelet cannot verify non-root from a name alone.
+				// (node) -- kubelet cannot verify non-root from a name alone.
 				SecurityContext: &corev1.SecurityContext{
 					RunAsNonRoot:             boolPtr(true),
 					RunAsUser:                int64Ptr(1000),

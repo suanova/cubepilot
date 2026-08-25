@@ -1,4 +1,4 @@
-// Toast — tiny global notification store (mirrors the original inline toast).
+// Toast -- tiny global notification store (mirrors the original inline toast).
 import { useSyncExternalStore } from 'react'
 
 let visible = false
@@ -36,7 +36,7 @@ function getMessage() {
   return message
 }
 
-/** React hook — re-renders the consumer whenever the toast visibility changes. */
+/** React hook -- re-renders the consumer whenever the toast visibility changes. */
 export function useToast() {
   const isVisible = useSyncExternalStore(subscribe, getSnapshot)
   return { visible: isVisible, message: getMessage() }

@@ -1,11 +1,11 @@
 // Package capability implements the three-layer capability model
 // (design doc CubePilot-Cloud-for-Agents-Design.md §3.3.1 / §4.2):
 //
-//	generic — platform-provided tools (list-kinds / describe-kind /
+//	generic -- platform-provided tools (list-kinds / describe-kind /
 //	         resource-manager / kubectl-raw), zero registration;
-//	atomic  — Capability (type: atomic + override + target + semantics/security),
+//	atomic  -- Capability (type: atomic + override + target + semantics/security),
 //	         thin overlays bound to a CRD (never touch fields);
-//	domain  — Capability (type: domain + uses[] + instructions), domain knowledge.
+//	domain  -- Capability (type: domain + uses[] + instructions), domain knowledge.
 //
 // The generic layer is where "the runtime understands the platform
 // automatically" lands: the platform reads all
@@ -67,7 +67,7 @@ type Catalog struct {
 	dynamic   dynamic.Interface
 	config    *rest.Config
 
-	// schemas is the cached CRD schema table (group/kind → schema).
+	// schemas is the cached CRD schema table (group/kind -> schema).
 	schemas map[string]*CRDSchema
 }
 
@@ -92,7 +92,7 @@ func NewCatalog(cfg *rest.Config) (*Catalog, error) {
 }
 
 // Refresh re-discovers the CRD schema table (generic toolset change
-// governance: CRD add/update/delete → the toolset changes automatically;
+// governance: CRD add/update/delete -> the toolset changes automatically;
 // design §3.3.1 toolset change governance).
 func (c *Catalog) Refresh(ctx context.Context) error {
 	list, err := c.discovery.ServerPreferredResources()
@@ -128,7 +128,7 @@ func (c *Catalog) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Schemas returns the current CRD schema table (group/kind → schema), sorted
+// Schemas returns the current CRD schema table (group/kind -> schema), sorted
 // by kind for stable output.
 func (c *Catalog) Schemas() []*CRDSchema {
 	out := make([]*CRDSchema, 0, len(c.schemas))
@@ -159,7 +159,7 @@ func (c *Catalog) FindKind(kind string) *CRDSchema {
 }
 
 // ValidateCapability validates a Capability registration (design §3.3.1:
-// the target CRD does not exist / has no schema → registration validation
+// the target CRD does not exist / has no schema -> registration validation
 // fails fast).
 func (c *Catalog) ValidateCapability(cap *v1alpha1.Capability) error {
 	switch cap.Spec.Type {

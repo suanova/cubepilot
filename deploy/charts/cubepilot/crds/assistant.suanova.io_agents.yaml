@@ -31,7 +31,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Agent is the declarative definition of an agent (design doc §3.1) — the
+          Agent is the declarative definition of an agent (design doc §3.1) -- the
           platform's first-class object. The builtin agent-for-cloud is the preset
           first Agent; user-created agents are phase 2+.
         properties:
@@ -68,9 +68,9 @@ spec:
               capabilities:
                 description: |-
                   Capabilities references Capabilities (atomic thin-overrides + domain
-                  skills) — design §3.1 `spec.capabilities`. Generic tools
+                  skills) -- design §3.1 `spec.capabilities`. Generic tools
                   (resource-manager / list-kinds / describe-kind) are platform-provided
-                  and always available — they are NOT listed here.
+                  and always available -- they are NOT listed here.
                 items:
                   type: string
                 type: array
@@ -122,7 +122,7 @@ spec:
                 description: |-
                   Model is the ordered model array (allowlist). model[0] = primary;
                   model[1:] = fallback chain. Instances select within this list.
-                  Deprecated transition shape — see AgentModelSpec; the Model catalog
+                  Deprecated transition shape -- see AgentModelSpec; the Model catalog
                   (§3.3) is the long-term source.
                 items:
                   description: |-
@@ -131,7 +131,7 @@ spec:
                     fallback depends on runtime capability).
 
                     Deprecated transition shape: the simplified design (§3.3) replaces the
-                    inline array with the platform Model catalog — AgentTemplate references
+                    inline array with the platform Model catalog -- AgentTemplate references
                     models by name (defaultModel / availableModels) and AgentInstance picks
                     via selectedModel. The array is kept for phase-one compatibility and
                     removed when the Model catalog is wired end to end.
@@ -139,7 +139,7 @@ spec:
                     apiKeyRef:
                       description: |-
                         APIKeyRef is a platform-managed Secret reference (shared default
-                        credential). References only — never the key itself (design §4.4).
+                        credential). References only -- never the key itself (design §4.4).
                       type: string
                     endpoint:
                       description: Endpoint is the OpenAI-compatible base URL; required

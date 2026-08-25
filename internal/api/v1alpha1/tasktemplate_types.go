@@ -34,7 +34,7 @@ type RequiredPermissions struct {
 // TaskTemplateDefaults are the default trigger settings of a template.
 //
 // Deprecated: the simplified design (§3.5) moves scheduling to the Task
-// (Task.cron) and keeps only a creation-wizard hint on the template — see
+// (Task.cron) and keeps only a creation-wizard hint on the template -- see
 // TaskTemplateSpec.DefaultCron. Kept only for compatibility; remove with the
 // JSON store migration.
 type TaskTemplateDefaults struct {
@@ -42,7 +42,7 @@ type TaskTemplateDefaults struct {
 	Cron    string          `json:"cron,omitempty"`
 }
 
-// TaskTemplateSpec is a parameterized task template (design §3.3.2) — the
+// TaskTemplateSpec is a parameterized task template (design §3.3.2) -- the
 // template (what to do), the "class" of tasks. Preloaded: daily-inspection.
 type TaskTemplateSpec struct {
 	// DisplayName is the human-facing template name.
@@ -76,9 +76,9 @@ type TaskTemplateSpec struct {
 // +kubebuilder:printcolumn:name="DisplayName",type="string",JSONPath=".spec.displayName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// TaskTemplate is a parameterized task template (design §3.3.2) — template ≠
-// instance ≠ run: TaskTemplate (what to do) ≠ Task (whose task, when it runs)
-// ≠ TaskRun (run report).
+// TaskTemplate is a parameterized task template (design §3.3.2) -- template !=
+// instance != run: TaskTemplate (what to do) != Task (whose task, when it runs)
+// != TaskRun (run report).
 type TaskTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

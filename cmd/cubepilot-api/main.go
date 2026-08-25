@@ -3,7 +3,7 @@
 // instances (AgentInstance CRs reconciled by the operator), and platform
 // objects (Agent / Capability / Task / TaskRun) are served read-only from
 // their CRDs. The only state it holds is the JSON metadata store (tasks /
-// reports / audit / agent config) on a single RWO PVC — replicas > 1 requires
+// reports / audit / agent config) on a single RWO PVC -- replicas > 1 requires
 // shared storage (phase two, design §11.1). No controllers and no leader
 // election run here.
 package main
@@ -38,7 +38,7 @@ func main() {
 	}
 
 	// Read-only controller-runtime client for the platform CRDs. The API
-	// process never writes CRDs — the operator owns the control plane
+	// process never writes CRDs -- the operator owns the control plane
 	// (credential minimization, design §3.3.4).
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))

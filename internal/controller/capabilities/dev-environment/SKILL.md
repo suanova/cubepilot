@@ -1,28 +1,28 @@
 ---
 name: dev-environment
-description: 创建与查询开发环境（DevEnvironment CRD，apiVersion assistant.suanova.io/v1alpha1）
+description: "Create and query development environments (DevEnvironment CRD, apiVersion assistant.suanova.io/v1alpha1)"
 ---
 
-# 开发环境（DevEnvironment）
+# Development Environment (DevEnvironment)
 
-平台以 CRD `DevEnvironment`（`assistant.suanova.io/v1alpha1`）表示 GPU 开发环境。
+The platform represents GPU development environments as the CRD `DevEnvironment` (`assistant.suanova.io/v1alpha1`).
 
-## 查询
+## Query
 
 ```bash
-kubectl get devenvironments -n <ns>        # 列出开发环境
-kubectl get devenvironment <name> -n <ns> -o yaml   # 详情
+kubectl get devenvironments -n <ns>        # list development environments
+kubectl get devenvironment <name> -n <ns> -o yaml   # details
 ```
 
-## 创建（自然语言 → YAML）
+## Create (Natural Language -> YAML)
 
-用户要求「创建一个开发环境」时，根据其描述生成 DevEnvironment YAML 并 apply。关键字段：
-- `metadata.name` / `namespace`：环境名与命名空间
-- `spec.image`：镜像（如 `pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime`）
-- `spec.resources`：请求的 CPU/内存/GPU（`nvidia.com/gpu`）
-- `spec.gpu.count`：GPU 数量（如有该字段）
+When a user asks to "create a development environment", generate a DevEnvironment YAML from their description and apply it. Key fields:
+- `metadata.name` / `namespace`: environment name and namespace
+- `spec.image`: image (e.g. `pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime`)
+- `spec.resources`: requested CPU/memory/GPU (`nvidia.com/gpu`)
+- `spec.gpu.count`: number of GPUs (if the field exists)
 
-示例：
+Example:
 
 ```yaml
 apiVersion: assistant.suanova.io/v1alpha1
@@ -40,7 +40,7 @@ spec:
       memory: "16Gi"
 ```
 
-## 原则
+## Principles
 
-- 创建前向用户确认镜像、GPU 数量与命名空间；缺省时给出合理默认并说明。
-- 环境诊断（CUDA 冲突 / OOM）时，结合 `kubectl logs`、`kubectl describe` 与 GPU 状态定位根因，给出修复建议。
+- Confirm the image, GPU count and namespace with the user before creating; when not specified, propose a sensible default and explain it.
+- When diagnosing an environment (CUDA conflict / OOM), combine `kubectl logs`, `kubectl describe` and GPU status to find the root cause, and give a fix recommendation.

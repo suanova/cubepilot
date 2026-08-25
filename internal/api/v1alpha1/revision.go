@@ -21,7 +21,7 @@ func specRevision(spec any) string {
 		return "unknown"
 	}
 	sum := sha256.Sum256(b)
-	// 12 hex chars = 48 bits — collision-improbable for audit identification
+	// 12 hex chars = 48 bits -- collision-improbable for audit identification
 	// while staying readable in kubectl output and report headers.
 	return hex.EncodeToString(sum[:])[:12]
 }

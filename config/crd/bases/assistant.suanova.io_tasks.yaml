@@ -34,7 +34,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Task is a task instance (design §3.3.3) — the "object" of the task domain:
+          Task is a task instance (design §3.3.3) -- the "object" of the task domain:
           who owns it, when it runs, which Agent executes it. The scheduler reads
           Task CRDs and writes TaskRun (written with the platform identity, credential
           minimization).
@@ -58,9 +58,9 @@ spec:
             type: object
           spec:
             description: |-
-              TaskSpec is a task instance (design §3.3.3) — whose task, when it runs. It
+              TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
               links the
-              execution subject (agentRef → Agent) with the task content (templateRef →
+              execution subject (agentRef -> Agent) with the task content (templateRef ->
               TaskTemplate); creator decides the execution identity.
             properties:
               cron:
@@ -73,7 +73,7 @@ spec:
               owner:
                 description: |-
                   Owner is the task owner; execution identity = owner (RBAC matches the
-                  owner; the per-user instance is derived from it — design §3.5: phase
+                  owner; the per-user instance is derived from it -- design §3.5: phase
                   one has one agent-for-cloud instance per user, no agentInstanceRef).
                 type: string
               params:

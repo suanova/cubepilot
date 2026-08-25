@@ -1,29 +1,29 @@
 ---
 name: inference-service
-description: 部署与查询模型推理服务（InferenceService CRD，apiVersion assistant.suanova.io/v1alpha1）
+description: "Deploy and query model inference services (InferenceService CRD, apiVersion assistant.suanova.io/v1alpha1)"
 ---
 
-# 推理服务（InferenceService）
+# Inference Service (InferenceService)
 
-平台以 CRD `InferenceService`（`assistant.suanova.io/v1alpha1`）表示模型推理服务。
+The platform represents model inference services as the CRD `InferenceService` (`assistant.suanova.io/v1alpha1`).
 
-## 查询
+## Query
 
 ```bash
 kubectl get inferenceservices -n <ns>
 kubectl get inferenceservice <name> -n <ns> -o yaml
-kubectl get pods -n <ns> -l app=<name>     # 关联 Pod
+kubectl get pods -n <ns> -l app=<name>     # associated Pods
 ```
 
-## 部署
+## Deploy
 
-用户要求「部署推理服务」时，根据模型/流量/延迟需求生成 InferenceService YAML 并 apply。关键字段：
-- `spec.model`：模型标识（如 `qwen2.5-72b`）
-- `spec.framework`：推理框架（如 `vllm`）
-- `spec.gpu.count` / `spec.gpu.type`：GPU 资源
-- `spec.replicas`：副本数
+When a user asks to "deploy an inference service", generate an InferenceService YAML from the model/traffic/latency requirements and apply it. Key fields:
+- `spec.model`: model identifier (e.g. `qwen2.5-72b`)
+- `spec.framework`: inference framework (e.g. `vllm`)
+- `spec.gpu.count` / `spec.gpu.type`: GPU resources
+- `spec.replicas`: number of replicas
 
-示例：
+Example:
 
 ```yaml
 apiVersion: assistant.suanova.io/v1alpha1
@@ -40,6 +40,6 @@ spec:
   replicas: 1
 ```
 
-## 排障
+## Troubleshooting
 
-服务异常时：`kubectl describe` 看事件 → `kubectl logs` 看启动日志 → 结合 GPU 状态（节点 `nvidia.com/gpu` allocatable）定位是资源不足还是配置问题。
+When a service is unhealthy: `kubectl describe` to check events -> `kubectl logs` to check startup logs -> combine with GPU status (node `nvidia.com/gpu` allocatable) to determine whether it is a resource shortage or a configuration issue.

@@ -38,7 +38,7 @@ const (
 // fallback depends on runtime capability).
 //
 // Deprecated transition shape: the simplified design (§3.3) replaces the
-// inline array with the platform Model catalog — AgentTemplate references
+// inline array with the platform Model catalog -- AgentTemplate references
 // models by name (defaultModel / availableModels) and AgentInstance picks
 // via selectedModel. The array is kept for phase-one compatibility and
 // removed when the Model catalog is wired end to end.
@@ -52,7 +52,7 @@ type AgentModelSpec struct {
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 	// APIKeyRef is a platform-managed Secret reference (shared default
-	// credential). References only — never the key itself (design §4.4).
+	// credential). References only -- never the key itself (design §4.4).
 	// +optional
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
 }
@@ -126,7 +126,7 @@ type AgentSpec struct {
 	Runtime AgentRuntime `json:"runtime,omitempty"`
 	// Model is the ordered model array (allowlist). model[0] = primary;
 	// model[1:] = fallback chain. Instances select within this list.
-	// Deprecated transition shape — see AgentModelSpec; the Model catalog
+	// Deprecated transition shape -- see AgentModelSpec; the Model catalog
 	// (§3.3) is the long-term source.
 	Model []AgentModelSpec `json:"model,omitempty"`
 	// DefaultModel references the Model catalog (§3.3) entry used when an
@@ -147,9 +147,9 @@ type AgentSpec struct {
 	// +optional
 	Instructions string `json:"instructions,omitempty"`
 	// Capabilities references Capabilities (atomic thin-overrides + domain
-	// skills) — design §3.1 `spec.capabilities`. Generic tools
+	// skills) -- design §3.1 `spec.capabilities`. Generic tools
 	// (resource-manager / list-kinds / describe-kind) are platform-provided
-	// and always available — they are NOT listed here.
+	// and always available -- they are NOT listed here.
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty"`
 	// Memory declares the memory capability.
@@ -184,7 +184,7 @@ type AgentStatus struct {
 // +kubebuilder:printcolumn:name="Builtin",type="boolean",JSONPath=".spec.registry.builtin"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Agent is the declarative definition of an agent (design doc §3.1) — the
+// Agent is the declarative definition of an agent (design doc §3.1) -- the
 // platform's first-class object. The builtin agent-for-cloud is the preset
 // first Agent; user-created agents are phase 2+.
 type Agent struct {
@@ -197,7 +197,7 @@ type Agent struct {
 
 // Revision returns an immutable content fingerprint of the Agent definition
 // (design §3.1: template changes generate an immutable revision for audit and
-// rollback). Content hash — deterministic across object re-creation, spec-only
+// rollback). Content hash -- deterministic across object re-creation, spec-only
 // (status updates never change the revision).
 func (in *Agent) Revision() string {
 	return specRevision(in.Spec)

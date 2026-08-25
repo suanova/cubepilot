@@ -40,8 +40,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          TaskRun is the execution report (design §3.3.4) — written by the scheduler
-          with the platform identity, completing the template → task → run report
+          TaskRun is the execution report (design §3.3.4) -- written by the scheduler
+          with the platform identity, completing the template -> task -> run report
           loop.
         properties:
           apiVersion:
@@ -79,7 +79,7 @@ spec:
               owner:
                 description: |-
                   Owner is the task owner (execution identity; derived from the Task's
-                  owner — design §3.5).
+                  owner -- design §3.5).
                 type: string
               scope:
                 description: Scope is the task scope (e.g. all).

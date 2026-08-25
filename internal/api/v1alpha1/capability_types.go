@@ -41,7 +41,7 @@ type CapabilityFile struct {
 
 // CapabilitySpec is a platform capability (design §3.3.1). Generic tools
 // (list-kinds / describe-kind / resource-manager / kubectl-raw) are
-// platform-provided and NOT registered as Capabilities — zero registration.
+// platform-provided and NOT registered as Capabilities -- zero registration.
 type CapabilitySpec struct {
 	// Type is atomic (CRD thin override) or domain (domain knowledge).
 	Type CapabilityType `json:"type"`
@@ -104,7 +104,7 @@ type CapabilityStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Capability is the capability catalog entry (design §3.3.1). It answers
-// "what an Agent can use" — atomic thin overrides bound to CRDs and domain
+// "what an Agent can use" -- atomic thin overrides bound to CRDs and domain
 // knowledge.
 // Generic tools are platform-provided and need no registration.
 type Capability struct {
@@ -130,7 +130,7 @@ func init() {
 
 // Revision returns an immutable content fingerprint of the capability spec
 // (design §3.4/§3.5: TaskRuns record the capability revision actually used at
-// run time for audit/rollback). Content hash — deterministic across object
+// run time for audit/rollback). Content hash -- deterministic across object
 // re-creation, spec-only (status updates never change the revision).
 func (c *Capability) Revision() string {
 	return specRevision(c.Spec)
