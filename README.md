@@ -93,6 +93,30 @@ The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
 assistant as thinking while it waits for the gateway to become ready), then
 streams tool calls and the answer back.
 
+## End-to-end tests & CI
+
+`scripts/e2e.sh` brings up the whole stack on a kind cluster via
+`scripts/setup.sh` and verifies it: cluster + namespace, the six
+`assistant.suanova.io` CRDs, shared Secrets, `operator`/`api`/`web` rollouts,
+the api `/healthz`, and the Portal HTML.
+
+```bash
+# Deploy path only (placeholder provider is fine):
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}' \
+  scripts/e2e.sh
+
+# Full conversational e2e (needs a real provider key; drives POST /api/messages
+# over SSE and cold-starts a per-user agent Pod):
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-real","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}' \
+  CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+```
+
+CI (`.github/workflows/e2e.yaml`) runs these on every PR and push to `main`: a
+fast `test` job (`go vet` + `go test` + `scripts/test-openclaw-config.sh`) and
+an `e2e` job on kind. The conversational e2e runs when the GitHub secret
+`CUBEPILOT_MODEL_PROVIDERS` (the `models.providers` object) is configured;
+without it the deploy path still runs with a placeholder key.
+
 ## What to verify
 
 | Check | Action | Expected |
