@@ -29,7 +29,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 // (design §3.1: builtin: true, auto-instantiated per user, non-deletable;
 // model[0] primary).
 func TestBuiltinAgentShape(t *testing.T) {
-	agent := BuiltinAgent()
+	agent := BuiltinAgentTemplate()
 	if agent.Name != "agent-for-cloud" {
 		t.Errorf("name = %s, want agent-for-cloud", agent.Name)
 	}
@@ -39,20 +39,20 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.DefaultModel != "deepseek-v4-flash" {
 		t.Errorf("defaultModel = %q, want deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
 	}
-	if len(agent.Spec.AvailableModels) != 1 || agent.Spec.AvailableModels[0] != "deepseek-v4-flash" {
-		t.Errorf("availableModels = %v, want [deepseek-v4-flash]", agent.Spec.AvailableModels)
+	if len(agent.Spec.Models) != 1 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
+		t.Errorf("inline models = %v, want [deepseek-v4-flash]", agent.Spec.Models)
 	}
 	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q, want ConfirmWrites (design §3.1)", agent.Spec.ConfirmPolicy)
 	}
-	if len(agent.Spec.Model) == 0 || agent.Spec.Model[0].Name == "" {
+	if len(agent.Spec.Models) == 0 || agent.Spec.Models[0].Name == "" {
 		t.Error("primary model missing")
 	}
 	if agent.Spec.Identity == nil || agent.Spec.Identity.Mode != v1alpha1.IdentityModeUser {
 		t.Error("identity mode should default to user")
 	}
-	if len(agent.Spec.Capabilities) == 0 {
-		t.Error("builtin agent should reference capabilities")
+	if len(agent.Spec.Skills) == 0 {
+		t.Error("builtin agent should reference capabilities/skills")
 	}
 }
 
@@ -90,7 +90,7 @@ func TestBootstrapEnsure(t *testing.T) {
 	}
 
 	// Agent definition exists.
-	var agent v1alpha1.Agent
+	var agent v1alpha1.AgentTemplate
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &agent); err != nil {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
@@ -110,13 +110,14 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("daily-inspection template not created: %v", err)
 	}
 
-	// Model catalog entries exist (design §3.3: platform preloads models).
-	var models v1alpha1.ModelList
-	if err := cl.List(context.Background(), &models); err != nil {
-		t.Fatalf("list models: %v", err)
+	// Models are inlined in the template (design §3.3): the builtin template
+	// carries the preset inline model entries.
+	tmpl := v1alpha1.AgentTemplate{}
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tmpl); err != nil {
+		t.Fatalf("agent-for-cloud template not found: %v", err)
 	}
-	if len(models.Items) != len(BuiltinModels()) {
-		t.Errorf("models = %d, want %d", len(models.Items), len(BuiltinModels()))
+	if len(tmpl.Spec.Models) != len(BuiltinModels()) {
+		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels()))
 	}
 
 	// Per-user instances exist (auto-instantiated per user).
@@ -128,8 +129,8 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("instances = %d, want 2", len(insts.Items))
 	}
 	for _, inst := range insts.Items {
-		if inst.Spec.AgentRef != "agent-for-cloud" {
-			t.Errorf("instance %s agentRef = %s", inst.Name, inst.Spec.AgentRef)
+		if inst.Spec.TemplateRef != "agent-for-cloud" {
+			t.Errorf("instance %s templateRef = %s", inst.Name, inst.Spec.TemplateRef)
 		}
 		if inst.Spec.Identity.Mode != v1alpha1.IdentityModeUser || inst.Spec.Identity.PrincipalRef.UserRef == "" {
 			t.Errorf("instance %s identity not bound to user", inst.Name)

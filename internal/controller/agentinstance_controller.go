@@ -81,10 +81,10 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		return ctrl.Result{}, nil
 	}
 
-	// Resolve the Agent definition.
-	agent, err := r.agentFor(ctx, inst.Spec.AgentRef)
+	// Resolve the AgentTemplate definition.
+	agent, err := r.templateFor(ctx, inst.Spec.TemplateRef)
 	if err != nil {
-		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "", "agent definition: "+err.Error())
+		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "", "template definition: "+err.Error())
 	}
 
 	// Runtime must be supported by this controller.
@@ -177,18 +177,18 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
-// agentFor fetches the Agent definition by name (nil when missing: the
-// builtin bootstrap creates agent-for-cloud before instances, but a missing
-// definition must not crash the loop).
-func (r *AgentInstanceReconciler) agentFor(ctx context.Context, name string) (*v1alpha1.Agent, error) {
-	var agent v1alpha1.Agent
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &agent); err != nil {
+// templateFor fetches the AgentTemplate definition by name (nil when missing:
+// the builtin bootstrap creates agent-for-cloud before instances, but a
+// missing template must not crash the loop).
+func (r *AgentInstanceReconciler) templateFor(ctx context.Context, name string) (*v1alpha1.AgentTemplate, error) {
+	var tmpl v1alpha1.AgentTemplate
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, &tmpl); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &agent, nil
+	return &tmpl, nil
 }
 
 // finalize removes the instance's data directory PVC (the data directory is

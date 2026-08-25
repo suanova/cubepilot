@@ -36,7 +36,7 @@ func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) 
 			&v1alpha1.Task{},
 			&v1alpha1.TaskRun{},
 			&v1alpha1.AgentInstance{},
-			&v1alpha1.Agent{},
+			&v1alpha1.AgentTemplate{},
 			&v1alpha1.Capability{},
 		).
 		WithObjects(objs...).

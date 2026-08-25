@@ -96,12 +96,6 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("agentinstance controller: %v", err)
 	}
-	if err := (&controller.ModelReconciler{
-		Client: mgr.GetClient(),
-		Cfg:    cfg,
-	}).SetupWithManager(mgr); err != nil {
-		log.Fatalf("model controller: %v", err)
-	}
 	if err := (&controller.BuiltinBootstrapReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

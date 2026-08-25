@@ -58,12 +58,12 @@ spec:
             type: object
           spec:
             description: |-
-              AgentInstanceSpec is the runtime instance of an Agent definition for one
+              AgentInstanceSpec is the runtime instance of an AgentTemplate definition for one
               user (design §3.2). The instance key is `user + agent` -- one instance per
               user per agent, single-writer.
             properties:
-              agentRef:
-                description: AgentRef points to the Agent definition (e.g. agent-for-cloud).
+              templateRef:
+                description: TemplateRef points to the AgentTemplate definition (e.g. agent-for-cloud).
                 type: string
               credentials:
                 description: Credentials are the typed downstream credentials.
@@ -82,7 +82,7 @@ spec:
                     modelRef:
                       description: |-
                         ModelRef optionally binds an llm credential to a model entry in the
-                        Agent definition model[] (by name). Required when multiple external
+                        AgentTemplate definition model[] (by name). Required when multiple external
                         models exist; implicit when exactly one (design §4.4, fail-closed).
                       type: string
                     ref:
@@ -115,10 +115,10 @@ spec:
                       in code).
                     type: string
                 type: object
-              enabledCapabilities:
+              enabledSkills:
                 description: |-
-                  EnabledCapabilities optionally restricts the domain capabilities the
-                  Agent definition declares (design §3.2: the instance may select a
+                  EnabledSkills optionally restricts the domain capabilities the
+                  AgentTemplate definition declares (design §3.2: the instance may select a
                   subset; empty = all declared). Atomic capabilities are overlays and
                   are not filtered here.
                 items:
@@ -128,7 +128,7 @@ spec:
                 description: Identity is the platform-side identity (mode + principal).
                 properties:
                   mode:
-                    description: Mode must match the Agent definition (inherited,
+                    description: Mode must match the AgentTemplate definition (inherited,
                       immutable).
                     type: string
                   principalRef:
@@ -166,7 +166,7 @@ spec:
                 type: string
               selectedModel:
                 description: |-
-                  SelectedModel optionally switches the model within the Agent definition
+                  SelectedModel optionally switches the model within the AgentTemplate definition
                   model[] allowlist (default model[0].name). FR-M2-005.
                 type: string
               userInstructions:

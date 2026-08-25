@@ -21,42 +21,34 @@ func testResolver(t *testing.T, objs ...client.Object) *Resolver {
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.Model{}, &v1alpha1.AgentInstance{}, &v1alpha1.Agent{}).
+		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
 		WithObjects(objs...).
 		Build()
 	return New(cl)
 }
 
-func agent(name string, mod func(*v1alpha1.Agent)) *v1alpha1.Agent {
-	a := &v1alpha1.Agent{
+func template(name string, mod func(*v1alpha1.AgentTemplate)) *v1alpha1.AgentTemplate {
+	t := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha1.AgentSpec{
+		Spec: v1alpha1.AgentTemplateSpec{
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions:  "You are the platform assistant.",
 		},
 	}
 	if mod != nil {
-		mod(a)
+		mod(t)
 	}
-	return a
+	return t
 }
 
-func instance(user, agentRef, selected string) *v1alpha1.AgentInstance {
+func instance(user, templateRef, selected string) *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(user, agentRef)},
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(user, templateRef)},
 		Spec: v1alpha1.AgentInstanceSpec{
-			AgentRef:      agentRef,
+			TemplateRef:   templateRef,
 			Owner:         user,
 			SelectedModel: selected,
 		},
-	}
-}
-
-func model(name string, phase v1alpha1.ModelPhase, modelID string) *v1alpha1.Model {
-	return &v1alpha1.Model{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       v1alpha1.ModelSpec{Provider: v1alpha1.ModelProviderPlatform, ModelID: modelID},
-		Status:     v1alpha1.ModelStatus{Phase: phase},
 	}
 }
 
@@ -90,12 +82,13 @@ func TestResolveNoInstance(t *testing.T) {
 // capabilities land in the resolved config.
 func TestResolveMergesFields(t *testing.T) {
 	r := testResolver(t,
-		agent(v1alpha1.DefaultAgentName, func(a *v1alpha1.Agent) {
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
-			a.Spec.AvailableModels = []string{"deepseek-v4-flash"}
+			a.Spec.Models = []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"),
 		domainCap("cluster-inspection", "Read-only cluster inspection."),
 		&v1alpha1.Capability{ // atomic -- must NOT appear in capabilities
 			ObjectMeta: metav1.ObjectMeta{Name: "some-atomic"},
@@ -138,13 +131,14 @@ func TestResolveMergesFields(t *testing.T) {
 // agent default.
 func TestResolveExplicitSelection(t *testing.T) {
 	r := testResolver(t,
-		agent(v1alpha1.DefaultAgentName, func(a *v1alpha1.Agent) {
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
-			a.Spec.AvailableModels = []string{"deepseek-v4-flash", "deepseek-chat"}
+			a.Spec.Models = []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-chat", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-chat"},
+			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, "deepseek-chat"),
-		model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"),
-		model("deepseek-chat", v1alpha1.ModelAvailable, "deepseek/deepseek-chat"),
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {
@@ -156,33 +150,19 @@ func TestResolveExplicitSelection(t *testing.T) {
 }
 
 // TestResolveOutsideAllowlist verifies fail-closed: a selection outside the
-// agent's availableModels is an error.
+// template's inline models is an error.
 func TestResolveOutsideAllowlist(t *testing.T) {
 	r := testResolver(t,
-		agent(v1alpha1.DefaultAgentName, func(a *v1alpha1.Agent) {
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
-			a.Spec.AvailableModels = []string{"deepseek-v4-flash"}
+			a.Spec.Models = []v1alpha1.TemplateModelSpec{
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, "glm-5.2"),
-		model("glm-5.2", v1alpha1.ModelAvailable, "glm/glm-5.2"),
 	)
 	if _, err := r.ResolveForUser(context.Background(), "li.ming"); err == nil {
-		t.Error("selection outside availableModels should fail (fail-closed)")
-	}
-}
-
-// TestResolveUnreachableModel verifies fail-closed on an Unreachable model.
-func TestResolveUnreachableModel(t *testing.T) {
-	r := testResolver(t,
-		agent(v1alpha1.DefaultAgentName, func(a *v1alpha1.Agent) {
-			a.Spec.DefaultModel = "deepseek-v4-flash"
-			a.Spec.AvailableModels = []string{"deepseek-v4-flash"}
-		}),
-		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		model("deepseek-v4-flash", v1alpha1.ModelUnreachable, "deepseek/deepseek-v4-flash"),
-	)
-	if _, err := r.ResolveForUser(context.Background(), "li.ming"); err == nil {
-		t.Error("Unreachable model should fail (fail-closed)")
+		t.Error("selection outside inline models should fail (fail-closed)")
 	}
 }
 
@@ -205,12 +185,12 @@ func TestResolveCapabilityScopedByAgents(t *testing.T) {
 	}
 }
 
-// TestResolveEnabledCapabilities verifies the instance-level capability
-// subset (design §3.2: the instance may restrict to enabledCapabilities;
-// empty = all visible).
-func TestResolveEnabledCapabilities(t *testing.T) {
+// TestResolveEnabledSkills verifies the instance-level skill subset
+// (design §3.2: the instance may restrict to enabledSkills; empty = all
+// visible).
+func TestResolveEnabledSkills(t *testing.T) {
 	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
-	inst.Spec.EnabledCapabilities = []string{"cluster-inspection"}
+	inst.Spec.EnabledSkills = []string{"cluster-inspection"}
 	r := testResolver(t,
 		inst,
 		domainCap("cluster-inspection", "Read-only cluster inspection."),
@@ -258,16 +238,17 @@ func TestResolveRevisionStable(t *testing.T) {
 	}
 }
 
-// TestResolveNoModelOverride verifies a selection whose Model has no modelId
+// TestResolveNoModelOverride verifies a selection whose model has no modelId
 // (platform default) resolves to empty SelectedModel, not an error.
 func TestResolveNoModelOverride(t *testing.T) {
 	r := testResolver(t,
-		agent(v1alpha1.DefaultAgentName, func(a *v1alpha1.Agent) {
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "builtin-default"
-			a.Spec.AvailableModels = []string{"builtin-default"}
+			a.Spec.Models = []v1alpha1.TemplateModelSpec{
+				{Name: "builtin-default", Provider: v1alpha1.ModelProviderPlatform, ModelID: ""},
+			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		model("builtin-default", v1alpha1.ModelAvailable, ""),
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {

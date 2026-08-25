@@ -124,16 +124,16 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		Owner:    inst.Spec.Owner,
 	}
 
-	// Agent definition constraints (defaultModel / availableModels /
-	// confirmPolicy / instructions). A missing definition contributes no
-	// constraints (phase-one compatibility).
-	if inst.Spec.AgentRef != "" {
-		cfg.Agent = inst.Spec.AgentRef
-		var def v1alpha1.Agent
-		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.AgentRef}, &def); err == nil {
+	// Template constraints (defaultModel / models / confirmPolicy /
+	// instructions). A missing template contributes no constraints
+	// (phase-one compatibility).
+	if inst.Spec.TemplateRef != "" {
+		cfg.Agent = inst.Spec.TemplateRef
+		var def v1alpha1.AgentTemplate
+		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
 			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
 			cfg.Instructions = def.Spec.Instructions
-			// User instructions append after the definition instructions
+			// User instructions append after the template instructions
 			// (design §3.2: final instructions = platform safety & execution
 			// constraints + template instructions + user instructions, combined
 			// in order; user instructions cannot remove or weaken the safety
@@ -144,13 +144,13 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 				}
 				cfg.Instructions += ui
 			}
-			// Model selection: instance override -> agent default -> none.
+			// Model selection: instance override -> template default -> none.
 			selected := inst.Spec.SelectedModel
 			if selected == "" {
 				selected = def.Spec.DefaultModel
 			}
 			if selected != "" {
-				modelID, err := r.resolveModel(ctx, selected, def)
+				modelID, err := r.resolveModel(selected, def)
 				if err != nil {
 					return nil, err
 				}
@@ -158,21 +158,21 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 				cfg.ModelName = selected
 			}
 		} else if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("get agent %s: %w", inst.Spec.AgentRef, err)
+			return nil, fmt.Errorf("get template %s: %w", inst.Spec.TemplateRef, err)
 		}
 	}
 
 	// Domain capabilities visible to this agent (empty Agents = visible to
 	// all; atomic capabilities are overlays, not skills). The instance may
-	// further restrict to an explicit enabledCapabilities subset (design
-	// §3.2); empty = all declared/all visible.
+	// further restrict to an explicit enabledSkills subset (design §3.2);
+	// empty = all declared/all visible.
 	var caps v1alpha1.CapabilityList
 	if err := r.cr.List(ctx, &caps); err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
 	}
 	restrict := map[string]bool{}
-	if len(inst.Spec.EnabledCapabilities) > 0 {
-		for _, name := range inst.Spec.EnabledCapabilities {
+	if len(inst.Spec.EnabledSkills) > 0 {
+		for _, name := range inst.Spec.EnabledSkills {
 			restrict[name] = true
 		}
 	}
@@ -202,24 +202,16 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	return cfg, nil
 }
 
-// resolveModel validates the selection against the agent's availableModels
-// allowlist and the Model catalog, returning the effective backend model id.
-// Fail-closed: outside allowlist / not in catalog / Unreachable -> error.
-func (r *Resolver) resolveModel(ctx context.Context, selected string, def v1alpha1.Agent) (string, error) {
-	if len(def.Spec.AvailableModels) > 0 && !contains(def.Spec.AvailableModels, selected) {
-		return "", fmt.Errorf("model %q not in agent %q availableModels", selected, def.Name)
+// resolveModel validates the selection against the template's inline models
+// list and returns the effective backend model id. Fail-closed: not in
+// models list -> error.
+func (r *Resolver) resolveModel(selected string, def v1alpha1.AgentTemplate) (string, error) {
+	for _, m := range def.Spec.Models {
+		if m.Name == selected {
+			return m.ModelID, nil // empty ModelID = platform default, no override
+		}
 	}
-	var model v1alpha1.Model
-	if err := r.cr.Get(ctx, types.NamespacedName{Name: selected}, &model); err != nil {
-		return "", fmt.Errorf("model %q not in catalog: %v", selected, err)
-	}
-	if model.Status.Phase == v1alpha1.ModelUnreachable {
-		return "", fmt.Errorf("model %q unavailable: %s", selected, model.Status.Message)
-	}
-	if model.Spec.ModelID == "" {
-		return "", nil // platform default, no override
-	}
-	return model.Spec.ModelID, nil
+	return "", fmt.Errorf("model %q not in template %q models", selected, def.Name)
 }
 
 func contains(list []string, s string) bool {
