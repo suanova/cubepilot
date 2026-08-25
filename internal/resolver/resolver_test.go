@@ -85,7 +85,7 @@ func TestResolveMergesFields(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
@@ -106,8 +106,8 @@ func TestResolveMergesFields(t *testing.T) {
 	if cfg.Owner != "li.ming" {
 		t.Errorf("owner = %q", cfg.Owner)
 	}
-	if cfg.SelectedModel != "deepseek/deepseek-v4-flash" {
-		t.Errorf("selectedModel = %q, want deepseek/deepseek-v4-flash", cfg.SelectedModel)
+	if cfg.SelectedModel != "cuberouter/deepseek-v4-flash-0731" {
+		t.Errorf("selectedModel = %q, want cuberouter/deepseek-v4-flash-0731", cfg.SelectedModel)
 	}
 	if cfg.ModelName != "deepseek-v4-flash" {
 		t.Errorf("modelName = %q", cfg.ModelName)
@@ -134,7 +134,7 @@ func TestResolveExplicitSelection(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 				{Name: "deepseek-chat", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-chat"},
 			}
 		}),
@@ -156,7 +156,7 @@ func TestResolveOutsideAllowlist(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, "glm-5.2"),

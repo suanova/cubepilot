@@ -15,8 +15,8 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.agentRef
-      name: Agent
+    - jsonPath: .spec.templateRef
+      name: Template
       type: string
     - jsonPath: .spec.owner
       name: Owner
@@ -176,7 +176,7 @@ spec:
                   instructions; cannot remove or weaken security/identity bounds).
                 type: string
             required:
-            - agentRef
+            - templateRef
             - identity
             - owner
             type: object
