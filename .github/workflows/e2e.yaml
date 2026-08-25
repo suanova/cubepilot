@@ -13,6 +13,7 @@ jobs:
   test:
     name: Unit tests + static checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,6 +26,7 @@ jobs:
   e2e:
     name: End-to-end (kind)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: test
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +52,8 @@ jobs:
           docker pull golang:1.26-bookworm
           docker pull node:24-bookworm-slim
           docker pull ghcr.io/openclaw/openclaw:2026.6.33
+          docker pull node:22-alpine
+          docker pull nginx:1.27-alpine
 
       # The full conversational e2e needs a real model-provider key. Configure
       # it as the GitHub secret CUBEPILOT_MODEL_PROVIDERS (the models.providers
