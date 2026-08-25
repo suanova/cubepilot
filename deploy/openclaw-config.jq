@@ -2,6 +2,11 @@
 # openclaw-config Secret). Every value comes from setup-time caller input or a
 # fixed default -- no host config file is ever read.
 #
+# $providers is the OpenClaw models.providers object, passed through verbatim,
+# so it must match OpenClaw's provider schema: each provider uses "api" as the
+# API-style enum (e.g. "openai-completions" for DeepSeek) and "apiKey" for the
+# secret, plus baseUrl and models[] (see scripts/setup.sh --help for an example).
+#
 # Invoke (see scripts/setup.sh):
 #   jq -n --argjson providers '<models.providers object>' \
 #         --arg defaultModel '<primary model, may be empty>' \

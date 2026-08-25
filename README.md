@@ -71,7 +71,7 @@ scripts/setup.sh        one-shot deployment (build -> kind -> helm install)
 
 ```bash
 # 1. Build images, create the kind cluster if needed, create Secrets, deploy
-CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/setup.sh
 
 # 2. Expose the Portal
@@ -85,8 +85,8 @@ Full input reference: `scripts/setup.sh --help` (or the env vars in
 
 Deployment is Helm-managed (`deploy/charts/cubepilot`): the operator, api,
 web and per-component RBAC are chart templates; platform CRDs ship in the
-chart's `crds/` dir (installed at `helm install` -- upgrade them explicitly
-with `kubectl apply -f config/crd/bases/`). Secrets (`openclaw-config`, `agent-kubeconfig`) are created out-of-band by
+chart's `crds/` dir (installed at `helm install` -- upgrade them by reapplying
+the manifests in `deploy/charts/cubepilot/crds/`). Secrets (`openclaw-config`, `agent-kubeconfig`) are created out-of-band by
 `scripts/setup.sh` because they hold LLM credentials supplied at setup time.
 
 The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
