@@ -57,7 +57,7 @@ func TestSelectedModelForResolvesDefault(t *testing.T) {
 		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel: "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 			},
 		},
 	}
@@ -67,8 +67,8 @@ func TestSelectedModelForResolvesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectedModelFor: %v", err)
 	}
-	if got != "deepseek/deepseek-v4-flash" {
-		t.Errorf("model = %q, want deepseek/deepseek-v4-flash", got)
+	if got != "cuberouter/deepseek-v4-flash-0731" {
+		t.Errorf("model = %q, want cuberouter/deepseek-v4-flash-0731", got)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestSelectedModelForExplicit(t *testing.T) {
 		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel: "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 				{Name: "deepseek-chat", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-chat"},
 			},
 		},
@@ -104,7 +104,7 @@ func TestSelectedModelForOutsideAllowlist(t *testing.T) {
 		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel: "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 			},
 		},
 	}
