@@ -10,8 +10,10 @@ Access the portal:
   open http://127.0.0.1:8080
 
 Notes:
-- Platform CRDs were installed from crds/ at install time. Helm does NOT
-  upgrade CRDs; update them with:
-    kubectl apply -f config/crd/bases/
-- The openclaw-config and agent-kubeconfig secrets are created out-of-band
-  (scripts/setup.sh extracts LLM credentials from the host OpenClaw config).
+- Platform CRDs are installed from the chart crds/ dir at first install.
+  Helm does NOT upgrade CRDs; update them by reapplying the manifests in
+  deploy/charts/cubepilot/crds/ after a chart upgrade.
+- The openclaw-config and agent-kubeconfig secrets are created by
+  scripts/setup.sh from caller-supplied inputs (CUBEPILOT_MODEL_PROVIDERS and
+  an auto-generated or pinned CUBEPILOT_GATEWAY_TOKEN) -- no host OpenClaw
+  config is read.
