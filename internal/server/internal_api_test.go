@@ -17,7 +17,7 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel:    "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-v4-flash"},
+				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
 			},
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions:  "You are the platform assistant.",
@@ -67,7 +67,7 @@ func TestInternalAgentConfig(t *testing.T) {
 	if cfg.Owner != "li.ming" {
 		t.Errorf("owner = %q", cfg.Owner)
 	}
-	if cfg.SelectedModel != "deepseek/deepseek-v4-flash" {
+	if cfg.SelectedModel != "cuberouter/deepseek-v4-flash-0731" {
 		t.Errorf("selectedModel = %q", cfg.SelectedModel)
 	}
 	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {

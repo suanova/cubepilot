@@ -46,7 +46,7 @@ func BuiltinModels() []v1alpha1.TemplateModelSpec {
 		{
 			Name:     "deepseek-v4-flash",
 			Provider: v1alpha1.ModelProviderPlatform,
-			ModelID:  "deepseek/deepseek-v4-flash",
+			ModelID:  "cuberouter/deepseek-v4-flash-0731",
 		},
 	}
 }
