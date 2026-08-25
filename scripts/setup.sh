@@ -28,11 +28,11 @@ SKIP_CLUSTER_CREATE="${CUBEPILOT_SKIP_CLUSTER_CREATE:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --providers-json)     MODEL_PROVIDERS="${2:?--providers-json requires a JSON value}"; shift 2 ;;
-    --default-model)      DEFAULT_MODEL="$2"; shift 2 ;;
-    --gateway-token)      GATEWAY_TOKEN="$2"; shift 2 ;;
-    --kind-cluster)       KIND_CLUSTER="$2"; shift 2 ;;
-    --namespace)          NAMESPACE="$2"; shift 2 ;;
-    --openclaw-image-tag) OPENCLAW_IMAGE_TAG="$2"; shift 2 ;;
+    --default-model)      DEFAULT_MODEL="${2:?--default-model requires a value}"; shift 2 ;;
+    --gateway-token)      GATEWAY_TOKEN="${2:?--gateway-token requires a value}"; shift 2 ;;
+    --kind-cluster)       KIND_CLUSTER="${2:?--kind-cluster requires a value}"; shift 2 ;;
+    --namespace)          NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
+    --openclaw-image-tag) OPENCLAW_IMAGE_TAG="${2:?--openclaw-image-tag requires a value}"; shift 2 ;;
     --skip-cluster-create) SKIP_CLUSTER_CREATE=1; shift ;;
     -h|--help)
       cat <<'EOF'
@@ -84,8 +84,8 @@ command -v openssl >/dev/null || { echo "openssl required"; exit 1; }
   echo "error: CUBEPILOT_MODEL_PROVIDERS is required (JSON of models.providers). See --help." >&2
   exit 1
 }
-echo "$MODEL_PROVIDERS" | jq -e 'type == "object" and ((to_entries[0].value.models // []) | length) >= 1' >/dev/null \
-  || { echo "error: CUBEPILOT_MODEL_PROVIDERS must be an object with >=1 provider and >=1 model" >&2; exit 1; }
+echo "$MODEL_PROVIDERS" | jq -e 'type == "object" and any(to_entries[]; ((.value.models // []) | length) >= 1)' >/dev/null \
+  || { echo "error: CUBEPILOT_MODEL_PROVIDERS must be an object with at least one provider having >=1 model" >&2; exit 1; }
 
 # ---- kind cluster bootstrap ----------------------------------------------
 if ! kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER"; then
@@ -119,10 +119,19 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
   --from-file=config="$REPO_DIR/deploy/agent-kubeconfig.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# gateway token: caller-supplied or auto-generated (never read from a host file).
+# gateway token: caller-supplied, reused from a prior run, or auto-generated
+# (never read from a host file). Reuse keeps the operator-created agent gateway
+# Pods working across re-runs: they read OPENCLAW_GATEWAY_TOKEN from the
+# openclaw-config Secret via secretKeyRef, which does not hot-update.
 if [ -z "$GATEWAY_TOKEN" ]; then
-  GATEWAY_TOKEN="$(openssl rand -hex 32)"
-  log "generated a random gateway token (set CUBEPILOT_GATEWAY_TOKEN to pin it)"
+  EXISTING="$(kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.gatewayToken}' 2>/dev/null || true)"
+  if [ -n "$EXISTING" ]; then
+    GATEWAY_TOKEN="$(printf '%s' "$EXISTING" | base64 -d)"
+    log "reusing existing gateway token from openclaw-config secret"
+  else
+    GATEWAY_TOKEN="$(openssl rand -hex 32)"
+    log "generated a random gateway token (set CUBEPILOT_GATEWAY_TOKEN to pin it)"
+  fi
 fi
 
 TMP="$(mktemp -d)"
