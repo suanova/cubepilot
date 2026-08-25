@@ -18,7 +18,7 @@ func internalTestAgent(name string) *v1alpha1.Agent {
 			DefaultModel:    "deepseek-v4-flash",
 			AvailableModels: []string{"deepseek-v4-flash"},
 			ConfirmPolicy:   v1alpha1.ConfirmPolicyConfirmWrites,
-			Instructions:    "你是平台助手。",
+			Instructions:    "You are the platform assistant.",
 		},
 	}
 }
@@ -46,8 +46,8 @@ func internalTestCap(name, instructions string) *v1alpha1.Capability {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.CapabilitySpec{
 			Type:         v1alpha1.CapabilityDomain,
-			Title:        "能力 " + name,
-			Description:  "描述 " + name,
+			Title:        "Capability " + name,
+			Description:  "Description " + name,
 			Instructions: instructions,
 		},
 	}
@@ -60,7 +60,7 @@ func TestInternalAgentConfig(t *testing.T) {
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
 		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
-		internalTestCap("cluster-inspection", "只读巡检集群。"),
+		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
 	)
 
 	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
@@ -109,7 +109,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
 		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
-		internalTestCap("cluster-inspection", "只读巡检集群。"),
+		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
 	)
 	rec1 := doReq(t, s1.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
 	cfg1 := decode[resolver.ResolvedAgentConfig](t, rec1)
@@ -118,7 +118,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
 		internalTestModel("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
-		internalTestCap("cluster-inspection", "只读巡检集群——新增检查。"),
+		internalTestCap("cluster-inspection", "Read-only cluster inspection - added one more check."),
 	)
 	rec2 := doReq(t, s2.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
 	cfg2 := decode[resolver.ResolvedAgentConfig](t, rec2)

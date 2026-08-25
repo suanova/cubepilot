@@ -4,11 +4,11 @@ CubePilot is the intelligent assistant of the CubeStack platform. It implements
 the two core capabilities described in the module design document (extension
 points E1/E2, FR-M2/M3):
 
-1. **Per-user agent instance lifecycle (K8s Pod)** — the Instance Manager
+1. **Per-user agent instance lifecycle (K8s Pod)** -- the Instance Manager
    controller provisions / self-heals / optionally reclaims per-user OpenClaw
    Pods through the Kubernetes API. Sessions and memory survive instance
    rebuilds (each instance has its own PVC).
-2. **Conversational loop** — a real OpenClaw runtime (DeepSeek V4 Flash) acts
+2. **Conversational loop** -- a real OpenClaw runtime (DeepSeek V4 Flash) acts
    under the guidance of the capability catalog (Skills), calls `exec` to run
    `kubectl` against the same cluster, and streams results back to the Portal
    over SSE.
@@ -16,11 +16,11 @@ points E1/E2, FR-M2/M3):
 ## Architecture
 
 ```
-browser (host) ── kubectl port-forward ──► inside the kind cluster:
+browser (host) -- kubectl port-forward --- inside the kind cluster:
   cubepilot Deployment (assistant service + instance-manager controllers)
-     ├──► per-user OpenClaw Pod  svc/agent-<user> (ClusterIP:18789)
-     │         exec ──► kubectl (in-cluster SA token) ──► same kind cluster
-     └──► K8s API (controller-runtime / client-go): Pod/PVC/Service lifecycle
+     ├--- per-user OpenClaw Pod  svc/agent-<user> (ClusterIP:18789)
+     │         exec --- kubectl (in-cluster SA token) --- same kind cluster
+     └--- K8s API (controller-runtime / client-go): Pod/PVC/Service lifecycle
 ```
 
 - Per-user isolation = **Pod + dedicated PVC** (NFR-002); sessions persist on
@@ -42,20 +42,20 @@ cmd/cubepilot-operator   platform controllers entry point
 cmd/cubepilot-api         Portal + REST/SSE API entry point
 internal/apiv1alpha1    CRD types (kubebuilder annotations)
 internal/controller     AgentInstance + builtin-bootstrap controllers
-internal/scheduler      CRD-driven task scheduler (Task → TaskRun)
+internal/scheduler      CRD-driven task scheduler (Task -> TaskRun)
 internal/instances      Instance Manager facade (CR-warm waits)
 internal/config         env configuration
 internal/k8s            client-go + Pod/PVC/Service builders
 internal/openclaw       OpenClaw HTTP client + event mapping (with tests)
 internal/server         REST/SSE handlers (no static serving)
 internal/store          platform metadata store (JSON on PVC)
-web/                    Portal SPA — Vue 3 + TypeScript + Vite (independent
+web/                    Portal SPA -- Vue 3 + TypeScript + Vite (independent
                         component; nginx serves it and proxies /api)
 capabilities/           capability catalog SKILL.md × 4
 workspace/              SOUL.md / AGENTS.md
 config/crd/bases        generated CRD manifests
 deploy/                 images Dockerfiles + charts/cubepilot Helm chart + kubeconfig template
-scripts/setup.sh        one-shot deployment (build → kind → helm install)
+scripts/setup.sh        one-shot deployment (build -> kind -> helm install)
 ```
 
 ## Prerequisites
@@ -80,7 +80,7 @@ kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
 
 Deployment is Helm-managed (`deploy/charts/cubepilot`): the operator, api,
 web and per-component RBAC are chart templates; platform CRDs ship in the
-chart's `crds/` dir (installed at `helm install` — upgrade them explicitly
+chart's `crds/` dir (installed at `helm install` -- upgrade them explicitly
 with `kubectl apply -f config/crd/bases/`). Secrets (`openclaw-config`,
 `agent-kubeconfig`) are created out-of-band by `scripts/setup.sh` because they
 hold host-derived LLM credentials.
@@ -93,11 +93,11 @@ streams tool calls and the answer back.
 
 | Check | Action | Expected |
 |---|---|---|
-| Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start → agent_thinking → tool_call(exec kubectl) → message_delta → message_done`, ending with a natural-language summary of real kind Pod state |
+| Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start -> agent_thinking -> tool_call(exec kubectl) -> message_delta -> message_done`, ending with a natural-language summary of real kind Pod state |
 | Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-zhang.wei` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
 | User isolation | Request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
-| Inspection | Portal → scheduled tasks → run now | Severity-graded node/Pod report (`/api/inspect`) |
+| Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (`/api/inspect`) |
 
 ## Current simplifications (phase-one boundaries)
 
@@ -108,7 +108,7 @@ streams tool calls and the answer back.
 - The capability catalog is baked into the image (production target: ConfigMap
   mounting for "takes effect immediately", FR-M2-005).
 - Not yet implemented: HITL confirmation (`confirm_*`), audit DB (M5), RAG,
-  and multi-tenant auth — scheduled for phases two/three.
+  and multi-tenant auth -- scheduled for phases two/three.
 - `tool_result` events do not appear separately in the stream (OpenClaw's agent
   loop executes tools server-side); tool outcomes are reflected in the final
   answer text, and the full tool blocks are available in session history.

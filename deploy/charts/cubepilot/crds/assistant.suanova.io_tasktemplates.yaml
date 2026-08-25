@@ -25,9 +25,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          TaskTemplate is a parameterized task template (design §3.3.2) — template ≠
-          instance ≠ run: TaskTemplate (what to do) ≠ Task (whose task, when it runs)
-          ≠ TaskRun (run report).
+          TaskTemplate is a parameterized task template (design §3.3.2) -- template !=
+          instance != run: TaskTemplate (what to do) != Task (whose task, when it runs)
+          != TaskRun (run report).
         properties:
           apiVersion:
             description: |-
@@ -48,7 +48,7 @@ spec:
             type: object
           spec:
             description: |-
-              TaskTemplateSpec is a parameterized task template (design §3.3.2) — the
+              TaskTemplateSpec is a parameterized task template (design §3.3.2) -- the
               template (what to do), the "class" of tasks. Preloaded: daily-inspection.
             properties:
               capabilities:

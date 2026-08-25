@@ -32,7 +32,7 @@ func agent(name string, mod func(*v1alpha1.Agent)) *v1alpha1.Agent {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.AgentSpec{
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
-			Instructions:  "你是平台助手。",
+			Instructions:  "You are the platform assistant.",
 		},
 	}
 	if mod != nil {
@@ -65,8 +65,8 @@ func domainCap(name, instructions string) *v1alpha1.Capability {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.CapabilitySpec{
 			Type:         v1alpha1.CapabilityDomain,
-			Title:        "能力 " + name,
-			Description:  "描述 " + name,
+			Title:        "Capability " + name,
+			Description:  "Description " + name,
 			Instructions: instructions,
 			Uses:         []string{"kubectl-platform"},
 		},
@@ -96,8 +96,8 @@ func TestResolveMergesFields(t *testing.T) {
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
 		model("deepseek-v4-flash", v1alpha1.ModelAvailable, "deepseek/deepseek-v4-flash"),
-		domainCap("cluster-inspection", "只读巡检集群。"),
-		&v1alpha1.Capability{ // atomic — must NOT appear in capabilities
+		domainCap("cluster-inspection", "Read-only cluster inspection."),
+		&v1alpha1.Capability{ // atomic -- must NOT appear in capabilities
 			ObjectMeta: metav1.ObjectMeta{Name: "some-atomic"},
 			Spec:       v1alpha1.CapabilitySpec{Type: v1alpha1.CapabilityAtomic},
 		},
@@ -189,11 +189,11 @@ func TestResolveUnreachableModel(t *testing.T) {
 // TestResolveCapabilityScopedByAgents verifies capability.Agents restricts
 // visibility.
 func TestResolveCapabilityScopedByAgents(t *testing.T) {
-	scoped := domainCap("scoped", "只给特定 agent")
+	scoped := domainCap("scoped", "Visible only to a specific agent.")
 	scoped.Spec.Agents = []string{"other-agent"}
 	r := testResolver(t,
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		domainCap("open", "所有人可见"),
+		domainCap("open", "Visible to everyone."),
 		scoped,
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
@@ -213,8 +213,8 @@ func TestResolveEnabledCapabilities(t *testing.T) {
 	inst.Spec.EnabledCapabilities = []string{"cluster-inspection"}
 	r := testResolver(t,
 		inst,
-		domainCap("cluster-inspection", "只读巡检集群。"),
-		domainCap("dev-environment", "开发环境管理。"),
+		domainCap("cluster-inspection", "Read-only cluster inspection."),
+		domainCap("dev-environment", "Development environment management."),
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {
@@ -226,11 +226,11 @@ func TestResolveEnabledCapabilities(t *testing.T) {
 }
 
 // TestResolveRevisionStable verifies the revision is a content hash: equal
-// inputs → equal revision; a capability change → different revision.
+// inputs -> equal revision; a capability change -> different revision.
 func TestResolveRevisionStable(t *testing.T) {
 	base := []client.Object{
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		domainCap("cluster-inspection", "只读巡检集群。"),
+		domainCap("cluster-inspection", "Read-only cluster inspection."),
 	}
 	r1 := testResolver(t, base...)
 	cfg1, err := r1.ResolveForUser(context.Background(), "li.ming")
@@ -247,7 +247,7 @@ func TestResolveRevisionStable(t *testing.T) {
 		t.Errorf("revision not stable: %q vs %q", cfg1.Revision, cfg2.Revision)
 	}
 
-	changed := domainCap("cluster-inspection", "只读巡检集群——新增一条检查。")
+	changed := domainCap("cluster-inspection", "Read-only cluster inspection - added one more check.")
 	r3 := testResolver(t, instance("li.ming", v1alpha1.DefaultAgentName, ""), changed)
 	cfg3, err := r3.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {

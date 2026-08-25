@@ -25,7 +25,7 @@ func TestParseHistoryToolsPairsCallsWithResults(t *testing.T) {
 	// Mirrors the real gateway transcript shape: an assistant item carries N
 	// toolCall blocks, and each toolResult item carries a single text block.
 	history := map[string]any{"items": []any{
-		buildHistoryItem("user", []map[string]any{textContent("检查环境")}),
+		buildHistoryItem("user", []map[string]any{textContent("Check the environment")}),
 		buildHistoryItem("assistant", []map[string]any{
 			toolCallContent("call_1", "read", map[string]any{"path": "/skills/a"}),
 			toolCallContent("call_2", "exec", map[string]any{"command": "kubectl get nodes"}),
@@ -34,7 +34,7 @@ func TestParseHistoryToolsPairsCallsWithResults(t *testing.T) {
 		buildHistoryItem("toolResult", []map[string]any{textContent("node list")}),
 		buildHistoryItem("assistant", []map[string]any{toolCallContent("call_3", "exec", map[string]any{"command": "kubectl top"})}),
 		buildHistoryItem("toolResult", []map[string]any{textContent("metrics error")}),
-		buildHistoryItem("assistant", []map[string]any{textContent("## 报告")}),
+		buildHistoryItem("assistant", []map[string]any{textContent("## Report")}),
 	}}
 	raw, _ := json.Marshal(history)
 
@@ -45,7 +45,7 @@ func TestParseHistoryToolsPairsCallsWithResults(t *testing.T) {
 		t.Fatalf("expected 6 events, got %d: %+v", len(evs), evs)
 	}
 
-	// tool_call(read) then tool_call(exec) — parallel batch of two.
+	// tool_call(read) then tool_call(exec) -- parallel batch of two.
 	if evs[0].Type != openclaw.EventToolCall || evs[0].Name != "read" || evs[0].CallID != "call_1" {
 		t.Errorf("evs[0] = %+v, want tool_call read/call_1", evs[0])
 	}
@@ -63,7 +63,7 @@ func TestParseHistoryToolsPairsCallsWithResults(t *testing.T) {
 	if evs[3].Type != openclaw.EventToolResult || evs[3].Name != "exec" || evs[3].CallID != "call_2" || evs[3].Output != "node list" {
 		t.Errorf("evs[3] = %+v, want tool_result exec/call_2 node list", evs[3])
 	}
-	// Third pair: exec / call_3 → metrics error.
+	// Third pair: exec / call_3 -> metrics error.
 	if evs[4].Type != openclaw.EventToolCall || evs[4].CallID != "call_3" {
 		t.Errorf("evs[4] = %+v, want tool_call exec/call_3", evs[4])
 	}

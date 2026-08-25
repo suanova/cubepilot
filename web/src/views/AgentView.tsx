@@ -1,4 +1,4 @@
-// Agent config view — model / system prompt / instance status / skills (FR-M2-005).
+// Agent config view -- model / system prompt / instance status / skills (FR-M2-005).
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api'
 import type { AgentConfig, AgentStatus } from '@/api/types'
@@ -6,10 +6,10 @@ import { esc, fmtUptime } from '@/utils/format'
 import { showToast } from '@/stores/toast'
 
 const SKILL_LABELS: Record<string, string> = {
-  'kubectl-platform': '平台资源操作',
-  'dev-environment': '开发环境',
-  'inference-service': '推理服务',
-  inspection: '智能巡检',
+  'kubectl-platform': 'Platform Resource Operations',
+  'dev-environment': 'Development Environment',
+  'inference-service': 'Inference Service',
+  inspection: 'Smart Inspection',
 }
 
 interface ModelRow {
@@ -97,17 +97,17 @@ export default function AgentView() {
 
   async function createModel() {
     if (!modelForm.displayName.trim()) {
-      showToast('模型名称必填')
+      showToast('Model name is required')
       return
     }
     setModelSaving(true)
     try {
       await api.createModel(modelForm)
-      showToast('模型已添加 · 控制器探测后将变为可用')
+      showToast('Model added - it becomes usable after the controller probes it')
       setModelDialogOpen(false)
       await loadModels()
     } catch (e) {
-      showToast('添加失败：' + e)
+      showToast('Add failed: ' + e)
     } finally {
       setModelSaving(false)
     }
@@ -118,10 +118,10 @@ export default function AgentView() {
     setProvisioning(true)
     try {
       const inst = await api.createInstance({ agentRef: 'agent-for-cloud', selectedModel: cfg.model || undefined })
-      showToast(inst.metadata?.name ? '实例已创建 · 控制器正在拉起 Pod' : '实例已创建 · 控制器正在拉起 Pod')
+      showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
       await loadAgentView()
     } catch (e) {
-      showToast('开通失败：' + e)
+      showToast('Provisioning failed: ' + e)
     } finally {
       setProvisioning(false)
     }
@@ -134,9 +134,9 @@ export default function AgentView() {
   async function saveAgentConfig() {
     try {
       await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt, skills })
-      showToast('配置已保存 · 系统提示词即时生效')
+      showToast('Config saved - system prompt takes effect immediately')
     } catch (e) {
-      showToast('保存失败：' + e)
+      showToast('Save failed: ' + e)
     }
   }
 
@@ -144,12 +144,12 @@ export default function AgentView() {
     <div className="view active">
       <div className="view-head">
         <div>
-          <div className="view-title">Agent 配置</div>
-          <div className="view-desc">模型选择 · Skills 技能 · 系统提示词 · 确认规则 · 实例状态（FR-M2-005）</div>
+          <div className="view-title">Agent Config</div>
+          <div className="view-desc">Model selection - Skills - System prompt - Confirm rules - Instance status (FR-M2-005)</div>
         </div>
         <button className="btn primary" onClick={saveAgentConfig}>
           <CheckIcon />
-          保存配置
+          Save Config
         </button>
       </div>
 
@@ -157,49 +157,49 @@ export default function AgentView() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">模型与运行时</span>
-              <span className="card-hint">OpenAI 兼容接口 · 保存为偏好，实例重建时生效</span>
+              <span className="card-title">Model & Runtime</span>
+              <span className="card-hint">OpenAI-compatible endpoint - saved as preference, applied on instance rebuild</span>
             </div>
             <div className="card-pad">
               <div className="field">
-                <label className="label">助手 LLM 模型</label>
+                <label className="label">Assistant LLM Model</label>
                 <select
                   className="input"
-                  aria-label="选择模型"
+                  aria-label="Select model"
                   value={cfg.model || ''}
                   onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value }))}
                 >
                   {availableModels.map((m) => (
                     <option key={m.name} value={m.name}>
                       {m.displayName || m.name}
-                      {m.phase === 'Unreachable' ? '（不可用）' : ''}
+                      {m.phase === 'Unreachable' ? ' (unavailable)' : ''}
                     </option>
                   ))}
                 </select>
                 <button className="btn" style={{ marginTop: 8, width: '100%' }} onClick={openModelDialog}>
-                  ＋ 添加模型
+                  + Add Model
                 </button>
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <label className="label">Agent 运行时</label>
-                <select className="input" aria-label="选择运行时">
-                  <option>OpenClaw（阶段一）</option>
-                  <option disabled>Hermes（预留 · 阶段三）</option>
+                <label className="label">Agent Runtime</label>
+                <select className="input" aria-label="Select runtime">
+                  <option>OpenClaw (Phase One)</option>
+                  <option disabled>Hermes (reserved - Phase Three)</option>
                 </select>
               </div>
             </div>
           </div>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">系统提示词</span>
-              <span className="card-hint">保存后即时注入后续对话</span>
+              <span className="card-title">System Prompt</span>
+              <span className="card-hint">Injected into subsequent conversations immediately after saving</span>
             </div>
             <div className="card-pad">
               <textarea
                 className="input"
                 rows={6}
-                aria-label="系统提示词"
-                placeholder="留空则使用 Agent 镜像内置人设（SOUL.md）"
+                aria-label="System prompt"
+                placeholder="Leave empty to use the persona built into the Agent image (SOUL.md)"
                 value={cfg.systemPrompt || ''}
                 onChange={(e) => setCfg((c) => ({ ...c, systemPrompt: e.target.value }))}
               />
@@ -210,37 +210,37 @@ export default function AgentView() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">实例状态</span>
-              <span className={`pill ${status?.exists ? 'success' : 'neutral'}`}>{status?.exists ? '运行中' : '已回收'}</span>
+              <span className="card-title">Instance Status</span>
+              <span className={`pill ${status?.exists ? 'success' : 'neutral'}`}>{status?.exists ? 'Running' : 'Reclaimed'}</span>
             </div>
             <div className="card-pad">
               <div className="inst-grid">
                 <div className="inst">
-                  <div className="k">实例 ID</div>
+                  <div className="k">Instance ID</div>
                   <div className="v">
-                    <span className="mono">{status?.id || '—'}</span>
+                    <span className="mono">{status?.id || '-'}</span>
                   </div>
                 </div>
                 <div className="inst">
-                  <div className="k">运行状态</div>
-                  <div className="v">{status?.exists ? 'Running' : status?.phase || '—'}</div>
+                  <div className="k">Run Status</div>
+                  <div className="v">{status?.exists ? 'Running' : status?.phase || '-'}</div>
                 </div>
                 <div className="inst">
-                  <div className="k">运行时长</div>
-                  <div className="v">{status?.uptimeSeconds != null ? fmtUptime(status.uptimeSeconds) : '—'}</div>
+                  <div className="k">Uptime</div>
+                  <div className="v">{status?.uptimeSeconds != null ? fmtUptime(status.uptimeSeconds) : '-'}</div>
                 </div>
                 <div className="inst">
-                  <div className="k">Agent 镜像</div>
+                  <div className="k">Agent Image</div>
                   <div className="v" style={{ fontSize: 12 }}>
-                    <span className="mono">{status?.gatewayImage || '—'}</span>
+                    <span className="mono">{status?.gatewayImage || '-'}</span>
                   </div>
                 </div>
                 <div className="inst">
-                  <div className="k">空闲回收</div>
-                  <div className="v">{status?.idleTTLMinutes ? status.idleTTLMinutes + ' min' : '—'}</div>
+                  <div className="k">Idle Reclaim</div>
+                  <div className="v">{status?.idleTTLMinutes ? status.idleTTLMinutes + ' min' : '-'}</div>
                 </div>
                 <div className="inst">
-                  <div className="k">数据卷</div>
+                  <div className="k">Data Volume</div>
                   <div className="v" style={{ fontSize: 12 }}>
                     <span className="mono">data-{status?.user}</span>
                   </div>
@@ -253,31 +253,31 @@ export default function AgentView() {
                   disabled={provisioning}
                   onClick={provisionInstance}
                 >
-                  {provisioning ? '开通中…' : '开通我的实例'}
+                  {provisioning ? 'Provisioning...' : 'Provision My Instance'}
                 </button>
               )}
             </div>
           </div>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">确认规则</span>
-              <span className="card-hint">阶段一读写直放 · 全部写入审计（M5）</span>
+              <span className="card-title">Confirm Rules</span>
+              <span className="card-hint">Phase one: read/write pass through directly - all writes audited (M5)</span>
             </div>
             <div className="card-pad">
               <div className="rule-row">
                 <WarnIcon />
                 <span className="mono">kubectl delete *</span>
-                <span className="pill accent">直放 · 记审计</span>
+                <span className="pill accent">Pass-through - audited</span>
               </div>
               <div className="rule-row">
                 <WarnIcon />
                 <span className="mono">kubectl exec *</span>
-                <span className="pill accent">直放 · 记审计</span>
+                <span className="pill accent">Pass-through - audited</span>
               </div>
               <div className="rule-row">
                 <WarnIcon />
                 <span className="mono">InferenceService delete</span>
-                <span className="pill accent">直放 · 记审计</span>
+                <span className="pill accent">Pass-through - audited</span>
               </div>
             </div>
           </div>
@@ -286,24 +286,24 @@ export default function AgentView() {
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
-          <span className="card-title">Skills 技能</span>
-          <span className="card-hint">来自实例镜像内置能力目录 · 开关保存为偏好</span>
+          <span className="card-title">Skills</span>
+          <span className="card-hint">From the capability catalog built into the instance image - toggles saved as preferences</span>
         </div>
         <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
-          <div className="skill-group">系统技能 · 内置不可关闭</div>
+          <div className="skill-group">System Skills - built-in, cannot be disabled</div>
           <div className="toggle">
             <div className="toggle-info">
               <div className="toggle-title">
-                平台资源操作 <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>kubectl</span>
+                Platform Resource Operations <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>kubectl</span>
               </div>
-              <div className="toggle-desc">以用户身份直连 K8s API Server，读写平台资源（RBAC 强制）</div>
+              <div className="toggle-desc">Connects to the K8s API Server as the user to read/write platform resources (RBAC enforced)</div>
             </div>
             <span className="lock-badge">
               <LockIcon />
-              系统
+              System
             </span>
           </div>
-          <div className="skill-group">平台能力 · 能力目录</div>
+          <div className="skill-group">Platform Capabilities - Capability Catalog</div>
           {skills.length ? (
             skills.map((sk) => (
               <div key={sk.name} className="toggle">
@@ -312,7 +312,7 @@ export default function AgentView() {
                     {SKILL_LABELS[sk.name] || sk.name}{' '}
                     <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(sk.name)}</span>
                   </div>
-                  <div className="toggle-desc">来自实例镜像内置能力目录 · 开关保存为偏好</div>
+                  <div className="toggle-desc">From the capability catalog built into the instance image - toggles saved as preferences</div>
                 </div>
                 <button
                   className="switch"
@@ -324,7 +324,7 @@ export default function AgentView() {
               </div>
             ))
           ) : (
-            <div style={{ color: 'var(--muted)', padding: '8px 0' }}>暂无登记能力</div>
+            <div style={{ color: 'var(--muted)', padding: '8px 0' }}>No registered capabilities</div>
           )}
         </div>
       </div>
@@ -340,25 +340,25 @@ export default function AgentView() {
         >
           <div className="modal">
             <div className="modal-head">
-              <span className="modal-title">添加模型</span>
-              <button className="modal-close" aria-label="关闭" onClick={() => setModelDialogOpen(false)}>
+              <span className="modal-title">Add Model</span>
+              <button className="modal-close" aria-label="Close" onClick={() => setModelDialogOpen(false)}>
                 <CloseIcon />
               </button>
             </div>
             <div className="modal-body">
               <div>
-                <label className="label">模型名称（显示名）</label>
+                <label className="label">Model Name (Display Name)</label>
                 <input
                   className="input"
-                  placeholder="例如：DeepSeek V3 内部部署"
-                  aria-label="模型名称"
+                  placeholder="e.g. DeepSeek V3 internal deployment"
+                  aria-label="Model name"
                   value={modelForm.displayName}
                   onChange={(e) => setModelForm((f) => ({ ...f, displayName: e.target.value }))}
                 />
               </div>
               <div>
-                <label className="label">提供方式</label>
-                <div className="radio-row" role="radiogroup" aria-label="提供方式">
+                <label className="label">Provisioning</label>
+                <div className="radio-row" role="radiogroup" aria-label="Provisioning">
                   <button
                     type="button"
                     className={`radio ${modelForm.provider === 'Platform' ? 'active' : ''}`}
@@ -366,7 +366,7 @@ export default function AgentView() {
                     aria-checked={modelForm.provider === 'Platform'}
                     onClick={() => setModelForm((f) => ({ ...f, provider: 'Platform' }))}
                   >
-                    平台部署（内置/手动）
+                    Platform Deployed (built-in/manual)
                   </button>
                   <button
                     type="button"
@@ -375,41 +375,41 @@ export default function AgentView() {
                     aria-checked={modelForm.provider === 'External'}
                     onClick={() => setModelForm((f) => ({ ...f, provider: 'External' }))}
                   >
-                    外部兼容端点
+                    External Compatible Endpoint
                   </button>
                 </div>
               </div>
               <div>
                 <label className="label">
-                  端点（OpenAI 兼容 Base URL）
-                  {modelForm.provider === 'External' && <span style={{ color: 'var(--danger)' }}> · 必填</span>}
+                  Endpoint (OpenAI-compatible Base URL)
+                  {modelForm.provider === 'External' && <span style={{ color: 'var(--danger)' }}> - required</span>}
                 </label>
                 <input
                   className="input mono"
                   placeholder="https://inference.example.com/v1"
-                  aria-label="端点"
+                  aria-label="Endpoint"
                   value={modelForm.endpoint}
                   onChange={(e) => setModelForm((f) => ({ ...f, endpoint: e.target.value }))}
                 />
               </div>
               {modelForm.provider === 'External' && (
                 <div>
-                  <label className="label">凭据 Secret（credentialRef · 平台管理）</label>
+                  <label className="label">Credential Secret (credentialRef - platform managed)</label>
                   <input
                     className="input mono"
                     placeholder="model-credential"
-                    aria-label="凭据引用"
+                    aria-label="Credential reference"
                     value={modelForm.credentialRef}
                     onChange={(e) => setModelForm((f) => ({ ...f, credentialRef: e.target.value }))}
                   />
                 </div>
               )}
               <div>
-                <label className="label">后端模型 ID（可选 · 留空 = 运行时默认）</label>
+                <label className="label">Backend Model ID (optional - empty = runtime default)</label>
                 <input
                   className="input mono"
                   placeholder="deepseek/deepseek-v4-flash"
-                  aria-label="后端模型 ID"
+                  aria-label="Backend model ID"
                   value={modelForm.modelId}
                   onChange={(e) => setModelForm((f) => ({ ...f, modelId: e.target.value }))}
                 />
@@ -417,17 +417,17 @@ export default function AgentView() {
               <div className="notice">
                 <WarnIcon />
                 <span>
-                  添加后控制器会探测端点连通性，Available 后才能被实例选用；external 需先在集群中创建凭据 Secret（key:{' '}
-                  <span className="mono">apiKey</span>）。
+                  After adding, the controller probes endpoint connectivity; the model becomes selectable only once Available. For external models, first create a credential Secret in the cluster (key:{' '}
+                  <span className="mono">apiKey</span>).
                 </span>
               </div>
             </div>
             <div className="modal-foot">
               <button className="btn" onClick={() => setModelDialogOpen(false)}>
-                取消
+                Cancel
               </button>
               <button className="btn primary" disabled={modelSaving} onClick={createModel}>
-                {modelSaving ? '提交中…' : '添加模型'}
+                {modelSaving ? 'Submitting...' : 'Add Model'}
               </button>
             </div>
           </div>

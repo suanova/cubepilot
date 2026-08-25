@@ -1,4 +1,4 @@
-// API types — mirror the CubePilot REST/SSE contract
+// API types -- mirror the CubePilot REST/SSE contract
 // (internal/server/handlers*.go).
 
 export interface SessionInfo {

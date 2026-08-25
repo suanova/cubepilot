@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
-// CubePilot Portal — dev server proxies /api to the backend so the SPA can
+// CubePilot Portal -- dev server proxies /api to the backend so the SPA can
 // be developed against a live kubepilot-api deployment.
 export default defineConfig({
   plugins: [react()],

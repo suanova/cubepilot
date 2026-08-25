@@ -1,28 +1,28 @@
 ---
 name: cluster-inspection
-description: 集群健康巡检：检查节点/Pod/事件，发现异常并按 P0/P1/P2 分级输出报告
+description: "Cluster health inspection: check nodes/Pods/events, classify findings and output a report by P0/P1/P2 severity"
 ---
 
-# 集群健康巡检
+# Cluster Health Inspection
 
-对当前集群执行一次基础巡检，发现异常并按严重程度分级输出报告。
+Run a basic inspection of the current cluster and output a report with findings classified by severity.
 
-## 巡检步骤
+## Inspection Steps
 
 ```bash
-kubectl get nodes                          # 节点 Ready 状态
-kubectl get pods -A --field-selector=status.phase!=Running   # 异常 Pod
-kubectl get events -A --sort-by=.lastTimestamp | tail -50    # 最近事件
+kubectl get nodes                          # node Ready status
+kubectl get pods -A --field-selector=status.phase!=Running   # abnormal Pods
+kubectl get events -A --sort-by=.lastTimestamp | tail -50    # recent events
 ```
 
-## 异常分级
+## Severity Classification
 
-- **P0 紧急**：控制面不可用、节点 NotReady、关键服务 CrashLoopBackOff。
-- **P1 重要**：Pod 长时间 Pending（GPU 不足）、OOMKilled、存储接近上限、GPU 节点降级。
-- **P2 一般**：偶发重启、非关键组件异常、资源使用率偏高、证书临近过期。
+- **P0 Critical**: control plane unavailable, node NotReady, key service CrashLoopBackOff.
+- **P1 Important**: Pod stuck in Pending (insufficient GPU), OOMKilled, storage near capacity, GPU node degraded.
+- **P2 Minor**: occasional restarts, non-critical component issues, high resource usage, certificates nearing expiry.
 
-## 报告格式（简体中文）
+## Report Format (Simplified Chinese)
 
-- 概览：节点数 / 异常 Pod 数 / 分级计数。
-- 逐项：级别 + 现象 + 证据（命令输出摘要）+ 建议。
-- 每项附证据链（命令与关键输出），便于用户复核。
+- Overview: node count / abnormal Pod count / classification counts.
+- Itemized: severity + symptom + evidence (command output excerpt) + recommendation.
+- Attach an evidence chain to each item (command and key output) so the user can review it.

@@ -1,4 +1,4 @@
-// App shell — sidebar navigation + topbar + routed view.
+// App shell -- sidebar navigation + topbar + routed view.
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import ChatView from '@/views/ChatView'
 import TasksView from '@/views/TasksView'
@@ -8,10 +8,10 @@ import { useToast } from '@/stores/toast'
 import { getCurrentUser } from '@/api/client'
 
 const VIEW_TITLES: Record<string, string> = {
-  chat: '对话',
-  tasks: '定时任务',
-  audit: '审计',
-  agent: 'Agent 配置',
+  chat: 'Chat',
+  tasks: 'Scheduled Tasks',
+  audit: 'Audit',
+  agent: 'Agent Config',
 }
 
 function BucketIcon() {
@@ -76,7 +76,7 @@ export default function App() {
     .slice(0, 2)
     .join('')
 
-  // Derive the active view title from the path ("/xxx" → "xxx").
+  // Derive the active view title from the path ("/xxx" -> "xxx").
   const segment = pathname.split('/')[1] || 'chat'
   const title = VIEW_TITLES[segment] ?? 'CubePilot'
 
@@ -89,22 +89,22 @@ export default function App() {
           <BucketIcon />
           <div className="brand-text">
             <span className="brand-name">CubeStack</span>
-            <span className="brand-sub">CubePilot 智能助手</span>
+            <span className="brand-sub">CubePilot Intelligent Assistant</span>
           </div>
         </div>
         <nav className="nav">
           <NavLink to="/chat" className={navCls}>
             <ChatIcon />
-            <span>对话</span>
+            <span>Chat</span>
           </NavLink>
           <NavLink to="/tasks" className={navCls}>
             <TasksIcon />
-            <span>定时任务</span>
+            <span>Scheduled Tasks</span>
           </NavLink>
-          {/* 审计入口暂时隐藏（M5 待有真实数据后放回） */}
+          {/* Audit entry temporarily hidden (M5, restore once real data exists) */}
           <NavLink to="/agent" className={navCls}>
             <AgentIcon />
-            <span>Agent 配置</span>
+            <span>Agent Config</span>
           </NavLink>
         </nav>
         <div className="sidebar-foot">
@@ -126,9 +126,9 @@ export default function App() {
           <div className="topbar-actions">
             <div className="search">
               <SearchIcon />
-              <input placeholder="搜索资源、日志、能力…" aria-label="全局搜索" />
+              <input placeholder="Search resources, logs, capabilities..." aria-label="Global search" />
             </div>
-            <button className="avatar-btn" aria-label="账户">
+            <button className="avatar-btn" aria-label="Account">
               {initials}
             </button>
           </div>

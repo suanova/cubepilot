@@ -13,7 +13,7 @@ type ModelProvider string
 
 const (
 	// ModelProviderPlatform is the platform-managed inference pool: a builtin
-	// runtime model (no endpoint — the runtime resolves it internally) or a
+	// runtime model (no endpoint -- the runtime resolves it internally) or a
 	// manually deployed inference service the admin registered here (endpoint
 	// set; probed like external).
 	ModelProviderPlatform ModelProvider = "Platform"
@@ -36,7 +36,7 @@ const (
 
 // ModelSpec is a platform-level LLM model catalog entry (design §3.3),
 // maintained by administrators. Templates and instances reference models by
-// name — decoupled from endpoints and credentials, which live inside the
+// name -- decoupled from endpoints and credentials, which live inside the
 // Model object (platform-managed, never plaintext).
 type ModelSpec struct {
 	// DisplayName is the human-facing model name.
@@ -51,7 +51,7 @@ type ModelSpec struct {
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 	// CredentialRef is a platform-managed Secret reference (namespace/name or
-	// name) holding the apiKey; required for external. References only — never
+	// name) holding the apiKey; required for external. References only -- never
 	// the key itself.
 	// +optional
 	CredentialRef string `json:"credentialRef,omitempty"`

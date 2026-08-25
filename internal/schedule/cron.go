@@ -102,7 +102,7 @@ func (c Cron) matches(t time.Time) bool {
 }
 
 // NextAfter returns the next fire time strictly after t (minute precision).
-// It walks minute-by-minute with a ~1-year cap — fine at these task counts.
+// It walks minute-by-minute with a ~1-year cap -- fine at these task counts.
 func (c Cron) NextAfter(t time.Time) time.Time {
 	next := t.Truncate(time.Minute).Add(time.Minute)
 	for i := 0; i < 366*24*60; i++ {

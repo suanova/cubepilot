@@ -25,7 +25,7 @@ func New(mgr *instances.Manager, token string) *Runner {
 	return &Runner{mgr: mgr, token: token}
 }
 
-// RunTask runs one task turn: prompt → agent instance → collected deltas.
+// RunTask runs one task turn: prompt -> agent instance -> collected deltas.
 // The instance is warmed (CR phase Warm + gateway reachable) before the
 // stream starts.
 func (r *Runner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {

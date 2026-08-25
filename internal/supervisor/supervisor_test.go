@@ -44,7 +44,7 @@ func TestRenderSkills(t *testing.T) {
 	cfg := &resolver.ResolvedAgentConfig{
 		Revision: "abc123",
 		Capabilities: []resolver.ResolvedCapability{
-			{Name: "cluster-inspection", Title: "集群智能巡检", Description: "巡检集群", Instructions: "只读巡检。", Revision: "rev1"},
+			{Name: "cluster-inspection", Title: "Cluster Intelligent Inspection", Description: "Inspect the cluster", Instructions: "Read-only inspection.", Revision: "rev1"},
 		},
 	}
 	if err := s.renderSkills(context.Background(), cfg); err != nil {
@@ -55,7 +55,7 @@ func TestRenderSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read skill: %v", err)
 	}
-	if !strings.Contains(string(skill), "name: cluster-inspection") || !strings.Contains(string(skill), "只读巡检。") {
+	if !strings.Contains(string(skill), "name: cluster-inspection") || !strings.Contains(string(skill), "Read-only inspection.") {
 		t.Errorf("skill content wrong: %s", skill)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "skills", "stale")); !os.IsNotExist(err) {
@@ -74,7 +74,7 @@ func TestPollNoChange(t *testing.T) {
 	srv := testAPI(t, cfg, "li.ming")
 
 	s := New(Config{APIURL: srv.URL, User: "li.ming", Workspace: ws})
-	// First poll: applies the config for the first time ("" → fixed) —
+	// First poll: applies the config for the first time ("" -> fixed) --
 	// reports changed because the gateway has not booted yet (Run applies
 	// before the first start, so no restart actually happens at boot).
 	changed, err := s.poll(context.Background())
@@ -87,7 +87,7 @@ func TestPollNoChange(t *testing.T) {
 	if s.current != "fixed" {
 		t.Errorf("current = %q, want fixed", s.current)
 	}
-	// Second poll: same revision → no-op.
+	// Second poll: same revision -> no-op.
 	changed, err = s.poll(context.Background())
 	if err != nil {
 		t.Fatalf("poll #2: %v", err)
@@ -107,7 +107,7 @@ func TestPollRendersOnChange(t *testing.T) {
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
 		Capabilities: []resolver.ResolvedCapability{
-			{Name: "cluster-inspection", Title: "巡检", Description: "d", Instructions: "第一版", Revision: "r1"},
+			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 1", Revision: "r1"},
 		},
 	}
 	if err := s.renderSkills(context.Background(), cfg1); err != nil {
@@ -120,7 +120,7 @@ func TestPollRendersOnChange(t *testing.T) {
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
 		Capabilities: []resolver.ResolvedCapability{
-			{Name: "cluster-inspection", Title: "巡检", Description: "d", Instructions: "第二版：加一条检查", Revision: "r2"},
+			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 2: added one more check.", Revision: "r2"},
 		},
 	}
 	if err := s.renderSkills(context.Background(), cfg2); err != nil {
@@ -130,7 +130,7 @@ func TestPollRendersOnChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(skill), "第二版") {
+	if !strings.Contains(string(skill), "Version 2") {
 		t.Errorf("skill not re-rendered: %s", skill)
 	}
 }

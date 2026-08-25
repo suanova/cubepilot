@@ -21,7 +21,7 @@ import (
 // (design §4: start/stop/chat/runTask/updateConfig/health). Phase one only
 // needs the chat and session/history read surface; lifecycle methods are
 // added when a second runtime arrives or the gateway lifecycle moves
-// in-process. *Client implements this interface — depend on the interface,
+// in-process. *Client implements this interface -- depend on the interface,
 // not the concrete type.
 type AgentRuntime interface {
 	// SetModel overrides the backend model for subsequent chat turns
@@ -58,7 +58,7 @@ func New(baseURL, token string) *Client {
 // SetModel sets the backend model override sent as x-openclaw-model on chat
 // requests (empty = use the agent's normal configured model). Overrides are
 // per-request hot-effective: no instance restart needed (design §3.2
-// selectedModel → AgentRuntime.updateConfig 热生效).
+// selectedModel -> AgentRuntime.updateConfig takes effect hot).
 func (c *Client) SetModel(model string) {
 	c.model = model
 }

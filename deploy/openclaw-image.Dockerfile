@@ -15,7 +15,7 @@ RUN apt-get update \
 
 # The agent-pod supervisor: pulls the resolved agent config (internal API),
 # renders skills into the PVC workspace, and runs the OpenClaw gateway as a
-# child process (graceful restart on config change — never a pod delete).
+# child process (graceful restart on config change -- never a pod delete).
 # Built on the host: CGO_ENABLED=0 GOOS=linux go build -o bin/cubepilot-supervisor ./cmd/cubepilot-supervisor
 COPY bin/cubepilot-supervisor /usr/local/bin/cubepilot-supervisor
 
@@ -24,7 +24,7 @@ COPY bin/cubepilot-supervisor /usr/local/bin/cubepilot-supervisor
 # first start, where the gateway keeps it writable (TOOLS.md etc).
 #
 # Capability skills are NOT baked in anymore: they flow dynamically via the
-# resolved agent config (Capability CRD → operator resolver → internal API →
+# resolved agent config (Capability CRD -> operator resolver -> internal API ->
 # supervisor renders into workspace/skills).
 COPY --chown=node:node workspace/ /opt/cubepilot/workspace/
 

@@ -1,4 +1,4 @@
-// API service layer — one function per backend endpoint.
+// API service layer -- one function per backend endpoint.
 import { apiFetch } from './client'
 import type {
   AgentConfig,

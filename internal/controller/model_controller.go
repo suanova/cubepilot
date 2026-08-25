@@ -3,7 +3,7 @@
 // external entries are connectivity-probed (endpoint + credentialRef) and
 // their status.phase is set to Available / Unreachable; platform-provided
 // entries are always Available. Templates and instances reference models by
-// name, so a new model becomes selectable as soon as it is probed Available —
+// name, so a new model becomes selectable as soon as it is probed Available --
 // without touching any running instance.
 package controller
 
@@ -54,7 +54,7 @@ type ModelReconciler struct {
 
 // Reconcile probes one Model and updates its status. Provider semantics
 // (design §3.3): platform = platform-managed inference (either a builtin
-// runtime model — no endpoint — or a manually deployed endpoint the admin
+// runtime model -- no endpoint -- or a manually deployed endpoint the admin
 // registered here); external = OpenAI-compatible endpoint with a
 // platform-managed credential. Anything with an endpoint is probed the same
 // way; only a builtin platform model with no endpoint is trusted Available.
@@ -141,7 +141,7 @@ func probeModelEndpoint(ctx context.Context, endpoint, apiKey string, skipTLS bo
 	if skipTLS {
 		client = &http.Client{
 			Timeout:   probeTimeout,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, // #nosec G402 — explicit opt-in via label
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, // #nosec G402 -- explicit opt-in via label
 		}
 	}
 	resp, err := client.Do(req)
