@@ -1,0 +1,72 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests + static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go vet ./...
+      - run: go test ./...
+      - run: bash scripts/test-openclaw-config.sh
+
+  e2e:
+    name: End-to-end (kind)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64"
+          chmod +x /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -fsSLO "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
+          install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+      - name: Install helm
+        run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Pre-pull base images (de-risk BuildKit metadata pulls)
+        run: |
+          docker pull golang:1.26-bookworm
+          docker pull node:24-bookworm-slim
+          docker pull ghcr.io/openclaw/openclaw:2026.6.33
+
+      # The full conversational e2e needs a real model-provider key. Configure
+      # it as the GitHub secret CUBEPILOT_MODEL_PROVIDERS (the models.providers
+      # object, e.g. {"deepseek":{"api":"openai-completions","apiKey":"sk-...",
+      # "baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}).
+      # Without the secret the job still runs the deploy path with a placeholder.
+      - name: Run e2e (deploy, or deploy + chat when the provider secret is set)
+        env:
+          CHAT_PROVIDER: ${{ secrets.CUBEPILOT_MODEL_PROVIDERS }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CHAT_PROVIDER" ]; then
+            echo "::group::e2e deploy + chat (real provider)"
+            CUBEPILOT_MODEL_PROVIDERS="$CHAT_PROVIDER" CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+            echo "::endgroup::"
+          else
+            echo "::group::e2e deploy only (placeholder provider)"
+            CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' scripts/e2e.sh
+            echo "::endgroup::"
+          fi
