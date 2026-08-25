@@ -14,7 +14,8 @@ This file is the operating guidance for AI agents and contributors working on Cu
   - `≠` -> `!=`, `≈` -> `~=`
 - The section symbol `§` (used for design-doc cross-references like "design §3.2") is permitted - it is standard Latin notation, not Chinese.
 - This applies to all file types: Go (`.go`), TypeScript/React (`.ts`/`.tsx`), YAML (`.yaml`/`.yml`/Helm templates), Markdown (`.md`, including `SKILL.md` capability files), shell scripts (`.sh`), Dockerfiles, `Makefile`, and JSON.
-- **Exception:** the `docs/` directory holds Chinese-language design deliverables and is intentionally not converted.
+- **Exception 1:** the `docs/` directory holds Chinese-language design deliverables and is intentionally not converted.
+- **Exception 2:** `workspace/AGENTS.md` and `workspace/SOUL.md` are the agent persona files. They stay in Chinese by design - the agent's output language to users is Simplified Chinese and must NOT be changed to English.
 
 ## Why
 
