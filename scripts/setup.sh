@@ -42,10 +42,12 @@ Usage: scripts/setup.sh [flags]
 
 Required:
   CUBEPILOT_MODEL_PROVIDERS / --providers-json <json>
-      The models.providers object (model provider credentials), e.g.
-      '{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com",
+      The models.providers object (OpenClaw provider config), e.g.
+      '{"deepseek":{"api":"openai-completions","apiKey":"sk-...",
+        "baseUrl":"https://api.deepseek.com",
         "models":[{"id":"deepseek-v4-flash"}]}}'
-      One provider is enough for testing.
+      api is the OpenClaw API style (openai-completions for DeepSeek);
+      apiKey holds the secret. One provider is enough for testing.
 
 Optional:
   CUBEPILOT_DEFAULT_MODEL / --default-model <provider/model>

@@ -6,7 +6,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JQ_FILE="$REPO_DIR/deploy/openclaw-config.jq"
 [ -f "$JQ_FILE" ] || { echo "missing $JQ_FILE"; exit 1; }
 
-PROVIDERS='{"deepseek":{"api":"sk-test","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"},{"id":"deepseek-chat","name":"DeepSeek Chat"}]}}'
+# OpenClaw provider shape: api is the API-style enum, apiKey is the secret.
+PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-test","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"},{"id":"deepseek-chat","name":"DeepSeek Chat"}]}}'
 
 out() { jq -n --argjson providers "$PROVIDERS" --arg defaultModel "$1" --arg token "$2" -f "$JQ_FILE"; }
 
@@ -28,7 +29,13 @@ v="$(out "" "tok" | jq -r '.agents.defaults.models | length')"
 v="$(out "" "tok123" | jq -r '.gateway.auth.token')"
 [ "$v" = "tok123" ] || { echo "FAIL: token=$v"; exit 1; }
 
-# 5. fixed defaults present
+# 5. provider credentials pass through (apiKey = secret, api = style enum)
+v="$(out "" "tok" | jq -r '.models.providers.deepseek.apiKey')"
+[ "$v" = "sk-test" ] || { echo "FAIL: apiKey=$v"; exit 1; }
+v="$(out "" "tok" | jq -r '.models.providers.deepseek.api')"
+[ "$v" = "openai-completions" ] || { echo "FAIL: api=$v"; exit 1; }
+
+# 6. fixed defaults present
 for expr in \
   '.gateway.mode == "local"' \
   '.gateway.port == 18789' \
