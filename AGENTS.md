@@ -2,11 +2,11 @@
 
 This file is the operating guidance for AI agents and contributors working on CubePilot.
 
-## Code & Text Language (Mandatory)
+## Code & Text Language (Preferred)
 
-- **All code, comments, commit messages, and user-facing strings must be in English.**
-- **Do not use Chinese (简体中文 / Traditional) anywhere in the codebase** - not even as comments, placeholders, log messages, UI text, or example values.
-- **Use ASCII punctuation only.** Replace common non-ASCII punctuation with their ASCII equivalents inside code/comments:
+- **Prefer English for all code, comments, and user-facing strings.** Use English whenever reasonable.
+- **Avoid Chinese where English works just as well** - especially in code, comments, placeholders, log messages, UI text, and example values. Chinese may be kept where it is genuinely clearer or expected (e.g. persona files, docs).
+- **Prefer ASCII punctuation.** Replace common non-ASCII punctuation with their ASCII equivalents inside code/comments:
   - em-dash `—` -> `--`
   - en-dash `–` -> `-`
   - arrow `→` -> `->`
@@ -14,8 +14,6 @@ This file is the operating guidance for AI agents and contributors working on Cu
   - `≠` -> `!=`, `≈` -> `~=`
 - The section symbol `§` (used for design-doc cross-references like "design §3.2") is permitted - it is standard Latin notation, not Chinese.
 - This applies to all file types: Go (`.go`), TypeScript/React (`.ts`/`.tsx`), YAML (`.yaml`/`.yml`/Helm templates), Markdown (`.md`, including `SKILL.md` capability files), shell scripts (`.sh`), Dockerfiles, `Makefile`, and JSON.
-- **Exception 1:** the `docs/` directory holds Chinese-language design deliverables and is intentionally not converted.
-- **Exception 2:** `workspace/AGENTS.md` and `workspace/SOUL.md` are the agent persona files. They stay in Chinese by design - the agent's output language to users is Simplified Chinese and must NOT be changed to English.
 
 ## Why
 
