@@ -61,16 +61,18 @@ scripts/setup.sh        one-shot deployment (build -> kind -> helm install)
 ## Prerequisites
 
 - Docker, [kind](https://kind.sigs.k8s.io/) (cluster name `cube`), `kubectl`,
-  `jq`, `helm` (v3), Go 1.26+.
-- A working OpenClaw config at `~/.openclaw/openclaw.json` (with
-  `models.providers.deepseek` and `gateway.auth.token`), and a locally built
-  `openclaw:local` image.
+  `jq`, `helm` (v3), and `openssl`.
+- Model provider credentials supplied at setup time via `CUBEPILOT_MODEL_PROVIDERS`
+  (the `models.providers` object). The gateway token is auto-generated.
+  `scripts/setup.sh` reads no host config file (`~/.openclaw/...`) and needs no
+  pre-built images or host Go toolchain, so it also runs on CI.
 
 ## Run
 
 ```bash
-# 1. Build images, load them into kind, create Secrets, deploy via Helm
-scripts/setup.sh
+# 1. Build images, create the kind cluster if needed, create Secrets, deploy
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
+  scripts/setup.sh
 
 # 2. Expose the Portal
 kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
@@ -78,12 +80,14 @@ kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
 # 3. Open http://127.0.0.1:8080
 ```
 
+Full input reference: `scripts/setup.sh --help` (or the env vars in
+`docs/superpowers/specs/2026-08-25-setup-zero-local-deps-design.md` §3).
+
 Deployment is Helm-managed (`deploy/charts/cubepilot`): the operator, api,
 web and per-component RBAC are chart templates; platform CRDs ship in the
 chart's `crds/` dir (installed at `helm install` -- upgrade them explicitly
-with `kubectl apply -f config/crd/bases/`). Secrets (`openclaw-config`,
-`agent-kubeconfig`) are created out-of-band by `scripts/setup.sh` because they
-hold host-derived LLM credentials.
+with `kubectl apply -f config/crd/bases/`). Secrets (`openclaw-config`, `agent-kubeconfig`) are created out-of-band by
+`scripts/setup.sh` because they hold LLM credentials supplied at setup time.
 
 The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
 assistant as thinking while it waits for the gateway to become ready), then
