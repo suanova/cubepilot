@@ -67,6 +67,14 @@ scripts/setup.sh        one-shot deployment (build -> kind -> helm install)
   `scripts/setup.sh` reads no host config file (`~/.openclaw/...`) and needs no
   pre-built images or host Go toolchain, so it also runs on CI.
 
+Images are registry-addressed:
+- Base images resolve from `harbor.isuanova.com/library/...` (mirrored from the
+  public registries by `scripts/mirror-base-images.sh`).
+- Built images are
+  `harbor.isuanova.com/cubestack/cubepilot-{openclaw,operator,api,web}:<tag>`:
+  `make images` builds them, `make push` pushes them, and
+  `CUBEPILOT_PUSH=1 scripts/setup.sh` pushes after building.
+
 ## Run
 
 ```bash
