@@ -18,7 +18,7 @@ spec:
         {{- include "cubepilot.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ .Values.serviceAccounts.api }}
-      # Container runs as `node` (uid 1000); make the data PVC writable.
+      # Container runs as a non-root uid (1000); make the data PVC writable.
       securityContext:
         fsGroup: 1000
       containers:

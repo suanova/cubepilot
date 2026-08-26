@@ -9,8 +9,8 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cubepilot-operator ./cmd/cubepilot-operator
 
-FROM harbor.isuanova.com/library/node:24-bookworm-slim
+FROM harbor.isuanova.com/library/debian:bookworm-slim
 COPY --from=build /out/cubepilot-operator /usr/local/bin/cubepilot-operator
-USER node
+USER 1000:1000
 ENTRYPOINT ["cubepilot-operator"]
 CMD []
