@@ -24,6 +24,11 @@ MODEL_PROVIDERS="${CUBEPILOT_MODEL_PROVIDERS:-}"
 DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
 GATEWAY_TOKEN="${CUBEPILOT_GATEWAY_TOKEN:-}"
 SKIP_CLUSTER_CREATE="${CUBEPILOT_SKIP_CLUSTER_CREATE:-}"
+# Built images are registry-addressed (harbor.isuanova.com/cubestack); set
+# CUBEPILOT_PUSH=1 to push after building (dev machines may lack creds).
+IMAGE_REPO="${CUBEPILOT_IMAGE_REPO:-harbor.isuanova.com/cubestack}"
+IMAGE_TAG="${CUBEPILOT_IMAGE_TAG:-local}"
+PUSH="${CUBEPILOT_PUSH:-0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +39,7 @@ while [ $# -gt 0 ]; do
     --namespace)          NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
     --openclaw-image-tag) OPENCLAW_IMAGE_TAG="${2:?--openclaw-image-tag requires a value}"; shift 2 ;;
     --skip-cluster-create) SKIP_CLUSTER_CREATE=1; shift ;;
+    --push)              PUSH=1; shift ;;
     -h|--help)
       cat <<'EOF'
 CubePilot setup -- bring up the stack on a kind cluster with zero host config.
@@ -64,6 +70,11 @@ Optional:
       Kind config file used when creating the cluster.
   CUBEPILOT_SKIP_CLUSTER_CREATE / --skip-cluster-create
       Fail instead of creating the kind cluster if it is missing.
+  CUBEPILOT_PUSH / --push
+      Push the four built images to CUBEPILOT_IMAGE_REPO after building.
+  CUBEPILOT_IMAGE_REPO / CUBEPILOT_IMAGE_TAG
+      Image repository and tag for the built cubepilot images
+      (default: harbor.isuanova.com/cubestack, local).
 EOF
       exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 1 ;;
@@ -100,16 +111,24 @@ else
 fi
 
 # ---- build images (self-contained in Docker) -----------------------------
-log "building images"
-docker build -t cubepilot-openclaw:local --build-arg OPENCLAW_IMAGE_TAG="$OPENCLAW_IMAGE_TAG" \
+log "building images ($IMAGE_REPO, tag $IMAGE_TAG)"
+docker build -t "$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" --build-arg OPENCLAW_IMAGE_TAG="$OPENCLAW_IMAGE_TAG" \
   -f "$REPO_DIR/deploy/openclaw-image.Dockerfile" "$REPO_DIR"
-docker build -t cubepilot-operator:local -f "$REPO_DIR/deploy/operator-image.Dockerfile" "$REPO_DIR"
-docker build -t cubepilot-api:local      -f "$REPO_DIR/deploy/api-image.Dockerfile"      "$REPO_DIR"
-docker build -t cubepilot-web:local      -f "$REPO_DIR/web/Dockerfile"                  "$REPO_DIR/web"
+docker build -t "$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" -f "$REPO_DIR/deploy/operator-image.Dockerfile" "$REPO_DIR"
+docker build -t "$IMAGE_REPO/cubepilot-api:$IMAGE_TAG"      -f "$REPO_DIR/deploy/api-image.Dockerfile"      "$REPO_DIR"
+docker build -t "$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"      -f "$REPO_DIR/web/Dockerfile"                  "$REPO_DIR/web"
+
+if [ "$PUSH" = "1" ]; then
+  log "pushing images to $IMAGE_REPO"
+  docker push "$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG"
+  docker push "$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG"
+  docker push "$IMAGE_REPO/cubepilot-api:$IMAGE_TAG"
+  docker push "$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
+fi
 
 log "loading images into kind ($KIND_CLUSTER)"
-kind load docker-image cubepilot-openclaw:local cubepilot-operator:local cubepilot-api:local cubepilot-web:local \
-  --name "$KIND_CLUSTER"
+kind load docker-image "$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" "$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
+  "$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" "$IMAGE_REPO/cubepilot-web:$IMAGE_TAG" --name "$KIND_CLUSTER"
 
 log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
@@ -151,10 +170,10 @@ kubectl -n "$NAMESPACE" create secret generic openclaw-config \
 
 log "deploying components via Helm (CRDs ship in the chart crds/ dir)"
 helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
-  --set agents.image=cubepilot-openclaw:local \
-  --set operator.image=cubepilot-operator:local \
-  --set api.image=cubepilot-api:local \
-  --set web.image=cubepilot-web:local
+  --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
+  --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
+  --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
+  --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
 
 log "done. expose the portal with:"
 log "  kubectl -n $NAMESPACE port-forward svc/cubepilot 8080:8080"
