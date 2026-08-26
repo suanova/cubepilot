@@ -134,3 +134,57 @@ func TestPollRendersOnChange(t *testing.T) {
 		t.Errorf("skill not re-rendered: %s", skill)
 	}
 }
+
+// TestConfigHashChanged verifies the gateway config file change detection:
+// edits are reported once, then converge; a missing file is not a change.
+func TestConfigHashChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	if err := os.WriteFile(path, []byte(`{"models":{"providers":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{ConfigPath: path})
+	s.snapshotConfigHash()
+
+	if s.configHashChanged() {
+		t.Error("no change after snapshot should report false")
+	}
+	// Editing the file (e.g. adding a provider) is detected once...
+	if err := os.WriteFile(path, []byte(`{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !s.configHashChanged() {
+		t.Error("edit should report changed")
+	}
+	// ...then converges (no repeated restarts).
+	if s.configHashChanged() {
+		t.Error("same content after detection should report false")
+	}
+}
+
+// TestConfigHashChangedMissingFile treats an absent config file as no change
+// (Secret not mounted yet), and detects the file when it appears.
+func TestConfigHashChangedMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	s := New(Config{ConfigPath: path})
+	s.snapshotConfigHash()
+
+	if s.configHashChanged() {
+		t.Error("missing file should report false")
+	}
+	if err := os.WriteFile(path, []byte(`{"gateway":{"mode":"local"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !s.configHashChanged() {
+		t.Error("file appearing should report changed")
+	}
+}
+
+// TestConfigHashChangedDisabled verifies an empty ConfigPath disables the watch.
+func TestConfigHashChangedDisabled(t *testing.T) {
+	s := New(Config{})
+	if s.configHashChanged() {
+		t.Error("empty ConfigPath should never report changed")
+	}
+}

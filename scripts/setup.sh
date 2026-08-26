@@ -51,9 +51,14 @@ Required:
       The models.providers object (OpenClaw provider config), e.g.
       '{"deepseek":{"api":"openai-completions","apiKey":"sk-...",
         "baseUrl":"https://api.deepseek.com",
-        "models":[{"id":"deepseek-v4-flash"}]}}'
+        "models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}'
       api is the OpenClaw API style (openai-completions for DeepSeek);
-      apiKey holds the secret. One provider is enough for testing.
+      apiKey holds the secret. The provider key is arbitrary (it is only the
+      first half of the gateway's model ref). The agent's default model is the
+      first provider's first model (or CUBEPILOT_DEFAULT_MODEL); to switch an
+      agent to another model, add it to the AgentTemplate models and set
+      AgentInstance.selectedModel. Each model should carry "name" (the renderer
+      fills it from "id" if omitted). One provider is enough for testing.
 
 Optional:
   CUBEPILOT_DEFAULT_MODEL / --default-model <provider/model>
