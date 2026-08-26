@@ -14,7 +14,7 @@
 queue_rules:
   - name: default
     merge_method: squash
-    conditions:
+    merge_conditions:
       - check-success="Unit tests + static checks"
       - check-success="End-to-end (kind)"
 
