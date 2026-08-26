@@ -4,10 +4,11 @@
 # openclaw:local and no host Go toolchain (CI-friendly).
 #
 # Pin the openclaw base to a release tag (never :latest). If a newer tag is
-# wanted, verify it exists:  ghcr.io/openclaw/openclaw:2026.6.33
+# wanted, mirror it from ghcr.io/openclaw/openclaw into
+# harbor.isuanova.com/library (scripts/mirror-base-images.sh).
 ARG OPENCLAW_IMAGE_TAG=2026.6.33
 
-FROM golang:1.26-bookworm AS supervisor-build
+FROM harbor.isuanova.com/library/golang:1.26-bookworm AS supervisor-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -15,7 +16,7 @@ COPY cmd/cubepilot-supervisor ./cmd/cubepilot-supervisor/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cubepilot-supervisor ./cmd/cubepilot-supervisor
 
-FROM ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG}
+FROM harbor.isuanova.com/library/openclaw:${OPENCLAW_IMAGE_TAG}
 ARG KUBECTL_VERSION=v1.36.1
 
 USER root
