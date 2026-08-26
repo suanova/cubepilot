@@ -6,15 +6,18 @@
 #   make build      build both Go binaries into bin/
 #   make test       go vet + go test ./...
 #   make web        build the Vue SPA (type-check + vite build)
-#   make images     build the four local images
+#   make images     build the four images (registry-addressed)
+#   make push       push the four images to $(IMAGE_REGISTRY)
 #   make lint       helm lint + helm template sanity check
 #   make deploy     helm upgrade --install (requires built images + secrets)
 #   make undeploy   helm uninstall
 #   make clean      remove build artifacts
 #
-# Overridable: IMAGE_TAG (default local), NAMESPACE, HELM_RELEASE.
+# Overridable: IMAGE_REGISTRY (default harbor.isuanova.com/cubestack),
+#              IMAGE_TAG (default local), NAMESPACE, HELM_RELEASE.
 
 BIN_DIR      ?= bin
+IMAGE_REGISTRY ?= harbor.isuanova.com/cubestack
 IMAGE_TAG    ?= local
 NAMESPACE    ?= cubepilot
 HELM_RELEASE ?= cubepilot
@@ -25,7 +28,7 @@ DOCKER   ?= docker
 HELM     ?= helm
 NPM      ?= npm
 
-.PHONY: build test web images lint deploy undeploy clean
+.PHONY: build test web images push lint deploy undeploy clean
 
 ## Build both Go binaries (linux/amd64, matching the container runtime).
 build:
@@ -42,12 +45,20 @@ test:
 web:
 	cd web && $(NPM) run build
 
-## Build the four local images (agent / operator / api / web).
+## Build the four images (agent / operator / api / web) as
+## $(IMAGE_REGISTRY)/cubepilot-<name>:$(IMAGE_TAG).
 images:
-	$(DOCKER) build -t cubepilot-openclaw:$(IMAGE_TAG)    -f deploy/openclaw-image.Dockerfile    .
-	$(DOCKER) build -t cubepilot-operator:$(IMAGE_TAG) -f deploy/operator-image.Dockerfile .
-	$(DOCKER) build -t cubepilot-api:$(IMAGE_TAG)      -f deploy/api-image.Dockerfile      .
-	$(DOCKER) build -t cubepilot-web:$(IMAGE_TAG)      -f web/Dockerfile                  web
+	$(DOCKER) build -t $(IMAGE_REGISTRY)/cubepilot-openclaw:$(IMAGE_TAG) -f deploy/openclaw-image.Dockerfile .
+	$(DOCKER) build -t $(IMAGE_REGISTRY)/cubepilot-operator:$(IMAGE_TAG) -f deploy/operator-image.Dockerfile .
+	$(DOCKER) build -t $(IMAGE_REGISTRY)/cubepilot-api:$(IMAGE_TAG)      -f deploy/api-image.Dockerfile      .
+	$(DOCKER) build -t $(IMAGE_REGISTRY)/cubepilot-web:$(IMAGE_TAG)      -f web/Dockerfile                  web
+
+## Push the four images to $(IMAGE_REGISTRY).
+push:
+	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-openclaw:$(IMAGE_TAG)
+	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-operator:$(IMAGE_TAG)
+	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-api:$(IMAGE_TAG)
+	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-web:$(IMAGE_TAG)
 
 ## Helm chart sanity: lint + render.
 lint:
