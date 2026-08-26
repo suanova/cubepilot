@@ -1,5 +1,7 @@
 # CubePilot
 
+[![e2e](https://github.com/suanova/cubepilot/actions/workflows/e2e.yaml/badge.svg)](https://github.com/suanova/cubepilot/actions/workflows/e2e.yaml)
+
 CubePilot is the intelligent assistant of the CubeStack platform. It implements
 the two core capabilities described in the module design document (extension
 points E1/E2, FR-M2/M3):
