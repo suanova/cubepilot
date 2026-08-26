@@ -1,5 +1,5 @@
-# CubePilot Helm values -- default to the kind-cluster local images; override
-# repository/tag for real registries.
+# CubePilot Helm values -- registry-addressed defaults
+# (harbor.isuanova.com/cubestack); override the tag for real releases.
 
 # --- shared ---------------------------------------------------------------
 # Image pull policy for all components.
@@ -9,7 +9,7 @@ imagePullPolicy: IfNotPresent
 # runtime names the agent runtime image family: openclaw today, hermes later.
 agents:
   runtime: openclaw
-  image: cubepilot-openclaw:local
+  image: harbor.isuanova.com/cubestack/cubepilot-openclaw:local
   # Comma-separated operator identities, one independent instance each.
   users: zhang.wei,li.ming
   # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
@@ -30,7 +30,7 @@ secrets:
 operator:
   name: cubepilot-operator
   replicas: 2
-  image: cubepilot-operator:local
+  image: harbor.isuanova.com/cubestack/cubepilot-operator:local
   # controller-runtime metrics + health/ready probes ("0" disables).
   metricsAddr: :8082
   probeAddr: :8081
@@ -42,7 +42,7 @@ operator:
 api:
   name: cubepilot-api
   replicas: 1
-  image: cubepilot-api:local
+  image: harbor.isuanova.com/cubestack/cubepilot-api:local
   dataDir: /opt/cubepilot/data
   storage: 1Gi
   storageClassName: ""
@@ -54,7 +54,7 @@ api:
 web:
   name: cubepilot-web
   replicas: 2
-  image: cubepilot-web:local
+  image: harbor.isuanova.com/cubestack/cubepilot-web:local
   resources: {}
   nodeSelector: {}
   tolerations: []
