@@ -120,6 +120,6 @@ docker buildx imagetools create -t harbor.isuanova.com/library/openclaw:2026.6.3
 
 - `openclaw-image.Dockerfile` 内的 `apt-get`(debian 源)与 kubectl 二进制下载(`dl.k8s.io`)仍走公网 —— 是包/二进制而非容器镜像,不在本次范围。
 - web build 阶段 `npm ci`、openclaw 构建的 `pnpm` 仍走 npm registry —— 非容器镜像,范围外。
-- `web/package.json` 声明 `engines.node >= 24`,但 `web/Dockerfile` 用 `node:22-alpine`(不一致)。本次保持镜像 `node:22-alpine`(零行为变更);后续如需对齐 engines,可镜像 `node:24-alpine` 并切换 web build 阶段。
+- ~~`web/package.json` 声明 `engines.node >= 24`,但 `web/Dockerfile` 用 `node:22-alpine`(不一致)~~ **已对齐**:web build 改为 `node:24-alpine`;operator/api 运行时基座由 node 改为 `library/debian:bookworm-slim`(纯 Go 二进制,`USER 1000:1000` 保持非 root 与 `fsGroup:1000` 语义)。node 仅在 web build 使用一次(`node:24-alpine`)。
 - openclaw 基础镜像目前为**镜像 ghcr 公开镜像**;后续可改为从 openclaw 源码仓库构建并 push 到 library(可复现性更可控)。
 - Harbor 账号需对 `library` 与 `cubestack` 两个项目具备写权限。
