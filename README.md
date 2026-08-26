@@ -79,7 +79,7 @@ Images are registry-addressed:
 
 ```bash
 # 1. Build images, create the kind cluster if needed, create Secrets, deploy
-CUBEPILOT_MODEL_PROVIDERS='{"cuberouter":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://cuberouter.cn","models":[{"id":"deepseek-v4-flash-0731","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-...","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/setup.sh
 
 # 2. Expose the Portal
@@ -88,11 +88,10 @@ kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
 # 3. Open http://127.0.0.1:8080
 ```
 
-Note the provider KEY and model id: the builtin agent resolves the default
-model `cuberouter/deepseek-v4-flash-0731`, and the gateway allowlist must
-contain that ref for chat turns. Use provider key `cuberouter` with model id
-`deepseek-v4-flash-0731` (or set `CUBEPILOT_PLATFORM_MODEL` to your own ref).
-`scripts/setup.sh` validates this at setup time.
+The provider key is arbitrary — it only prefixes the gateway's model ref. The
+agent's default model is the first provider's first model (or
+`CUBEPILOT_DEFAULT_MODEL`); to use a specific model, add it to the
+`AgentTemplate` `models` and set `AgentInstance.selectedModel`.
 
 Full input reference: `scripts/setup.sh --help` (or the env vars in
 `docs/superpowers/specs/2026-08-25-setup-zero-local-deps-design.md` §3).
@@ -147,18 +146,17 @@ the api `/healthz`, and the Portal HTML.
 
 ```bash
 # Deploy path only (placeholder provider is fine):
-CUBEPILOT_MODEL_PROVIDERS='{"cuberouter":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://cuberouter.cn","models":[{"id":"deepseek-v4-flash-0731","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/e2e.sh
 
 # Full conversational e2e (needs a real provider key; drives POST /api/messages
 # over SSE and cold-starts a per-user agent Pod):
-CUBEPILOT_MODEL_PROVIDERS='{"cuberouter":{"api":"openai-completions","apiKey":"sk-real","baseUrl":"https://cuberouter.cn","models":[{"id":"deepseek-v4-flash-0731","name":"DeepSeek V4 Flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-real","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 ```
 
-Both examples keep the provider key `cuberouter` and model id
-`deepseek-v4-flash-0731` so the gateway allowlist matches the builtin agent's
-default model (see the note above the setup example).
+Any provider key works (the e2e uses `deepseek`); the agent's default model is
+the first provider's first model, so the gateway allowlist always covers it.
 
 CI (`.github/workflows/e2e.yaml`) runs these on every PR and push to `main`: a
 fast `test` job (`go vet` + `go test` + `scripts/test-openclaw-config.sh`) and

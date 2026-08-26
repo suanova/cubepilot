@@ -48,9 +48,9 @@ func instance(user, selected string) *v1alpha1.AgentInstance {
 	}
 }
 
-// TestSelectedModelForResolvesDefault verifies the agent definition's
-// defaultModel applies when the instance has no explicit selection
-// (design §3.1: defaultModel -> inline models -> modelId).
+// TestSelectedModelForResolvesDefault verifies that with no explicit
+// instance selection there is no override: the runtime uses its configured
+// primary (the deployer's provider config decides the default).
 func TestSelectedModelForResolvesDefault(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
@@ -67,8 +67,8 @@ func TestSelectedModelForResolvesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectedModelFor: %v", err)
 	}
-	if got != "cuberouter/deepseek-v4-flash-0731" {
-		t.Errorf("model = %q, want cuberouter/deepseek-v4-flash-0731", got)
+	if got != "" {
+		t.Errorf("model = %q, want empty (no override for default)", got)
 	}
 }
 

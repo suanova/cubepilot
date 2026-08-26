@@ -106,8 +106,10 @@ func TestResolveMergesFields(t *testing.T) {
 	if cfg.Owner != "li.ming" {
 		t.Errorf("owner = %q", cfg.Owner)
 	}
-	if cfg.SelectedModel != "cuberouter/deepseek-v4-flash-0731" {
-		t.Errorf("selectedModel = %q, want cuberouter/deepseek-v4-flash-0731", cfg.SelectedModel)
+	// No explicit selection -> no override; the template default is the
+	// display name only (the runtime's configured primary decides the model).
+	if cfg.SelectedModel != "" {
+		t.Errorf("selectedModel = %q, want empty (no override for default)", cfg.SelectedModel)
 	}
 	if cfg.ModelName != "deepseek-v4-flash" {
 		t.Errorf("modelName = %q", cfg.ModelName)

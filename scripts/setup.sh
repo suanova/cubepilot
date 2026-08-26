@@ -22,10 +22,6 @@ NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 OPENCLAW_IMAGE_TAG="${CUBEPILOT_OPENCLAW_IMAGE_TAG:-2026.6.33}"
 MODEL_PROVIDERS="${CUBEPILOT_MODEL_PROVIDERS:-}"
 DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
-# Model ref the builtin agent resolves (internal/controller/builtin.go): the
-# rendered gateway allowlist must contain it, otherwise chat turns 400 on
-# x-openclaw-model override. Keep in sync with BuiltinModels().
-PLATFORM_MODEL="${CUBEPILOT_PLATFORM_MODEL:-cuberouter/deepseek-v4-flash-0731}"
 GATEWAY_TOKEN="${CUBEPILOT_GATEWAY_TOKEN:-}"
 SKIP_CLUSTER_CREATE="${CUBEPILOT_SKIP_CLUSTER_CREATE:-}"
 # Built images are registry-addressed (harbor.isuanova.com/cubestack); set
@@ -53,25 +49,20 @@ Usage: scripts/setup.sh [flags]
 Required:
   CUBEPILOT_MODEL_PROVIDERS / --providers-json <json>
       The models.providers object (OpenClaw provider config), e.g.
-      '{"cuberouter":{"api":"openai-completions","apiKey":"sk-...",
-        "baseUrl":"https://cuberouter.cn",
-        "models":[{"id":"deepseek-v4-flash-0731","name":"DeepSeek V4 Flash"}]}}'
+      '{"deepseek":{"api":"openai-completions","apiKey":"sk-...",
+        "baseUrl":"https://api.deepseek.com",
+        "models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}'
       api is the OpenClaw API style (openai-completions for DeepSeek);
-      apiKey holds the secret. The provider KEY and model id must match the
-      platform's model catalog: the builtin agent resolves the default model
-      CUBEPILOT_PLATFORM_MODEL (default "cuberouter/deepseek-v4-flash-0731"),
-      and the gateway allowlist must contain that ref for chat turns -- so use
-      provider key "cuberouter" with model id "deepseek-v4-flash-0731" unless
-      you override CUBEPILOT_PLATFORM_MODEL. Each model should carry "name"
-      (the renderer fills it from "id" if omitted). One provider is enough
-      for testing.
+      apiKey holds the secret. The provider key is arbitrary (it is only the
+      first half of the gateway's model ref). The agent's default model is the
+      first provider's first model (or CUBEPILOT_DEFAULT_MODEL); to switch an
+      agent to another model, add it to the AgentTemplate models and set
+      AgentInstance.selectedModel. Each model should carry "name" (the renderer
+      fills it from "id" if omitted). One provider is enough for testing.
 
 Optional:
   CUBEPILOT_DEFAULT_MODEL / --default-model <provider/model>
       Default agent model (default: first provider's first model).
-  CUBEPILOT_PLATFORM_MODEL <provider/model>
-      Model ref the builtin agent resolves for chat turns; the rendered gateway
-      allowlist must contain it (default: cuberouter/deepseek-v4-flash-0731).
   CUBEPILOT_GATEWAY_TOKEN / --gateway-token <token>
       Gateway auth token (default: auto-generated, openssl rand -hex 32).
   CUBEPILOT_KIND_CLUSTER / --kind-cluster <name>
@@ -176,21 +167,6 @@ jq -n \
   --arg defaultModel "$DEFAULT_MODEL" \
   --arg token "$GATEWAY_TOKEN" \
   -f "$REPO_DIR/deploy/openclaw-config.jq" > "$TMP/openclaw.json"
-
-# Fail fast instead of a cryptic SSE failure later: the builtin agent resolves
-# the platform default model and the gateway allowlist must contain that exact
-# ref, otherwise every chat turn 400s with "Model '<ref>' is not allowed".
-log "verifying gateway allowlist covers the platform default model ($PLATFORM_MODEL)"
-jq -e --arg ref "$PLATFORM_MODEL" '.agents.defaults.models | has($ref)' "$TMP/openclaw.json" >/dev/null \
-  || {
-      echo "error: CUBEPILOT_MODEL_PROVIDERS does not include the platform default model '$PLATFORM_MODEL'." >&2
-      echo "  The builtin agent resolves '$PLATFORM_MODEL' (internal/controller/builtin.go), and the" >&2
-      echo "  gateway allowlist is keyed '<provider>/<model id>' from CUBEPILOT_MODEL_PROVIDERS, so the" >&2
-      echo "  provider key and model id must match it. Use e.g.:" >&2
-      echo "    '{\"cuberouter\":{\"api\":\"openai-completions\",\"apiKey\":\"sk-...\",\"baseUrl\":\"https://cuberouter.cn\",\"models\":[{\"id\":\"deepseek-v4-flash-0731\",\"name\":\"DeepSeek V4 Flash\"}]}}'" >&2
-      echo "  (set CUBEPILOT_PLATFORM_MODEL to your own platform model ref if it differs)" >&2
-      exit 1
-    }
 
 kubectl -n "$NAMESPACE" create secret generic openclaw-config \
   --from-file=openclaw.json="$TMP/openclaw.json" \

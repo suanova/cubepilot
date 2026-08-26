@@ -30,11 +30,12 @@ func (s *Server) userOf(r *http.Request) string {
 }
 
 // clientFor returns the OpenClaw client for a user's agent instance, with the
-// effective selectedModel applied (design §3.2/§3.3: selectedModel -> Model
-// catalog -> x-openclaw-model per-request override; fail-closed when the
-// selected model is missing/unavailable). The error is non-nil only when the
-// user explicitly selected a model that is missing or Unreachable -- callers
-// that generate content must surface it; read-only callers may ignore it
+// explicitly selected model applied as an x-openclaw-model per-request
+// override (design §3.2/§3.3). No override is sent when the user did not
+// explicitly select a model -- the gateway runs its configured primary, so
+// the deployer's provider config decides the default. Fail-closed: an
+// explicitly selected model that is missing/unavailable is an error that
+// callers generating content must surface; read-only callers may ignore it
 // (the override only affects chat turns, not session/history reads).
 func (s *Server) clientFor(user string) (openclaw.AgentRuntime, error) {
 	c := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
