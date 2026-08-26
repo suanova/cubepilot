@@ -1,0 +1,32 @@
+# .mergify.yml
+#
+# Automates PR merging with Mergify (https://mergify.io).
+#
+# Model:
+#   * A PR is added to the "default" merge queue as soon as CI passes.
+#   * The queue is strict: a queued PR is updated against main before merging.
+#   * Merges use squash so each PR lands as a single commit on main.
+#
+# The two check names come from .github/workflows/e2e.yaml:
+#   * "Unit tests + static checks"   (job: test)
+#   * "End-to-end (kind)"            (job: e2e)
+
+queue_rules:
+  - name: default
+    conditions:
+      - check-success="Unit tests + static checks"
+      - check-success="End-to-end (kind)"
+
+pull_request_rules:
+  - name: queue PRs that pass CI
+    conditions:
+      - base=main
+      - -draft
+      - -conflict
+      - label!=do-not-merge
+      - check-success="Unit tests + static checks"
+      - check-success="End-to-end (kind)"
+    actions:
+      queue:
+        name: default
+        method: squash
