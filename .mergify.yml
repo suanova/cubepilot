@@ -13,6 +13,7 @@
 
 queue_rules:
   - name: default
+    merge_method: squash
     conditions:
       - check-success="Unit tests + static checks"
       - check-success="End-to-end (kind)"
@@ -29,4 +30,3 @@ pull_request_rules:
     actions:
       queue:
         name: default
-        method: squash
