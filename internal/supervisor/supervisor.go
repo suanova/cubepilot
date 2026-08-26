@@ -5,10 +5,17 @@
 // never deleted, so sessions/PVC/IP survive). It is the "agent supervisor"
 // of the final architecture: CRDs declare -> operator resolves -> supervisor
 // renders -> OpenClaw executes.
+//
+// The gateway config (LLM providers / model allowlist, mounted from the
+// openclaw-config Secret as openclaw.json) is also watched: the gateway loads
+// it at startup, so when the file changes the gateway is gracefully restarted.
+// This is how providers are added/edited post-install (by patching the Secret)
+// without touching Pods or scripts/setup.sh.
 package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +48,11 @@ type Config struct {
 	GatewayCmd []string
 	// PollInterval is how often the resolved config is re-fetched.
 	PollInterval time.Duration
+	// ConfigPath is the gateway config file (openclaw.json, mounted from the
+	// openclaw-config Secret). The gateway reads it at startup; when it changes
+	// the supervisor restarts the gateway so the new config applies. Empty
+	// disables the file watch.
+	ConfigPath string
 }
 
 // LoadFromEnv builds a Config from the environment with sane defaults.
@@ -51,6 +63,7 @@ func LoadFromEnv() Config {
 		Workspace:    getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
 		GatewayCmd:   []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
 		PollInterval: 10 * time.Second,
+		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
 	}
 }
 
@@ -71,6 +84,10 @@ type Supervisor struct {
 
 	cmdMu sync.Mutex
 	cmd   *exec.Cmd
+
+	// lastCfgHash is the sha256 of the gateway config file as last loaded (or
+	// detected); configHashChanged compares against it. Only touched by Run.
+	lastCfgHash string
 }
 
 // New returns a Supervisor for the given config.
@@ -96,6 +113,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.startGateway(ctx); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
 	}
+	// Baseline the gateway config file so edits (e.g. a provider added to the
+	// openclaw-config Secret post-install) are detected relative to what the
+	// gateway just loaded, not treated as a change on the first tick.
+	s.snapshotConfigHash()
 
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
@@ -108,7 +129,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			changed, err := s.poll(ctx)
 			if err != nil {
 				log.Printf("supervisor: poll: %v", err)
-				continue
+			}
+			if s.configHashChanged() {
+				log.Printf("supervisor: gateway config file changed; restarting")
+				changed = true
 			}
 			if changed {
 				log.Printf("supervisor: restarting gateway for new config")
@@ -118,6 +142,38 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// hashFile returns the sha256 hex of the gateway config file, or "" when the
+// file is missing (e.g. the Secret is not mounted yet).
+func (s *Supervisor) hashFile() string {
+	data, err := os.ReadFile(s.cfg.ConfigPath)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum)
+}
+
+// snapshotConfigHash records the current gateway config file as the baseline.
+func (s *Supervisor) snapshotConfigHash() {
+	s.lastCfgHash = s.hashFile()
+}
+
+// configHashChanged reports whether the gateway config file differs from the
+// last snapshot (and records the new hash). A missing file reports no change
+// but does not reset the baseline, so a transient mount gap never triggers a
+// restart. No-op when no ConfigPath is configured.
+func (s *Supervisor) configHashChanged() bool {
+	if s.cfg.ConfigPath == "" {
+		return false
+	}
+	h := s.hashFile()
+	if h == "" || h == s.lastCfgHash {
+		return false
+	}
+	s.lastCfgHash = h
+	return true
 }
 
 // poll fetches the resolved config and applies it (renders skills, records
