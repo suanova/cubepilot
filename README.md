@@ -88,6 +88,11 @@ kubectl -n cubepilot port-forward svc/cubepilot 8080:8080
 # 3. Open http://127.0.0.1:8080
 ```
 
+The provider key is arbitrary — it only prefixes the gateway's model ref. The
+agent's default model is the first provider's first model (or
+`CUBEPILOT_DEFAULT_MODEL`); to use a specific model, add it to the
+`AgentTemplate` `models` and set `AgentInstance.selectedModel`.
+
 Full input reference: `scripts/setup.sh --help` (or the env vars in
 `docs/superpowers/specs/2026-08-25-setup-zero-local-deps-design.md` §3).
 
@@ -96,6 +101,37 @@ web and per-component RBAC are chart templates; platform CRDs ship in the
 chart's `crds/` dir (installed at `helm install` -- upgrade them by reapplying
 the manifests in `deploy/charts/cubepilot/crds/`). Secrets (`openclaw-config`, `agent-kubeconfig`) are created out-of-band by
 `scripts/setup.sh` because they hold LLM credentials supplied at setup time.
+
+### Adding or changing providers after install (no setup.sh needed)
+
+The gateway config (LLM providers, model allowlist, gateway token) lives in
+the `openclaw-config` Secret's `openclaw.json`. `scripts/setup.sh` only writes
+that Secret at first install; it is not involved afterwards. Production
+installations (plain `helm install`) create the Secret out-of-band, and later
+changes edit it directly — the chart does not own it.
+
+To add a provider to a running install:
+
+```bash
+# 1. Export the current config, edit it (add your provider under
+#    .models.providers), then write it back -- keep gatewayToken untouched.
+kubectl -n cubepilot get secret openclaw-config -o jsonpath='{.data.openclaw\.json}' | base64 -d > openclaw.json
+#    ... edit openclaw.json ...
+kubectl -n cubepilot create secret generic openclaw-config \
+  --from-file=openclaw.json=openclaw.json \
+  --from-literal=gatewayToken="$(kubectl -n cubepilot get secret openclaw-config -o jsonpath='{.data.gatewayToken}' | base64 -d)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+2. The agent supervisors watch the mounted `openclaw.json` and gracefully
+   restart their gateway when it changes, so the new provider applies without
+   touching Pods (sessions/PVC survive).
+
+3. To make a model selectable, add it to the `AgentTemplate` `models` list —
+   its `modelId` prefix must equal the provider key (the gateway allowlist is
+   keyed `<provider>/<model-id>`) — and set `AgentInstance.selectedModel` to
+   the model's `name`. Model selection is configuration (API/kubectl), not a
+   chat-time picker in phase one.
 
 The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
 assistant as thinking while it waits for the gateway to become ready), then
@@ -110,14 +146,17 @@ the api `/healthz`, and the Portal HTML.
 
 ```bash
 # Deploy path only (placeholder provider is fine):
-CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   scripts/e2e.sh
 
 # Full conversational e2e (needs a real provider key; drives POST /api/messages
 # over SSE and cold-starts a per-user agent Pod):
-CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-real","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}' \
+CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-real","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' \
   CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 ```
+
+Any provider key works (the e2e uses `deepseek`); the agent's default model is
+the first provider's first model, so the gateway allowlist always covers it.
 
 CI (`.github/workflows/e2e.yaml`) runs these on every PR and push to `main`: a
 fast `test` job (`go vet` + `go test` + `scripts/test-openclaw-config.sh`) and

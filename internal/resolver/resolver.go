@@ -50,10 +50,13 @@ type ResolvedAgentConfig struct {
 	Instance string `json:"instance"`
 	// Owner is the instance owner (user).
 	Owner string `json:"owner"`
-	// SelectedModel is the effective backend model id (empty = runtime
-	// default; only set when an explicit/default selection resolved).
+	// SelectedModel is the per-turn model override, set only when the instance
+	// explicitly selected a model (empty = no override; the runtime uses its
+	// configured primary).
 	SelectedModel string `json:"selectedModel,omitempty"`
-	// ModelName is the catalog entry name backing SelectedModel.
+	// ModelName is the catalog model name backing SelectedModel, or the
+	// template default model name when nothing was explicitly selected
+	// (display only).
 	ModelName string `json:"modelName,omitempty"`
 	// ConfirmPolicy is the agent-level write confirmation policy.
 	ConfirmPolicy v1alpha1.ConfirmPolicy `json:"confirmPolicy,omitempty"`
@@ -144,18 +147,22 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 				}
 				cfg.Instructions += ui
 			}
-			// Model selection: instance override -> template default -> none.
-			selected := inst.Spec.SelectedModel
-			if selected == "" {
-				selected = def.Spec.DefaultModel
-			}
-			if selected != "" {
+			// Model selection: only an explicitly chosen model
+			// (instance.selectedModel) is sent as the per-turn override, so the
+			// agent's default model is whatever the runtime's configured primary
+			// is -- no provider-key naming convention is required. The template
+			// default is kept as the display name only. Fail-closed still
+			// applies to explicit selections (outside the template models ->
+			// error).
+			if selected := strings.TrimSpace(inst.Spec.SelectedModel); selected != "" {
 				modelID, err := r.resolveModel(selected, def)
 				if err != nil {
 					return nil, err
 				}
 				cfg.SelectedModel = modelID
 				cfg.ModelName = selected
+			} else {
+				cfg.ModelName = def.Spec.DefaultModel
 			}
 		} else if !apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("get template %s: %w", inst.Spec.TemplateRef, err)
