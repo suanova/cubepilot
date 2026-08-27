@@ -17,7 +17,7 @@ import (
 
 func TestOpenClawConfigReconcile(t *testing.T) {
 	scheme := testScheme(t)
-	builtin := BuiltinAgentTemplate()
+	builtin := BuiltinAgentTemplate("https://api.deepseek.com")
 	cred := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: "cubepilot"},
 		Data:       map[string][]byte{"apiKey": []byte("sk-real")},
@@ -47,7 +47,7 @@ func TestOpenClawConfigReconcile(t *testing.T) {
 
 func TestOpenClawConfigReconcileSkipsMissingCredential(t *testing.T) {
 	scheme := testScheme(t)
-	builtin := BuiltinAgentTemplate() // references cubepilot-llm, which is absent
+	builtin := BuiltinAgentTemplate("https://api.deepseek.com") // references cubepilot-llm, which is absent
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin).Build()
 	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 

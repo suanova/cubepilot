@@ -140,11 +140,13 @@ automatically. `setup.sh` only seeds one working LLM:
 
 ```bash
 CUBEPILOT_LLM_APIKEY='sk-...' scripts/setup.sh   # creates the cubepilot-llm Secret
+# optional: CUBEPILOT_LLM_ENDPOINT='https://other.example.com/v1' scripts/setup.sh
 ```
 
 The builtin `agent-for-cloud` template carries the platform default model
-(`deepseek-v4-flash`, endpoint `https://api.deepseek.com`, credential
-`cubepilot-llm`). To add another LLM after install, use the Portal
+(`deepseek-v4-flash`, credential `cubepilot-llm`) at the configured default
+LLM endpoint (`https://api.deepseek.com`, overridable with `--llm-endpoint` /
+`CUBEPILOT_LLM_ENDPOINT`). To add another LLM after install, use the Portal
 (Agent Config -> LLM 配置): give a model name, an OpenAI-compatible endpoint,
 and an apiKey (leave empty for a public model). The operator re-renders the
 gateway and the model becomes selectable — no hand-edited Secret.

@@ -29,7 +29,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 // (design §3.1: builtin: true, auto-instantiated per user, non-deletable;
 // model[0] primary).
 func TestBuiltinAgentShape(t *testing.T) {
-	agent := BuiltinAgentTemplate()
+	agent := BuiltinAgentTemplate(config.DefaultLLMEndpoint)
 	if agent.Name != "agent-for-cloud" {
 		t.Errorf("name = %s, want agent-for-cloud", agent.Name)
 	}
@@ -42,8 +42,8 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if len(agent.Spec.Models) != 1 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
 		t.Errorf("inline models = %v, want [deepseek-v4-flash]", agent.Spec.Models)
 	}
-	if agent.Spec.Models[0].Endpoint == "" {
-		t.Errorf("builtin model missing endpoint: %+v", agent.Spec.Models[0])
+	if agent.Spec.Models[0].Endpoint != config.DefaultLLMEndpoint {
+		t.Errorf("builtin model endpoint = %q, want %q", agent.Spec.Models[0].Endpoint, config.DefaultLLMEndpoint)
 	}
 	if agent.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
 		t.Errorf("builtin model credentialRef = %q, want cubepilot-llm", agent.Spec.Models[0].CredentialRef.Name)
@@ -122,8 +122,8 @@ func TestBootstrapEnsure(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tmpl); err != nil {
 		t.Fatalf("agent-for-cloud template not found: %v", err)
 	}
-	if len(tmpl.Spec.Models) != len(BuiltinModels()) {
-		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels()))
+	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint)) {
+		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels(config.DefaultLLMEndpoint)))
 	}
 
 	// Per-user instances exist (auto-instantiated per user).

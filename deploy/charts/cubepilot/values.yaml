@@ -16,6 +16,10 @@ agents:
   image: harbor.isuanova.com/suanova/cubepilot-openclaw:latest
   # Comma-separated operator identities, one independent instance each.
   users: zhang.wei,li.ming
+  # Default LLM endpoint (OpenAI-compatible base URL) for the builtin
+  # agent-for-cloud model. setup.sh --llm-endpoint / CUBEPILOT_LLM_ENDPOINT
+  # overrides it; the apiKey always comes from the cubepilot-llm Secret.
+  llmEndpoint: https://api.deepseek.com
   # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
   reclaim: "false"
   idleTTL: 30m

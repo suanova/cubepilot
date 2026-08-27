@@ -32,7 +32,7 @@ func addLLMTestServer(t *testing.T, objs ...client.Object) *Server {
 }
 
 func TestHandleAddLLM(t *testing.T) {
-	s := addLLMTestServer(t, controller.BuiltinAgentTemplate())
+	s := addLLMTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com"))
 
 	body := bytes.NewBufferString(`{"name":"My Qwen","endpoint":"https://api.example.com/v1","apiKey":"sk-2"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
@@ -64,7 +64,7 @@ func TestHandleAddLLM(t *testing.T) {
 }
 
 func TestHandleAddLLMPublicNoKey(t *testing.T) {
-	s := addLLMTestServer(t, controller.BuiltinAgentTemplate())
+	s := addLLMTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com"))
 
 	body := bytes.NewBufferString(`{"name":"local-ollama","endpoint":"http://localhost:11434/v1"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)

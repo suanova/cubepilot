@@ -42,21 +42,22 @@ var BuiltinSkills = func() []string {
 // BuiltinModels returns the preset inline model entries for the builtin
 // AgentTemplate (design §3.3: models are inlined in the template -- no
 // standalone Model CRD). The platform default model references the
-// cubepilot-llm credential Secret created by setup.sh; its endpoint can be
+// cubepilot-llm credential Secret created by setup.sh; its endpoint is the
+// configured platform default LLM endpoint (config.LLMEndpoint) and can be
 // edited on the CR after install.
-func BuiltinModels() []v1alpha1.TemplateModelSpec {
+func BuiltinModels(endpoint string) []v1alpha1.TemplateModelSpec {
 	return []v1alpha1.TemplateModelSpec{
 		{
 			Name:          "deepseek-v4-flash",
-			Endpoint:      "https://api.deepseek.com",
+			Endpoint:      endpoint,
 			CredentialRef: corev1.LocalObjectReference{Name: "cubepilot-llm"},
 		},
 	}
 }
 
 // BuiltinAgentTemplate returns the builtin agent-for-cloud template
-// (design §3.1).
-func BuiltinAgentTemplate() *v1alpha1.AgentTemplate {
+// (design §3.1), with the platform default model at the given endpoint.
+func BuiltinAgentTemplate(endpoint string) *v1alpha1.AgentTemplate {
 	builtin := true
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{
@@ -71,7 +72,7 @@ func BuiltinAgentTemplate() *v1alpha1.AgentTemplate {
 			Description:   "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
 			Runtime:       v1alpha1.RuntimeOpenClaw,
 			DefaultModel:  "deepseek-v4-flash",
-			Models:        BuiltinModels(),
+			Models:        BuiltinModels(endpoint),
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
@@ -164,7 +165,11 @@ func (r *BuiltinBootstrapReconciler) Ensure(ctx context.Context) error {
 
 func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	// 1. AgentTemplate definition (with inline models, design §3.1/§3.3).
-	if err := r.createIfMissing(ctx, BuiltinAgentTemplate()); err != nil {
+	endpoint := r.Cfg.LLMEndpoint
+	if endpoint == "" {
+		endpoint = config.DefaultLLMEndpoint
+	}
+	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint)); err != nil {
 		return err
 	}
 	// 2. Domain skills (generated from embedded SKILL.md).
