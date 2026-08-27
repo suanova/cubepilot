@@ -439,7 +439,7 @@ export default function ChatView() {
               <div className="thread-empty">
                 <EmptyChatIcon />
                 <div className="thread-empty-title">Start a new conversation</div>
-                <div className="thread-empty-desc">Type your request below; CubePilot will use platform capabilities to troubleshoot, deploy or query resources for you.</div>
+                <div className="thread-empty-desc">Type your request below; CubePilot will use platform skills to troubleshoot, deploy or query resources for you.</div>
               </div>
             )}
           </div>

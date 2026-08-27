@@ -16,7 +16,7 @@ type Config struct {
 	// Namespace is the Kubernetes namespace where per-user agent Pods live.
 	Namespace string
 
-	// AgentImage is the per-user OpenClaw agent image (with kubectl + capability catalog).
+	// AgentImage is the per-user OpenClaw agent image (with kubectl + skill catalog).
 	AgentImage string
 
 	// GatewayToken is the bearer token used to authenticate against each agent

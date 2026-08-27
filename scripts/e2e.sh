@@ -27,9 +27,9 @@ kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER" || fail "kind cluster '
 kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || fail "namespace '$NAMESPACE' missing"
 ok "cluster + namespace"
 
-step "verify chart CRDs (assistant.suanova.io)"
-for c in agenttemplates agentinstances capabilities tasks taskruns tasktemplates; do
-  kubectl get crd "$c.assistant.suanova.io" >/dev/null 2>&1 || fail "CRD $c.assistant.suanova.io missing"
+step "verify chart CRDs (ai.cubestack.io)"
+for c in agenttemplates agentinstances skills tasktemplates tasks taskruns; do
+  kubectl get crd "$c.ai.cubestack.io" >/dev/null 2>&1 || fail "CRD $c.ai.cubestack.io missing"
 done
 ok "6 CRDs"
 

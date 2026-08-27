@@ -1,6 +1,6 @@
 // Package resolver merges the per-instance effective configuration into a
 // single immutable artifact (design §3.2/§3.3): AgentTemplate + AgentInstance
-// + Model catalog + Capabilities -> ResolvedAgentConfig. It is a pure function
+// + Model catalog + Skills -> ResolvedAgentConfig. It is a pure function
 // over CRs -- it never writes anything (no CRD updates, no ConfigMaps). The
 // agent-side supervisor pulls ResolvedAgentConfig via the internal API and
 // renders it into runtime form (skills etc.); the API and runner use the same
@@ -23,22 +23,22 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// ResolvedCapability is the domain capability content an agent may use --
+// ResolvedSkill is the domain skill content an agent may use --
 // the skill source. The supervisor renders it into workspace/skills/<name>/.
-type ResolvedCapability struct {
+type ResolvedSkill struct {
 	Name         string                    `json:"name"`
 	Title        string                    `json:"title,omitempty"`
 	Description  string                    `json:"description,omitempty"`
 	Instructions string                    `json:"instructions,omitempty"`
 	Uses         []string                  `json:"uses,omitempty"`
-	Files        []v1alpha1.CapabilityFile `json:"files,omitempty"`
+	Files        []v1alpha1.SkillFile `json:"files,omitempty"`
 	Revision     string                    `json:"revision"`
 }
 
 // ResolvedAgentConfig is the immutable, fully-resolved configuration for one
 // agent instance -- the single artifact the runtime depends on. Revision is a
 // content hash of everything else: any CR change (agent template, instance,
-// model, capability) produces a new revision, which is the supervisor's
+// model, skill) produces a new revision, which is the supervisor's
 // "reload needed" signal. It is pure data -- never persisted to CRDs or
 // ConfigMaps.
 type ResolvedAgentConfig struct {
@@ -62,10 +62,10 @@ type ResolvedAgentConfig struct {
 	ConfirmPolicy v1alpha1.ConfirmPolicy `json:"confirmPolicy,omitempty"`
 	// Instructions is the agent definition's default system prompt.
 	Instructions string `json:"instructions,omitempty"`
-	// Capabilities are the domain capabilities visible to this agent
-	// (empty = no domain skills; atomic capabilities are overlays and do
+	// Skills are the domain skills visible to this agent
+	// (empty = no domain skills; atomic skills are overlays and do
 	// not appear here).
-	Capabilities []ResolvedCapability `json:"capabilities,omitempty"`
+	Skills []ResolvedSkill `json:"skills,omitempty"`
 }
 
 // Empty reports whether the config is the zero default (no instance -- the
@@ -104,7 +104,7 @@ func (r *Resolver) ResolveForUser(ctx context.Context, user string) (*ResolvedAg
 	return r.Resolve(ctx, user, v1alpha1.DefaultAgentName)
 }
 
-// Resolve merges AgentTemplate + AgentInstance + Model catalog + Capabilities
+// Resolve merges AgentTemplate + AgentInstance + Model catalog + Skills
 // for (user, agent). Fail-closed: an explicit selection that is outside the
 // agent's availableModels, missing from the catalog, or Unreachable is an
 // error -- never a silent fallback. An empty selection (no instance, no
@@ -169,13 +169,13 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		}
 	}
 
-	// Domain capabilities visible to this agent (empty Agents = visible to
-	// all; atomic capabilities are overlays, not skills). The instance may
+	// Domain skills visible to this agent (empty Agents = visible to
+	// all; atomic skills are overlays, not skills). The instance may
 	// further restrict to an explicit enabledSkills subset (design §3.2);
 	// empty = all declared/all visible.
-	var caps v1alpha1.CapabilityList
-	if err := r.cr.List(ctx, &caps); err != nil {
-		return nil, fmt.Errorf("list capabilities: %w", err)
+	var skills v1alpha1.SkillList
+	if err := r.cr.List(ctx, &skills); err != nil {
+		return nil, fmt.Errorf("list skills: %w", err)
 	}
 	restrict := map[string]bool{}
 	if len(inst.Spec.EnabledSkills) > 0 {
@@ -183,25 +183,25 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			restrict[name] = true
 		}
 	}
-	for i := range caps.Items {
-		cap := &caps.Items[i]
-		if cap.Spec.Type != v1alpha1.CapabilityDomain {
+	for i := range skills.Items {
+		skill := &skills.Items[i]
+		if skill.Spec.Type != v1alpha1.SkillDomain {
 			continue
 		}
-		if len(cap.Spec.Agents) > 0 && !contains(cap.Spec.Agents, cfg.Agent) {
+		if len(skill.Spec.Agents) > 0 && !contains(skill.Spec.Agents, cfg.Agent) {
 			continue
 		}
-		if len(restrict) > 0 && !restrict[cap.Name] {
+		if len(restrict) > 0 && !restrict[skill.Name] {
 			continue
 		}
-		cfg.Capabilities = append(cfg.Capabilities, ResolvedCapability{
-			Name:         cap.Name,
-			Title:        cap.Spec.Title,
-			Description:  cap.Spec.Description,
-			Instructions: cap.Spec.Instructions,
-			Uses:         cap.Spec.Uses,
-			Files:        cap.Spec.Files,
-			Revision:     cap.Revision(),
+		cfg.Skills = append(cfg.Skills, ResolvedSkill{
+			Name:         skill.Name,
+			Title:        skill.Spec.Title,
+			Description:  skill.Spec.Description,
+			Instructions: skill.Spec.Instructions,
+			Uses:         skill.Spec.Uses,
+			Files:        skill.Spec.Files,
+			Revision:     skill.Revision(),
 		})
 	}
 
@@ -230,32 +230,32 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// RenderSkill converts a resolved domain capability into an OpenClaw
-// SKILL.md (design §3.3.1: the skill name equals the Capability name so
+// RenderSkill converts a resolved domain skill into an OpenClaw
+// SKILL.md (design §3.3.1: the skill name equals the Skill name so
 // platform accounting and runtime skills share one identity). The body is
-// the capability instructions; description + uses feed the frontmatter.
-func RenderSkill(cap ResolvedCapability) (string, error) {
-	if cap.Name == "" {
-		return "", fmt.Errorf("capability has no name")
+// the skill instructions; description + uses feed the frontmatter.
+func RenderSkill(skill ResolvedSkill) (string, error) {
+	if skill.Name == "" {
+		return "", fmt.Errorf("skill has no name")
 	}
 	var b strings.Builder
 	b.WriteString("---\n")
-	fmt.Fprintf(&b, "name: %s\n", cap.Name)
-	if cap.Description != "" {
-		fmt.Fprintf(&b, "description: %s\n", cap.Description)
+	fmt.Fprintf(&b, "name: %s\n", skill.Name)
+	if skill.Description != "" {
+		fmt.Fprintf(&b, "description: %s\n", skill.Description)
 	}
-	if len(cap.Uses) > 0 {
+	if len(skill.Uses) > 0 {
 		b.WriteString("metadata:\n  openclaw:\n    requires:\n")
-		for _, u := range cap.Uses {
+		for _, u := range skill.Uses {
 			fmt.Fprintf(&b, "      - %s\n", u)
 		}
 	}
 	b.WriteString("---\n\n")
-	if cap.Title != "" {
-		fmt.Fprintf(&b, "# %s\n\n", cap.Title)
+	if skill.Title != "" {
+		fmt.Fprintf(&b, "# %s\n\n", skill.Title)
 	}
-	if cap.Instructions != "" {
-		b.WriteString(strings.TrimSpace(cap.Instructions))
+	if skill.Instructions != "" {
+		b.WriteString(strings.TrimSpace(skill.Instructions))
 		b.WriteString("\n")
 	}
 	return b.String(), nil

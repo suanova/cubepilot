@@ -160,27 +160,27 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ---- Capability catalog (design §3.3.1: three-layer capabilities;
+// ---- Skill catalog (design §3.3.1: three-layer skills;
 // atomic/domain registration) ----
 
-// handleCapabilities serves GET /api/capabilities -- the registered Capability
+// handleSkills serves GET /api/skills -- the registered Skill
 // CRs (atomic thin overrides + domain knowledge; the generic layer is
 // platform-provided and not listed here).
-func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	if s.cr == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"capabilities": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"skills": []any{}})
 		return
 	}
-	var list v1alpha1.CapabilityList
+	var list v1alpha1.SkillList
 	if err := s.cr.List(r.Context(), &list); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"capabilities": list.Items})
+	writeJSON(w, http.StatusOK, map[string]any{"skills": list.Items})
 }
 
 // ---- TaskRun (design §3.3.4: run report, written with the platform
@@ -283,11 +283,11 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 
 // ---- shared helpers ----
 
-func (s *Server) listCapabilities(ctx context.Context) ([]v1alpha1.Capability, error) {
+func (s *Server) listSkills(ctx context.Context) ([]v1alpha1.Skill, error) {
 	if s.cr == nil {
 		return nil, nil
 	}
-	var list v1alpha1.CapabilityList
+	var list v1alpha1.SkillList
 	if err := s.cr.List(ctx, &list); err != nil {
 		return nil, err
 	}

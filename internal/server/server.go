@@ -1,7 +1,7 @@
 // Package server exposes the CubePilot Portal and REST/SSE API, routing chat
 // turns to per-user OpenClaw instances via the Instance Manager. Instance
 // state comes from AgentInstance CRs; the server also serves the platform
-// objects (Agent / Capability / Model / Task / TaskRun) over the API (design
+// objects (Agent / Skill / Model / Task / TaskRun) over the API (design
 // CubePilot-Cloud-for-Agents-Simplified-Design.md §2.1). The API process is
 // stateless except for the JSON metadata store (message ledger / audit /
 // inspect reports / agent config) on a single RWO PVC. Task scheduling is
@@ -15,7 +15,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/suanova/cubepilot/internal/capability"
+	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/metrics"
@@ -27,12 +27,12 @@ type Server struct {
 	cfg     config.Config
 	mgr     *instances.Manager
 	store   *store.Store
-	catalog *capability.Catalog
+	catalog *skill.Catalog
 	cr      client.Client
 }
 
 // New builds the HTTP handler for the assistant service.
-func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *capability.Catalog, cr client.Client) *Server {
+func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *skill.Catalog, cr client.Client) *Server {
 	return &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
 }
 
@@ -53,7 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
 	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
 	mux.HandleFunc("/api/instances", s.handleInstances)
-	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)

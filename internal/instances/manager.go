@@ -169,7 +169,7 @@ func (m *Manager) SelectedModelFor(ctx context.Context, user string) (string, er
 
 // ResolvedConfigForUser returns the fully-resolved agent configuration for a
 // user's default instance (AgentTemplate + AgentInstance + Model catalog +
-// Capabilities merged). It is the artifact the agent-side supervisor pulls
+// Skills merged). It is the artifact the agent-side supervisor pulls
 // via the internal API to render runtime skills and detect reloads.
 func (m *Manager) ResolvedConfigForUser(ctx context.Context, user string) (*resolver.ResolvedAgentConfig, error) {
 	return m.resolve.ResolveForUser(ctx, user)

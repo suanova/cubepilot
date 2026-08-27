@@ -4,64 +4,64 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CapabilityType is the capability layer (design §3.3.1 three-layer model).
+// SkillType is the skill layer (design §3.4 skill market (two layers: generic + skill)).
 // +kubebuilder:validation:Enum=Atomic;Domain
-type CapabilityType string
+type SkillType string
 
 const (
-	// CapabilityAtomic is a thin override bound to a CRD: semantics + security
+	// SkillAtomic is a thin override bound to a CRD: semantics + security
 	// only, never touches fields (parameters come from the CRD schema).
-	CapabilityAtomic CapabilityType = "Atomic"
-	// CapabilityDomain is domain knowledge: uses[] orchestration +
+	SkillAtomic SkillType = "Atomic"
+	// SkillDomain is domain knowledge: uses[] orchestration +
 	// instructions/scripts.
-	CapabilityDomain CapabilityType = "Domain"
+	SkillDomain SkillType = "Domain"
 )
 
-// CapabilityTarget binds an atomic capability to a CRD (design §3.3.1: the
+// SkillTarget binds an atomic skill to a CRD (design §3.4: the
 // platform validates the target exists + schema at registration, fail-fast).
-type CapabilityTarget struct {
+type SkillTarget struct {
 	Group   string `json:"group"`
 	Version string `json:"version"`
 	Kind    string `json:"kind"`
 }
 
-// CapabilitySemantics is the LLM-facing semantic overlay of an atomic
-// capability (design §3.3.1: changes only the semantics the LLM sees).
-type CapabilitySemantics struct {
+// SkillSemantics is the LLM-facing semantic overlay of an atomic
+// skill (design §3.4: changes only the semantics the LLM sees).
+type SkillSemantics struct {
 	Title       string   `json:"title,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Examples    []string `json:"examples,omitempty"`
 }
 
-// CapabilityFile is a small inline file of a domain capability.
-type CapabilityFile struct {
+// SkillFile is a small inline file of a domain skill.
+type SkillFile struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 }
 
-// CapabilitySpec is a platform capability (design §3.3.1). Generic tools
+// SkillSpec is a platform skill (design §3.4). Generic tools
 // (list-kinds / describe-kind / resource-manager / kubectl-raw) are
-// platform-provided and NOT registered as Capabilities -- zero registration.
-type CapabilitySpec struct {
+// platform-provided and NOT registered as Skills -- zero registration.
+type SkillSpec struct {
 	// Type is atomic (CRD thin override) or domain (domain knowledge).
-	Type CapabilityType `json:"type"`
+	Type SkillType `json:"type"`
 	// Title is the display title.
 	// +optional
 	Title string `json:"title,omitempty"`
-	// Description explains when to use this capability.
+	// Description explains when to use this skill.
 	// +optional
 	Description string `json:"description,omitempty"`
-	// Override marks an atomic capability as an overlay (not a fresh
+	// Override marks an atomic skill as an overlay (not a fresh
 	// definition). Required for atomic.
 	// +optional
 	Override bool `json:"override,omitempty"`
-	// Target binds an atomic capability to a CRD.
+	// Target binds an atomic skill to a CRD.
 	// +optional
-	Target *CapabilityTarget `json:"target,omitempty"`
+	Target *SkillTarget `json:"target,omitempty"`
 	// Semantics is the atomic semantic overlay.
 	// +optional
-	Semantics *CapabilitySemantics `json:"semantics,omitempty"`
-	// Uses orchestrates generic/atomic/MCP capabilities (domain only).
+	Semantics *SkillSemantics `json:"semantics,omitempty"`
+	// Uses orchestrates generic/atomic/MCP skills (domain only).
 	// +optional
 	Uses []string `json:"uses,omitempty"`
 	// Instructions is the domain knowledge instruction (inline default).
@@ -69,7 +69,7 @@ type CapabilitySpec struct {
 	Instructions string `json:"instructions,omitempty"`
 	// Files are small inline scripts (domain).
 	// +optional
-	Files []CapabilityFile `json:"files,omitempty"`
+	Files []SkillFile `json:"files,omitempty"`
 	// ContentRef points to external content (ConfigMap) for large content.
 	// +optional
 	ContentRef string `json:"contentRef,omitempty"`
@@ -81,8 +81,8 @@ type CapabilitySpec struct {
 	OwnerModule string `json:"ownerModule,omitempty"`
 }
 
-// CapabilityStatus is the observed state of a Capability.
-type CapabilityStatus struct {
+// SkillStatus is the observed state of a Skill.
+type SkillStatus struct {
 	// ObservedGeneration is the most recent generation observed.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -103,35 +103,35 @@ type CapabilityStatus struct {
 // +kubebuilder:printcolumn:name="Valid",type="boolean",JSONPath=".status.valid"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Capability is the capability catalog entry (design §3.3.1). It answers
+// Skill is the skill catalog entry (design §3.4). It answers
 // "what an Agent can use" -- atomic thin overrides bound to CRDs and domain
 // knowledge.
 // Generic tools are platform-provided and need no registration.
-type Capability struct {
+type Skill struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   CapabilitySpec   `json:"spec,omitempty"`
-	Status CapabilityStatus `json:"status,omitempty"`
+	Spec   SkillSpec   `json:"spec,omitempty"`
+	Status SkillStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// CapabilityList contains a list of Capability.
-type CapabilityList struct {
+// SkillList contains a list of Skill.
+type SkillList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Capability `json:"items"`
+	Items           []Skill `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&Capability{}, &CapabilityList{})
+	SchemeBuilder.Register(&Skill{}, &SkillList{})
 }
 
-// Revision returns an immutable content fingerprint of the capability spec
-// (design §3.4/§3.5: TaskRuns record the capability revision actually used at
+// Revision returns an immutable content fingerprint of the skill spec
+// (design §3.4/§3.5: TaskRuns record the skill revision actually used at
 // run time for audit/rollback). Content hash -- deterministic across object
 // re-creation, spec-only (status updates never change the revision).
-func (c *Capability) Revision() string {
+func (c *Skill) Revision() string {
 	return specRevision(c.Spec)
 }

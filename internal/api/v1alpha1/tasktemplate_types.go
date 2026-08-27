@@ -57,11 +57,11 @@ type TaskTemplateSpec struct {
 	// RequiredPermissions is the permission hint.
 	// +optional
 	RequiredPermissions *RequiredPermissions `json:"requiredPermissions,omitempty"`
-	// Capabilities declares the capabilities the task needs (design §3.5:
-	// resolved at execution time against the current versions; the actual
-	// revisions used are recorded on the TaskRun).
+	// Skills declares the skills the task needs (design §3.5: resolved at
+	// execution time against the current versions; the actual revisions used
+	// are recorded on the TaskRun).
 	// +optional
-	Capabilities []string `json:"capabilities,omitempty"`
+	Skills []string `json:"skills,omitempty"`
 	// DefaultCron is the creation-wizard default schedule hint (design §3.5:
 	// the Task's own cron wins).
 	// +optional

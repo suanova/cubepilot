@@ -248,7 +248,7 @@ export default function AgentView() {
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
           <span className="card-title">Skills</span>
-          <span className="card-hint">From the capability catalog built into the instance image - toggles saved as preferences</span>
+          <span className="card-hint">From the skill catalog built into the instance image - toggles saved as preferences</span>
         </div>
         <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
           <div className="skill-group">System Skills - built-in, cannot be disabled</div>
@@ -264,7 +264,7 @@ export default function AgentView() {
               System
             </span>
           </div>
-          <div className="skill-group">Platform Capabilities - Capability Catalog</div>
+          <div className="skill-group">Platform Skills - Skill Catalog</div>
           {skills.length ? (
             skills.map((sk) => (
               <div key={sk.name} className="toggle">
@@ -273,7 +273,7 @@ export default function AgentView() {
                     {SKILL_LABELS[sk.name] || sk.name}{' '}
                     <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(sk.name)}</span>
                   </div>
-                  <div className="toggle-desc">From the capability catalog built into the instance image - toggles saved as preferences</div>
+                  <div className="toggle-desc">From the skill catalog built into the instance image - toggles saved as preferences</div>
                 </div>
                 <button
                   className="switch"
@@ -285,7 +285,7 @@ export default function AgentView() {
               </div>
             ))
           ) : (
-            <div style={{ color: 'var(--muted)', padding: '8px 0' }}>No registered capabilities</div>
+            <div style={{ color: 'var(--muted)', padding: '8px 0' }}>No registered skills</div>
           )}
         </div>
       </div>
