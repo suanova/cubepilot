@@ -24,9 +24,9 @@ MODEL_PROVIDERS="${CUBEPILOT_MODEL_PROVIDERS:-}"
 DEFAULT_MODEL="${CUBEPILOT_DEFAULT_MODEL:-}"
 GATEWAY_TOKEN="${CUBEPILOT_GATEWAY_TOKEN:-}"
 SKIP_CLUSTER_CREATE="${CUBEPILOT_SKIP_CLUSTER_CREATE:-}"
-# Built images are registry-addressed (harbor.isuanova.com/cubestack); set
+# Built images are registry-addressed (harbor.isuanova.com/suanova); set
 # CUBEPILOT_PUSH=1 to push after building (dev machines may lack creds).
-IMAGE_REPO="${CUBEPILOT_IMAGE_REPO:-harbor.isuanova.com/cubestack}"
+IMAGE_REPO="${CUBEPILOT_IMAGE_REPO:-harbor.isuanova.com/suanova}"
 IMAGE_TAG="${CUBEPILOT_IMAGE_TAG:-local}"
 PUSH="${CUBEPILOT_PUSH:-0}"
 
@@ -79,7 +79,7 @@ Optional:
       Push the four built images to CUBEPILOT_IMAGE_REPO after building.
   CUBEPILOT_IMAGE_REPO / CUBEPILOT_IMAGE_TAG
       Image repository and tag for the built cubepilot images
-      (default: harbor.isuanova.com/cubestack, local).
+      (default: harbor.isuanova.com/suanova, local).
 EOF
       exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 1 ;;

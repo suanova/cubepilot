@@ -73,7 +73,7 @@ Images are registry-addressed:
 - Base images resolve from `harbor.isuanova.com/library/...` (mirrored from the
   public registries by `scripts/mirror-base-images.sh`).
 - Built images are
-  `harbor.isuanova.com/cubestack/cubepilot-{openclaw,operator,api,web}:<tag>`:
+  `harbor.isuanova.com/suanova/cubepilot-{openclaw,operator,api,web}:<tag>`:
   `make images` builds them, `make push` pushes them, and
   `CUBEPILOT_PUSH=1 scripts/setup.sh` pushes after building.
 
@@ -85,22 +85,22 @@ the four images plus the Helm chart (as an OCI artifact) into
 
 | Trigger | Images | Helm chart (OCI) |
 |---|---|---|
-| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:latest` | `oci://harbor.isuanova.com/cubestack/cubepilot:<chartVersion>-latest` (rolling dev artifact) |
-| tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/cubestack/cubepilot:X.Y.Z` |
-| `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/cubestack/cubepilot:<tag>` |
+| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:latest` | `oci://harbor.isuanova.com/suanova/cubepilot:<chartVersion>-latest` (rolling dev artifact) |
+| tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot:X.Y.Z` |
+| `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot:<tag>` |
 
 The chart's default image tags are `:latest` (tracking main builds); pin a
 specific release with `--set operator.image=...,api.image=...,web.image=...,agents.image=...`
 or your own values file. Install a published chart with:
 
 ```bash
-helm install cubepilot oci://harbor.isuanova.com/cubestack/cubepilot --version 0.1.0
+helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot --version 0.1.0
 ```
 
 The workflow needs the GitHub variable `CI_BOT_NAME` (Harbor username) and
 secret `CI_BOT_PASSWORD` (Harbor password/token), ideally a Harbor bot account
-with push rights on the `cubestack` project.
-The Harbor `cubestack` project must allow tag overwrites so the rolling
+with push rights on the `suanova` project.
+The Harbor `suanova` project must allow tag overwrites so the rolling
 `latest` / `-latest` artifacts can be re-pushed on every main push.
 
 ## Run

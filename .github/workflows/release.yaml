@@ -3,7 +3,7 @@
 #
 # Triggers and published tags:
 #   - push to main       images pushed as `latest`; chart pushed as
-#                        oci://.../cubestack/cubepilot:<chartVersion>-latest
+#                        oci://.../suanova/cubepilot:<chartVersion>-latest
 #                        (rolling dev artifact -- the `-latest` suffix keeps it
 #                        from colliding with a real <chartVersion> release)
 #   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
@@ -11,7 +11,7 @@
 #   - workflow_dispatch  publish under the semver tag supplied in the input
 #
 # Required GitHub variable + secret (a Harbor bot account with push rights on
-# the `cubestack` project):
+# the `suanova` project):
 #   vars.CI_BOT_NAME         (Harbor username)
 #   secrets.CI_BOT_PASSWORD  (Harbor password/token)
 
@@ -32,7 +32,7 @@ permissions:
 
 env:
   REGISTRY: harbor.isuanova.com
-  CHART_OCI: oci://harbor.isuanova.com/cubestack
+  CHART_OCI: oci://harbor.isuanova.com/suanova
 
 jobs:
   publish:
