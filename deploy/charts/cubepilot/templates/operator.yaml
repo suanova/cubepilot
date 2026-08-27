@@ -23,6 +23,8 @@ spec:
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           env:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}
+            - name: CUBEPILOT_LLM_ENDPOINT
+              value: {{ .Values.agents.llmEndpoint | quote }}
             - name: CUBEPILOT_METRICS_ADDR
               value: {{ .Values.operator.metricsAddr | quote }}
             - name: CUBEPILOT_PROBE_ADDR

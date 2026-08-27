@@ -116,13 +116,10 @@ spec:
   runtime: OpenClaw
   displayName: 平台管理助手
   defaultModel: deepseek-v4-flash          # 从 models 里选默认
-  models:                                  # 内联模型清单（无独立 Model CRD，支持外部）
-    - name: deepseek-v4-flash
-      provider: Platform                   # Platform（内置推理）| External（OpenAI 兼容端点）
-    - name: qwen2.5-72b
-      provider: External
-      endpoint: https://api.example.com/v1
-      credentialRef: { name: cred-llm-org, namespace: cubepilot }
+  models:                                  # 内联模型清单（无独立 Model CRD）
+    - name: deepseek-v4-flash              # 目录名 = 选择 key = 后端模型名
+      endpoint: https://api.deepseek.com   # 必填，OpenAI 兼容 base URL
+      credentialRef: { name: cubepilot-llm }  # 可选；public 模型没有
   instructions: |
     你是 CubeStack 平台管理助手。优先使用已登记能力；
     不确定资源或权限时先解释并请求用户澄清。
@@ -160,12 +157,12 @@ status:
 
 ## 3.3 模型（内联，无独立 CRD）
 
-不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `models` 列表**，每项含 `name` + `provider` + `endpoint`（External 必填）+ `credentialRef`（External 必填）。
+不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `models` 列表**，每项含 `name`（目录名 = 选择 key = 网关 provider key = 后端模型名）+ `endpoint`（必填，OpenAI 兼容 base URL）+ `credentialRef`（可选，`LocalObjectReference`；public 模型没有）。
 
-- `Platform`：平台内置推理（无 endpoint）；
-- `External`：OpenAI 兼容端点（endpoint + credentialRef 必填）。
-
-`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。要接外部模型，在 models 里加一条 External 即可——阶段一就支持，不用建独立对象。多模型路由/模型目录治理是阶段二的事。
+- 所有模型都是具体端点；`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。
+- 网关配置（providers + allowlist + 网关 token）由 operator 从模板 models + 凭据 Secret **声明式生成**，写入 `openclaw-config` Secret；不再由安装时环境变量决定。
+- 加一个 LLM = 往模板加一条模型（+ 非 public 时一个凭据 Secret），Portal「LLM 配置」即可完成。
+- 多模型路由/模型目录治理是阶段二的事。
 
 ## 3.4 技能市场（Skill）
 

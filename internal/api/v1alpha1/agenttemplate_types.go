@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -35,65 +36,38 @@ const (
 	IdentityModeService IdentityMode = "service"
 )
 
-// ModelProvider is how a model endpoint is provided
-// (design §3.3: platform = platform-managed inference pool; external =
-// OpenAI-compatible endpoint with platform-managed credential). Models are
-// inlined in the template -- there is no standalone Model CRD.
-// +kubebuilder:validation:Enum=Platform;External
-type ModelProvider string
-
-const (
-	// ModelProviderPlatform is the platform-managed inference pool: a builtin
-	// runtime model (no endpoint -- the runtime resolves it internally) or a
-	// manually deployed inference service the admin registered inline here
-	// (endpoint set).
-	ModelProviderPlatform ModelProvider = "Platform"
-	// ModelProviderExternal is an OpenAI-compatible endpoint: endpoint +
-	// credentialRef required (platform-managed Secret, never plaintext).
-	ModelProviderExternal ModelProvider = "External"
-)
-
-// TemplateModelSpec is one entry of the inline model list of an
-// AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD;
-// each entry carries name + provider + endpoint + credentialRef).
+// TemplateModelSpec is one entry of the inline model list of an AgentTemplate
+// (design §3.3: models are inlined -- no standalone Model CRD). Name is the
+// catalog name, the selection key (selectedModel), the gateway provider key
+// and the backend model id sent to the endpoint. Every model is a concrete
+// OpenAI-compatible endpoint; a public model simply omits CredentialRef.
 type TemplateModelSpec struct {
-	// Name is the model name (and the key for selectedModel on instances).
+	// Name is the model name: the key for selectedModel on instances, the
+	// gateway provider key, and the model id passed to the LLM endpoint.
 	Name string `json:"name"`
-	// Provider is "Platform" (platform-managed inference) or "External"
-	// (OpenAI-compatible endpoint; endpoint + credentialRef required).
-	Provider ModelProvider `json:"provider"`
-	// Endpoint is the OpenAI-compatible base URL; required for external.
+	// Endpoint is the OpenAI-compatible base URL; required for every model.
+	Endpoint string `json:"endpoint"`
+	// CredentialRef optionally references a platform-managed Secret (name)
+	// holding the apiKey; public models omit it (nil). References only -- never
+	// the key itself (design §4.4).
 	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-	// CredentialRef is a platform-managed Secret reference (namespace/name or
-	// name) holding the apiKey; required for external. References only --
-	// never the key itself (design §4.4).
-	// +optional
-	CredentialRef string `json:"credentialRef,omitempty"`
-	// ModelID is the backend model identifier passed to the LLM endpoint:
-	// for external it is the model name sent to the OpenAI-compatible
-	// endpoint; for platform it is the runtime-known model id (e.g.
-	// "deepseek/deepseek-v4-flash"). Empty for platform means "use the
-	// runtime's default model" (no override).
-	// +optional
-	ModelID string `json:"modelId,omitempty"`
+	CredentialRef *corev1.LocalObjectReference `json:"credentialRef,omitempty"`
 }
 
-// Validate enforces the inline-model invariants (design §3.3): an External
-// model requires endpoint + credentialRef; the provider must be known. The
-// same rule is enforced on the API server by the CEL XValidation on Models.
+// Validate enforces the inline-model invariants (design §3.3): every model
+// needs an endpoint; a present credentialRef must carry a name. The same rules
+// are enforced on the API server by the CEL XValidations on Models.
 func (m TemplateModelSpec) Validate() error {
-	switch m.Provider {
-	case ModelProviderPlatform:
-		return nil
-	case ModelProviderExternal:
-		if m.Endpoint == "" || m.CredentialRef == "" {
-			return fmt.Errorf("external model %q requires endpoint and credentialRef", m.Name)
-		}
-		return nil
-	default:
-		return fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
+	if m.Name == "" {
+		return fmt.Errorf("model name is required")
 	}
+	if m.Endpoint == "" {
+		return fmt.Errorf("model %q requires an endpoint", m.Name)
+	}
+	if m.CredentialRef != nil && m.CredentialRef.Name == "" {
+		return fmt.Errorf("model %q credentialRef must reference a Secret name", m.Name)
+	}
+	return nil
 }
 
 // AgentIdentitySpec declares the identity mode and scope an agent runs with
@@ -172,9 +146,10 @@ type AgentTemplateSpec struct {
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Models is the inline model list (design §3.3: models are inlined in the
 	// template -- no standalone Model CRD). The first entry is the primary;
-	// instances select within this list. External models require endpoint +
-	// credentialRef (enforced by CEL on the API server, see Validate).
-	// +kubebuilder:validation:XValidation:rule="self.all(m, m.provider != 'External' || (has(m.endpoint) && has(m.credentialRef)))",message="external models require endpoint and credentialRef"
+	// instances select within this list. Every model requires an endpoint;
+	// credentialRef is optional (a public model has none).
+	// +kubebuilder:validation:XValidation:rule="self.all(m, has(m.endpoint))",message="every model requires an endpoint"
+	// +kubebuilder:validation:XValidation:rule="self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))",message="credentialRef must reference a Secret name"
 	// +optional
 	Models []TemplateModelSpec `json:"models,omitempty"`
 	// ConfirmPolicy is the template-level confirmation policy for write

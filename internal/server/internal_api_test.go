@@ -17,7 +17,7 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 		Spec: v1alpha1.AgentTemplateSpec{
 			DefaultModel:    "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			},
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions:  "You are the platform assistant.",

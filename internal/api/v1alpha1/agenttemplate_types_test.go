@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestAgentTemplateSerializationRoundTrip verifies JSON round-trip of an
-// AgentTemplate with inline Platform + External models (design §3.1/§3.3).
+// AgentTemplate with inline models (design §3.1/§3.3).
 func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 	in := &AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
@@ -17,8 +18,7 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 			DefaultModel:  "deepseek-v4-flash",
 			ConfirmPolicy: ConfirmPolicyConfirmWrites,
 			Models: []TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
-				{Name: "qwen2.5-72b", Provider: ModelProviderExternal, Endpoint: "https://api.example.com/v1", CredentialRef: "cred-llm-org"},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com", CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"}},
 			},
 			Skills: []string{"dev-environment", "inference-service"},
 		},
@@ -34,8 +34,8 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 	if out.Spec.Runtime != RuntimeOpenClaw || out.Spec.ConfirmPolicy != ConfirmPolicyConfirmWrites {
 		t.Errorf("scalar round-trip mismatch: %+v", out.Spec)
 	}
-	if len(out.Spec.Models) != 2 || out.Spec.Models[1].Provider != ModelProviderExternal ||
-		out.Spec.Models[1].Endpoint == "" || out.Spec.Models[1].CredentialRef == "" {
+	if len(out.Spec.Models) != 1 || out.Spec.Models[0].Endpoint == "" ||
+		out.Spec.Models[0].CredentialRef == nil || out.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
 		t.Errorf("inline models not round-tripped: %+v", out.Spec.Models)
 	}
 }
@@ -66,11 +66,10 @@ func TestAgentTemplateRevision(t *testing.T) {
 }
 
 // TestTemplateModelValidate rejects invalid combinations (design §3.3):
-// External requires endpoint + credentialRef; unknown provider is rejected.
+// every model needs an endpoint; a missing name is rejected.
 func TestTemplateModelValidate(t *testing.T) {
 	ok := []TemplateModelSpec{
-		{Name: "platform", Provider: ModelProviderPlatform},
-		{Name: "ext", Provider: ModelProviderExternal, Endpoint: "https://x", CredentialRef: "cred"},
+		{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 	}
 	for _, m := range ok {
 		if err := m.Validate(); err != nil {
@@ -78,9 +77,9 @@ func TestTemplateModelValidate(t *testing.T) {
 		}
 	}
 	bad := []TemplateModelSpec{
-		{Name: "no-endpoint", Provider: ModelProviderExternal, CredentialRef: "cred"},
-		{Name: "no-cred", Provider: ModelProviderExternal, Endpoint: "https://x"},
-		{Name: "weird", Provider: ModelProvider("Mystery")},
+		{Name: "no-endpoint"},
+		{Name: ""},
+		{Name: "bad-cred", Endpoint: "https://x", CredentialRef: &corev1.LocalObjectReference{}},
 	}
 	for _, m := range bad {
 		if err := m.Validate(); err == nil {

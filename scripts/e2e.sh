@@ -3,8 +3,8 @@
 # cluster and verify it. Deploy path always runs; the conversational path runs
 # when CUBEPILOT_E2E_CHAT=1 (needs a real provider key).
 #
-#   CUBEPILOT_MODEL_PROVIDERS='{...}' scripts/e2e.sh             # deploy only
-#   CUBEPILOT_MODEL_PROVIDERS='{...}' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+#   CUBEPILOT_LLM_APIKEY='sk-...' scripts/e2e.sh                  # deploy only
+#   CUBEPILOT_LLM_APIKEY='sk-...' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +19,7 @@ ok()   { printf '\033[1;32m[e2e] ok\033[0m %s\n' "$*"; }
 
 # ---------- deploy phase --------------------------------------------------
 step "deploy via scripts/setup.sh"
-[ -n "${CUBEPILOT_MODEL_PROVIDERS:-}" ] || fail "CUBEPILOT_MODEL_PROVIDERS is required"
+[ -n "${CUBEPILOT_LLM_APIKEY:-}" ] || fail "CUBEPILOT_LLM_APIKEY is required"
 "$REPO_DIR/scripts/setup.sh"
 
 step "verify kind cluster + namespace"
@@ -34,12 +34,8 @@ done
 ok "6 CRDs"
 
 step "verify shared secrets"
-kubectl -n "$NAMESPACE" get secret openclaw-config >/dev/null 2>&1 || fail "secret openclaw-config missing"
-kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.gatewayToken}' | base64 -d | grep -q . \
-  || fail "openclaw-config: gatewayToken empty"
-kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.openclaw\.json}' | base64 -d \
-  | jq -e '.gateway.mode == "local"' >/dev/null 2>&1 || fail "openclaw-config: openclaw.json invalid"
 kubectl -n "$NAMESPACE" get secret agent-kubeconfig >/dev/null 2>&1 || fail "secret agent-kubeconfig missing"
+kubectl -n "$NAMESPACE" get secret cubepilot-llm >/dev/null 2>&1 || fail "secret cubepilot-llm missing"
 ok "secrets"
 
 step "verify deployments ready (operator/api/web)"
@@ -47,6 +43,23 @@ for dep in cubepilot-operator cubepilot-api cubepilot-web; do
   kubectl -n "$NAMESPACE" rollout status deployment/"$dep" --timeout=240s >/dev/null || fail "deployment $dep not ready"
 done
 ok "operator/api/web ready"
+
+step "verify operator-generated openclaw-config"
+# The operator creates the Secret with the gatewayToken first and writes
+# openclaw.json on the first reconcile, so wait until the rendered config is
+# present and valid (not just until the Secret exists).
+for _ in $(seq 1 30); do
+  if kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.openclaw\.json}' 2>/dev/null \
+    | base64 -d | jq -e '.gateway.mode == "local"' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.gatewayToken}' | base64 -d | grep -q . \
+  || fail "openclaw-config: gatewayToken empty"
+kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.openclaw\.json}' | base64 -d \
+  | jq -e '.gateway.mode == "local"' >/dev/null 2>&1 || fail "openclaw-config: openclaw.json invalid"
+ok "operator-generated config"
 
 PF_PIDS=""
 cleanup() { [ -n "$PF_PIDS" ] && kill $PF_PIDS 2>/dev/null || true; }

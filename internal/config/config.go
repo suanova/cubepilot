@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// DefaultLLMEndpoint is the default OpenAI-compatible base URL of the platform
+// default LLM (the builtin agent-for-cloud model).
+const DefaultLLMEndpoint = "https://api.deepseek.com"
+
 // Config holds all runtime configuration for the assistant service + instance manager.
 type Config struct {
 	// Listen is the HTTP listen address for the assistant service (Portal + API).
@@ -22,6 +26,11 @@ type Config struct {
 	// GatewayToken is the bearer token used to authenticate against each agent
 	// gateway (mirrors gateway.auth.token in the injected openclaw.json).
 	GatewayToken string
+
+	// LLMEndpoint is the OpenAI-compatible base URL of the platform default LLM
+	// (the builtin AgentTemplate's model endpoint). Defaults to DeepSeek; the
+	// apiKey lives in the cubepilot-llm Secret, never here.
+	LLMEndpoint string
 
 	// IdleTTL is how long an agent instance may sit idle before the manager
 	// reclaims it. Only effective when ReclaimEnabled is true (design doc §5.2:
@@ -76,6 +85,7 @@ func Load() Config {
 		Namespace:      getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
 		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
 		GatewayToken:   os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
+		LLMEndpoint:    getenv("CUBEPILOT_LLM_ENDPOINT", DefaultLLMEndpoint),
 		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
 		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),
 		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),

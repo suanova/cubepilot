@@ -210,12 +210,14 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 }
 
 // resolveModel validates the selection against the template's inline models
-// list and returns the effective backend model id. Fail-closed: not in
-// models list -> error.
+// list and returns the effective override ref. Fail-closed: not in models
+// list -> error. The returned ref is the full gateway ref `<name>/<name>` --
+// the same string the gateway renderer puts in the allowlist, so the override
+// always matches (the coupling issue #6 removes).
 func (r *Resolver) resolveModel(selected string, def v1alpha1.AgentTemplate) (string, error) {
 	for _, m := range def.Spec.Models {
 		if m.Name == selected {
-			return m.ModelID, nil // empty ModelID = platform default, no override
+			return m.Name + "/" + m.Name, nil
 		}
 	}
 	return "", fmt.Errorf("model %q not in template %q models", selected, def.Name)

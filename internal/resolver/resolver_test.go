@@ -85,7 +85,7 @@ func TestResolveMergesFields(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
@@ -136,8 +136,8 @@ func TestResolveExplicitSelection(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
-				{Name: "deepseek-chat", Provider: v1alpha1.ModelProviderPlatform, ModelID: "deepseek/deepseek-chat"},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
+				{Name: "deepseek-chat", Endpoint: "https://api.deepseek.com"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, "deepseek-chat"),
@@ -146,8 +146,8 @@ func TestResolveExplicitSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if cfg.SelectedModel != "deepseek/deepseek-chat" {
-		t.Errorf("selectedModel = %q, want deepseek/deepseek-chat", cfg.SelectedModel)
+	if cfg.SelectedModel != "deepseek-chat/deepseek-chat" {
+		t.Errorf("selectedModel = %q, want deepseek-chat/deepseek-chat", cfg.SelectedModel)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestResolveOutsideAllowlist(t *testing.T) {
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "deepseek-v4-flash"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Provider: v1alpha1.ModelProviderPlatform, ModelID: "cuberouter/deepseek-v4-flash-0731"},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, "glm-5.2"),
@@ -240,14 +240,14 @@ func TestResolveRevisionStable(t *testing.T) {
 	}
 }
 
-// TestResolveNoModelOverride verifies a selection whose model has no modelId
-// (platform default) resolves to empty SelectedModel, not an error.
+// TestResolveNoModelOverride verifies that with no explicit selection there is
+// no override: the gateway runs its configured primary.
 func TestResolveNoModelOverride(t *testing.T) {
 	r := testResolver(t,
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
 			a.Spec.DefaultModel = "builtin-default"
 			a.Spec.Models = []v1alpha1.TemplateModelSpec{
-				{Name: "builtin-default", Provider: v1alpha1.ModelProviderPlatform, ModelID: ""},
+				{Name: "builtin-default", Endpoint: "https://api.deepseek.com"},
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
