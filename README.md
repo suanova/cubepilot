@@ -177,7 +177,8 @@ allowlist always covers it.
 CI (`.github/workflows/e2e.yaml`) runs these on every PR and push to `main`: a
 fast `test` job (`go vet` + `go test`) and an `e2e` job on kind. The
 conversational e2e runs when the GitHub secret `CUBEPILOT_LLM_APIKEY` is
-configured; without it the deploy path still runs with a placeholder key.
+configured (optionally `CUBEPILOT_LLM_ENDPOINT` to point at a non-DeepSeek
+endpoint); without it the deploy path still runs with a placeholder key.
 Publishing the images/chart to the registry is handled separately by the
 `release` workflow — see [Releases (CI)](#releases-ci).
 
