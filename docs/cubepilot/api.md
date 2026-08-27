@@ -202,7 +202,17 @@ Content-Type: application/merge-patch+json
 - `spec.skills` → 可启用技能清单（实例子集 = `enabledSkills`）。
 - `spec.confirmPolicy` → 决定对话中是否会出现 `confirm_pending`（`ConfirmWrites` 时写操作暂停确认）。
 
-> 📘 模型**没有独立 CRD**：模型清单（名 + provider + endpoint + credentialRef）内联在模板的 `models` 列表（设计 §3.3）。
+> 📘 模型**没有独立 CRD**：模型清单（`name` + `endpoint` + 可选 `credentialRef`）内联在模板的 `models` 列表（设计 §3.3）。`name` 同时是选择 key、网关 provider key 与后端模型名。
+
+### 添加 LLM（cubepilot-api · `POST /api/llms`）
+
+平台管理员追加一个 OpenAI 兼容模型到内置 `agent-for-cloud` 模板；operator 将其渲染进网关配置。非 public 模型会创建一个 `llm-<name>` 凭据 Secret（只存 apiKey）。
+
+```json
+{ "name": "qwen2.5-72b", "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
+```
+
+省略 `apiKey` 表示 public 模型（不建 Secret）。返回创建的模型条目。Portal「LLM 配置」页面封装此调用。
 
 ## 3.2 `agentinstances` —— 实例（开通 / 配置）
 
