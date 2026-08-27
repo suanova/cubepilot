@@ -9,7 +9,11 @@
 #   make images     build the four images (registry-addressed)
 #   make push       push the four images to $(IMAGE_REGISTRY)
 #   make lint       helm lint + helm template sanity check
-#   make deploy     helm upgrade --install (requires built images + secrets)
+#   make deploy     helm upgrade --install (defaults to the published
+#                   :latest images; to deploy locally-built :local images,
+#                   override the chart image tags, e.g.
+#                   helm upgrade --install $(HELM_RELEASE) $(CHART_DIR) \
+#                     --set agents.image=...,operator.image=...,api.image=...,web.image=...)
 #   make undeploy   helm uninstall
 #   make clean      remove build artifacts
 #
