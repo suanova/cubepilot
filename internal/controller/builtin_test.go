@@ -39,8 +39,12 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.DefaultModel != "deepseek-v4-flash" {
 		t.Errorf("defaultModel = %q, want deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
 	}
-	if len(agent.Spec.Models) != 1 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
-		t.Errorf("inline models = %v, want [deepseek-v4-flash]", agent.Spec.Models)
+	if len(agent.Spec.Models) != 2 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
+		t.Errorf("inline models = %v, want [deepseek-v4-flash, qwen2.5-72b]", agent.Spec.Models)
+	}
+	if agent.Spec.Models[1].Provider != v1alpha1.ModelProviderExternal ||
+		agent.Spec.Models[1].Endpoint == "" || agent.Spec.Models[1].CredentialRef == "" {
+		t.Errorf("builtin External model incomplete: %+v", agent.Spec.Models[1])
 	}
 	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q, want ConfirmWrites (design §3.1)", agent.Spec.ConfirmPolicy)

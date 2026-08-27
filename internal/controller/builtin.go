@@ -48,6 +48,13 @@ func BuiltinModels() []v1alpha1.TemplateModelSpec {
 			Provider: v1alpha1.ModelProviderPlatform,
 			ModelID:  "cuberouter/deepseek-v4-flash-0731",
 		},
+		{
+			Name:          "qwen2.5-72b",
+			Provider:      v1alpha1.ModelProviderExternal,
+			Endpoint:      "https://api.example.com/v1",
+			CredentialRef: "cred-llm-org",
+			ModelID:       "qwen2.5-72b",
+		},
 	}
 }
 

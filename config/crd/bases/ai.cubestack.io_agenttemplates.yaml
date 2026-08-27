@@ -107,7 +107,8 @@ spec:
                 description: |-
                   Models is the inline model list (design §3.3: models are inlined in the
                   template -- no standalone Model CRD). The first entry is the primary;
-                  instances select within this list.
+                  instances select within this list. External models require endpoint +
+                  credentialRef (enforced by CEL on the API server, see Validate).
                 items:
                   description: |-
                     TemplateModelSpec is one entry of the inline model list of an
@@ -149,6 +150,10 @@ spec:
                   - provider
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: external models require endpoint and credentialRef
+                  rule: self.all(m, m.provider != 'External' || (has(m.endpoint) &&
+                    has(m.credentialRef)))
               policyRefs:
                 description: PolicyRefs references confirmation-rule policies (E3,
                   phase 2).
