@@ -56,6 +56,12 @@ export const api = {
 
   // Platform objects (read-only CRD views)
   listAgentTemplates: () => apiFetch<{ agentTemplates: PlatformObject[] }>('/api/agenttemplates').then((d) => d.agentTemplates),
+  addLLM: (body: { name: string; endpoint: string; apiKey?: string }) =>
+    apiFetch<{ model: PlatformObject }>('/api/llms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((d) => d.model),
   listInstances: () =>
     apiFetch<{ instances: PlatformObject[] }>('/api/instances').then((d) => d.instances),
   createInstance: (body: { templateRef?: string; selectedModel?: string; enabledSkills?: string[]; userInstructions?: string }) =>
