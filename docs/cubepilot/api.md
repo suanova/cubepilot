@@ -187,8 +187,7 @@ Content-Type: application/merge-patch+json
     "displayName": "平台管理助手",
     "defaultModel": "deepseek-v4-flash",
     "models": [
-      { "name": "deepseek-v4-flash", "provider": "Platform" },
-      { "name": "qwen2.5-72b", "provider": "External", "endpoint": "https://api.example.com/v1", "credentialRef": { "name": "cred-llm-org", "namespace": "cubepilot" } }
+      { "name": "deepseek-v4-flash", "endpoint": "https://api.deepseek.com", "credentialRef": { "name": "cubepilot-llm" } }
     ],
     "instructions": "你是 CubeStack 平台管理助手。……",
     "skills": ["dev-environment", "inference-service", "cluster-inspection"],

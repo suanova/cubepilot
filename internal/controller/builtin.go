@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,20 +41,15 @@ var BuiltinSkills = func() []string {
 
 // BuiltinModels returns the preset inline model entries for the builtin
 // AgentTemplate (design §3.3: models are inlined in the template -- no
-// standalone Model CRD).
+// standalone Model CRD). The platform default model references the
+// cubepilot-llm credential Secret created by setup.sh; its endpoint can be
+// edited on the CR after install.
 func BuiltinModels() []v1alpha1.TemplateModelSpec {
 	return []v1alpha1.TemplateModelSpec{
 		{
-			Name:     "deepseek-v4-flash",
-			Provider: v1alpha1.ModelProviderPlatform,
-			ModelID:  "cuberouter/deepseek-v4-flash-0731",
-		},
-		{
-			Name:          "qwen2.5-72b",
-			Provider:      v1alpha1.ModelProviderExternal,
-			Endpoint:      "https://api.example.com/v1",
-			CredentialRef: "cred-llm-org",
-			ModelID:       "qwen2.5-72b",
+			Name:          "deepseek-v4-flash",
+			Endpoint:      "https://api.deepseek.com",
+			CredentialRef: corev1.LocalObjectReference{Name: "cubepilot-llm"},
 		},
 	}
 }

@@ -107,53 +107,52 @@ spec:
                 description: |-
                   Models is the inline model list (design §3.3: models are inlined in the
                   template -- no standalone Model CRD). The first entry is the primary;
-                  instances select within this list. External models require endpoint +
-                  credentialRef (enforced by CEL on the API server, see Validate).
+                  instances select within this list. Every model requires an endpoint;
+                  credentialRef is optional (a public model has none).
                 items:
                   description: |-
-                    TemplateModelSpec is one entry of the inline model list of an
-                    AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD;
-                    each entry carries name + provider + endpoint + credentialRef).
+                    TemplateModelSpec is one entry of the inline model list of an AgentTemplate
+                    (design §3.3: models are inlined -- no standalone Model CRD). Name is the
+                    catalog name, the selection key (selectedModel), the gateway provider key
+                    and the backend model id sent to the endpoint. Every model is a concrete
+                    OpenAI-compatible endpoint; a public model simply omits CredentialRef.
                   properties:
                     credentialRef:
                       description: |-
-                        CredentialRef is a platform-managed Secret reference (namespace/name or
-                        name) holding the apiKey; required for external. References only --
-                        never the key itself (design §4.4).
-                      type: string
+                        CredentialRef optionally references a platform-managed Secret (name)
+                        holding the apiKey; public models omit it. References only -- never the
+                        key itself (design §4.4).
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
                     endpoint:
                       description: Endpoint is the OpenAI-compatible base URL; required
-                        for external.
-                      type: string
-                    modelId:
-                      description: |-
-                        ModelID is the backend model identifier passed to the LLM endpoint:
-                        for external it is the model name sent to the OpenAI-compatible
-                        endpoint; for platform it is the runtime-known model id (e.g.
-                        "deepseek/deepseek-v4-flash"). Empty for platform means "use the
-                        runtime's default model" (no override).
+                        for every model.
                       type: string
                     name:
-                      description: Name is the model name (and the key for selectedModel
-                        on instances).
-                      type: string
-                    provider:
                       description: |-
-                        Provider is "Platform" (platform-managed inference) or "External"
-                        (OpenAI-compatible endpoint; endpoint + credentialRef required).
-                      enum:
-                      - Platform
-                      - External
+                        Name is the model name: the key for selectedModel on instances, the
+                        gateway provider key, and the model id passed to the LLM endpoint.
                       type: string
                   required:
+                  - endpoint
                   - name
-                  - provider
                   type: object
                 type: array
                 x-kubernetes-validations:
-                - message: external models require endpoint and credentialRef
-                  rule: self.all(m, m.provider != 'External' || (has(m.endpoint) &&
-                    has(m.credentialRef)))
+                - message: every model requires an endpoint
+                  rule: self.all(m, has(m.endpoint))
+                - message: credentialRef must reference a Secret name
+                  rule: self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))
               policyRefs:
                 description: PolicyRefs references confirmation-rule policies (E3,
                   phase 2).
