@@ -3,16 +3,26 @@
 # cluster and verify it. Deploy path always runs; the conversational path runs
 # when CUBEPILOT_E2E_CHAT=1 (needs a real provider key).
 #
-#   CUBEPILOT_LLM_APIKEY='sk-...' scripts/e2e.sh                  # deploy only
-#   CUBEPILOT_LLM_APIKEY='sk-...' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
-#   CUBEPILOT_LLM_APIKEY='sk-...' CUBEPILOT_LLM_ENDPOINT='https://...' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+#   CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh          # deploy only
+#   CUBEPILOT_LLM_APIKEY='sk-real' scripts/e2e.sh                 # deploy + chat (auto)
+#   CUBEPILOT_LLM_APIKEY='sk-real' CUBEPILOT_LLM_ENDPOINT='https://...' scripts/e2e.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 KIND_CLUSTER="${CUBEPILOT_KIND_CLUSTER:-cube}"
 E2E_USER="${CUBEPILOT_E2E_USER:-zhang.wei}"
-CHAT="${CUBEPILOT_E2E_CHAT:-0}"
+# The conversational e2e runs by default once a real apiKey is configured
+# (same as CI); an explicit CUBEPILOT_E2E_CHAT=0/1 overrides. A placeholder
+# key (deploy-only runs) skips chat.
+CHAT="${CUBEPILOT_E2E_CHAT:-}"
+if [ -z "$CHAT" ]; then
+  if [ -n "${CUBEPILOT_LLM_APIKEY:-}" ] && [ "$CUBEPILOT_LLM_APIKEY" != "sk-placeholder" ]; then
+    CHAT="1"
+  else
+    CHAT="0"
+  fi
+fi
 
 fail() { printf '\n\033[1;31m[e2e] FAIL\033[0m %s\n' "$*" >&2; exit 1; }
 step() { printf '\n\033[1;34m[e2e]\033[0m %s\n' "$*"; }
