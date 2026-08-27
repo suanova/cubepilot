@@ -21,7 +21,7 @@ Apply this rename map everywhere (identifiers, comments, docs, yaml, RBAC, web, 
 | `BuiltinCapabilityDefinitions` / `BuiltinCapabilities` | `BuiltinSkillDefinitions` / `BuiltinSkills` |
 | `ValidateCapability` | `ValidateSkill` |
 | package `capability` (dir `internal/capability`) | package `skill` (dir `internal/skill`) |
-| CRD `capabilities.assistant.suanova.io` | `skills.assistant.suanova.io` |
+| CRD resource `capabilities` (plural) | `skills` (group -> `ai.cubestack.io`, see below) |
 | API `/api/capabilities`, JSON key `"capabilities"` | `/api/skills`, JSON key `"skills"` |
 | `listCapabilities` / `handleCapabilities` | `listSkills` / `handleSkills` |
 | `TaskTemplateSpec.Capabilities` (design §3.5 `skills`) | `TaskTemplateSpec.Skills` |
@@ -324,7 +324,7 @@ RBAC markers, embedded skills dir. Assisted-by: Claude Code"
 - Modify: `deploy/charts/cubepilot/templates/rbac.yaml`
 
 **Interfaces:**
-- Produces: 6 CRDs `agenttemplates agentinstances skills tasktemplates tasks taskruns` under `assistant.suanova.io` (no `agents`, `models`, `capabilities`).
+- Produces: 6 CRDs `agenttemplates agentinstances skills tasktemplates tasks taskruns` under `ai.cubestack.io` (no `agents`, `models`, `capabilities`).
 
 - [ ] **Step 1: Delete stale CRD yamls, then regenerate CRDs from types**
 
@@ -649,7 +649,7 @@ Expected: no syntax errors.
 git add scripts/e2e.sh README.md docs/cubepilot
 git commit -s -m "docs(e2e): align CRD list and docs with Skill rename
 
-e2e asserts skills.assistant.suanova.io; README/api/implementation-status updated.
+e2e asserts skills.ai.cubestack.io; README/api/implementation-status updated.
 Assisted-by: Claude Code"
 ```
 
@@ -674,7 +674,7 @@ helm version --short
 - [ ] **Step 2: Run the e2e deploy path**
 
 Run: `cd "$(git rev-parse --show-toplevel)" && CUBEPILOT_MODEL_PROVIDERS='{"platform":{"base_url":"http://127.0.0.1:9999/v1","api_key":"placeholder"}}' scripts/e2e.sh`
-Expected: deploy-phase assertions PASS -- kind cluster `cube`, namespace, 6 CRDs (incl. `skills.assistant.suanova.io`, no `capabilities`), secrets, operator/api/web rollouts, `/healthz`, portal HTML. Ends with `E2E PASS (deploy only)`.
+Expected: deploy-phase assertions PASS -- kind cluster `cube`, namespace, 6 CRDs (incl. `skills.ai.cubestack.io`, no `capabilities`), secrets, operator/api/web rollouts, `/healthz`, portal HTML. Ends with `E2E PASS (deploy only)`.
 
 If `CUBEPILOT_E2E_CHAT=1` with a real key is available, run it too; otherwise deploy-only is the acceptance gate.
 
