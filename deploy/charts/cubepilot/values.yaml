@@ -1,5 +1,5 @@
 # CubePilot Helm values -- registry-addressed defaults
-# (harbor.isuanova.com/cubestack). The default :latest tags track the rolling
+# (harbor.isuanova.com/suanova). The default :latest tags track the rolling
 # builds published from main (see .github/workflows/release.yaml); pin a real
 # release by overriding the image refs (e.g. --set operator.image=...:0.1.0).
 # scripts/setup.sh always passes explicit image refs, so local development is
@@ -13,7 +13,7 @@ imagePullPolicy: IfNotPresent
 # runtime names the agent runtime image family: openclaw today, hermes later.
 agents:
   runtime: openclaw
-  image: harbor.isuanova.com/cubestack/cubepilot-openclaw:latest
+  image: harbor.isuanova.com/suanova/cubepilot-openclaw:latest
   # Comma-separated operator identities, one independent instance each.
   users: zhang.wei,li.ming
   # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
@@ -34,7 +34,7 @@ secrets:
 operator:
   name: cubepilot-operator
   replicas: 2
-  image: harbor.isuanova.com/cubestack/cubepilot-operator:latest
+  image: harbor.isuanova.com/suanova/cubepilot-operator:latest
   # controller-runtime metrics + health/ready probes ("0" disables).
   metricsAddr: :8082
   probeAddr: :8081
@@ -46,7 +46,7 @@ operator:
 api:
   name: cubepilot-api
   replicas: 1
-  image: harbor.isuanova.com/cubestack/cubepilot-api:latest
+  image: harbor.isuanova.com/suanova/cubepilot-api:latest
   dataDir: /opt/cubepilot/data
   storage: 1Gi
   storageClassName: ""
@@ -58,7 +58,7 @@ api:
 web:
   name: cubepilot-web
   replicas: 2
-  image: harbor.isuanova.com/cubestack/cubepilot-web:latest
+  image: harbor.isuanova.com/suanova/cubepilot-web:latest
   resources: {}
   nodeSelector: {}
   tolerations: []

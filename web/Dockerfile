@@ -1,7 +1,7 @@
 # CubePilot Portal image — multi-stage: build the Vue SPA on node, serve it
 # with nginx (which also reverse-proxies /api to the cubepilot-api service).
 #
-# Build:  docker build -t harbor.isuanova.com/cubestack/cubepilot-web:<tag> -f web/Dockerfile web
+# Build:  docker build -t harbor.isuanova.com/suanova/cubepilot-web:<tag> -f web/Dockerfile web
 FROM harbor.isuanova.com/library/node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
