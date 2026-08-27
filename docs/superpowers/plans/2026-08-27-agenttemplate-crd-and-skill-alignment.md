@@ -42,8 +42,14 @@ NOT renamed: Linux kernel capabilities (`corev1.Capabilities`, `drop ALL`) in
 `internal/config/config.go:19`, `internal/instances/manager.go:172`,
 `internal/store/store.go:54,175`.
 
-API group stays `assistant.suanova.io` (design examples say `ai.cubestack.io`
-but the group is an established, deployed convention -- out of scope).
+API group: ALL CRDs move to `ai.cubestack.io` (design §3.1). Change the
+`+groupName` marker, every kubebuilder `groups=assistant.suanova.io` RBAC
+marker, the catalog `SchemaFor` default group, CRD yaml filenames + contents
+(controller-gen regenerates them from the marker; the stale
+`assistant.suanova.io_*.yaml` files are deleted manually -- controller-gen
+does not clean them), chart `rbac.yaml` `apiGroups`, `scripts/e2e.sh` CRD
+assertions, and README / api.md / implementation-status docs. Web has no
+group refs.
 
 ---
 
@@ -157,7 +163,15 @@ Delete `capability_types.go`.
 
 `tasktemplate_types.go`: `Capabilities []string \`json:"capabilities,omitempty"\`` -> `Skills []string \`json:"skills,omitempty"\``, comment: "skills the task needs (resolved at run time, design §3.5)".
 
-`groupversion_info.go`: package comment "Agent / AgentInstance / Capability / TaskTemplate / Task / TaskRun" -> "AgentTemplate / AgentInstance / Skill / TaskTemplate / Task / TaskRun".
+`groupversion_info.go`: package comment "Agent / AgentInstance / Capability / TaskTemplate / Task / TaskRun" -> "AgentTemplate / AgentInstance / Skill / TaskTemplate / Task / TaskRun", AND the group -> `ai.cubestack.io`:
+
+```go
+// +kubebuilder:object:generate=true
+// +groupName=ai.cubestack.io
+package v1alpha1
+
+var GroupVersion = schema.GroupVersion{Group: "ai.cubestack.io", Version: "v1alpha1"}
+```
 
 `agenttemplate_types.go`: comments "skills" already; update any "capability" wording to "skill".
 
@@ -208,7 +222,7 @@ git mv internal/capability internal/skill
 sed -i 's/^package capability$/package skill/' internal/skill/catalog.go internal/skill/catalog_test.go
 ```
 
-In `catalog.go`: `ValidateCapability(cap *v1alpha1.Capability)` -> `ValidateSkill(skill *v1alpha1.Skill)`; all `v1alpha1.Capability`/`CapabilityAtomic`/`CapabilityDomain` refs per the map; error strings "capability %s" -> "skill %s". Keep generic-tool constants, `CRDSchema`, `Catalog`, `ToolSetForAgent` (its signature uses `[]v1alpha1.Skill` now). In `catalog_test.go` rename all `Capability` refs.
+In `catalog.go`: `ValidateCapability(cap *v1alpha1.Capability)` -> `ValidateSkill(skill *v1alpha1.Skill)`; all `v1alpha1.Capability`/`CapabilityAtomic`/`CapabilityDomain` refs per the map; error strings "capability %s" -> "skill %s"; `SchemaFor` default group `"assistant.suanova.io"` -> `"ai.cubestack.io"`. Keep generic-tool constants, `CRDSchema`, `Catalog`, `ToolSetForAgent` (its signature uses `[]v1alpha1.Skill` now). In `catalog_test.go` rename all `Capability` refs.
 
 - [ ] **Step 2: Update the embedded skill source + bootstrap**
 
@@ -220,20 +234,25 @@ In `catalog.go`: `ValidateCapability(cap *v1alpha1.Capability)` -> `ValidateSkil
 `internal/controller/builtin.go`:
 - `BuiltinCapabilities` var -> `BuiltinSkills` (still populated from embedded names).
 - `BuiltinCapabilityDefinitions()` call -> `BuiltinSkillDefinitions()`.
-- RBAC markers:
+- RBAC markers (group -> `ai.cubestack.io`, drop `agents`/`models`):
 ```go
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
 ```
 - `BuiltinTaskTemplate()`: `Capabilities: []string{"cluster-inspection"}` -> `Skills: []string{"cluster-inspection"}`.
 - "preset Capabilities" comments -> "preset Skills".
 
-`internal/controller/agentinstance_controller.go` RBAC markers:
+`internal/controller/agentinstance_controller.go` RBAC markers (group -> `ai.cubestack.io`, drop the stale `agents` resource -- the operator reads `agenttemplates` + `skills`):
 ```go
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agenttemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=skills,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills,verbs=get;list;watch
 ```
-(remove the stale `agents` resource; the operator reads `agenttemplates` + `skills`).
+
+`internal/scheduler/scheduler.go` RBAC markers (group -> `ai.cubestack.io`):
+```go
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=tasks,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=taskruns,verbs=get;list;watch;create;update;patch
+```
 
 - [ ] **Step 3: Update resolver + scheduler + supervisor**
 
@@ -281,7 +300,9 @@ Expected: PASS with no references to `Capability`/`capabilities` (except `corev1
 Then: `go test ./...`
 Expected: PASS.
 
-Confirm no stale refs: `grep -rn "Capabilit" --include='*.go' internal/ cmd/ | grep -v corev1` should show only comments (config/manager/store) -- fix those comments too if you like.
+Confirm no stale refs:
+- `grep -rn "Capabilit" --include='*.go' internal/ cmd/ | grep -v corev1` should show only comments (config/manager/store) -- fix those comments too if you like.
+- `grep -rn "assistant.suanova.io" --include='*.go' internal/ cmd/` should return NOTHING.
 
 - [ ] **Step 8: Commit**
 
@@ -305,36 +326,38 @@ RBAC markers, embedded skills dir. Assisted-by: Claude Code"
 **Interfaces:**
 - Produces: 6 CRDs `agenttemplates agentinstances skills tasktemplates tasks taskruns` under `assistant.suanova.io` (no `agents`, `models`, `capabilities`).
 
-- [ ] **Step 1: Regenerate CRDs from types**
+- [ ] **Step 1: Delete stale CRD yamls, then regenerate CRDs from types**
 
 ```bash
+git rm config/crd/bases/assistant.suanova.io_*.yaml
 controller-gen crd paths="./..." output:crd:artifacts:config=config/crd/bases
 ls config/crd/bases/
 ```
 
-Expected: exactly `assistant.suanova.io_{agentinstances,agenttemplates,skills,taskruns,tasks,tasktemplates}.yaml` -- `agents.yaml`, `models.yaml`, `capabilities.yaml` are gone.
+Expected: exactly `ai.cubestack.io_{agentinstances,agenttemplates,skills,taskruns,tasks,tasktemplates}.yaml` -- the old `assistant.suanova.io_*` files (including stale `agents`, `models`, `capabilities`) are gone.
 
 - [ ] **Step 2: Confirm `skills` CRD + `agenttemplates` CRD contents**
 
 ```bash
-grep -E "name: |plural:|kind:" config/crd/bases/assistant.suanova.io_skills.yaml config/crd/bases/assistant.suanova.io_agenttemplates.yaml
+grep -E "name: |plural:|kind:|group:" config/crd/bases/ai.cubestack.io_skills.yaml config/crd/bases/ai.cubestack.io_agenttemplates.yaml
 ```
-`skills` should have `plural: skills`, `kind: Skill`, enums `Atomic;Domain`. `agenttemplates` should carry the runtime/provider/confirmPolicy enums and the Models `XValidation` rule (after Task 5; absent until then).
+`skills` should have `group: ai.cubestack.io`, `plural: skills`, `kind: Skill`, enums `Atomic;Domain`. `agenttemplates` should have `group: ai.cubestack.io` and the runtime/provider/confirmPolicy enums (plus the Models `XValidation` rule after Task 5).
 
 - [ ] **Step 3: Sync regenerated CRDs into the Helm chart**
 
 ```bash
-cp config/crd/bases/assistant.suanova.io_*.yaml deploy/charts/cubepilot/crds/
+git rm deploy/charts/cubepilot/crds/assistant.suanova.io_*.yaml
+cp config/crd/bases/ai.cubestack.io_*.yaml deploy/charts/cubepilot/crds/
 ls deploy/charts/cubepilot/crds/
 ```
 Expected: 6 files, matching config (verify: `md5sum config/crd/bases/*.yaml | awk '{print $1}'` equal across both dirs).
 
 - [ ] **Step 4: Update chart RBAC**
 
-In `deploy/charts/cubepilot/templates/rbac.yaml` replace every `capabilities` resource with `skills` and drop `agents`/`models` if present:
-- operator ClusterRole resources: `["agenttemplates", "agentinstances", "skills", "tasktemplates", "tasks", "taskruns"]`
+In `deploy/charts/cubepilot/templates/rbac.yaml` replace every `assistant.suanova.io` apiGroup with `ai.cubestack.io`, every `capabilities` resource with `skills`, and drop `agents`/`models` if present:
+- operator ClusterRole `apiGroups: ["ai.cubestack.io"]`, resources: `["agenttemplates", "agentinstances", "skills", "tasktemplates", "tasks", "taskruns"]`
 - operator status resources: `["agenttemplates/status", "agentinstances/status", "skills/status", "tasks/status", "taskruns/status"]`
-- api ClusterRole resources: `["agenttemplates", "skills", "tasktemplates", "taskruns"]`
+- api ClusterRole `apiGroups: ["ai.cubestack.io"]`, resources: `["agenttemplates", "skills", "tasktemplates", "taskruns"]`
 
 - [ ] **Step 5: Verify chart renders**
 
@@ -571,8 +594,8 @@ In `internal/controller/builtin_test.go`, `TestBuiltinAgentShape`: change `len(a
 
 - [ ] **Step 5: Re-run CRD generation for the CEL rule**
 
-Run: `controller-gen crd paths="./..." output:crd:artifacts:config=config/crd/bases && cp config/crd/bases/assistant.suanova.io_*.yaml deploy/charts/cubepilot/crds/`
-Verify the `XValidation` rule appears: `grep -n "external models require" config/crd/bases/assistant.suanova.io_agenttemplates.yaml`.
+Run: `controller-gen crd paths="./..." output:crd:artifacts:config=config/crd/bases && cp config/crd/bases/ai.cubestack.io_*.yaml deploy/charts/cubepilot/crds/`
+Verify the `XValidation` rule appears: `grep -n "external models require" config/crd/bases/ai.cubestack.io_agenttemplates.yaml`.
 
 - [ ] **Step 6: Verify tests**
 
@@ -600,17 +623,20 @@ revision and invalid combinations. Assisted-by: Claude Code"
 
 - [ ] **Step 1: Update e2e CRD list**
 
-In `scripts/e2e.sh`, the 6-CRD loop:
+In `scripts/e2e.sh`, the 6-CRD loop (group -> `ai.cubestack.io`):
 ```bash
+step "verify chart CRDs (ai.cubestack.io)"
 for c in agenttemplates agentinstances skills tasktemplates tasks taskruns; do
+  kubectl get crd "$c.ai.cubestack.io" >/dev/null 2>&1 || fail "CRD $c.ai.cubestack.io missing"
+done
+ok "6 CRDs"
 ```
-and update the `ok "6 CRDs"` line if it lists them.
 
 - [ ] **Step 2: Update docs**
 
-- `README.md`: the "Platform objects are Kubernetes CRDs" line -> `AgentTemplate`, `AgentInstance`, `Skill`, `TaskTemplate`, `Task`, `TaskRun`; any `Capability` -> `Skill`.
-- `docs/cubepilot/implementation-status.md`: rename the gap-#1 title "技能市场（Skill CRD + 对象存储）未建" body to note the CRD is now `Skill` (renamed from `Capability`) but the marketplace (source path/S3, shared-volume repo, publish/install, visibility) is still deferred; update the "已对齐" bullet "能力目录 + Skill 落盘" and the "数据真源" row `Capability` -> `Skill`; keep the rest.
-- `docs/cubepilot/api.md`: `/api/capabilities` -> `/api/skills`, any `Capability` -> `Skill`.
+- `README.md`: the "Platform objects are Kubernetes CRDs" line -> `AgentTemplate`, `AgentInstance`, `Skill`, `TaskTemplate`, `Task`, `TaskRun` under `ai.cubestack.io`; any `Capability` -> `Skill`; any `assistant.suanova.io` -> `ai.cubestack.io`.
+- `docs/cubepilot/implementation-status.md`: rename the gap-#1 title "技能市场（Skill CRD + 对象存储）未建" body to note the CRD is now `Skill` (renamed from `Capability`) but the marketplace (source path/S3, shared-volume repo, publish/install, visibility) is still deferred; update the "已对齐" bullet "能力目录 + Skill 落盘" and the "数据真源" row `Capability` -> `Skill`; update group `assistant.suanova.io` -> `ai.cubestack.io`; keep the rest.
+- `docs/cubepilot/api.md`: `/api/capabilities` -> `/api/skills`, any `Capability` -> `Skill`, any `assistant.suanova.io` -> `ai.cubestack.io`.
 
 - [ ] **Step 3: Validate the script**
 
@@ -652,10 +678,14 @@ Expected: deploy-phase assertions PASS -- kind cluster `cube`, namespace, 6 CRDs
 
 If `CUBEPILOT_E2E_CHAT=1` with a real key is available, run it too; otherwise deploy-only is the acceptance gate.
 
-- [ ] **Step 3: Confirm no stale CRDs installed**
+- [ ] **Step 3: Confirm the new-group CRDs and clean stale ones**
 
-Run: `kubectl get crd | grep assistant.suanova.io`
-Expected: exactly `agenttemplates, agentinstances, skills, tasktemplates, tasks, taskruns` (no `agents`, `models`, `capabilities`).
+The kind cluster may still hold `*.assistant.suanova.io` CRDs from prior deploys. Remove them, then assert the new set:
+```bash
+kubectl get crd --no-headers | awk '{print $1}' | grep '\.assistant\.suanova\.io$' | xargs -r kubectl delete crd
+kubectl get crd | grep ai.cubestack.io
+```
+Expected: exactly `agenttemplates, agentinstances, skills, tasktemplates, tasks, taskruns` under `ai.cubestack.io` (no `agents`, `models`, `capabilities`, no `assistant.suanova.io`).
 
 - [ ] **Step 4: Report results**
 
