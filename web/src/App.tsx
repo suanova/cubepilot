@@ -126,7 +126,7 @@ export default function App() {
           <div className="topbar-actions">
             <div className="search">
               <SearchIcon />
-              <input placeholder="Search resources, logs, capabilities..." aria-label="Global search" />
+              <input placeholder="Search resources, logs, skills..." aria-label="Global search" />
             </div>
             <button className="avatar-btn" aria-label="Account">
               {initials}

@@ -64,8 +64,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((d) => d.instance),
-  listCapabilities: () =>
-    apiFetch<{ capabilities: PlatformObject[] }>('/api/capabilities').then((d) => d.capabilities),
+  listSkills: () =>
+    apiFetch<{ skills: PlatformObject[] }>('/api/skills').then((d) => d.skills),
   listTaskRuns: () =>
     apiFetch<{ taskruns: PlatformObject[] }>('/api/taskruns').then((d) => d.taskruns),
 }
