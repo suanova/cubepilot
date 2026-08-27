@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: capabilities.assistant.suanova.io
+  name: skills.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
-    kind: Capability
-    listKind: CapabilityList
-    plural: capabilities
-    singular: capability
+    kind: Skill
+    listKind: SkillList
+    plural: skills
+    singular: skill
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -31,7 +31,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Capability is the capability catalog entry (design §3.3.1). It answers
+          Skill is the skill catalog entry (design §3.4). It answers
           "what an Agent can use" -- atomic thin overrides bound to CRDs and domain
           knowledge.
           Generic tools are platform-provided and need no registration.
@@ -55,9 +55,9 @@ spec:
             type: object
           spec:
             description: |-
-              CapabilitySpec is a platform capability (design §3.3.1). Generic tools
+              SkillSpec is a platform skill (design §3.4). Generic tools
               (list-kinds / describe-kind / resource-manager / kubectl-raw) are
-              platform-provided and NOT registered as Capabilities -- zero registration.
+              platform-provided and NOT registered as Skills -- zero registration.
             properties:
               agents:
                 description: 'Agents restricts visibility: empty = visible to all
@@ -70,12 +70,12 @@ spec:
                   large content.
                 type: string
               description:
-                description: Description explains when to use this capability.
+                description: Description explains when to use this skill.
                 type: string
               files:
                 description: Files are small inline scripts (domain).
                 items:
-                  description: CapabilityFile is a small inline file of a domain capability.
+                  description: SkillFile is a small inline file of a domain skill.
                   properties:
                     content:
                       type: string
@@ -92,7 +92,7 @@ spec:
                 type: string
               override:
                 description: |-
-                  Override marks an atomic capability as an overlay (not a fresh
+                  Override marks an atomic skill as an overlay (not a fresh
                   definition). Required for atomic.
                 type: boolean
               ownerModule:
@@ -111,7 +111,7 @@ spec:
                     type: string
                 type: object
               target:
-                description: Target binds an atomic capability to a CRD.
+                description: Target binds an atomic skill to a CRD.
                 properties:
                   group:
                     type: string
@@ -135,8 +135,7 @@ spec:
                 - Domain
                 type: string
               uses:
-                description: Uses orchestrates generic/atomic/MCP capabilities (domain
-                  only).
+                description: Uses orchestrates generic/atomic/MCP skills (domain only).
                 items:
                   type: string
                 type: array
@@ -144,7 +143,7 @@ spec:
             - type
             type: object
           status:
-            description: CapabilityStatus is the observed state of a Capability.
+            description: SkillStatus is the observed state of a Skill.
             properties:
               message:
                 description: Message carries the validation detail.

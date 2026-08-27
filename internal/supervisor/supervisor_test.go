@@ -28,7 +28,7 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user string) *http
 	return srv
 }
 
-// TestRenderSkills verifies the supervisor renders resolved capabilities
+// TestRenderSkills verifies the supervisor renders resolved skills
 // into workspace/skills/<name>/SKILL.md and clears stale entries.
 func TestRenderSkills(t *testing.T) {
 	ws := t.TempDir()
@@ -43,7 +43,7 @@ func TestRenderSkills(t *testing.T) {
 	s := New(Config{Workspace: ws})
 	cfg := &resolver.ResolvedAgentConfig{
 		Revision: "abc123",
-		Capabilities: []resolver.ResolvedCapability{
+		Skills: []resolver.ResolvedSkill{
 			{Name: "cluster-inspection", Title: "Cluster Intelligent Inspection", Description: "Inspect the cluster", Instructions: "Read-only inspection.", Revision: "rev1"},
 		},
 	}
@@ -106,7 +106,7 @@ func TestPollRendersOnChange(t *testing.T) {
 		Revision: "rev-1",
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
-		Capabilities: []resolver.ResolvedCapability{
+		Skills: []resolver.ResolvedSkill{
 			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 1", Revision: "r1"},
 		},
 	}
@@ -119,7 +119,7 @@ func TestPollRendersOnChange(t *testing.T) {
 		Revision: "rev-2",
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
-		Capabilities: []resolver.ResolvedCapability{
+		Skills: []resolver.ResolvedSkill{
 			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 2: added one more check.", Revision: "r2"},
 		},
 	}

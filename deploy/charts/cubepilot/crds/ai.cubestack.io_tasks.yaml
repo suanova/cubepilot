@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: tasks.assistant.suanova.io
+  name: tasks.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
     kind: Task
     listKind: TaskList
@@ -60,7 +60,7 @@ spec:
             description: |-
               TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
               links the
-              execution subject (templateRef -> Agent) with the task content (templateRef ->
+              execution subject (agentRef -> Agent) with the task content (templateRef ->
               TaskTemplate); creator decides the execution identity.
             properties:
               cron:

@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: agenttemplates.assistant.suanova.io
+  name: agenttemplates.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
     kind: AgentTemplate
     listKind: AgentTemplateList
@@ -31,10 +31,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          AgentTemplate is the declarative definition of an agent (design doc
-          §3.1) -- the platform's first-class object. The builtin agent-for-cloud
-          is the preset first template; user-created templates are phase 2+.
-          Models are inlined in spec.models (design §3.3: no standalone Model CRD).
+          AgentTemplate is the declarative definition of an agent (design doc §3.1)
+          -- the platform's first-class object. The builtin agent-for-cloud is the
+          preset first template; user-created templates are phase 2+.
         properties:
           apiVersion:
             description: |-
@@ -71,12 +70,11 @@ spec:
                 type: string
               defaultModel:
                 description: |-
-                  DefaultModel is the model name from Models used when an instance
-                  does not select a model explicitly. Empty = no default / runtime
-                  default.
+                  DefaultModel is the model name from Models used when an instance does
+                  not select a model explicitly. Empty = no default / runtime default.
                 type: string
               description:
-                description: Explains what the template does.
+                description: Description explains what the template does.
                 type: string
               displayName:
                 description: DisplayName is the human-facing template name.
@@ -87,9 +85,6 @@ spec:
                   mode:
                     default: user
                     description: Mode is user | service (default user).
-                    enum:
-                    - user
-                    - service
                     type: string
                   scope:
                     description: Scope is a coarse permission scope hint (e.g. project-write).
@@ -104,49 +99,48 @@ spec:
                 description: Memory declares the memory capability.
                 properties:
                   enabled:
-                    description: Enabled toggles persistent memory for instances of this template.
+                    description: Enabled toggles persistent memory for instances of
+                      this template.
                     type: boolean
                 type: object
               models:
                 description: |-
-                  Models is the inline model list (design §3.3: models are inlined
-                  in the template -- no standalone Model CRD). The first entry is
-                  the primary; instances select within this list.
+                  Models is the inline model list (design §3.3: models are inlined in the
+                  template -- no standalone Model CRD). The first entry is the primary;
+                  instances select within this list. External models require endpoint +
+                  credentialRef (enforced by CEL on the API server, see Validate).
                 items:
                   description: |-
                     TemplateModelSpec is one entry of the inline model list of an
-                    AgentTemplate (design §3.3: models are inlined -- no standalone
-                    Model CRD; each entry carries name + provider + endpoint +
-                    credentialRef).
+                    AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD;
+                    each entry carries name + provider + endpoint + credentialRef).
                   properties:
                     credentialRef:
                       description: |-
-                        CredentialRef is a platform-managed Secret reference
-                        (namespace/name or name) holding the apiKey; required for
-                        external. References only -- never the key itself (design §4.4).
+                        CredentialRef is a platform-managed Secret reference (namespace/name or
+                        name) holding the apiKey; required for external. References only --
+                        never the key itself (design §4.4).
                       type: string
                     endpoint:
-                      description: Endpoint is the OpenAI-compatible base URL; required for external.
+                      description: Endpoint is the OpenAI-compatible base URL; required
+                        for external.
                       type: string
                     modelId:
                       description: |-
-                        ModelID is the backend model identifier passed to the LLM
-                        endpoint: for external it is the model name sent to the
-                        OpenAI-compatible endpoint; for platform it is the
-                        runtime-known model id (e.g. "deepseek/deepseek-v4-flash").
-                        Empty for platform means "use the runtime's default model"
-                        (no override).
+                        ModelID is the backend model identifier passed to the LLM endpoint:
+                        for external it is the model name sent to the OpenAI-compatible
+                        endpoint; for platform it is the runtime-known model id (e.g.
+                        "deepseek/deepseek-v4-flash"). Empty for platform means "use the
+                        runtime's default model" (no override).
                       type: string
                     name:
-                      description: |-
-                        Name is the model name (and the key for selectedModel on
-                        instances).
+                      description: Name is the model name (and the key for selectedModel
+                        on instances).
                       type: string
                     provider:
                       description: |-
-                        Provider is "Platform" (platform-managed inference) or
-                        "External" (OpenAI-compatible endpoint; endpoint +
-                        credentialRef required).
+                        Provider is "Platform" (platform-managed inference) or "External"
+                        (OpenAI-compatible endpoint; endpoint + credentialRef required).
                       enum:
                       - Platform
                       - External
@@ -156,8 +150,13 @@ spec:
                   - provider
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: external models require endpoint and credentialRef
+                  rule: self.all(m, m.provider != 'External' || (has(m.endpoint) &&
+                    has(m.credentialRef)))
               policyRefs:
-                description: PolicyRefs references confirmation-rule policies (E3, phase 2).
+                description: PolicyRefs references confirmation-rule policies (E3,
+                  phase 2).
                 items:
                   type: string
                 type: array
@@ -166,7 +165,9 @@ spec:
                 properties:
                   maxInstancesPerUser:
                     default: 1
-                    description: MaxInstancesPerUser caps instances per user for this template (default 1).
+                    description: |-
+                      MaxInstancesPerUser caps instances per user for this template
+                      (default 1).
                     format: int32
                     type: integer
                 type: object
@@ -175,17 +176,19 @@ spec:
                 properties:
                   builtin:
                     description: |-
-                      Builtin marks platform-preset templates (every user gets an
-                      instance automatically; cannot be deleted).
+                      Builtin marks platform-preset templates (every user gets an instance
+                      automatically; cannot be deleted).
                     type: boolean
                   visibility:
                     default: system
-                    description: Visibility is system | platform-reviewed | public (default system).
+                    description: Visibility is system | platform-reviewed | public
+                      (default system).
                     type: string
                 type: object
               runtime:
                 default: OpenClaw
-                description: Runtime selects the runtime implementation (OpenClaw default).
+                description: Runtime selects the runtime implementation (OpenClaw
+                  default).
                 enum:
                 - OpenClaw
                 - Hermes
@@ -193,17 +196,16 @@ spec:
               skills:
                 description: |-
                   Skills references Skills (domain knowledge + controlled scripts),
-                  design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec +
-                  schema discovery) are platform-provided and always available --
-                  NOT listed here.
+                  design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec + schema
+                  discovery) are platform-provided and always available -- NOT listed here.
                 items:
                   type: string
                 type: array
             type: object
           status:
             description: |-
-              AgentTemplateStatus is the observed state of an AgentTemplate
-              definition (phase one: minimal).
+              AgentTemplateStatus is the observed state of an AgentTemplate definition
+              (phase one: minimal).
             properties:
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed.

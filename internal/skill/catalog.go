@@ -1,18 +1,18 @@
-// Package capability implements the three-layer capability model
-// (design doc CubePilot-Cloud-for-Agents-Design.md §3.3.1 / §4.2):
+// Package skill implements the skill catalog (design cubepilot-design.md
+// §3.4 / §A.1, two layers):
 //
 //	generic -- platform-provided tools (list-kinds / describe-kind /
 //	         resource-manager / kubectl-raw), zero registration;
-//	atomic  -- Capability (type: atomic + override + target + semantics/security),
-//	         thin overlays bound to a CRD (never touch fields);
-//	domain  -- Capability (type: domain + uses[] + instructions), domain knowledge.
+//	skill   -- Skill (type: atomic + override + target + semantics/security,
+//	         thin overlays bound to a CRD; or type: domain + uses[] +
+//	         instructions, domain knowledge).
 //
 // The generic layer is where "the runtime understands the platform
 // automatically" lands: the platform reads all
 // CRD schemas at startup and serves them to the LLM via list-kinds /
 // describe-kind; resource-manager validates data against the CRD schema and
 // renders manifests mechanically (schema-driven, zero guessing).
-package capability
+package skill
 
 import (
 	"context"
@@ -31,7 +31,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 )
 
-// Generic tool names (platform-provided, not registered as Capabilities).
+// Generic tool names (platform-provided, not registered as Skills).
 const (
 	ToolListKinds       = "list-kinds"
 	ToolDescribeKind    = "describe-kind"
@@ -59,8 +59,8 @@ type CRDSchema struct {
 	OpenAPI map[string]any `json:"openapi,omitempty"`
 }
 
-// Catalog is the platform's capability catalog: discovered CRD schemas plus
-// the registered Capability CRs. It answers "what an Agent can use" (design
+// Catalog is the platform's skill catalog: discovered CRD schemas plus
+// the registered Skill CRs. It answers "what an Agent can use" (design
 // §3.1).
 type Catalog struct {
 	discovery discovery.DiscoveryInterface
@@ -142,7 +142,7 @@ func (c *Catalog) Schemas() []*CRDSchema {
 // SchemaFor returns the CRD schema for (group, kind), or nil.
 func (c *Catalog) SchemaFor(group, kind string) *CRDSchema {
 	if group == "" {
-		group = "assistant.suanova.io"
+		group = "ai.cubestack.io"
 	}
 	return c.schemas[group+"/"+kind]
 }
@@ -158,57 +158,57 @@ func (c *Catalog) FindKind(kind string) *CRDSchema {
 	return nil
 }
 
-// ValidateCapability validates a Capability registration (design §3.3.1:
+// ValidateSkill validates a Skill registration (design §3.4:
 // the target CRD does not exist / has no schema -> registration validation
 // fails fast).
-func (c *Catalog) ValidateCapability(cap *v1alpha1.Capability) error {
-	switch cap.Spec.Type {
-	case v1alpha1.CapabilityAtomic:
-		if !cap.Spec.Override {
-			return fmt.Errorf("atomic capability %s must set override=true", cap.Name)
+func (c *Catalog) ValidateSkill(skill *v1alpha1.Skill) error {
+	switch skill.Spec.Type {
+	case v1alpha1.SkillAtomic:
+		if !skill.Spec.Override {
+			return fmt.Errorf("atomic skill %s must set override=true", skill.Name)
 		}
-		if cap.Spec.Target == nil {
-			return fmt.Errorf("atomic capability %s must set spec.target (bound CRD)", cap.Name)
+		if skill.Spec.Target == nil {
+			return fmt.Errorf("atomic skill %s must set spec.target (bound CRD)", skill.Name)
 		}
-		schema := c.SchemaFor(cap.Spec.Target.Group, cap.Spec.Target.Kind)
+		schema := c.SchemaFor(skill.Spec.Target.Group, skill.Spec.Target.Kind)
 		if schema == nil {
-			return fmt.Errorf("atomic capability %s: target CRD %s/%s not found in cluster (fail-fast)",
-				cap.Name, cap.Spec.Target.Group, cap.Spec.Target.Kind)
+			return fmt.Errorf("atomic skill %s: target CRD %s/%s not found in cluster (fail-fast)",
+				skill.Name, skill.Spec.Target.Group, skill.Spec.Target.Kind)
 		}
-		if len(schema.OpenAPI) == 0 && cap.Spec.Target.Group == "" {
-			return fmt.Errorf("atomic capability %s: target CRD %s has no schema", cap.Name, cap.Spec.Target.Kind)
+		if len(schema.OpenAPI) == 0 && skill.Spec.Target.Group == "" {
+			return fmt.Errorf("atomic skill %s: target CRD %s has no schema", skill.Name, skill.Spec.Target.Kind)
 		}
-	case v1alpha1.CapabilityDomain:
-		if cap.Spec.Instructions == "" && cap.Spec.ContentRef == "" {
-			return fmt.Errorf("domain capability %s must set instructions or contentRef", cap.Name)
+	case v1alpha1.SkillDomain:
+		if skill.Spec.Instructions == "" && skill.Spec.ContentRef == "" {
+			return fmt.Errorf("domain skill %s must set instructions or contentRef", skill.Name)
 		}
 	default:
-		return fmt.Errorf("capability %s: unknown type %q", cap.Name, cap.Spec.Type)
+		return fmt.Errorf("skill %s: unknown type %q", skill.Name, skill.Spec.Type)
 	}
 	return nil
 }
 
 // ToolSetForAgent computes the effective tool set for an AgentTemplate
 // definition: generic tools are always available; the template's skills[]
-// references Capabilities (atomic + domain) whose visibility (spec.agents[])
-// admits the template (design §3.3.1: Capability.agents[] and RBAC jointly
-// decide the visible subset).
-func ToolSetForAgent(agent *v1alpha1.AgentTemplate, caps []v1alpha1.Capability) []string {
+// references Skills (atomic + domain) whose visibility (spec.agents[])
+// admits the template (design §3.4: Skill.agents[] and RBAC jointly decide
+// the visible subset).
+func ToolSetForAgent(agent *v1alpha1.AgentTemplate, skills []v1alpha1.Skill) []string {
 	set := map[string]bool{}
 	for _, t := range GenericTools {
 		set[t] = true
 	}
 	for _, ref := range agent.Spec.Skills {
-		for _, cap := range caps {
-			if cap.Name != ref {
+		for _, skill := range skills {
+			if skill.Name != ref {
 				continue
 			}
 			// Visibility: empty agents[] = visible to all.
-			if len(cap.Spec.Agents) > 0 && !contains(cap.Spec.Agents, agent.Name) {
+			if len(skill.Spec.Agents) > 0 && !contains(skill.Spec.Agents, agent.Name) {
 				continue
 			}
 			set[ref] = true
-			for _, u := range cap.Spec.Uses {
+			for _, u := range skill.Spec.Uses {
 				set[u] = true
 			}
 		}
@@ -230,7 +230,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// CRDExists reports whether a CRD (group/kind) is present (for Capability
+// CRDExists reports whether a CRD (group/kind) is present (for Skill
 // validation against a live cluster; returns false on any error).
 func (c *Catalog) CRDExists(group, kind string) bool {
 	return c.SchemaFor(group, kind) != nil

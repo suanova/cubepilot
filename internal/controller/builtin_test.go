@@ -39,8 +39,12 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.DefaultModel != "deepseek-v4-flash" {
 		t.Errorf("defaultModel = %q, want deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
 	}
-	if len(agent.Spec.Models) != 1 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
-		t.Errorf("inline models = %v, want [deepseek-v4-flash]", agent.Spec.Models)
+	if len(agent.Spec.Models) != 2 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
+		t.Errorf("inline models = %v, want [deepseek-v4-flash, qwen2.5-72b]", agent.Spec.Models)
+	}
+	if agent.Spec.Models[1].Provider != v1alpha1.ModelProviderExternal ||
+		agent.Spec.Models[1].Endpoint == "" || agent.Spec.Models[1].CredentialRef == "" {
+		t.Errorf("builtin External model incomplete: %+v", agent.Spec.Models[1])
 	}
 	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q, want ConfirmWrites (design §3.1)", agent.Spec.ConfirmPolicy)
@@ -52,7 +56,7 @@ func TestBuiltinAgentShape(t *testing.T) {
 		t.Error("identity mode should default to user")
 	}
 	if len(agent.Spec.Skills) == 0 {
-		t.Error("builtin agent should reference capabilities/skills")
+		t.Error("builtin agent should reference skills/skills")
 	}
 }
 
@@ -73,7 +77,7 @@ func TestInstanceNameFor(t *testing.T) {
 }
 
 // TestBootstrapEnsure verifies the builtin bootstrap creates the Agent,
-// Capabilities, TaskTemplate and per-user instances idempotently
+// Skills, TaskTemplate and per-user instances idempotently
 // (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
@@ -95,13 +99,13 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 
-	// Capabilities exist.
-	var caps v1alpha1.CapabilityList
+	// Skills exist.
+	var caps v1alpha1.SkillList
 	if err := cl.List(context.Background(), &caps); err != nil {
-		t.Fatalf("list capabilities: %v", err)
+		t.Fatalf("list skills: %v", err)
 	}
-	if len(caps.Items) != len(BuiltinCapabilities) {
-		t.Errorf("capabilities = %d, want %d", len(caps.Items), len(BuiltinCapabilities))
+	if len(caps.Items) != len(BuiltinSkills) {
+		t.Errorf("skills = %d, want %d", len(caps.Items), len(BuiltinSkills))
 	}
 
 	// TaskTemplate exists.

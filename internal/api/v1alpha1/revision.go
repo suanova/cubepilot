@@ -7,7 +7,7 @@ import (
 )
 
 // specRevision returns a short, immutable content fingerprint of a spec
-// (design §3.5: templates and capabilities are versioned; TaskRuns record the
+// (design §3.5: templates and skills are versioned; TaskRuns record the
 // revision actually used at run time for audit and rollback).
 //
 // A content hash is used instead of metadata.generation because it is

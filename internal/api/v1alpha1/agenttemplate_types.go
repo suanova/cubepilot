@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -75,6 +77,23 @@ type TemplateModelSpec struct {
 	// runtime's default model" (no override).
 	// +optional
 	ModelID string `json:"modelId,omitempty"`
+}
+
+// Validate enforces the inline-model invariants (design §3.3): an External
+// model requires endpoint + credentialRef; the provider must be known. The
+// same rule is enforced on the API server by the CEL XValidation on Models.
+func (m TemplateModelSpec) Validate() error {
+	switch m.Provider {
+	case ModelProviderPlatform:
+		return nil
+	case ModelProviderExternal:
+		if m.Endpoint == "" || m.CredentialRef == "" {
+			return fmt.Errorf("external model %q requires endpoint and credentialRef", m.Name)
+		}
+		return nil
+	default:
+		return fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
+	}
 }
 
 // AgentIdentitySpec declares the identity mode and scope an agent runs with
@@ -153,7 +172,9 @@ type AgentTemplateSpec struct {
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Models is the inline model list (design §3.3: models are inlined in the
 	// template -- no standalone Model CRD). The first entry is the primary;
-	// instances select within this list.
+	// instances select within this list. External models require endpoint +
+	// credentialRef (enforced by CEL on the API server, see Validate).
+	// +kubebuilder:validation:XValidation:rule="self.all(m, m.provider != 'External' || (has(m.endpoint) && has(m.credentialRef)))",message="external models require endpoint and credentialRef"
 	// +optional
 	Models []TemplateModelSpec `json:"models,omitempty"`
 	// ConfirmPolicy is the template-level confirmation policy for write

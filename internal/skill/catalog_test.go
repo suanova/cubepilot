@@ -1,4 +1,4 @@
-package capability
+package skill
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ import (
 
 // TestToolSetForAgent verifies the effective tool set computation
 // (design §3.3.1: generic tools are available by default; Agent.tools[] only
-// references Capabilities; Capability.agents[] decides the visible subset).
+// references Skills; Skill.agents[] decides the visible subset).
 func TestToolSetForAgent(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
@@ -18,18 +18,18 @@ func TestToolSetForAgent(t *testing.T) {
 			Skills: []string{"cluster-inspection", "dev-environment"},
 		},
 	}
-	caps := []v1alpha1.Capability{
+	caps := []v1alpha1.Skill{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "cluster-inspection"},
-			Spec: v1alpha1.CapabilitySpec{
-				Type: v1alpha1.CapabilityDomain,
+			Spec: v1alpha1.SkillSpec{
+				Type: v1alpha1.SkillDomain,
 				Uses: []string{"resource-manager", "kubectl-platform"},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "dev-environment"},
-			Spec: v1alpha1.CapabilitySpec{
-				Type:   v1alpha1.CapabilityAtomic,
+			Spec: v1alpha1.SkillSpec{
+				Type:   v1alpha1.SkillAtomic,
 				Agents: []string{"other-agent"}, // NOT visible to agent-for-cloud
 			},
 		},
@@ -50,10 +50,10 @@ func TestToolSetForAgent(t *testing.T) {
 	}
 }
 
-// TestValidateCapability verifies the registration validation rules
+// TestValidateSkill verifies the registration validation rules
 // (design §3.3.1: atomic must have override+target; domain must have
 // instructions; a missing target CRD -> fail-fast).
-func TestValidateCapability(t *testing.T) {
+func TestValidateSkill(t *testing.T) {
 	c := &Catalog{schemas: map[string]*CRDSchema{
 		"dev.suanova.io/DevEnvironment": {
 			Group: "dev.suanova.io", Version: "v1alpha1", Kind: "DevEnvironment", Plural: "devenvironments",
@@ -61,38 +61,38 @@ func TestValidateCapability(t *testing.T) {
 	}}
 
 	// Valid atomic.
-	ok := &v1alpha1.Capability{
+	ok := &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-environment"},
-		Spec: v1alpha1.CapabilitySpec{
-			Type:     v1alpha1.CapabilityAtomic,
+		Spec: v1alpha1.SkillSpec{
+			Type:     v1alpha1.SkillAtomic,
 			Override: true,
-			Target:   &v1alpha1.CapabilityTarget{Group: "dev.suanova.io", Version: "v1alpha1", Kind: "DevEnvironment"},
+			Target:   &v1alpha1.SkillTarget{Group: "dev.suanova.io", Version: "v1alpha1", Kind: "DevEnvironment"},
 		},
 	}
-	if err := c.ValidateCapability(ok); err != nil {
+	if err := c.ValidateSkill(ok); err != nil {
 		t.Errorf("valid atomic rejected: %v", err)
 	}
 
 	// Atomic without override -> reject.
 	noOverride := ok.DeepCopy()
 	noOverride.Spec.Override = false
-	if err := c.ValidateCapability(noOverride); err == nil {
+	if err := c.ValidateSkill(noOverride); err == nil {
 		t.Error("atomic without override accepted")
 	}
 
 	// Atomic targeting a missing CRD -> fail-fast.
 	badTarget := ok.DeepCopy()
-	badTarget.Spec.Target = &v1alpha1.CapabilityTarget{Group: "x.io", Kind: "Missing"}
-	if err := c.ValidateCapability(badTarget); err == nil {
+	badTarget.Spec.Target = &v1alpha1.SkillTarget{Group: "x.io", Kind: "Missing"}
+	if err := c.ValidateSkill(badTarget); err == nil {
 		t.Error("atomic with missing target accepted")
 	}
 
 	// Domain without instructions -> reject.
-	dom := &v1alpha1.Capability{
+	dom := &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: "d"},
-		Spec:       v1alpha1.CapabilitySpec{Type: v1alpha1.CapabilityDomain},
+		Spec:       v1alpha1.SkillSpec{Type: v1alpha1.SkillDomain},
 	}
-	if err := c.ValidateCapability(dom); err == nil {
+	if err := c.ValidateSkill(dom); err == nil {
 		t.Error("domain without instructions accepted")
 	}
 }

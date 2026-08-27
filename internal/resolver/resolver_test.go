@@ -52,12 +52,12 @@ func instance(user, templateRef, selected string) *v1alpha1.AgentInstance {
 	}
 }
 
-func domainCap(name, instructions string) *v1alpha1.Capability {
-	return &v1alpha1.Capability{
+func domainCap(name, instructions string) *v1alpha1.Skill {
+	return &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha1.CapabilitySpec{
-			Type:         v1alpha1.CapabilityDomain,
-			Title:        "Capability " + name,
+		Spec: v1alpha1.SkillSpec{
+			Type:         v1alpha1.SkillDomain,
+			Title:        "Skill " + name,
 			Description:  "Description " + name,
 			Instructions: instructions,
 			Uses:         []string{"kubectl-platform"},
@@ -79,7 +79,7 @@ func TestResolveNoInstance(t *testing.T) {
 }
 
 // TestResolveMergesFields verifies agent definition fields and domain
-// capabilities land in the resolved config.
+// skills land in the resolved config.
 func TestResolveMergesFields(t *testing.T) {
 	r := testResolver(t,
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
@@ -90,9 +90,9 @@ func TestResolveMergesFields(t *testing.T) {
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
 		domainCap("cluster-inspection", "Read-only cluster inspection."),
-		&v1alpha1.Capability{ // atomic -- must NOT appear in capabilities
+		&v1alpha1.Skill{ // atomic -- must NOT appear in skills
 			ObjectMeta: metav1.ObjectMeta{Name: "some-atomic"},
-			Spec:       v1alpha1.CapabilitySpec{Type: v1alpha1.CapabilityAtomic},
+			Spec:       v1alpha1.SkillSpec{Type: v1alpha1.SkillAtomic},
 		},
 	)
 
@@ -117,12 +117,12 @@ func TestResolveMergesFields(t *testing.T) {
 	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
 	}
-	if len(cfg.Capabilities) != 1 {
-		t.Fatalf("capabilities = %d, want 1 (atomic excluded)", len(cfg.Capabilities))
+	if len(cfg.Skills) != 1 {
+		t.Fatalf("skills = %d, want 1 (atomic excluded)", len(cfg.Skills))
 	}
-	cap := cfg.Capabilities[0]
+	cap := cfg.Skills[0]
 	if cap.Name != "cluster-inspection" || cap.Revision == "" {
-		t.Errorf("capability = %+v", cap)
+		t.Errorf("skill = %+v", cap)
 	}
 	if cfg.Revision == "" {
 		t.Error("empty revision")
@@ -168,9 +168,9 @@ func TestResolveOutsideAllowlist(t *testing.T) {
 	}
 }
 
-// TestResolveCapabilityScopedByAgents verifies capability.Agents restricts
+// TestResolveSkillScopedByAgents verifies skill.Agents restricts
 // visibility.
-func TestResolveCapabilityScopedByAgents(t *testing.T) {
+func TestResolveSkillScopedByAgents(t *testing.T) {
 	scoped := domainCap("scoped", "Visible only to a specific agent.")
 	scoped.Spec.Agents = []string{"other-agent"}
 	r := testResolver(t,
@@ -182,8 +182,8 @@ func TestResolveCapabilityScopedByAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "open" {
-		t.Errorf("capabilities = %+v, want only open", cfg.Capabilities)
+	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "open" {
+		t.Errorf("skills = %+v, want only open", cfg.Skills)
 	}
 }
 
@@ -202,13 +202,13 @@ func TestResolveEnabledSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "cluster-inspection" {
-		t.Errorf("capabilities = %+v, want only cluster-inspection", cfg.Capabilities)
+	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "cluster-inspection" {
+		t.Errorf("skills = %+v, want only cluster-inspection", cfg.Skills)
 	}
 }
 
 // TestResolveRevisionStable verifies the revision is a content hash: equal
-// inputs -> equal revision; a capability change -> different revision.
+// inputs -> equal revision; a skill change -> different revision.
 func TestResolveRevisionStable(t *testing.T) {
 	base := []client.Object{
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
@@ -236,7 +236,7 @@ func TestResolveRevisionStable(t *testing.T) {
 		t.Fatalf("resolve #3: %v", err)
 	}
 	if cfg1.Revision == cfg3.Revision {
-		t.Errorf("capability change should change revision: %q", cfg1.Revision)
+		t.Errorf("skill change should change revision: %q", cfg1.Revision)
 	}
 }
 

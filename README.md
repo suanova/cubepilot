@@ -25,15 +25,17 @@ browser (host) -- kubectl port-forward --- inside the kind cluster:
 
 - Per-user isolation = **Pod + dedicated PVC** (NFR-002); sessions persist on
   each PVC (FR-M2-004).
-- Capability catalog = OpenClaw **Skills** (`capabilities/*/SKILL.md`) plus
-  `workspace/SOUL.md` / `AGENTS.md`, baked into the agent image.
+- Skill catalog = OpenClaw **Skills** (`internal/controller/skills/*/SKILL.md`,
+  embedded and rendered by the supervisor) plus `workspace/SOUL.md` / `AGENTS.md`,
+  baked into the agent image.
 - Chat flows through OpenClaw's `/v1/chat/completions` (OpenAI-compatible,
   `stream:true`, `model: openclaw/default`); the gateway runs the full agent
   loop. Session lists/history go through `/tools/invoke` (`sessions_list`) and
   `GET /sessions/{key}/history`.
-- Platform objects are Kubernetes CRDs (cluster-scoped): `Agent`,
-  `AgentInstance`, `Capability`, `TaskTemplate`, `Task`, `TaskRun`
-  (`config/crd/bases`), reconciled by controller-runtime controllers.
+- Platform objects are Kubernetes CRDs (cluster-scoped, group
+  `ai.cubestack.io`): `AgentTemplate`, `AgentInstance`, `Skill`,
+  `TaskTemplate`, `Task`, `TaskRun` (`config/crd/bases`), reconciled by
+  controller-runtime controllers.
 
 ## Directory layout
 
@@ -51,7 +53,7 @@ internal/server         REST/SSE handlers (no static serving)
 internal/store          platform metadata store (JSON on PVC)
 web/                    Portal SPA -- Vue 3 + TypeScript + Vite (independent
                         component; nginx serves it and proxies /api)
-capabilities/           capability catalog SKILL.md × 4
+internal/controller/skills/   embedded skill catalog SKILL.md × 4
 workspace/              SOUL.md / AGENTS.md
 config/crd/bases        generated CRD manifests
 deploy/                 images Dockerfiles + charts/cubepilot Helm chart + kubeconfig template
@@ -141,7 +143,7 @@ streams tool calls and the answer back.
 
 `scripts/e2e.sh` brings up the whole stack on a kind cluster via
 `scripts/setup.sh` and verifies it: cluster + namespace, the six
-`assistant.suanova.io` CRDs, shared Secrets, `operator`/`api`/`web` rollouts,
+`ai.cubestack.io` CRDs, shared Secrets, `operator`/`api`/`web` rollouts,
 the api `/healthz`, and the Portal HTML.
 
 ```bash

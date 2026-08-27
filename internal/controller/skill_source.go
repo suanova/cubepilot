@@ -13,15 +13,15 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 )
 
-// capabilitiesFS embeds the preset capability SKILL.md files. Each
-// capabilities/<name>/SKILL.md is the single source of truth for one preset
-// domain capability: the bootstrap renders it into a Capability CRD, and the
+// skillsFS embeds the preset skill SKILL.md files. Each
+// skills/<name>/SKILL.md is the single source of truth for one preset
+// domain skill: the bootstrap renders it into a Skill CRD, and the
 // resolver/supervisor renders the CRD back into a runtime skill (design
-// §3.3.1: Capability is the platform truth, the runtime skill is its OpenClaw
+// §3.4: Skill is the platform truth, the runtime skill is its OpenClaw
 // presentation).
 //
-//go:embed capabilities/*/SKILL.md
-var capabilitiesFS embed.FS
+//go:embed skills/*/SKILL.md
+var skillsFS embed.FS
 
 // skillMeta is the YAML frontmatter of a SKILL.md.
 type skillMeta struct {
@@ -50,7 +50,7 @@ func parseSKILL(raw string) (skillMeta, string, error) {
 }
 
 // skillTitle extracts the first H1 heading from a skill body (used as the
-// Capability title); returns "" when the body has none.
+// Skill title); returns "" when the body has none.
 func skillTitle(body string) string {
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
@@ -61,20 +61,20 @@ func skillTitle(body string) string {
 	return ""
 }
 
-// loadSkill reads one embedded SKILL.md by capability name.
+// loadSkill reads one embedded SKILL.md by skill name.
 func loadSkill(name string) (skillMeta, string, error) {
-	path := "capabilities/" + name + "/SKILL.md"
-	raw, err := capabilitiesFS.ReadFile(path)
+	path := "skills/" + name + "/SKILL.md"
+	raw, err := skillsFS.ReadFile(path)
 	if err != nil {
 		return skillMeta{}, "", err
 	}
 	return parseSKILL(string(raw))
 }
 
-// presetCapabilityNames returns the embedded skill names, sorted for
+// presetSkillNames returns the embedded skill names, sorted for
 // deterministic bootstrap order.
-func presetCapabilityNames() ([]string, error) {
-	entries, err := fs.ReadDir(capabilitiesFS, "capabilities")
+func presetSkillNames() ([]string, error) {
+	entries, err := fs.ReadDir(skillsFS, "skills")
 	if err != nil {
 		return nil, err
 	}
@@ -88,22 +88,22 @@ func presetCapabilityNames() ([]string, error) {
 	return names, nil
 }
 
-// BuiltinCapabilityDefinitions returns the preset domain capabilities
-// generated from the embedded SKILL.md files. The Capability CRD carries the
+// BuiltinSkillDefinitions returns the preset domain skills
+// generated from the embedded SKILL.md files. The Skill CRD carries the
 // platform semantics (title/description/instructions); the resolver renders
 // the CRD back into the runtime skill -- one source, two presentations.
-func BuiltinCapabilityDefinitions() ([]*v1alpha1.Capability, error) {
-	names, err := presetCapabilityNames()
+func BuiltinSkillDefinitions() ([]*v1alpha1.Skill, error) {
+	names, err := presetSkillNames()
 	if err != nil {
 		return nil, err
 	}
-	var out []*v1alpha1.Capability
+	var out []*v1alpha1.Skill
 	for _, name := range names {
 		meta, body, err := loadSkill(name)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &v1alpha1.Capability{
+		out = append(out, &v1alpha1.Skill{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: name,
 				Labels: map[string]string{
@@ -111,8 +111,8 @@ func BuiltinCapabilityDefinitions() ([]*v1alpha1.Capability, error) {
 					"cubepilot/builtin":         "true",
 				},
 			},
-			Spec: v1alpha1.CapabilitySpec{
-				Type:         v1alpha1.CapabilityDomain,
+			Spec: v1alpha1.SkillSpec{
+				Type:         v1alpha1.SkillDomain,
 				Title:        skillTitle(body),
 				Description:  meta.Description,
 				OwnerModule:  "Platform",

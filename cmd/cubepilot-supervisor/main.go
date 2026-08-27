@@ -1,6 +1,6 @@
 // Command cubepilot-supervisor is the agent-pod-side runtime supervisor
 // (final architecture): it pulls the resolved agent config from the platform
-// internal API, renders domain capabilities into the OpenClaw workspace as
+// internal API, renders domain skills into the OpenClaw workspace as
 // skills, and manages the OpenClaw gateway process -- graceful restart on
 // config change, never a pod delete. It replaces the ConfigMap-based skill
 // channel and the API->gateway direct client.

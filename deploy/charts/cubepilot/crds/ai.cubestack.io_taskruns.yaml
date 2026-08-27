@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: taskruns.assistant.suanova.io
+  name: taskruns.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
     kind: TaskRun
     listKind: TaskRunList
@@ -102,11 +102,6 @@ spec:
               platform identity (design §3.3.4: written with the platform identity;
               Agent instances and user credentials never write CRDs directly).
             properties:
-              capabilityRevision:
-                description: |-
-                  CapabilityRevision is the capability revision actually used for this run
-                  (design §3.5: resolved at run time, recorded for audit/rollback).
-                type: string
               conditions:
                 description: Conditions carries detail (Inspected=True etc).
                 items:
@@ -209,6 +204,11 @@ spec:
                 type: array
               phase:
                 description: Phase is Pending / Running / Completed / Failed / Cancelled.
+                type: string
+              skillRevision:
+                description: |-
+                  SkillRevision is the skill revision actually used for this run
+                  (design §3.5: resolved at run time, recorded for audit/rollback).
                 type: string
               startedAt:
                 description: StartedAt / FinishedAt bound the run.

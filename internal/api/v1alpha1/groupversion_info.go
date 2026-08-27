@@ -1,11 +1,11 @@
 // Package v1alpha1 contains the CubePilot platform API types (design doc
-// CubePilot-Cloud-for-Agents-Design.md §3): Agent / AgentInstance /
-// Capability / TaskTemplate / Task / TaskRun.
+// cubepilot-design.md §3): AgentTemplate / AgentInstance / Skill /
+// TaskTemplate / Task / TaskRun.
 //
-// Group: assistant.suanova.io -- the platform-layer (Cloud for Agents) API.
+// Group: ai.cubestack.io -- the platform-layer (Cloud for Agents) API.
 
 // +kubebuilder:object:generate=true
-// +groupName=assistant.suanova.io
+// +groupName=ai.cubestack.io
 package v1alpha1
 
 import (
@@ -15,7 +15,7 @@ import (
 )
 
 // GroupVersion is the group/version of the CubePilot platform API.
-var GroupVersion = schema.GroupVersion{Group: "assistant.suanova.io", Version: "v1alpha1"}
+var GroupVersion = schema.GroupVersion{Group: "ai.cubestack.io", Version: "v1alpha1"}
 
 // SchemeBuilder collects the registered types for this group/version.
 var SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
