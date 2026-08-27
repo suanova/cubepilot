@@ -19,11 +19,6 @@ ok()   { printf '\033[1;32m[e2e] ok\033[0m %s\n' "$*"; }
 
 # ---------- deploy phase --------------------------------------------------
 step "deploy via scripts/setup.sh"
-# Transitional compatibility for the pre-merge pull_request_target workflow
-# (main still sets CUBEPILOT_MODEL_PROVIDERS): derive the apiKey.
-if [ -z "${CUBEPILOT_LLM_APIKEY:-}" ] && [ -n "${CUBEPILOT_MODEL_PROVIDERS:-}" ]; then
-  export CUBEPILOT_LLM_APIKEY="$(printf '%s' "$CUBEPILOT_MODEL_PROVIDERS" | jq -r 'to_entries[0].value.apiKey // empty' 2>/dev/null || true)"
-fi
 [ -n "${CUBEPILOT_LLM_APIKEY:-}" ] || fail "CUBEPILOT_LLM_APIKEY is required"
 "$REPO_DIR/scripts/setup.sh"
 
