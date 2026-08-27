@@ -27,10 +27,8 @@ func TestRender(t *testing.T) {
 		} `json:"models"`
 		Agents struct {
 			Defaults struct {
-				Model struct {
-					Primary string         `json:"primary"`
-					Models  map[string]any `json:"models"`
-				} `json:"model"`
+				Model  map[string]any `json:"model"`
+				Models map[string]any `json:"models"`
 			} `json:"defaults"`
 		} `json:"agents"`
 	}
@@ -45,13 +43,15 @@ func TestRender(t *testing.T) {
 	if q.APIKey != "" || q.Models[0].ID != "qwen2.5-72b" {
 		t.Errorf("public provider should be keyless: %+v", q)
 	}
-	if cfg.Agents.Defaults.Model.Primary != "deepseek-v4-flash/deepseek-v4-flash" {
-		t.Errorf("primary = %q", cfg.Agents.Defaults.Model.Primary)
+	// model = {primary} and the allowlist lives at agents.defaults.models
+	// (siblings) -- this is the OpenClaw schema the old jq produced.
+	if cfg.Agents.Defaults.Model["primary"] != "deepseek-v4-flash/deepseek-v4-flash" {
+		t.Errorf("primary = %v", cfg.Agents.Defaults.Model["primary"])
 	}
-	if _, ok := cfg.Agents.Defaults.Model.Models["deepseek-v4-flash/deepseek-v4-flash"]; !ok {
+	if _, ok := cfg.Agents.Defaults.Models["deepseek-v4-flash/deepseek-v4-flash"]; !ok {
 		t.Error("allowlist missing primary ref")
 	}
-	if _, ok := cfg.Agents.Defaults.Model.Models["qwen/qwen2.5-72b"]; !ok {
+	if _, ok := cfg.Agents.Defaults.Models["qwen/qwen2.5-72b"]; !ok {
 		t.Error("allowlist missing public ref")
 	}
 }

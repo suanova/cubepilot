@@ -12,6 +12,10 @@ import (
 // default LLM (the builtin agent-for-cloud model).
 const DefaultLLMEndpoint = "https://api.deepseek.com"
 
+// DefaultLLMModel is the default model name (backend model id) of the platform
+// default LLM (the builtin agent-for-cloud model).
+const DefaultLLMModel = "deepseek-v4-flash"
+
 // Config holds all runtime configuration for the assistant service + instance manager.
 type Config struct {
 	// Listen is the HTTP listen address for the assistant service (Portal + API).
@@ -31,6 +35,11 @@ type Config struct {
 	// (the builtin AgentTemplate's model endpoint). Defaults to DeepSeek; the
 	// apiKey lives in the cubepilot-llm Secret, never here.
 	LLMEndpoint string
+
+	// LLMModel is the model name (backend model id) of the platform default LLM
+	// (the builtin AgentTemplate's model name). Defaults to deepseek-v4-flash;
+	// must match the configured LLM endpoint's allow-list.
+	LLMModel string
 
 	// IdleTTL is how long an agent instance may sit idle before the manager
 	// reclaims it. Only effective when ReclaimEnabled is true (design doc §5.2:
@@ -86,6 +95,7 @@ func Load() Config {
 		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
 		GatewayToken:   os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
 		LLMEndpoint:    getenv("CUBEPILOT_LLM_ENDPOINT", DefaultLLMEndpoint),
+		LLMModel:       getenv("CUBEPILOT_LLM_MODEL", DefaultLLMModel),
 		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
 		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),
 		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),

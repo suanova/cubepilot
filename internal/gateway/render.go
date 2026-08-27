@@ -39,10 +39,10 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 		"agents": map[string]any{
 			"defaults": map[string]any{
 				"workspace": "/home/node/.openclaw/workspace",
-				"model": map[string]any{
-					"primary": primary,
-					"models":  modelsOut,
-				},
+				// model = the primary ref; models = the allowlist (siblings,
+				// matching the OpenClaw agents.defaults schema).
+				"model":   map[string]any{"primary": primary},
+				"models":  modelsOut,
 				"sandbox": map[string]any{"mode": "off"},
 			},
 		},
