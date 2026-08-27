@@ -12,22 +12,22 @@
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel → template.defaultModel → template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效。
 - **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。
 - **实例状态阶段**：`status.phase` 六态（Creating/Ready/Idle/Reclaiming/Failed），Ready 为稳态（设计 §3.2）。
-- **模板与执行分离**：TaskTemplate / Task / TaskRun 三态分离；TaskRun 记录 `templateRevision` / `capabilityRevision`（内容 sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
+- **模板与执行分离**：TaskTemplate / Task / TaskRun 三态分离；TaskRun 记录 `templateRevision` / `skillRevision`（内容 sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
 - **Task 状态字符串枚举**：`spec.state: Enabled | Paused`（自定义 bool），CRD default=Enabled。
-- **枚举值 CRD 校验**：六种枚举（runtime / provider / capability type / confirmPolicy / trigger / task state）均带 `kubebuilder:validation:Enum`。
+- **枚举值 CRD 校验**：六种枚举（runtime / provider / skill type / confirmPolicy / trigger / task state）均带 `kubebuilder:validation:Enum`。
 - **统一事件契约**：message_start / delta / tool_call / tool_result / message_done / error 全套实现（设计 §4）。confirm_* 仅定义、一期不 emit。
 - **Runtime 窄接口**：`AgentRuntime` Go interface（SetModel / StreamChat / ListSessions / GetHistory），concrete client 实现。
-- **能力目录 + Skill 落盘**：能力分层（generic / domain），Capability CRD 登记；supervisor 把启用能力以 `SKILL.md` 渲染到实例 `workspace/skills/`；OpenClaw 文件监听热重载。
+- **能力目录 + Skill 落盘**：能力分层（generic / domain），Skill CRD 登记；supervisor 把启用能力以 `SKILL.md` 渲染到实例 `workspace/skills/`；OpenClaw 文件监听热重载。
 - **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、readOnlyRootFS、emptyDir /tmp（设计 §6）。
 - **观测**：healthz / readyz / metrics / readiness 全绿。
-- **数据真源**：AgentTemplate / AgentInstance / Capability / TaskTemplate / Task / TaskRun 走 CRD；会话/记忆/运行时缓存走实例 PVC（设计 §3.6）。
+- **数据真源**：AgentTemplate / AgentInstance / Skill / TaskTemplate / Task / TaskRun 走 CRD（group `ai.cubestack.io`）；会话/记忆/运行时缓存走实例 PVC（设计 §3.6）。
 
 ## 与当前设计的剩余结构性差异
 
 > 以下为设计已要求、但实现尚未同步的项。**请不要把设计文档改回旧版来迁就实现；实现应逐步对齐本节。**
 
-1. **技能市场（Skill CRD + 对象存储）未建**。
-   新设计 §3.4：能力分两层，skill 为多文件目录（SKILL.md + scripts/references），经「技能市场」发布/安装（`Skill` CRD 登记 + S3/对象存储 tar 包 + sha256 校验），`AgentTemplate.skills` 声明默认、实例 `enabledSkills` 用户子集。代码现状：**无 Skill CRD、无对象存储技能仓库**；仅内置 capabilities（SKILL.md 由 supervisor 从内嵌配置渲染到 `workspace/skills`）。→ 技能市场是设计一期明确验收项，**尚未实现**。
+1. **技能市场（Skill 登记 CRD 已重命名对齐，对象存储/发布安装未建）**。
+   新设计 §3.4：能力分两层，skill 为多文件目录（SKILL.md + scripts/references），经「技能市场」发布/安装（`Skill` CRD 登记 + S3/对象存储 tar 包 + sha256 校验），`AgentTemplate.skills` 声明默认、实例 `enabledSkills` 用户子集。代码现状：`Capability` CRD 已重命名为 `Skill`（2026-08-27），**Skill CRD 存在**但仅承载内嵌目录登记（type/title/description/instructions/files），**对象存储技能仓库、source path/S3 + sha256、visibility 及发布/安装流程未建**（SKILL.md 由 supervisor 从内嵌配置渲染到 `workspace/skills`）。→ 技能市场发布/安装是设计一期明确验收项，**尚未实现**。
 
 2. **简单 HITL ——设计一期要求，代码执行侧未接入**。
    设计 §5：一期写操作**靠命令匹配（动词/资源白名单）命中即暂停确认的简单 HITL**（尽力而为）。代码现状：`confirmPolicy` 字段已进 AgentTemplate 对象模型（内置模板默认 `ConfirmWrites`），`confirm_pending`/`confirm_resolved` 事件已在合约定义，但**执行侧（OpenClaw exec kubectl 前）未接入命令匹配与暂停确认**。→ HITL 为设计一期交付项，实现侧缺口。
@@ -55,6 +55,13 @@
 - **CRD YAML**：删除 `assistant.suanova.io_models.yaml`，重命名 `assistant.suanova.io_agents.yaml` → `assistant.suanova.io_agenttemplates.yaml`，更新 `assistant.suanova.io_agentinstances.yaml` 字段。
 - **RBAC**：去掉 models 权限，agents → agenttemplates。
 - **Web UI**：`AgentView.tsx` 去掉 Model 管理对话框（不再有独立 Model CRD），模型从 AgentTemplate 内联清单展示；`api/index.ts` 路由对齐。
+
+## 本次对齐变更清单（2026-08-27）
+
+- **API group → `ai.cubestack.io`**：所有 CRD 从 `assistant.suanova.io` 迁到设计示例的 `ai.cubestack.io`（groupversion_info、RBAC markers/finalizer、catalog SchemaFor 默认 group、CRD yaml 文件名与内容、chart rbac.yaml、e2e 断言、文档）。
+- **Capability → Skill 重命名**：`Capability`/`CapabilitySpec`/`CapabilityList` → `Skill`/`SkillSpec`/`SkillList`，`CapabilityType` → `SkillType`，`internal/capability` → `internal/skill`；`TaskTemplateSpec.Capabilities` → `Skills`，`TaskRunStatus.CapabilityRevision` → `SkillRevision`（设计 §3.5 字段名）；`/api/capabilities` → `/api/skills`；CRD `capabilities` → `skills`；web UI 同步。**保留现有目录登记 schema**（type/title/description/instructions/files），完整技能市场字段（source/S3/sha256/visibility）仍属阶段二。
+- **删除陈旧 CRD yaml**：`config/crd/bases` 中遗留的 `agents`、`models`（无对应类型）随 controller-gen 重生成删除；CRD 集合收敛为设计六件：`agenttemplates / agentinstances / skills / tasktemplates / tasks / taskruns`。
+- **issue #9 补全**：内置 `agent-for-cloud` 增加内联 External 模型（Platform + External，设计 §3.1）；`TemplateModelSpec.Validate()` + CEL `XValidation` 拒绝非法 External 组合（§3.3）；新增 AgentTemplate 序列化 / revision / 非法组合单元测试。
 
 ## 阶段二/演进清单（设计 §9 / 附录 B）
 

@@ -69,7 +69,7 @@ group/version：**`ai.cubestack.io/v1alpha1`**（📘，见设计全部 YAML）�
 | `Task` | `tasks` | 读 + 建 + 改 + 删 | Scheduler | 任务列表、暂停/恢复、手动触发 |
 | `TaskRun` | `taskruns` | 只读 | Scheduler | 巡检报告、证据链、P0/P1/P2 |
 
-> 📘 **不存在的 CRD**：`Model`（模型内联在 AgentTemplate.models，设计 §3.3）、`Agent`（模板即 `AgentTemplate`，§3.1）、`Capability`（能力 = `Skill`，§3.4）。
+> 📘 **不存在的 CRD**：`Model`（模型内联在 AgentTemplate.models，设计 §3.3）、`Agent`（模板即 `AgentTemplate`，§3.1）；`Capability` 已重命名为 `Skill`（设计 §3.4）。
 
 ---
 
