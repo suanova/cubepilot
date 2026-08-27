@@ -14,9 +14,8 @@ const SKILL_LABELS: Record<string, string> = {
 
 interface TemplateModel {
   name: string
-  provider: string
   endpoint: string
-  modelId: string
+  credentialRef?: { name: string }
 }
 
 function CheckIcon() {
@@ -36,17 +35,18 @@ export default function AgentView() {
   const [provisioning, setProvisioning] = useState(false)
   const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
   const [defaultModel, setDefaultModel] = useState('')
+  const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '' })
+  const [adding, setAdding] = useState(false)
 
   async function loadTemplate() {
     try {
       const list = await api.listAgentTemplates()
       const tmpl = list[0]
       if (!tmpl) return
-      const models: TemplateModel[] = ((tmpl.spec?.models || []) as Array<Record<string, string>>).map((m) => ({
+      const models: TemplateModel[] = ((tmpl.spec?.models || []) as Array<Record<string, string | { name: string }>>).map((m) => ({
         name: String(m.name ?? ''),
-        provider: String(m.provider ?? ''),
         endpoint: String(m.endpoint ?? ''),
-        modelId: String(m.modelId ?? ''),
+        credentialRef: (m.credentialRef as { name: string } | undefined) ?? undefined,
       }))
       setTemplateModels(models)
       setDefaultModel(String(tmpl.spec?.defaultModel ?? ''))
@@ -99,6 +99,25 @@ export default function AgentView() {
     }
   }
 
+  async function addLLM() {
+    if (adding) return
+    if (!llmForm.name.trim() || !llmForm.endpoint.trim()) {
+      showToast('Name and endpoint are required')
+      return
+    }
+    setAdding(true)
+    try {
+      await api.addLLM({ name: llmForm.name, endpoint: llmForm.endpoint, apiKey: llmForm.apiKey || undefined })
+      showToast('LLM added - the operator will wire it into the gateway')
+      setLLMForm({ name: '', endpoint: '', apiKey: '' })
+      await loadTemplate()
+    } catch (e) {
+      showToast('Add LLM failed: ' + e)
+    } finally {
+      setAdding(false)
+    }
+  }
+
   return (
     <div className="view active">
       <div className="view-head">
@@ -131,7 +150,7 @@ export default function AgentView() {
                   <option value="">-- Runtime Default --</option>
                   {templateModels.map((m) => (
                     <option key={m.name} value={m.name}>
-                      {m.name}{m.provider === 'External' ? ' (External)' : ' (Platform)'}
+                      {m.name}
                     </option>
                   ))}
                 </select>
@@ -164,6 +183,45 @@ export default function AgentView() {
                 value={cfg.systemPrompt || ''}
                 onChange={(e) => setCfg((c) => ({ ...c, systemPrompt: e.target.value }))}
               />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-head">
+              <span className="card-title">LLM 配置</span>
+              <span className="card-hint">Add an OpenAI-compatible model to the platform catalog</span>
+            </div>
+            <div className="card-pad">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                {templateModels.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No models yet.</div>}
+                {templateModels.map((m) => (
+                  <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+                    <span className="mono">{m.name}</span>
+                    <span className="pill neutral">{m.credentialRef ? 'keyed' : 'public'}</span>
+                  </div>
+                ))}
+              </div>
+              <input
+                className="input"
+                placeholder="Model name (sent to the endpoint)"
+                value={llmForm.name}
+                onChange={(e) => setLLMForm((f) => ({ ...f, name: e.target.value }))}
+              />
+              <input
+                className="input"
+                placeholder="Endpoint (OpenAI-compatible base URL)"
+                value={llmForm.endpoint}
+                onChange={(e) => setLLMForm((f) => ({ ...f, endpoint: e.target.value }))}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="apiKey (leave empty for public models)"
+                value={llmForm.apiKey}
+                onChange={(e) => setLLMForm((f) => ({ ...f, apiKey: e.target.value }))}
+              />
+              <button className="btn primary" style={{ width: '100%' }} disabled={adding} onClick={addLLM}>
+                {adding ? 'Adding...' : 'Add LLM'}
+              </button>
             </div>
           </div>
         </div>

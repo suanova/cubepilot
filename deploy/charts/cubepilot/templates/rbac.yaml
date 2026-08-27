@@ -38,12 +38,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "persistentvolumeclaims", "services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Secrets: the operator resolves credentialRef for external models
-  # inlined in AgentTemplate.spec.models (design §3.3: no standalone Model
-  # CRD; credentials are platform-managed Secret references).
+  # Secrets: the operator resolves credentialRef for models inlined in
+  # AgentTemplate.spec.models (design §3.3: no standalone Model CRD;
+  # credentials are platform-managed Secret references) and reconciles the
+  # openclaw-config Secret (rendered gateway config).
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -105,8 +106,13 @@ kind: ClusterRole
 metadata:
   name: {{ .Values.api.name }}
 rules:
+  # handleAddLLM updates only the builtin AgentTemplate (POST /api/llms); the
+  # other platform CRDs stay read-only for the API (credential minimization).
   - apiGroups: ["ai.cubestack.io"]
-    resources: ["agenttemplates", "skills", "tasktemplates", "taskruns"]
+    resources: ["agenttemplates"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["skills", "tasktemplates", "taskruns"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["ai.cubestack.io"]
     resources: ["tasks", "agentinstances"]
@@ -122,6 +128,33 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
+  name: {{ .Values.api.name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccounts.api }}
+    namespace: {{ .Release.Namespace }}
+
+# --- API: namespaced credential Secret creation (POST /api/llms writes the
+# apiKey Secret; the model entry itself lives on the builtin AgentTemplate) ---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.api.name }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.api.name }}
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
   name: {{ .Values.api.name }}
 subjects:
   - kind: ServiceAccount

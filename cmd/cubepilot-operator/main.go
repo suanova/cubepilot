@@ -17,6 +17,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -24,6 +25,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/logrlog"
@@ -84,6 +86,20 @@ func main() {
 		log.Fatalf("readyz: %v", err)
 	}
 
+	// Ensure the gateway token exists before building the Runner: the operator
+	// generates it once and persists it in the openclaw-config Secret (the API
+	// process reads the same token). A direct client is used because the
+	// manager's cache is not up before Start.
+	direct, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		log.Fatalf("direct client: %v", err)
+	}
+	token, err := gateway.EnsureGatewayToken(ctx, direct, cfg.Namespace)
+	if err != nil {
+		log.Fatalf("ensure gateway token: %v", err)
+	}
+	cfg.GatewayToken = token
+
 	// Instance facade + task runner (direct OpenClaw gateway, no API process).
 	mgrInstances := instances.New(mgr.GetClient(), cfg)
 	taskRunner := runner.New(mgrInstances, cfg.GatewayToken)
@@ -102,6 +118,13 @@ func main() {
 		Cfg:    cfg,
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("builtin bootstrap controller: %v", err)
+	}
+	if err := (&controller.OpenClawConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Cfg:    cfg,
+	}).SetupWithManager(mgr); err != nil {
+		log.Fatalf("openclaw-config controller: %v", err)
 	}
 	if err := (&scheduler.ReconcileScheduler{
 		Client: mgr.GetClient(),

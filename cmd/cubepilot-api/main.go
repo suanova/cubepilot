@@ -23,6 +23,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/server"
@@ -55,6 +56,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Ensure the gateway token before the server is built: generated once and
+	// persisted in the openclaw-config Secret (the operator does the same, so
+	// both processes always agree).
+	token, err := gateway.EnsureGatewayToken(ctx, cr, cfg.Namespace)
+	if err != nil {
+		log.Fatalf("ensure gateway token: %v", err)
+	}
+	cfg.GatewayToken = token
 
 	// Skill catalog (three-layer skill model: auto-discovered generic
 	// + Skill atomic/domain).

@@ -2,12 +2,13 @@
 
 > 本文记录 CubePilot 简化设计在阶段一实现中的实际状态：已完成项、与设计正文(git 内的简体「cubepilot 简化设计」当前版)的有意偏差、以及后续演进清单。实现仓库：cubePilot（operator / api / web / agent supervisor）。设计正文见 [cubepilot-design.md](./cubepilot-design.md)。
 >
-> 状态：已按当前代码与当前设计重新核对（2026-08-25）。本次更新：**Model CRD 已删除、Agent CRD 已对齐为 AgentTemplate（内联模型）**，两项结构性冲突已消除。
+> 状态：已按当前代码与当前设计重新核对（2026-08-27）。本次更新：**网关配置改为声明式** —— `CUBEPILOT_MODEL_PROVIDERS` 退役，operator 从 AgentTemplate models + 凭据 Secret 生成 `openclaw-config`；`TemplateModelSpec` 简化为 `{name, endpoint, credentialRef?}`。
 
 ## 已对齐（一期已实现并验证）
 
 - **AgentTemplate 与实例分离**：AgentTemplate（`agent-for-cloud` 内置）+ AgentInstance（每用户）分离；实例引用模板名（`templateRef`，不钉版）；内置实例由 operator 启动时按 bootstrap 名单自动创建（设计 §3.1/§3.2）。**已对齐设计：Agent→AgentTemplate 重命名完成。**
-- **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.models`（每项 name + provider + endpoint + credentialRef + modelId），`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/models` 已删除。**
+- **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.models`（每项 name + endpoint + credentialRef），`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/models` 已删除；`provider`/`modelId` 字段已删除。**
+- **声明式网关配置**：`OpenClawConfigReconciler` 从 AgentTemplate models + 凭据 Secret 渲染 `openclaw-config`（providers + allowlist + primary），网关 token 由 cubepilot 生成一次并持久化；`CUBEPILOT_MODEL_PROVIDERS` 与 `deploy/openclaw-config.jq` 退役。`POST /api/llms` + Portal「LLM 配置」可追加模型（name + endpoint + 可选 apiKey），operator 自动接入网关。
 - **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel → template.defaultModel → template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效。
 - **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。
