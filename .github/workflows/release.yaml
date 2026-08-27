@@ -1,0 +1,103 @@
+# Build & publish CubePilot images and the Helm chart (OCI format) into
+# harbor.isuanova.com. Tracks suanova/cubepilot#35.
+#
+# Triggers and published tags:
+#   - push to main       images pushed as `latest`; chart pushed as
+#                        oci://.../cubestack/cubepilot:<chartVersion>-latest
+#                        (rolling dev artifact -- the `-latest` suffix keeps it
+#                        from colliding with a real <chartVersion> release)
+#   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
+#                        pinned to X.Y.Z regardless of Chart.yaml)
+#   - workflow_dispatch  publish under the semver tag supplied in the input
+#
+# Required GitHub variable + secret (a Harbor bot account with push rights on
+# the `cubestack` project):
+#   vars.CI_BOT_NAME         (Harbor username)
+#   secrets.CI_BOT_PASSWORD  (Harbor password/token)
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Semver tag to publish (e.g. 0.1.0); also becomes the Helm chart version.'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: harbor.isuanova.com
+  CHART_OCI: oci://harbor.isuanova.com/cubestack
+
+jobs:
+  publish:
+    name: Build & push images and chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve publish tag
+        id: tag
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              TAG="${{ github.event.inputs.tag }}" ;; # explicit semver input
+            push)
+              if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+                TAG="${GITHUB_REF_NAME#v}"            # v0.1.0 -> 0.1.0
+              else
+                TAG="latest"                          # push to main
+              fi ;;
+            *) echo "::error::unsupported trigger: $GITHUB_EVENT_NAME"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to Harbor (docker + helm)
+        run: |
+          echo "${{ secrets.CI_BOT_PASSWORD }}" | docker login "${{ env.REGISTRY }}" \
+            -u "${{ vars.CI_BOT_NAME }}" --password-stdin
+          echo "${{ secrets.CI_BOT_PASSWORD }}" | helm registry login "${{ env.REGISTRY }}" \
+            -u "${{ vars.CI_BOT_NAME }}" --password-stdin
+
+      - name: Pre-pull base images (de-risk BuildKit metadata pulls)
+        run: |
+          docker pull harbor.isuanova.com/library/golang:1.26-bookworm
+          docker pull harbor.isuanova.com/library/debian:bookworm-slim
+          docker pull harbor.isuanova.com/library/openclaw:2026.6.33
+          docker pull harbor.isuanova.com/library/node:24-alpine
+          docker pull harbor.isuanova.com/library/nginx:1.27-alpine
+
+      - name: Build images
+        run: make images IMAGE_TAG=${{ steps.tag.outputs.tag }}
+
+      - name: Push images
+        run: make push IMAGE_TAG=${{ steps.tag.outputs.tag }}
+
+      - name: Package Helm chart
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [ "$TAG" = "latest" ]; then
+            # Rolling dev artifact: chart version <chartVersion>-latest is a
+            # distinct OCI tag, so a later main push never clobbers a released
+            # <chartVersion> chart.
+            BASE_VERSION="$(grep '^version:' deploy/charts/cubepilot/Chart.yaml | awk '{print $2}')"
+            helm package deploy/charts/cubepilot \
+              --version "$BASE_VERSION-latest" --app-version latest -d .chart
+          else
+            helm package deploy/charts/cubepilot \
+              --version "$TAG" --app-version "$TAG" -d .chart
+          fi
+
+      - name: Push Helm chart (OCI)
+        run: helm push .chart/cubepilot-*.tgz "${{ env.CHART_OCI }}"

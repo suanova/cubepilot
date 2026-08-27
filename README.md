@@ -75,6 +75,32 @@ Images are registry-addressed:
   `make images` builds them, `make push` pushes them, and
   `CUBEPILOT_PUSH=1 scripts/setup.sh` pushes after building.
 
+### Releases (CI)
+
+The `release` workflow (`.github/workflows/release.yaml`) builds and publishes
+the four images plus the Helm chart (as an OCI artifact) into
+`harbor.isuanova.com`:
+
+| Trigger | Images | Helm chart (OCI) |
+|---|---|---|
+| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:latest` | `oci://harbor.isuanova.com/cubestack/cubepilot:<chartVersion>-latest` (rolling dev artifact) |
+| tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/cubestack/cubepilot:X.Y.Z` |
+| `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/cubestack/cubepilot:<tag>` |
+
+The chart's default image tags are `:latest` (tracking main builds); pin a
+specific release with `--set operator.image=...,api.image=...,web.image=...,agents.image=...`
+or your own values file. Install a published chart with:
+
+```bash
+helm install cubepilot oci://harbor.isuanova.com/cubestack/cubepilot --version 0.1.0
+```
+
+The workflow needs the GitHub variable `CI_BOT_NAME` (Harbor username) and
+secret `CI_BOT_PASSWORD` (Harbor password/token), ideally a Harbor bot account
+with push rights on the `cubestack` project.
+The Harbor `cubestack` project must allow tag overwrites so the rolling
+`latest` / `-latest` artifacts can be re-pushed on every main push.
+
 ## Run
 
 ```bash
@@ -162,7 +188,9 @@ CI (`.github/workflows/e2e.yaml`) runs these on every PR and push to `main`: a
 fast `test` job (`go vet` + `go test` + `scripts/test-openclaw-config.sh`) and
 an `e2e` job on kind. The conversational e2e runs when the GitHub secret
 `CUBEPILOT_MODEL_PROVIDERS` (the `models.providers` object) is configured;
-without it the deploy path still runs with a placeholder key.
+without it the deploy path still runs with a placeholder key. Publishing the
+images/chart to the registry is handled separately by the `release` workflow —
+see [Releases (CI)](#releases-ci).
 
 ## What to verify
 
