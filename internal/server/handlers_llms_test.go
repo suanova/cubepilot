@@ -78,7 +78,7 @@ func TestHandleAddLLMPublicNoKey(t *testing.T) {
 		t.Fatalf("get template: %v", err)
 	}
 	m := tmpl.Spec.Models[len(tmpl.Spec.Models)-1]
-	if m.CredentialRef.Name != "" {
+	if m.CredentialRef != nil {
 		t.Errorf("public model should carry no credentialRef: %+v", m)
 	}
 	// No Secret created for a public model.

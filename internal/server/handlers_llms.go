@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,12 +36,13 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 		return
 	}
-	name := k8s.Sanitize(strings.TrimSpace(body.Name))
-	endpoint := strings.TrimSpace(body.Endpoint)
-	if name == "" {
+	rawName := strings.TrimSpace(body.Name)
+	if rawName == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name is required"})
 		return
 	}
+	name := k8s.Sanitize(rawName)
+	endpoint := strings.TrimSpace(body.Endpoint)
 	if u, err := url.Parse(endpoint); err != nil || u.Scheme == "" || u.Host == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "endpoint must be a valid URL"})
 		return
@@ -62,24 +64,44 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Commit the model to the template BEFORE creating the credential Secret:
+	// a failed template update leaves no orphaned key Secret, and a re-add with
+	// a new key never keeps the old one (the operator skips a model whose
+	// Secret is missing and re-renders once it appears).
 	model := v1alpha1.TemplateModelSpec{Name: name, Endpoint: endpoint}
 	if body.APIKey != "" {
-		secretName := "llm-" + name
-		sec := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Namespace: s.cfg.Namespace, Name: secretName},
-			Data:       map[string][]byte{"apiKey": []byte(body.APIKey)},
-		}
-		if err := s.cr.Create(r.Context(), sec); err != nil && !apierrors.IsAlreadyExists(err) {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("create credential Secret: %v", err)})
-			return
-		}
-		model.CredentialRef = corev1.LocalObjectReference{Name: secretName}
+		model.CredentialRef = &corev1.LocalObjectReference{Name: "llm-" + name}
 	}
-
 	tmpl.Spec.Models = append(tmpl.Spec.Models, model)
 	if err := s.cr.Update(r.Context(), &tmpl); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update template: %v", err)})
 		return
 	}
+	if body.APIKey != "" {
+		if err := upsertLLMCredential(r.Context(), s, "llm-"+name, body.APIKey); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("create credential Secret: %v", err)})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"model": model})
+}
+
+// upsertLLMCredential creates the credential Secret, or refreshes its apiKey
+// if it already exists (so re-adding a model with a new key takes effect).
+func upsertLLMCredential(ctx context.Context, s *Server, secretName, apiKey string) error {
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: s.cfg.Namespace, Name: secretName},
+		Data:       map[string][]byte{"apiKey": []byte(apiKey)},
+	}
+	if err := s.cr.Create(ctx, sec); err == nil {
+		return nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	var existing corev1.Secret
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: secretName}, &existing); err != nil {
+		return err
+	}
+	existing.Data["apiKey"] = []byte(apiKey)
+	return s.cr.Update(ctx, &existing)
 }

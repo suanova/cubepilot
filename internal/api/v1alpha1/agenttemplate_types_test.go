@@ -18,7 +18,7 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 			DefaultModel:  "deepseek-v4-flash",
 			ConfirmPolicy: ConfirmPolicyConfirmWrites,
 			Models: []TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com", CredentialRef: corev1.LocalObjectReference{Name: "cubepilot-llm"}},
+				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com", CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"}},
 			},
 			Skills: []string{"dev-environment", "inference-service"},
 		},
@@ -35,7 +35,7 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 		t.Errorf("scalar round-trip mismatch: %+v", out.Spec)
 	}
 	if len(out.Spec.Models) != 1 || out.Spec.Models[0].Endpoint == "" ||
-		out.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
+		out.Spec.Models[0].CredentialRef == nil || out.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
 		t.Errorf("inline models not round-tripped: %+v", out.Spec.Models)
 	}
 }
@@ -79,6 +79,7 @@ func TestTemplateModelValidate(t *testing.T) {
 	bad := []TemplateModelSpec{
 		{Name: "no-endpoint"},
 		{Name: ""},
+		{Name: "bad-cred", Endpoint: "https://x", CredentialRef: &corev1.LocalObjectReference{}},
 	}
 	for _, m := range bad {
 		if err := m.Validate(); err == nil {

@@ -106,9 +106,14 @@ kind: ClusterRole
 metadata:
   name: {{ .Values.api.name }}
 rules:
+  # handleAddLLM updates only the builtin AgentTemplate (POST /api/llms); the
+  # other platform CRDs stay read-only for the API (credential minimization).
   - apiGroups: ["ai.cubestack.io"]
-    resources: ["agenttemplates", "skills", "tasktemplates", "taskruns"]
+    resources: ["agenttemplates"]
     verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["skills", "tasktemplates", "taskruns"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["ai.cubestack.io"]
     resources: ["tasks", "agentinstances"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

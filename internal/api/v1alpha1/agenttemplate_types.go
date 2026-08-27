@@ -48,10 +48,10 @@ type TemplateModelSpec struct {
 	// Endpoint is the OpenAI-compatible base URL; required for every model.
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
-	// holding the apiKey; public models omit it. References only -- never the
-	// key itself (design §4.4).
+	// holding the apiKey; public models omit it (nil). References only -- never
+	// the key itself (design §4.4).
 	// +optional
-	CredentialRef corev1.LocalObjectReference `json:"credentialRef,omitempty"`
+	CredentialRef *corev1.LocalObjectReference `json:"credentialRef,omitempty"`
 }
 
 // Validate enforces the inline-model invariants (design §3.3): every model
@@ -63,6 +63,9 @@ func (m TemplateModelSpec) Validate() error {
 	}
 	if m.Endpoint == "" {
 		return fmt.Errorf("model %q requires an endpoint", m.Name)
+	}
+	if m.CredentialRef != nil && m.CredentialRef.Name == "" {
+		return fmt.Errorf("model %q credentialRef must reference a Secret name", m.Name)
 	}
 	return nil
 }

@@ -50,7 +50,7 @@ func BuiltinModels(endpoint string) []v1alpha1.TemplateModelSpec {
 		{
 			Name:          "deepseek-v4-flash",
 			Endpoint:      endpoint,
-			CredentialRef: corev1.LocalObjectReference{Name: "cubepilot-llm"},
+			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
 		},
 	}
 }

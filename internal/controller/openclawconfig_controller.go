@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"log"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,7 +47,7 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 				continue
 			}
 			p := gateway.Provider{Key: m.Name, BaseURL: m.Endpoint, Model: m.Name}
-			if m.CredentialRef.Name != "" {
+			if m.CredentialRef != nil && m.CredentialRef.Name != "" {
 				var sec corev1.Secret
 				if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: m.CredentialRef.Name}, &sec); err != nil {
 					log.Printf("openclaw-config: model %q credential %q not ready (%v), skipping", m.Name, m.CredentialRef.Name, err)
@@ -83,7 +82,7 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName, Namespace: r.Cfg.Namespace},
 			Data:       map[string][]byte{"gatewayToken": []byte(token), "openclaw.json": jsonBytes},
 		}
-		return ctrl.Result{RequeueAfter: time.Minute}, r.Create(ctx, &sec)
+		return ctrl.Result{}, r.Create(ctx, &sec)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -94,7 +93,7 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 			return ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager registers the reconciler on AgentTemplate + Secret events.

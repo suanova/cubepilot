@@ -21,11 +21,27 @@ import (
 func EnsureGatewayToken(ctx context.Context, cl client.Client, ns string) (string, error) {
 	key := types.NamespacedName{Namespace: ns, Name: k8s.ConfigSecretName}
 	var sec corev1.Secret
-	if err := cl.Get(ctx, key, &sec); err == nil {
+	err := cl.Get(ctx, key, &sec)
+	if err == nil {
 		if tok := string(sec.Data["gatewayToken"]); tok != "" {
 			return tok, nil
 		}
-	} else if !apierrors.IsNotFound(err) {
+		// Secret exists but the token is empty/missing: repair it so the state
+		// self-heals instead of persisting an empty auth token.
+		token, err := randomToken()
+		if err != nil {
+			return "", err
+		}
+		if sec.Data == nil {
+			sec.Data = map[string][]byte{}
+		}
+		sec.Data["gatewayToken"] = []byte(token)
+		if err := cl.Update(ctx, &sec); err != nil {
+			return "", err
+		}
+		return token, nil
+	}
+	if !apierrors.IsNotFound(err) {
 		return "", err
 	}
 	token, err := randomToken()
@@ -38,6 +54,7 @@ func EnsureGatewayToken(ctx context.Context, cl client.Client, ns string) (strin
 	}
 	if err := cl.Create(ctx, &sec); err != nil {
 		if apierrors.IsAlreadyExists(err) {
+			// Lost the create race: reuse the winner's persisted token.
 			if err := cl.Get(ctx, key, &sec); err != nil {
 				return "", err
 			}

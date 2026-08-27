@@ -120,8 +120,8 @@ spec:
                     credentialRef:
                       description: |-
                         CredentialRef optionally references a platform-managed Secret (name)
-                        holding the apiKey; public models omit it. References only -- never the
-                        key itself (design §4.4).
+                        holding the apiKey; public models omit it (nil). References only -- never
+                        the key itself (design §4.4).
                       properties:
                         name:
                           default: ""

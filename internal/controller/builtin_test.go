@@ -45,8 +45,8 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.Models[0].Endpoint != config.DefaultLLMEndpoint {
 		t.Errorf("builtin model endpoint = %q, want %q", agent.Spec.Models[0].Endpoint, config.DefaultLLMEndpoint)
 	}
-	if agent.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
-		t.Errorf("builtin model credentialRef = %q, want cubepilot-llm", agent.Spec.Models[0].CredentialRef.Name)
+	if agent.Spec.Models[0].CredentialRef == nil || agent.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
+		t.Errorf("builtin model credentialRef = %+v, want cubepilot-llm", agent.Spec.Models[0].CredentialRef)
 	}
 	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q, want ConfirmWrites (design §3.1)", agent.Spec.ConfirmPolicy)

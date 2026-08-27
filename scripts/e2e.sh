@@ -45,8 +45,14 @@ done
 ok "operator/api/web ready"
 
 step "verify operator-generated openclaw-config"
+# The operator creates the Secret with the gatewayToken first and writes
+# openclaw.json on the first reconcile, so wait until the rendered config is
+# present and valid (not just until the Secret exists).
 for _ in $(seq 1 30); do
-  kubectl -n "$NAMESPACE" get secret openclaw-config >/dev/null 2>&1 && break
+  if kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.openclaw\.json}' 2>/dev/null \
+    | base64 -d | jq -e '.gateway.mode == "local"' >/dev/null 2>&1; then
+    break
+  fi
   sleep 2
 done
 kubectl -n "$NAMESPACE" get secret openclaw-config -o jsonpath='{.data.gatewayToken}' | base64 -d | grep -q . \
