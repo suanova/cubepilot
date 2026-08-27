@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CubePilot end-to-end test: bring up the stack via scripts/setup.sh on a kind
 # cluster and verify it. Deploy path always runs; the conversational path runs
-# when CUBEPILOT_E2E_CHAT=1 (needs a real provider key).
+# by default when a real provider key is configured (or with CUBEPILOT_E2E_CHAT=1).
 #
 #   CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh          # deploy only
 #   CUBEPILOT_LLM_APIKEY='sk-real' scripts/e2e.sh                 # deploy + chat (auto)
