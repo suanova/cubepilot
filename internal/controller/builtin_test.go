@@ -29,7 +29,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 // (design §3.1: builtin: true, auto-instantiated per user, non-deletable;
 // model[0] primary).
 func TestBuiltinAgentShape(t *testing.T) {
-	agent := BuiltinAgentTemplate(config.DefaultLLMEndpoint)
+	agent := BuiltinAgentTemplate(config.DefaultLLMEndpoint, config.DefaultLLMModel)
 	if agent.Name != "agent-for-cloud" {
 		t.Errorf("name = %s, want agent-for-cloud", agent.Name)
 	}
@@ -122,8 +122,8 @@ func TestBootstrapEnsure(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tmpl); err != nil {
 		t.Fatalf("agent-for-cloud template not found: %v", err)
 	}
-	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint)) {
-		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels(config.DefaultLLMEndpoint)))
+	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)) {
+		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)))
 	}
 
 	// Per-user instances exist (auto-instantiated per user).

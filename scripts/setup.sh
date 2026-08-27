@@ -22,6 +22,7 @@ NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 OPENCLAW_IMAGE_TAG="${CUBEPILOT_OPENCLAW_IMAGE_TAG:-2026.6.33}"
 LLM_APIKEY="${CUBEPILOT_LLM_APIKEY:-}"
 LLM_ENDPOINT="${CUBEPILOT_LLM_ENDPOINT:-https://api.deepseek.com}"
+LLM_MODEL="${CUBEPILOT_LLM_MODEL:-deepseek-v4-flash}"
 SKIP_CLUSTER_CREATE="${CUBEPILOT_SKIP_CLUSTER_CREATE:-}"
 # Built images are registry-addressed (harbor.isuanova.com/suanova); set
 # CUBEPILOT_PUSH=1 to push after building (dev machines may lack creds).
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --llm-apikey)         LLM_APIKEY="${2:?--llm-apikey requires a value}"; shift 2 ;;
     --llm-endpoint)       LLM_ENDPOINT="${2:?--llm-endpoint requires a value}"; shift 2 ;;
+    --llm-model)          LLM_MODEL="${2:?--llm-model requires a value}"; shift 2 ;;
     --kind-cluster)       KIND_CLUSTER="${2:?--kind-cluster requires a value}"; shift 2 ;;
     --namespace)          NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
     --openclaw-image-tag) OPENCLAW_IMAGE_TAG="${2:?--openclaw-image-tag requires a value}"; shift 2 ;;
@@ -55,6 +57,9 @@ Optional:
   CUBEPILOT_LLM_ENDPOINT / --llm-endpoint <url>
       OpenAI-compatible base URL of the platform default LLM (default:
       https://api.deepseek.com). The apiKey still comes from --llm-apikey.
+  CUBEPILOT_LLM_MODEL / --llm-model <model>
+      Model name (backend model id) of the platform default LLM (default:
+      deepseek-v4-flash). Must be in the endpoint's allow-list.
   CUBEPILOT_KIND_CLUSTER / --kind-cluster <name>
       Kind cluster name (default: cube).
   CUBEPILOT_NAMESPACE   / --namespace <ns>
@@ -142,6 +147,7 @@ log "deploying components via Helm (CRDs ship in the chart crds/ dir)"
 helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set agents.llmEndpoint="$LLM_ENDPOINT" \
+  --set agents.llmModel="$LLM_MODEL" \
   --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
   --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
