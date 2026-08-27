@@ -67,10 +67,10 @@ type TaskRunStatus struct {
 	// (design §3.5: resolved at run time, recorded for audit/rollback).
 	// +optional
 	TemplateRevision string `json:"templateRevision,omitempty"`
-	// CapabilityRevision is the capability revision actually used for this run
+	// SkillRevision is the skill revision actually used for this run
 	// (design §3.5: resolved at run time, recorded for audit/rollback).
 	// +optional
-	CapabilityRevision string `json:"capabilityRevision,omitempty"`
+	SkillRevision string `json:"skillRevision,omitempty"`
 	// Conditions carries detail (Inspected=True etc).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
