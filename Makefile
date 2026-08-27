@@ -17,11 +17,11 @@
 #   make undeploy   helm uninstall
 #   make clean      remove build artifacts
 #
-# Overridable: IMAGE_REGISTRY (default harbor.isuanova.com/cubestack),
+# Overridable: IMAGE_REGISTRY (default harbor.isuanova.com/suanova),
 #              IMAGE_TAG (default local), NAMESPACE, HELM_RELEASE.
 
 BIN_DIR      ?= bin
-IMAGE_REGISTRY ?= harbor.isuanova.com/cubestack
+IMAGE_REGISTRY ?= harbor.isuanova.com/suanova
 IMAGE_TAG    ?= local
 NAMESPACE    ?= cubepilot
 HELM_RELEASE ?= cubepilot
