@@ -1,7 +1,7 @@
 // Command cubepilot-api runs the CubePilot Portal + REST/SSE API. It is the
 // stateless front for the platform: chat turns are routed to per-user OpenClaw
 // instances (AgentInstance CRs reconciled by the operator), and platform
-// objects (Agent / Capability / Task / TaskRun) are served read-only from
+// objects (Agent / Skill / Task / TaskRun) are served read-only from
 // their CRDs. The only state it holds is the JSON metadata store (tasks /
 // reports / audit / agent config) on a single RWO PVC -- replicas > 1 requires
 // shared storage (phase two, design §11.1). No controllers and no leader
@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
-	"github.com/suanova/cubepilot/internal/capability"
+	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -56,14 +56,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Capability catalog (three-layer capability model: auto-discovered generic
-	// + Capability atomic/domain).
-	catalog, err := capability.NewCatalog(restCfg)
+	// Skill catalog (three-layer skill model: auto-discovered generic
+	// + Skill atomic/domain).
+	catalog, err := skill.NewCatalog(restCfg)
 	if err != nil {
-		log.Fatalf("capability catalog: %v", err)
+		log.Fatalf("skill catalog: %v", err)
 	}
 	if err := catalog.Refresh(ctx); err != nil {
-		log.Printf("capability catalog refresh: %v (continuing)", err)
+		log.Printf("skill catalog refresh: %v (continuing)", err)
 	}
 
 	// Instance Manager facade (observes AgentInstance CRs; the operator's

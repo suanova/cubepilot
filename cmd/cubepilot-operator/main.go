@@ -111,7 +111,7 @@ func main() {
 		log.Fatalf("scheduler controller: %v", err)
 	}
 
-	// Bootstrap the builtin objects (agent-for-cloud + capabilities + template
+	// Bootstrap the builtin objects (agent-for-cloud + skills + template
 	// + per-user instances) once the manager's cache is ready. The cache-backed
 	// client cannot read before the manager starts, so we start the manager
 	// first, wait for the cache sync, then run the initial ensure (the

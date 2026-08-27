@@ -41,8 +41,8 @@ type ReconcileScheduler struct {
 	Runner Runner
 }
 
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=tasks,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=taskruns,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=tasks,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=taskruns,verbs=get;list;watch;create;update;patch
 
 // Reconcile is invoked on Task changes; due tasks fire here (leader-gated in
 // the manager wiring).
@@ -141,16 +141,16 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 // turn, and writes the report (Completed / Failed) with the platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
 	// Resolve the prompt + revisions before creating the run: the TaskRun
-	// records the template/capability revisions actually used for audit and
+	// records the template/skill revisions actually used for audit and
 	// rollback (design §3.5 / §7).
 	prompt := task.Spec.Instruction
-	templateRev, capabilityRev := "", ""
+	templateRev, skillRev := "", ""
 	if task.Spec.TemplateRef != "" {
 		var tpl v1alpha1.TaskTemplate
 		if err := r.Get(ctx, types.NamespacedName{Name: task.Spec.TemplateRef}, &tpl); err == nil {
 			prompt = renderTemplate(tpl.Spec.Instruction, task.Spec.Params)
 			templateRev = tpl.Revision()
-			capabilityRev = r.capabilityRevisions(ctx, tpl.Spec.Capabilities)
+			skillRev = r.skillRevisions(ctx, tpl.Spec.Skills)
 		} else {
 			log.Printf("scheduler: template %s: %v (falling back to inline)", task.Spec.TemplateRef, err)
 		}
@@ -167,13 +167,13 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	// response carries an empty status -- the revision fields pre-set on `run`
 	// are NOT persisted by Create. Set the full status here in one patch
 	// (revisions included) so the run records what was actually executed
-	// (design §3.5/§7: template/capability revision resolved at run time).
+	// (design §3.5/§7: template/skill revision resolved at run time).
 	patch := client.MergeFrom(run.DeepCopy()) // base = create response (empty status)
 	run.Status.Phase = v1alpha1.TaskRunRunning
 	now := metav1.Now()
 	run.Status.StartedAt = &now
 	run.Status.TemplateRevision = templateRev
-	run.Status.CapabilityRevision = capabilityRev
+	run.Status.SkillRevision = skillRev
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
 		log.Printf("scheduler: patch running %s: %v", run.Name, err)
 	}
@@ -220,20 +220,20 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	return runErr
 }
 
-// capabilityRevisions resolves the current revisions of the named
-// capabilities (design §3.5: resolved at run time, recorded on the TaskRun).
+// skillRevisions resolves the current revisions of the named
+// skills (design §3.5: resolved at run time, recorded on the TaskRun).
 // Entries are formatted "name@rev" (rev = immutable spec content hash);
-// missing capabilities are skipped (the run itself will fail closed via the
-// agent if the capability is actually required).
-func (r *ReconcileScheduler) capabilityRevisions(ctx context.Context, names []string) string {
+// missing skills are skipped (the run itself will fail closed via the
+// agent if the skill is actually required).
+func (r *ReconcileScheduler) skillRevisions(ctx context.Context, names []string) string {
 	var revs []string
 	for _, name := range names {
-		var cap v1alpha1.Capability
-		if err := r.Get(ctx, types.NamespacedName{Name: name}, &cap); err != nil {
-			log.Printf("scheduler: capability %s: %v (revision skipped)", name, err)
+		var skill v1alpha1.Skill
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &skill); err != nil {
+			log.Printf("scheduler: skill %s: %v (revision skipped)", name, err)
 			continue
 		}
-		revs = append(revs, name+"@"+cap.Revision())
+		revs = append(revs, name+"@"+skill.Revision())
 	}
 	return strings.Join(revs, ", ")
 }

@@ -1,6 +1,6 @@
 // Package supervisor implements the agent-pod-side runtime supervisor: it
 // pulls the resolved agent config from the platform internal API, renders
-// domain capabilities into the OpenClaw workspace as skills, and manages the
+// domain skills into the OpenClaw workspace as skills, and manages the
 // OpenClaw gateway process (graceful restart on config change -- the pod is
 // never deleted, so sessions/PVC/IP survive). It is the "agent supervisor"
 // of the final architecture: CRDs declare -> operator resolves -> supervisor
@@ -235,7 +235,7 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	return &cfg, nil
 }
 
-// renderSkills writes the resolved domain capabilities into
+// renderSkills writes the resolved domain skills into
 // Workspace/skills/<name>/SKILL.md (clearing stale entries first). The
 // gateway discovers skills under the workspace at startup.
 func (s *Supervisor) renderSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
@@ -243,7 +243,7 @@ func (s *Supervisor) renderSkills(ctx context.Context, cfg *resolver.ResolvedAge
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return err
 	}
-	// Clear the skills dir so removed capabilities disappear too.
+	// Clear the skills dir so removed skills disappear too.
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return err
@@ -253,19 +253,19 @@ func (s *Supervisor) renderSkills(ctx context.Context, cfg *resolver.ResolvedAge
 			return err
 		}
 	}
-	for _, cap := range cfg.Capabilities {
-		skill, err := resolver.RenderSkill(cap)
+	for _, skill := range cfg.Skills {
+		rendered, err := resolver.RenderSkill(skill)
 		if err != nil {
-			return fmt.Errorf("render %s: %w", cap.Name, err)
+			return fmt.Errorf("render %s: %w", skill.Name, err)
 		}
-		dir := filepath.Join(skillsDir, cap.Name)
+		dir := filepath.Join(skillsDir, skill.Name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", cap.Name, err)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(rendered), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", skill.Name, err)
 		}
-		log.Printf("supervisor: skill %s/%s rendered (%d bytes)", cap.Name, cap.Revision, len(skill))
+		log.Printf("supervisor: skill %s/%s rendered (%d bytes)", skill.Name, skill.Revision, len(rendered))
 	}
 	return nil
 }

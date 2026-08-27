@@ -27,11 +27,11 @@ const BuiltinAgentName = "agent-for-cloud"
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
 
-// BuiltinCapabilities are the preset domain capabilities the builtin agent
+// BuiltinSkills are the preset domain skills the builtin agent
 // references (design §3.3.1 domain layer). Generated from the embedded
 // SKILL.md files: the agent gets exactly the skills the platform ships.
-var BuiltinCapabilities = func() []string {
-	names, err := presetCapabilityNames()
+var BuiltinSkills = func() []string {
+	names, err := presetSkillNames()
 	if err != nil {
 		return []string{"cluster-inspection"}
 	}
@@ -73,7 +73,7 @@ func BuiltinAgentTemplate() *v1alpha1.AgentTemplate {
 			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
-			Skills: BuiltinCapabilities,
+			Skills: BuiltinSkills,
 			Memory: &v1alpha1.MemorySpec{Enabled: true},
 			Identity: &v1alpha1.AgentIdentitySpec{
 				Mode:  v1alpha1.IdentityModeUser,
@@ -88,8 +88,8 @@ func BuiltinAgentTemplate() *v1alpha1.AgentTemplate {
 	}
 }
 
-// BuiltinCapabilityDefinitions is generated from the embedded SKILL.md files
-// (see skill_source.go) -- one source of truth for preset domain capabilities.
+// BuiltinSkillDefinitions is generated from the embedded SKILL.md files
+// (see skill_source.go) -- one source of truth for preset domain skills.
 
 // BuiltinTaskTemplate returns the preset daily-inspection template
 // (design §3.3.2).
@@ -119,7 +119,7 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 				Level: "cluster-read",
 				Note:  "Full-cluster inspection requires the creator to have cluster-level read permission",
 			},
-			Capabilities: []string{"cluster-inspection"},
+			Skills: []string{"cluster-inspection"},
 			DefaultCron:  "0 2 * * *",
 			Defaults: &v1alpha1.TaskTemplateDefaults{
 				Trigger: v1alpha1.TaskTriggerCron,
@@ -130,7 +130,7 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 }
 
 // BuiltinBootstrapReconciler reconciles the builtin platform objects: the
-// agent-for-cloud Agent definition, the preset Capabilities and the
+// agent-for-cloud Agent definition, the preset Skills and the
 // daily-inspection TaskTemplate. It also instantiates the builtin agent for
 // every configured user (auto-instantiated per user, design §3.1 / §5.3),
 // reconciling the
@@ -142,8 +142,8 @@ type BuiltinBootstrapReconciler struct {
 	Cfg    config.Config
 }
 
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents;capabilities;tasktemplates;agentinstances;tasks;taskruns;models,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents/status;agentinstances/status;tasks/status;taskruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
 
 // Reconcile ensures the builtin objects exist (create-if-missing).
 func (r *BuiltinBootstrapReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -164,13 +164,13 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinAgentTemplate()); err != nil {
 		return err
 	}
-	// 2. Domain capabilities (generated from embedded SKILL.md).
-	caps, err := BuiltinCapabilityDefinitions()
+	// 2. Domain skills (generated from embedded SKILL.md).
+	skills, err := BuiltinSkillDefinitions()
 	if err != nil {
-		return fmt.Errorf("capability definitions: %w", err)
+		return fmt.Errorf("skill definitions: %w", err)
 	}
-	for _, cap := range caps {
-		if err := r.createIfMissing(ctx, cap); err != nil {
+	for _, skill := range skills {
+		if err := r.createIfMissing(ctx, skill); err != nil {
 			return err
 		}
 	}

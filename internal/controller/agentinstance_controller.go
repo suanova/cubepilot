@@ -32,7 +32,7 @@ import (
 
 // finalizerName protects the instance's data directory PVC until the
 // AgentInstance is fully removed (design §3.2 data-directory GC / reclaim).
-const finalizerName = "assistant.suanova.io/agentinstance"
+const finalizerName = "ai.cubestack.io/agentinstance"
 
 // AgentInstanceReconciler reconciles AgentInstance objects: it ensures the
 // per-user agent Pod + Service + data PVC exist and are healthy, and updates
@@ -44,10 +44,10 @@ type AgentInstanceReconciler struct {
 	Cfg    config.Config
 }
 
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agentinstances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agentinstances/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=agents,verbs=get;list;watch
-// +kubebuilder:rbac:groups=assistant.suanova.io,resources=capabilities,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives one AgentInstance toward its desired state.

@@ -51,7 +51,7 @@ type AuditEntry struct {
 	Detail    string    `json:"detail,omitempty"`
 }
 
-// SkillToggle is one capability switch on the Agent config page.
+// SkillToggle is one skill switch on the Agent config page.
 type SkillToggle struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
@@ -172,7 +172,7 @@ type AgentConfig struct {
 	Skills       []SkillToggle `json:"skills"`
 }
 
-// DefaultAgentConfig mirrors the baked-in capability catalog + gateway model.
+// DefaultAgentConfig mirrors the baked-in skill catalog + gateway model.
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
 		Model: "cuberouter/glm-5.1",

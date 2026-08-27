@@ -52,7 +52,7 @@ func TestBuiltinAgentShape(t *testing.T) {
 		t.Error("identity mode should default to user")
 	}
 	if len(agent.Spec.Skills) == 0 {
-		t.Error("builtin agent should reference capabilities/skills")
+		t.Error("builtin agent should reference skills/skills")
 	}
 }
 
@@ -73,7 +73,7 @@ func TestInstanceNameFor(t *testing.T) {
 }
 
 // TestBootstrapEnsure verifies the builtin bootstrap creates the Agent,
-// Capabilities, TaskTemplate and per-user instances idempotently
+// Skills, TaskTemplate and per-user instances idempotently
 // (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
@@ -95,13 +95,13 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 
-	// Capabilities exist.
-	var caps v1alpha1.CapabilityList
+	// Skills exist.
+	var caps v1alpha1.SkillList
 	if err := cl.List(context.Background(), &caps); err != nil {
-		t.Fatalf("list capabilities: %v", err)
+		t.Fatalf("list skills: %v", err)
 	}
-	if len(caps.Items) != len(BuiltinCapabilities) {
-		t.Errorf("capabilities = %d, want %d", len(caps.Items), len(BuiltinCapabilities))
+	if len(caps.Items) != len(BuiltinSkills) {
+		t.Errorf("skills = %d, want %d", len(caps.Items), len(BuiltinSkills))
 	}
 
 	// TaskTemplate exists.

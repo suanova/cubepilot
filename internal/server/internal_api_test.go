@@ -35,12 +35,12 @@ func internalTestInstance(user, agentRef string) *v1alpha1.AgentInstance {
 	}
 }
 
-func internalTestCap(name, instructions string) *v1alpha1.Capability {
-	return &v1alpha1.Capability{
+func internalTestCap(name, instructions string) *v1alpha1.Skill {
+	return &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha1.CapabilitySpec{
-			Type:         v1alpha1.CapabilityDomain,
-			Title:        "Capability " + name,
+		Spec: v1alpha1.SkillSpec{
+			Type:         v1alpha1.SkillDomain,
+			Title:        "Skill " + name,
 			Description:  "Description " + name,
 			Instructions: instructions,
 		},
@@ -74,8 +74,8 @@ func TestInternalAgentConfig(t *testing.T) {
 	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
 		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
 	}
-	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "cluster-inspection" {
-		t.Errorf("capabilities = %+v", cfg.Capabilities)
+	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "cluster-inspection" {
+		t.Errorf("skills = %+v", cfg.Skills)
 	}
 	if cfg.Revision == "" {
 		t.Error("empty revision")
@@ -97,7 +97,7 @@ func TestInternalAgentConfigNoInstance(t *testing.T) {
 }
 
 // TestInternalAgentConfigRevisionChanges verifies the revision is a content
-// fingerprint: a capability content change produces a different revision.
+// fingerprint: a skill content change produces a different revision.
 func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	s1 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
@@ -116,7 +116,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	cfg2 := decode[resolver.ResolvedAgentConfig](t, rec2)
 
 	if cfg1.Revision == cfg2.Revision {
-		t.Errorf("capability change should change revision: %q", cfg1.Revision)
+		t.Errorf("skill change should change revision: %q", cfg1.Revision)
 	}
 	if cfg1.Revision == "" {
 		t.Error("empty revision")
