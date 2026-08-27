@@ -5,6 +5,7 @@
 #
 #   CUBEPILOT_LLM_APIKEY='sk-...' scripts/e2e.sh                  # deploy only
 #   CUBEPILOT_LLM_APIKEY='sk-...' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+#   CUBEPILOT_LLM_APIKEY='sk-...' CUBEPILOT_LLM_ENDPOINT='https://...' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
