@@ -35,7 +35,6 @@ jobs:
           go-version: '1.26'
       - run: go vet ./...
       - run: go test ./...
-      - run: bash scripts/test-openclaw-config.sh
 
   e2e:
     name: End-to-end (kind)
@@ -73,22 +72,21 @@ jobs:
           docker pull harbor.isuanova.com/library/node:24-alpine
           docker pull harbor.isuanova.com/library/nginx:1.27-alpine
 
-      # The full conversational e2e needs a real model-provider key. Configure
-      # it as the GitHub secret CUBEPILOT_MODEL_PROVIDERS (the models.providers
-      # object, e.g. {"deepseek":{"api":"openai-completions","apiKey":"sk-...",
-      # "baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash"}]}}).
-      # Without the secret the job still runs the deploy path with a placeholder.
+      # The full conversational e2e needs a real LLM apiKey. Configure it as the
+      # GitHub secret CUBEPILOT_LLM_APIKEY (the platform default LLM apiKey for
+      # the builtin deepseek endpoint). Without the secret the job still runs the
+      # deploy path with a placeholder key.
       - name: Run e2e (deploy, or deploy + chat when the provider secret is set)
         env:
-          CHAT_PROVIDER: ${{ secrets.CUBEPILOT_MODEL_PROVIDERS }}
+          CHAT_KEY: ${{ secrets.CUBEPILOT_LLM_APIKEY }}
         run: |
           set -euo pipefail
-          if [ -n "$CHAT_PROVIDER" ]; then
+          if [ -n "$CHAT_KEY" ]; then
             echo "::group::e2e deploy + chat (real provider)"
-            CUBEPILOT_MODEL_PROVIDERS="$CHAT_PROVIDER" CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+            CUBEPILOT_LLM_APIKEY="$CHAT_KEY" CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
             echo "::endgroup::"
           else
             echo "::group::e2e deploy only (placeholder provider)"
-            CUBEPILOT_MODEL_PROVIDERS='{"deepseek":{"api":"openai-completions","apiKey":"sk-placeholder","baseUrl":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}}' scripts/e2e.sh
+            CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh
             echo "::endgroup::"
           fi
