@@ -62,12 +62,18 @@ jobs:
       - name: Install helm
         uses: azure/setup-helm@v4
 
+      # Credentials are passed via env (not inlined into the shell command):
+      # the Harbor robot username contains a literal '$' (e.g. robot$ci-bot)
+      # which the shell would otherwise expand into a variable reference.
       - name: Login to Harbor (docker + helm)
+        env:
+          CI_BOT_NAME: ${{ vars.CI_BOT_NAME }}
+          CI_BOT_PASSWORD: ${{ secrets.CI_BOT_PASSWORD }}
         run: |
-          echo "${{ secrets.CI_BOT_PASSWORD }}" | docker login "${{ env.REGISTRY }}" \
-            -u "${{ vars.CI_BOT_NAME }}" --password-stdin
-          echo "${{ secrets.CI_BOT_PASSWORD }}" | helm registry login "${{ env.REGISTRY }}" \
-            -u "${{ vars.CI_BOT_NAME }}" --password-stdin
+          echo "$CI_BOT_PASSWORD" | docker login "$REGISTRY" \
+            -u "$CI_BOT_NAME" --password-stdin
+          echo "$CI_BOT_PASSWORD" | helm registry login "$REGISTRY" \
+            -u "$CI_BOT_NAME" --password-stdin
 
       - name: Pre-pull base images (de-risk BuildKit metadata pulls)
         run: |
