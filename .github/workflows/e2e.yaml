@@ -74,12 +74,12 @@ jobs:
 
       # The full conversational e2e needs a real LLM. Configure the apiKey as the
       # GitHub secret CUBEPILOT_LLM_APIKEY and (if not DeepSeek) the endpoint as
-      # CUBEPILOT_LLM_ENDPOINT. Without the secrets the job still runs the deploy
-      # path with a placeholder key.
+      # a repo variable CUBEPILOT_LLM_ENDPOINT. Without the secret the job still
+      # runs the deploy path with a placeholder key.
       - name: Run e2e (deploy, or deploy + chat when the provider secret is set)
         env:
           CHAT_KEY: ${{ secrets.CUBEPILOT_LLM_APIKEY }}
-          CHAT_ENDPOINT: ${{ secrets.CUBEPILOT_LLM_ENDPOINT }}
+          CHAT_ENDPOINT: ${{ vars.CUBEPILOT_LLM_ENDPOINT }}
         run: |
           set -euo pipefail
           if [ -n "$CHAT_KEY" ]; then
