@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: tasks.assistant.suanova.io
+  name: tasks.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
     kind: Task
     listKind: TaskList

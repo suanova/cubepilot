@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: agents.assistant.suanova.io
+  name: agenttemplates.ai.cubestack.io
 spec:
-  group: assistant.suanova.io
+  group: ai.cubestack.io
   names:
-    kind: Agent
-    listKind: AgentList
-    plural: agents
-    singular: agent
+    kind: AgentTemplate
+    listKind: AgentTemplateList
+    plural: agenttemplates
+    singular: agenttemplate
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -31,9 +31,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Agent is the declarative definition of an agent (design doc §3.1) -- the
-          platform's first-class object. The builtin agent-for-cloud is the preset
-          first Agent; user-created agents are phase 2+.
+          AgentTemplate is the declarative definition of an agent (design doc §3.1)
+          -- the platform's first-class object. The builtin agent-for-cloud is the
+          preset first template; user-created templates are phase 2+.
         properties:
           apiVersion:
             description: |-
@@ -54,30 +54,15 @@ spec:
             type: object
           spec:
             description: |-
-              AgentSpec defines what an Agent is: model, instructions, tools (capability
-              refs), memory, identity, policy and registry metadata (design §3.1).
-              It is the "class": shared by all instances, versioned, user-independent.
+              AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
+              tools (skill refs), memory, identity, policy and registry metadata
+              (design §3.1). It is the "class": shared by all instances, versioned,
+              user-independent.
             properties:
-              availableModels:
-                description: |-
-                  AvailableModels optionally limits the selectable Model catalog entries
-                  (§3.3) for instances of this agent. Empty = all catalog entries.
-                items:
-                  type: string
-                type: array
-              capabilities:
-                description: |-
-                  Capabilities references Capabilities (atomic thin-overrides + domain
-                  skills) -- design §3.1 `spec.capabilities`. Generic tools
-                  (resource-manager / list-kinds / describe-kind) are platform-provided
-                  and always available -- they are NOT listed here.
-                items:
-                  type: string
-                type: array
               confirmPolicy:
                 default: ConfirmWrites
                 description: |-
-                  ConfirmPolicy is the agent-level confirmation policy for write
+                  ConfirmPolicy is the template-level confirmation policy for write
                   operations (default ConfirmWrites).
                 enum:
                 - None
@@ -85,14 +70,14 @@ spec:
                 type: string
               defaultModel:
                 description: |-
-                  DefaultModel references the Model catalog (§3.3) entry used when an
-                  instance does not select a model explicitly. Empty = runtime default.
+                  DefaultModel is the model name from Models used when an instance does
+                  not select a model explicitly. Empty = no default / runtime default.
                 type: string
               description:
-                description: Description explains what the agent does.
+                description: Description explains what the template does.
                 type: string
               displayName:
-                description: DisplayName is the human-facing agent name.
+                description: DisplayName is the human-facing template name.
                 type: string
               identity:
                 description: Identity declares the identity mode and scope.
@@ -108,42 +93,44 @@ spec:
               instructions:
                 description: |-
                   Instructions is the default system prompt (definition-level default;
-                  instances may override within capability bounds).
+                  instances may append within capability bounds).
                 type: string
               memory:
                 description: Memory declares the memory capability.
                 properties:
                   enabled:
                     description: Enabled toggles persistent memory for instances of
-                      this agent.
+                      this template.
                     type: boolean
                 type: object
-              model:
+              models:
                 description: |-
-                  Model is the ordered model array (allowlist). model[0] = primary;
-                  model[1:] = fallback chain. Instances select within this list.
-                  Deprecated transition shape -- see AgentModelSpec; the Model catalog
-                  (§3.3) is the long-term source.
+                  Models is the inline model list (design §3.3: models are inlined in the
+                  template -- no standalone Model CRD). The first entry is the primary;
+                  instances select within this list.
                 items:
                   description: |-
-                    AgentModelSpec is one entry of the ordered model array of an Agent
-                    definition (design §3.1 FR-M2-003: model-agnostic, supports custom LLMs;
-                    fallback depends on runtime capability).
-
-                    Deprecated transition shape: the simplified design (§3.3) replaces the
-                    inline array with the platform Model catalog -- AgentTemplate references
-                    models by name (defaultModel / availableModels) and AgentInstance picks
-                    via selectedModel. The array is kept for phase-one compatibility and
-                    removed when the Model catalog is wired end to end.
+                    TemplateModelSpec is one entry of the inline model list of an
+                    AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD;
+                    each entry carries name + provider + endpoint + credentialRef).
                   properties:
-                    apiKeyRef:
+                    credentialRef:
                       description: |-
-                        APIKeyRef is a platform-managed Secret reference (shared default
-                        credential). References only -- never the key itself (design §4.4).
+                        CredentialRef is a platform-managed Secret reference (namespace/name or
+                        name) holding the apiKey; required for external. References only --
+                        never the key itself (design §4.4).
                       type: string
                     endpoint:
                       description: Endpoint is the OpenAI-compatible base URL; required
                         for external.
+                      type: string
+                    modelId:
+                      description: |-
+                        ModelID is the backend model identifier passed to the LLM endpoint:
+                        for external it is the model name sent to the OpenAI-compatible
+                        endpoint; for platform it is the runtime-known model id (e.g.
+                        "deepseek/deepseek-v4-flash"). Empty for platform means "use the
+                        runtime's default model" (no override).
                       type: string
                     name:
                       description: Name is the model name (and the key for selectedModel
@@ -151,8 +138,11 @@ spec:
                       type: string
                     provider:
                       description: |-
-                        Provider is "Platform" (builtin inference pool) or "External"
-                        (OpenAI-compatible endpoint; endpoint + apiKeyRef required).
+                        Provider is "Platform" (platform-managed inference) or "External"
+                        (OpenAI-compatible endpoint; endpoint + credentialRef required).
+                      enum:
+                      - Platform
+                      - External
                       type: string
                   required:
                   - name
@@ -170,8 +160,9 @@ spec:
                 properties:
                   maxInstancesPerUser:
                     default: 1
-                    description: MaxInstancesPerUser caps instances per user for this
-                      agent (default 1).
+                    description: |-
+                      MaxInstancesPerUser caps instances per user for this template
+                      (default 1).
                     format: int32
                     type: integer
                 type: object
@@ -180,7 +171,7 @@ spec:
                 properties:
                   builtin:
                     description: |-
-                      Builtin marks platform-preset agents (every user gets an instance
+                      Builtin marks platform-preset templates (every user gets an instance
                       automatically; cannot be deleted).
                     type: boolean
                   visibility:
@@ -197,10 +188,19 @@ spec:
                 - OpenClaw
                 - Hermes
                 type: string
+              skills:
+                description: |-
+                  Skills references Skills (domain knowledge + controlled scripts),
+                  design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec + schema
+                  discovery) are platform-provided and always available -- NOT listed here.
+                items:
+                  type: string
+                type: array
             type: object
           status:
-            description: 'AgentStatus is the observed state of an Agent definition
-              (phase one: minimal).'
+            description: |-
+              AgentTemplateStatus is the observed state of an AgentTemplate definition
+              (phase one: minimal).
             properties:
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed.

@@ -72,11 +72,11 @@ kind: ClusterRole
 metadata:
   name: {{ .Values.operator.name }}-crds
 rules:
-  - apiGroups: ["assistant.suanova.io"]
-    resources: ["agenttemplates", "agentinstances", "capabilities", "tasktemplates", "tasks", "taskruns"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["agenttemplates", "agentinstances", "skills", "tasktemplates", "tasks", "taskruns"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["assistant.suanova.io"]
-    resources: ["agenttemplates/status", "agentinstances/status", "tasks/status", "taskruns/status", "capabilities/status"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["agenttemplates/status", "agentinstances/status", "tasks/status", "taskruns/status", "skills/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
@@ -105,10 +105,10 @@ kind: ClusterRole
 metadata:
   name: {{ .Values.api.name }}
 rules:
-  - apiGroups: ["assistant.suanova.io"]
-    resources: ["agenttemplates", "capabilities", "tasktemplates", "taskruns"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["agenttemplates", "skills", "tasktemplates", "taskruns"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["assistant.suanova.io"]
+  - apiGroups: ["ai.cubestack.io"]
     resources: ["tasks", "agentinstances"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apiextensions.k8s.io"]
@@ -145,7 +145,7 @@ rules:
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch"]
   # Platform CRDs (DevEnvironment / InferenceService / ...) -- current wildcard.
-  - apiGroups: ["assistant.suanova.io"]
+  - apiGroups: ["ai.cubestack.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
