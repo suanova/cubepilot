@@ -42,13 +42,13 @@ var BuiltinSkills = func() []string {
 // BuiltinModels returns the preset inline model entries for the builtin
 // AgentTemplate (design §3.3: models are inlined in the template -- no
 // standalone Model CRD). The platform default model references the
-// cubepilot-llm credential Secret created by setup.sh; its endpoint is the
-// configured platform default LLM endpoint (config.LLMEndpoint) and can be
-// edited on the CR after install.
-func BuiltinModels(endpoint string) []v1alpha1.TemplateModelSpec {
+// cubepilot-llm credential Secret created by setup.sh; its endpoint and model
+// name come from the operator config (config.LLMEndpoint / config.LLMModel)
+// and can be edited on the CR after install.
+func BuiltinModels(endpoint, modelName string) []v1alpha1.TemplateModelSpec {
 	return []v1alpha1.TemplateModelSpec{
 		{
-			Name:          "deepseek-v4-flash",
+			Name:          modelName,
 			Endpoint:      endpoint,
 			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
 		},
@@ -56,8 +56,9 @@ func BuiltinModels(endpoint string) []v1alpha1.TemplateModelSpec {
 }
 
 // BuiltinAgentTemplate returns the builtin agent-for-cloud template
-// (design §3.1), with the platform default model at the given endpoint.
-func BuiltinAgentTemplate(endpoint string) *v1alpha1.AgentTemplate {
+// (design §3.1), with the platform default model at the given endpoint and
+// model name.
+func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 	builtin := true
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{
@@ -71,8 +72,8 @@ func BuiltinAgentTemplate(endpoint string) *v1alpha1.AgentTemplate {
 			DisplayName:   "Platform Management Assistant",
 			Description:   "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
 			Runtime:       v1alpha1.RuntimeOpenClaw,
-			DefaultModel:  "deepseek-v4-flash",
-			Models:        BuiltinModels(endpoint),
+			DefaultModel:  modelName,
+			Models:        BuiltinModels(endpoint, modelName),
 			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
@@ -169,7 +170,11 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if endpoint == "" {
 		endpoint = config.DefaultLLMEndpoint
 	}
-	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint)); err != nil {
+	modelName := r.Cfg.LLMModel
+	if modelName == "" {
+		modelName = config.DefaultLLMModel
+	}
+	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint, modelName)); err != nil {
 		return err
 	}
 	// 2. Domain skills (generated from embedded SKILL.md).

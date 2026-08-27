@@ -20,6 +20,9 @@ agents:
   # agent-for-cloud model. setup.sh --llm-endpoint / CUBEPILOT_LLM_ENDPOINT
   # overrides it; the apiKey always comes from the cubepilot-llm Secret.
   llmEndpoint: https://api.deepseek.com
+  # Model name (backend model id) of the platform default LLM; must be in the
+  # endpoint's allow-list. setup.sh --llm-model / CUBEPILOT_LLM_MODEL overrides.
+  llmModel: deepseek-v4-flash
   # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
   reclaim: "false"
   idleTTL: 30m
