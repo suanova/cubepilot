@@ -53,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
 	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
 	mux.HandleFunc("/api/instances", s.handleInstances)
+	mux.HandleFunc("/api/llms", s.handleAddLLM)
 	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
