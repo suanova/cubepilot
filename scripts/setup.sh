@@ -86,6 +86,18 @@ command -v jq      >/dev/null || { echo "jq required"; exit 1; }
 command -v helm    >/dev/null || { echo "helm required"; exit 1; }
 command -v openssl >/dev/null || { echo "openssl required"; exit 1; }
 
+# Transitional compatibility: the pre-merge pull_request_target workflow on
+# main still supplies CUBEPILOT_MODEL_PROVIDERS (the old providers JSON).
+# Derive the apiKey + endpoint from it when the new env vars are not set; this
+# block becomes inert once the workflow lands on main.
+if [ -z "$LLM_APIKEY" ] && [ -n "${CUBEPILOT_MODEL_PROVIDERS:-}" ]; then
+  LLM_APIKEY="$(printf '%s' "$CUBEPILOT_MODEL_PROVIDERS" | jq -r 'to_entries[0].value.apiKey // empty' 2>/dev/null || true)"
+  if [ -z "${CUBEPILOT_LLM_ENDPOINT:-}" ]; then
+    OLD_ENDPOINT="$(printf '%s' "$CUBEPILOT_MODEL_PROVIDERS" | jq -r 'to_entries[0].value.baseUrl // empty' 2>/dev/null || true)"
+    [ -n "$OLD_ENDPOINT" ] && LLM_ENDPOINT="$OLD_ENDPOINT"
+  fi
+fi
+
 [ -n "$LLM_APIKEY" ] || {
   echo "error: CUBEPILOT_LLM_APIKEY is required (the platform default LLM apiKey). See --help." >&2
   exit 1
