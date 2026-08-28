@@ -2,10 +2,16 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -49,17 +55,49 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
-		if body.Config.Model == "" {
-			body.Config.Model = store.DefaultAgentConfig().Model
-		}
 		if err := s.store.SaveAgentConfig(body.Config); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		// A model switch must take effect on the next chat turn: write it to
+		// the caller's AgentInstance.selectedModel (design §3.2: switching the
+		// model = editing selectedModel -> re-resolve), not just the global
+		// store preference. An empty model ("Runtime Default") clears the
+		// override so the gateway's configured primary decides.
+		if err := s.applyModelOverride(r, body.Config.Model); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update instance model: %v", err)})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"config": body.Config})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or PUT required"})
 	}
+}
+
+// applyModelOverride writes the model to the caller's AgentInstance
+// selectedModel so the switch takes effect on the next chat turn (the resolver
+// sends the override from spec.selectedModel). An empty model clears the
+// override ("Runtime Default": the gateway's configured primary decides). A
+// not-yet-provisioned instance is fine -- the provisioning path carries the
+// selection when the instance is created.
+func (s *Server) applyModelOverride(r *http.Request, model string) error {
+	if s.cr == nil {
+		return nil
+	}
+	user := s.userOf(r)
+	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &inst); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if inst.Spec.SelectedModel == model {
+		return nil
+	}
+	inst.Spec.SelectedModel = model
+	return s.cr.Update(r.Context(), &inst)
 }
 
 // handleAgentStatus reports the live state of the caller's agent instance

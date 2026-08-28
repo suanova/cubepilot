@@ -91,6 +91,12 @@ export default function AgentView() {
   }
 
   async function saveAgentConfig() {
+    // The model must be explicit: saving an empty selection would leave the
+    // instance with no override, so prompt instead of silently saving.
+    if (!cfg.model) {
+      showToast('Add or select a model first')
+      return
+    }
     try {
       await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt, skills })
       showToast('Config saved - system prompt takes effect immediately')
@@ -147,13 +153,18 @@ export default function AgentView() {
                   value={cfg.model || ''}
                   onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value }))}
                 >
-                  <option value="">-- Runtime Default --</option>
+                  <option value="" disabled>-- Select a model --</option>
                   {templateModels.map((m) => (
                     <option key={m.name} value={m.name}>
                       {m.name}
                     </option>
                   ))}
                 </select>
+                {templateModels.length === 0 && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>
+                    No models yet — add one in the LLM Config card below
+                  </div>
+                )}
                 {defaultModel && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
                     Template default: {defaultModel}
@@ -187,7 +198,7 @@ export default function AgentView() {
           </div>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">LLM 配置</span>
+              <span className="card-title">LLM Config</span>
               <span className="card-hint">Add an OpenAI-compatible model to the platform catalog</span>
             </div>
             <div className="card-pad">

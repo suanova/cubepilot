@@ -15,12 +15,20 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
+	"github.com/suanova/cubepilot/internal/store"
 )
 
 // platformTestServer builds a Server with a fake client (status subresources
 // enabled for Model/TaskRun so patchStatus-style writes behave) and the
 // platform scheme registered.
 func platformTestServer(t *testing.T, objs ...client.Object) *Server {
+	t.Helper()
+	return platformTestServerStore(t, nil, objs...)
+}
+
+// platformTestServerStore is platformTestServer with a JSON store attached, so
+// endpoints that persist agent config (PUT /api/agent/config) can be tested.
+func platformTestServerStore(t *testing.T, st *store.Store, objs ...client.Object) *Server {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -33,7 +41,7 @@ func platformTestServer(t *testing.T, objs ...client.Object) *Server {
 		Build()
 	cfg := config.Config{DefaultUser: "zhang.wei"}
 	mgr := instances.New(cl, cfg)
-	return New(cfg, mgr, nil, nil, cl)
+	return New(cfg, mgr, st, nil, cl)
 }
 
 func doReq(t *testing.T, h http.Handler, method, path, user string, body any) *httptest.ResponseRecorder {
