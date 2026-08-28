@@ -23,7 +23,7 @@ jobs:
     steps:
       # Check out the PR head with full history so the base..HEAD range below
       # resolves (the pull_request event supplies base.sha on the base branch).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}

@@ -32,7 +32,7 @@ jobs:
       # push / workflow_dispatch events). actions/checkout refuses fork-PR
       # checkouts in a pull_request_target workflow (the "pwn request" vector);
       # we explicitly opt in -- accepted trade-off, contributors are trusted.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           allow-unsafe-pr-checkout: true
