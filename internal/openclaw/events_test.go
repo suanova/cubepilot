@@ -3,6 +3,7 @@ package openclaw
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -72,6 +73,41 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 	}
 	if toolCall.Arguments != "kubectl get pods -A" {
 		t.Errorf("tool arguments = %q, want accumulated fragments", toolCall.Arguments)
+	}
+}
+
+func TestStreamChat_SurfacesStreamedError(t *testing.T) {
+	// The gateway streams an agent-run failure as an OpenAI-compatible error
+	// line before [DONE]. The client must surface it instead of finishing the
+	// turn with no content (which showed only "done" in the portal).
+	sse := "" +
+		"data: {\"error\":{\"message\":\"The agent run failed before producing a reply.\",\"type\":\"api_error\"}}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "secret")
+	var got []Event
+	err := c.StreamChat(t.Context(), ChatParams{
+		SessionKey: "conv-abc",
+		Messages:   []ChatMessage{{Role: "user", Content: "hi"}},
+	}, func(e Event) error {
+		got = append(got, e)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an error for a streamed agent failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "The agent run failed before producing a reply.") {
+		t.Errorf("error = %q, want the streamed message", err.Error())
+	}
+	// The terminal event must carry the error so the portal can render it.
+	if len(got) == 0 || got[len(got)-1].Type != EventMessageDone || got[len(got)-1].Error == "" {
+		t.Errorf("expected message_done carrying the error, got %+v", got)
 	}
 }
 
