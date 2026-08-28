@@ -18,6 +18,8 @@ import (
 var GroupVersion = schema.GroupVersion{Group: "ai.cubestack.io", Version: "v1alpha1"}
 
 // SchemeBuilder collects the registered types for this group/version.
+//
+//nolint:staticcheck // kubebuilder scaffolding; scheme.Builder is the standard pattern for API packages.
 var SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
 // AddToScheme adds the types in this group/version to the given scheme.

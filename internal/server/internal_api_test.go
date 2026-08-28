@@ -15,7 +15,7 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DefaultModel:    "deepseek-v4-flash",
+			DefaultModel: "deepseek-v4-flash",
 			Models: []v1alpha1.TemplateModelSpec{
 				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			},

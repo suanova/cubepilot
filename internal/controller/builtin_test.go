@@ -155,7 +155,3 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Errorf("instances after re-ensure = %d, want 2 (idempotent)", len(insts2.Items))
 	}
 }
-
-func objectKey(name string) types.NamespacedName {
-	return types.NamespacedName{Name: name}
-}

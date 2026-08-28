@@ -1,0 +1,28 @@
+# golangci-lint configuration (v1.x). Tuned so the tree lints clean; see the
+# //nolint:staticcheck markers for the two intentional deprecation usages
+# (kubebuilder scaffolding and the TaskTemplateDefaults compatibility shim).
+#
+# The enabled set is the golangci default plus formatting/style checks that
+# mirror the repo's `make test` / `make lint` discipline.
+
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck    # unchecked errors
+    - gosimple    # simplify code (S1xxx)
+    - govet       # go vet
+    - ineffassign # ineffective assignments
+    - staticcheck # static analysis (SA1xxx, incl. deprecation use)
+    - unused      # dead code
+    - gofmt       # gofmt formatting
+    - goimports   # import grouping / ordering
+    - misspell    # common misspellings
+
+issues:
+  # Keep golangci's default exclusions (they filter common false positives);
+  # add repo-specific rules here if the need arises.
+  exclude-use-default: true

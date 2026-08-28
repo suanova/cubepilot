@@ -124,8 +124,9 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 				Level: "cluster-read",
 				Note:  "Full-cluster inspection requires the creator to have cluster-level read permission",
 			},
-			Skills: []string{"cluster-inspection"},
-			DefaultCron:  "0 2 * * *",
+			Skills:      []string{"cluster-inspection"},
+			DefaultCron: "0 2 * * *",
+			//nolint:staticcheck // TaskTemplateDefaults is deprecated (kept for compatibility, see TaskTemplateSpec.DefaultCron).
 			Defaults: &v1alpha1.TaskTemplateDefaults{
 				Trigger: v1alpha1.TaskTriggerCron,
 				Cron:    "0 2 * * *",
