@@ -49,7 +49,7 @@ func main() {
 		log.Fatalf("cr client: %v", err)
 	}
 
-	st, err := store.New(cfg.DataDir)
+	st, err := store.New(cfg.DataDir, cfg.LLMModel)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}

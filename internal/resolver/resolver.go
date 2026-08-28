@@ -220,7 +220,7 @@ func (r *Resolver) resolveModel(selected string, def v1alpha1.AgentTemplate) (st
 			return m.Name + "/" + m.Name, nil
 		}
 	}
-	return "", fmt.Errorf("model %q not in template %q models", selected, def.Name)
+	return "", fmt.Errorf("model %q is not available in template %q (add it under Agent config -> LLM Config, then select it again)", selected, def.Name)
 }
 
 func contains(list []string, s string) bool {

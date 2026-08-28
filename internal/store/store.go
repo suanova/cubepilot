@@ -172,10 +172,11 @@ type AgentConfig struct {
 	Skills       []SkillToggle `json:"skills"`
 }
 
-// DefaultAgentConfig mirrors the baked-in skill catalog + gateway model.
+// DefaultAgentConfig mirrors the baked-in skill catalog + gateway model. The
+// model is the fallback when no operator-configured default is supplied to New.
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
-		Model: "cuberouter/glm-5.1",
+		Model: "deepseek-v4-flash",
 		Skills: []SkillToggle{
 			{Name: "kubectl-platform", Enabled: true},
 			{Name: "dev-environment", Enabled: true},
@@ -185,18 +186,32 @@ func DefaultAgentConfig() AgentConfig {
 	}
 }
 
-// Store keeps each collection in one JSON file under dir.
-type Store struct {
-	dir string
-	mu  sync.Mutex
+// defaultConfig returns the baked-in defaults with the operator-configured
+// default model (seeds the portal model selector until the user picks a model).
+func (s *Store) defaultConfig() AgentConfig {
+	cfg := DefaultAgentConfig()
+	if s.defaultModel != "" {
+		cfg.Model = s.defaultModel
+	}
+	return cfg
 }
 
-// New opens (creating if needed) a store rooted at dir.
-func New(dir string) (*Store, error) {
+// Store keeps each collection in one JSON file under dir.
+type Store struct {
+	dir          string
+	defaultModel string // operator-configured default LLM (the builtin template default)
+	mu           sync.Mutex
+}
+
+// New opens (creating if needed) a store rooted at dir. defaultModel is the
+// operator-configured default LLM (the builtin AgentTemplate default): it seeds
+// the Agent config so the portal's model selector always shows a valid template
+// model instead of a stale hardcoded value.
+func New(dir, defaultModel string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("store dir: %w", err)
 	}
-	return &Store{dir: dir}, nil
+	return &Store{dir: dir, defaultModel: defaultModel}, nil
 }
 
 func shortID(prefix string) string {
@@ -289,16 +304,15 @@ func (s *Store) ListAudit(limit int) ([]AuditEntry, error) {
 
 // ---- agent config ----
 
-// GetAgentConfig returns the saved config merged over defaults.
+// GetAgentConfig returns the saved config merged over defaults. An explicitly
+// saved empty model ("Runtime Default" on the portal) is preserved so the
+// selector stays on Runtime Default and the instance keeps no override.
 func (s *Store) GetAgentConfig() (AgentConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cfg := DefaultAgentConfig()
+	cfg := s.defaultConfig()
 	if err := s.file("agent-config.json", &cfg, false); err != nil {
 		return AgentConfig{}, err
-	}
-	if cfg.Model == "" {
-		cfg.Model = DefaultAgentConfig().Model
 	}
 	return cfg, nil
 }

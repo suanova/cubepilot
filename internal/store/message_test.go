@@ -8,7 +8,7 @@ import (
 
 func TestAppendAndListMessages(t *testing.T) {
 	dir := t.TempDir()
-	s, err := New(dir)
+	s, err := New(dir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestAppendAndListMessages(t *testing.T) {
 
 func TestTurnEndMarksAssistantRow(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, "")
 
 	_, _ = s.AppendMessage(Message{ConversationID: "c", Role: "user", Content: "q"})
 	_, _ = s.AppendMessage(Message{ConversationID: "c", Role: "assistant", EventType: "message_delta", Content: "a"})
@@ -79,7 +79,7 @@ func TestTurnEndMarksAssistantRow(t *testing.T) {
 
 func TestGCExpiredMessages(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, "")
 
 	_, _ = s.AppendMessage(Message{ConversationID: "c", Role: "user", Content: "fresh"})
 	// Simulate an old row by writing directly with a stale timestamp.
@@ -105,7 +105,7 @@ func TestGCExpiredMessages(t *testing.T) {
 
 func TestMessageToolCallsJSON(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, "")
 	// ToolCalls stores the raw arguments JSON (the same payload that flows on
 	// the SSE stream), not a doubly-encoded string.
 	_, _ = s.AppendMessage(Message{ConversationID: "c", Role: "tool", EventType: "tool_call", ToolName: "exec", CallID: "call-1", ToolCalls: json.RawMessage(`{"command":"kubectl get nodes"}`)})
