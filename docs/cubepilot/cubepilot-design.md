@@ -357,7 +357,7 @@ schema 发现：runtime Pod 挂**两个 kubeconfig**——用户 kubeconfig（�
 - 用户被禁用、权限回收或凭据轮换时，Instance Manager 更新或撤销实例挂载的凭据。
 - TaskRun 在运行前再次校验身份和授权，不依赖创建任务时的权限。
 - 凭据由平台托管为 Secret，以文件挂载或短期令牌注入 Pod；Template、Instance、PVC 和审计记录中不存明文密钥。
-- 模型端点与凭据内联在 AgentTemplate 的 `models` 里（External 项含 endpoint + credentialRef），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
+- 模型端点与凭据内联在 AgentTemplate 的 `models` 里（每项含 endpoint；credentialRef 可选，public 模型没有），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
 - 每实例独占 Pod 和 PVC，使用非 root、`readOnlyRootFilesystem`、`seccomp RuntimeDefault`、`drop ALL capabilities`、资源限制和 egress 白名单。
 
 ---
