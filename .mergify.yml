@@ -3,8 +3,9 @@
 # Automates PR merging with Mergify (https://mergify.io).
 #
 # Model:
-#   * A PR is added to the "default" merge queue as soon as CI passes.
-#   * The queue is strict: a queued PR is updated against main before merging.
+#   * A PR is merged as soon as its CI passes and — unless it's from
+#     dependabot — a human approves it.
+#   * No merge queue: no temporary "checking" PRs are ever created.
 #   * Merges use squash so each PR lands as a single commit on main.
 #
 # The check names come from the split CI workflows:
@@ -16,20 +17,17 @@
 # checks depend on the repo's "Run workflows from fork pull requests" setting
 # (first-time contributors require one approval). e2e.yaml (pull_request_target)
 # runs on fork PRs regardless.
-
-queue_rules:
-  - name: default
-    merge_method: squash
-    merge_conditions:
-      - check-success="Unit tests + static checks"
-      - check-success="Web build (type-check + vite)"
-      - check-success="End-to-end (kind)"
-      - check-success="DCO"
+#
+# Rules are evaluated top-down; the first one that matches wins, so the
+# dependabot rule must come before the approval-requiring one.
 
 pull_request_rules:
-  - name: queue PRs that pass CI
+  # Dependency bumps are generated upstream, so merge them as soon as CI is
+  # green — no human approval required.
+  - name: automatically merge dependabot PRs
     conditions:
-      - base=main
+      - author = dependabot[bot]
+      - base = main
       - -draft
       - -conflict
       - label!=do-not-merge
@@ -38,5 +36,21 @@ pull_request_rules:
       - check-success="End-to-end (kind)"
       - check-success="DCO"
     actions:
-      queue:
-        name: default
+      merge:
+        method: squash
+
+  # Everything else needs a human approval on top of green CI.
+  - name: automatically merge approved PRs
+    conditions:
+      - base = main
+      - -draft
+      - -conflict
+      - label!=do-not-merge
+      - "#approved-reviews-by >= 1"
+      - check-success="Unit tests + static checks"
+      - check-success="Web build (type-check + vite)"
+      - check-success="End-to-end (kind)"
+      - check-success="DCO"
+    actions:
+      merge:
+        method: squash
