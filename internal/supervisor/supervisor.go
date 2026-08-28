@@ -63,7 +63,7 @@ func LoadFromEnv() Config {
 		Workspace:    getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
 		GatewayCmd:   []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
 		PollInterval: 10 * time.Second,
-		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
+		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/config/openclaw.json"),
 	}
 }
 

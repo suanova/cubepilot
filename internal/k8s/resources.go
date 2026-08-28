@@ -181,7 +181,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
-					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/openclaw.json"},
+					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/config/openclaw.json"},
 					{Name: "OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS", Value: "1"},
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
@@ -201,7 +201,14 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// The workspace is the default ~/.openclaw/workspace (= PVC
 					// root / workspace subdir); no explicit mount or env needed.
 					{Name: "data", MountPath: "/home/node/.openclaw"},
-					{Name: "config", MountPath: "/home/node/.openclaw/openclaw.json", SubPath: "openclaw.json"},
+					// Mount the config Secret as a directory, NOT subPath: the
+					// kubelet never propagates Secret updates to subPath mounts, so
+					// an operator re-render (e.g. a newly added LLM provider) would
+					// never reach the gateway's openclaw.json and the override would
+					// stay rejected. Directory mounts refresh within ~30-60s and the
+					// supervisor restarts the gateway on the change (see
+					// OPENCLAW_CONFIG_PATH).
+					{Name: "config", MountPath: "/home/node/.openclaw/config"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
 				},
