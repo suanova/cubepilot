@@ -42,6 +42,15 @@ type ChatChunk struct {
 	ID      string       `json:"id"`
 	Object  string       `json:"object"`
 	Choices []chatChoice `json:"choices"`
+	// Error carries a streamed OpenAI-compatible error (e.g. the agent run
+	// failed mid-turn). The gateway emits data: {"error": {...}} before [DONE];
+	// without it the client would silently finish with no content.
+	Error *chatError `json:"error"`
+}
+
+type chatError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
 }
 
 type chatChoice struct {

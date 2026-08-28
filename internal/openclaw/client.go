@@ -140,6 +140,12 @@ func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) 
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue // skip malformed keepalive/usage lines
 		}
+		// The gateway streams agent-run failures as an error line before [DONE]
+		// (e.g. "The agent run failed before producing a reply."). Surface it
+		// instead of finishing the turn with no content.
+		if chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "" {
+			return c.fail(emit, fmt.Errorf("%s", strings.TrimSpace(chunk.Error.Message)))
+		}
 		for _, ev := range m.mapChunk(chunk) {
 			if err := emit(ev); err != nil {
 				return err
