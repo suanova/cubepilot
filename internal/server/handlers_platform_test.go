@@ -9,6 +9,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -31,6 +33,7 @@ func platformTestServer(t *testing.T, objs ...client.Object) *Server {
 func platformTestServerStore(t *testing.T, st *store.Store, objs ...client.Object) *Server {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add platform types: %v", err)
 	}

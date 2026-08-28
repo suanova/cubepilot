@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -278,4 +279,32 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
+// for the agent supervisor: GET /internal/gateway/config. The operator renders
+// it into the openclaw-config Secret from the AgentTemplate models; the
+// supervisor pulls it here so provider/model changes apply without waiting on
+// the kubelet Secret-volume sync (design §3.3 / issue #6).
+func (s *Server) handleInternalGatewayConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "k8s client unavailable"})
+		return
+	}
+	var sec corev1.Secret
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.ConfigSecretName}, &sec); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("gateway config not ready: %v", err)})
+		return
+	}
+	raw := sec.Data["openclaw.json"]
+	if len(raw) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway config empty"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
 }

@@ -181,7 +181,12 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
-					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/openclaw.json"},
+					// The gateway reads its config from this writable path; the
+					// supervisor renders it by pulling the operator's config from
+					// the internal API (fast, no kubelet Secret sync). The
+					// read-only Secret mount below is only the cold-start seed.
+					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/gateway/openclaw.json"},
+					{Name: "CUBEPILOT_CONFIG_SEED", Value: "/home/node/.openclaw/openclaw.json"},
 					{Name: "OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS", Value: "1"},
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
@@ -201,6 +206,9 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// The workspace is the default ~/.openclaw/workspace (= PVC
 					// root / workspace subdir); no explicit mount or env needed.
 					{Name: "data", MountPath: "/home/node/.openclaw"},
+					// The openclaw-config Secret is a read-only cold-start seed only;
+					// the supervisor copies it to the writable gateway config path
+					// (OPENCLAW_CONFIG_PATH) and keeps it fresh from the internal API.
 					{Name: "config", MountPath: "/home/node/.openclaw/openclaw.json", SubPath: "openclaw.json"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},

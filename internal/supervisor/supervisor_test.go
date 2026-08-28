@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suanova/cubepilot/internal/resolver"
 )
@@ -135,56 +136,85 @@ func TestPollRendersOnChange(t *testing.T) {
 	}
 }
 
-// TestConfigHashChanged verifies the gateway config file change detection:
-// edits are reported once, then converge; a missing file is not a change.
-func TestConfigHashChanged(t *testing.T) {
+// TestApplyGatewayConfig verifies the gateway config change detection: the
+// supervisor writes the pulled config when its content changes, reports the
+// change once, and converges (no repeated restarts for unchanged content).
+func TestApplyGatewayConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "openclaw.json")
-	if err := os.WriteFile(path, []byte(`{"models":{"providers":{}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(dir, "gateway", "openclaw.json")
 	s := New(Config{ConfigPath: path})
-	s.snapshotConfigHash()
 
-	if s.configHashChanged() {
-		t.Error("no change after snapshot should report false")
+	changed, err := s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
+	if err != nil {
+		t.Fatalf("apply: %v", err)
 	}
-	// Editing the file (e.g. adding a provider) is detected once...
-	if err := os.WriteFile(path, []byte(`{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}`), 0o644); err != nil {
-		t.Fatal(err)
+	if !changed {
+		t.Error("first apply should report changed")
 	}
-	if !s.configHashChanged() {
-		t.Error("edit should report changed")
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != `{"models":{"providers":{}}}` {
+		t.Errorf("config not written correctly: %q, err=%v", got, err)
 	}
-	// ...then converges (no repeated restarts).
-	if s.configHashChanged() {
-		t.Error("same content after detection should report false")
+
+	// Same content (e.g. the poll re-pulls) -> no change, no restart.
+	changed, err = s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
+	if err != nil {
+		t.Fatalf("apply same: %v", err)
+	}
+	if changed {
+		t.Error("same content should not report changed")
+	}
+
+	// A provider added (e.g. an LLM added on the portal) -> changed.
+	changed, err = s.applyGatewayConfig([]byte(`{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}`))
+	if err != nil {
+		t.Fatalf("apply new: %v", err)
+	}
+	if !changed {
+		t.Error("changed content should report changed")
+	}
+	got, _ = os.ReadFile(path)
+	if string(got) != `{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}` {
+		t.Errorf("config = %q, want the new content", got)
 	}
 }
 
-// TestConfigHashChangedMissingFile treats an absent config file as no change
-// (Secret not mounted yet), and detects the file when it appears.
-func TestConfigHashChangedMissingFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "openclaw.json")
-	s := New(Config{ConfigPath: path})
-	s.snapshotConfigHash()
-
-	if s.configHashChanged() {
-		t.Error("missing file should report false")
-	}
-	if err := os.WriteFile(path, []byte(`{"gateway":{"mode":"local"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !s.configHashChanged() {
-		t.Error("file appearing should report changed")
-	}
-}
-
-// TestConfigHashChangedDisabled verifies an empty ConfigPath disables the watch.
-func TestConfigHashChangedDisabled(t *testing.T) {
+// TestApplyGatewayConfigDisabled verifies an empty ConfigPath disables the pull.
+func TestApplyGatewayConfigDisabled(t *testing.T) {
 	s := New(Config{})
-	if s.configHashChanged() {
-		t.Error("empty ConfigPath should never report changed")
+	changed, err := s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
+	if err != nil || changed {
+		t.Errorf("empty ConfigPath: changed=%v err=%v, want no-op", changed, err)
+	}
+}
+
+// TestSeedGatewayConfigFallback verifies the cold-start seed: when the internal
+// API is unreachable, the mounted read-only config is copied to the writable
+// path so the gateway still boots with the operator's config.
+func TestSeedGatewayConfigFallback(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "seed", "openclaw.json")
+	if err := os.MkdirAll(filepath.Dir(seed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seed, []byte(`{"gateway":{"mode":"local"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{
+		ConfigPath: filepath.Join(dir, "gateway", "openclaw.json"),
+		SeedPath:   seed,
+		APIURL:     "http://127.0.0.1:1", // unreachable -> fall back to seed
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if err := s.seedGatewayConfig(ctx); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := os.ReadFile(s.cfg.ConfigPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	if string(got) != `{"gateway":{"mode":"local"}}` {
+		t.Errorf("config = %q, want the seeded content", got)
 	}
 }
