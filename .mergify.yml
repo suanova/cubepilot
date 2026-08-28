@@ -11,6 +11,7 @@
 #   * "Unit tests + static checks"    (ci.yaml,   job: test)
 #   * "Web build (type-check + vite)" (ci.yaml,   job: web)
 #   * "End-to-end (kind)"             (e2e.yaml,  job: e2e)
+#   * "DCO"                           (dco.yaml,  job: dco)
 # NOTE: ci.yaml runs on plain `pull_request`, so on fork PRs the first two
 # checks depend on the repo's "Run workflows from fork pull requests" setting
 # (first-time contributors require one approval). e2e.yaml (pull_request_target)
@@ -23,6 +24,7 @@ queue_rules:
       - check-success="Unit tests + static checks"
       - check-success="Web build (type-check + vite)"
       - check-success="End-to-end (kind)"
+      - check-success="DCO"
 
 pull_request_rules:
   - name: queue PRs that pass CI
@@ -34,6 +36,7 @@ pull_request_rules:
       - check-success="Unit tests + static checks"
       - check-success="Web build (type-check + vite)"
       - check-success="End-to-end (kind)"
+      - check-success="DCO"
     actions:
       queue:
         name: default

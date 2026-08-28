@@ -1,0 +1,50 @@
+# DCO (Developer Certificate of Origin): every commit in a PR must carry a
+# `Signed-off-by:` trailer certifying the author has the right to submit it.
+# Fast and needs no repository secrets, so it runs on plain `pull_request`
+# like the checks in ci.yaml. Merge commits are skipped -- GitHub "Update
+# branch" merges and local `git merge main` do not carry a trailer, and the
+# real merge into main is a squash done by Mergify, which preserves the
+# trailers of the signed PR commits.
+
+name: dco
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Check out the PR head with full history so the base..HEAD range below
+      # resolves (the pull_request event supplies base.sha on the base branch).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Check commits are signed off
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          # No pull_request context (workflow_dispatch): nothing to check.
+          [ -z "$base" ] && exit 0
+          failed=0
+          for sha in $(git rev-list --no-merges "${base}..HEAD"); do
+            if ! git log -1 --format=%B "$sha" | grep -qE '^Signed-off-by:'; then
+              echo "::error::commit ${sha} is not signed off"
+              git log -1 --format='  %h %s%n    %an <%ae>' "$sha"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Add 'Signed-off-by: Name <email>' to each commit, e.g.:"
+            echo "  git commit --amend --signoff      # last commit"
+            echo "  git rebase --signoff main         # whole branch"
+            exit 1
+          fi
