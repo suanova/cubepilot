@@ -1,0 +1,56 @@
+# Fast checks that need no repository secrets: Go build/test/lint, chart lint,
+# and the web build. Triggered on plain `pull_request` -- GitHub checks out the
+# PR head with no secrets in scope, so there is no pwn-request surface here.
+# The secret-gated kind e2e (chat e2e needs CUBEPILOT_LLM_APIKEY) lives in
+# e2e.yaml on `pull_request_target`.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests + static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+      - run: go mod verify
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+      # Fast chart sanity (the e2e job does a real helm upgrade --install, which
+      # also renders the chart; lint catches malformed charts before that).
+      - name: Install helm (chart lint)
+        uses: azure/setup-helm@v4
+      - run: helm lint deploy/charts/cubepilot
+
+  web:
+    name: Web build (type-check + vite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+      - name: Build (type-check + vite)
+        run: npm run build
+        working-directory: web
