@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -95,10 +94,10 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// Self-service provisioning: the instance owner is always the caller
 		// (never taken from the body), so a user can only create their own.
 		var body struct {
-			TemplateRef     string   `json:"templateRef"`
-			SelectedModel   string   `json:"selectedModel"`
-			EnabledSkills   []string `json:"enabledSkills"`
-			UserInstructions string  `json:"userInstructions"`
+			TemplateRef      string   `json:"templateRef"`
+			SelectedModel    string   `json:"selectedModel"`
+			EnabledSkills    []string `json:"enabledSkills"`
+			UserInstructions string   `json:"userInstructions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
@@ -136,8 +135,8 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: v1alpha1.AgentInstanceSpec{
-				TemplateRef:      templateRef,
-				Owner:            owner,
+				TemplateRef: templateRef,
+				Owner:       owner,
 				Identity: v1alpha1.IdentitySpec{
 					Mode: v1alpha1.IdentityModeUser,
 					PrincipalRef: v1alpha1.PrincipalRef{
@@ -280,34 +279,3 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, cfg)
 }
-
-// ---- shared helpers ----
-
-func (s *Server) listSkills(ctx context.Context) ([]v1alpha1.Skill, error) {
-	if s.cr == nil {
-		return nil, nil
-	}
-	var list v1alpha1.SkillList
-	if err := s.cr.List(ctx, &list); err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-
-func (s *Server) getAgentTemplate(ctx context.Context, name string) (*v1alpha1.AgentTemplate, error) {
-	if s.cr == nil {
-		return nil, fmt.Errorf("CRD path disabled")
-	}
-	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &tmpl); err != nil {
-		return nil, err
-	}
-	return &tmpl, nil
-}
-
-// writeObjectJSON marshals a metav1 object's JSON for API responses.
-func writeObjectJSON(w http.ResponseWriter, status int, v any) {
-	writeJSON(w, status, v)
-}
-
-var _ = metav1.Now

@@ -26,13 +26,13 @@ import (
 // ResolvedSkill is the domain skill content an agent may use --
 // the skill source. The supervisor renders it into workspace/skills/<name>/.
 type ResolvedSkill struct {
-	Name         string                    `json:"name"`
-	Title        string                    `json:"title,omitempty"`
-	Description  string                    `json:"description,omitempty"`
-	Instructions string                    `json:"instructions,omitempty"`
-	Uses         []string                  `json:"uses,omitempty"`
+	Name         string               `json:"name"`
+	Title        string               `json:"title,omitempty"`
+	Description  string               `json:"description,omitempty"`
+	Instructions string               `json:"instructions,omitempty"`
+	Uses         []string             `json:"uses,omitempty"`
 	Files        []v1alpha1.SkillFile `json:"files,omitempty"`
-	Revision     string                    `json:"revision"`
+	Revision     string               `json:"revision"`
 }
 
 // ResolvedAgentConfig is the immutable, fully-resolved configuration for one

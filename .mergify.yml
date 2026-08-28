@@ -7,15 +7,21 @@
 #   * The queue is strict: a queued PR is updated against main before merging.
 #   * Merges use squash so each PR lands as a single commit on main.
 #
-# The two check names come from .github/workflows/e2e.yaml:
-#   * "Unit tests + static checks"   (job: test)
-#   * "End-to-end (kind)"            (job: e2e)
+# The check names come from the split CI workflows:
+#   * "Unit tests + static checks"    (ci.yaml,   job: test)
+#   * "Web build (type-check + vite)" (ci.yaml,   job: web)
+#   * "End-to-end (kind)"             (e2e.yaml,  job: e2e)
+# NOTE: ci.yaml runs on plain `pull_request`, so on fork PRs the first two
+# checks depend on the repo's "Run workflows from fork pull requests" setting
+# (first-time contributors require one approval). e2e.yaml (pull_request_target)
+# runs on fork PRs regardless.
 
 queue_rules:
   - name: default
     merge_method: squash
     merge_conditions:
       - check-success="Unit tests + static checks"
+      - check-success="Web build (type-check + vite)"
       - check-success="End-to-end (kind)"
 
 pull_request_rules:
@@ -26,6 +32,7 @@ pull_request_rules:
       - -conflict
       - label!=do-not-merge
       - check-success="Unit tests + static checks"
+      - check-success="Web build (type-check + vite)"
       - check-success="End-to-end (kind)"
     actions:
       queue:
