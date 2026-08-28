@@ -38,7 +38,7 @@ jobs:
       # Fast chart sanity (the e2e job does a real helm upgrade --install, which
       # also renders the chart; lint catches malformed charts before that).
       - name: Install helm (chart lint)
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
       - run: helm lint deploy/charts/cubepilot
 
   web:
