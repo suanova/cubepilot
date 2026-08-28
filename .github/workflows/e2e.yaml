@@ -1,14 +1,20 @@
+# The secret-gated end-to-end test (kind): deploys the full stack and, when a
+# real LLM apiKey is configured, runs a conversational chat e2e. Kept on
+# `pull_request_target` so fork PRs can access repository secrets. The
+# secret-free fast checks (Go build/test/lint, helm lint, web build) live in
+# ci.yaml on plain `pull_request`.
+#
+# NOTE: the workflow definition is loaded from the base branch, so this only
+# takes effect for fork PRs after it lands on main. The job checks out the PR
+# head explicitly (see the checkout step) so the PR's code is what runs.
+# Security: the PR's checked-out code runs with the secret in scope; the
+# GITHUB_TOKEN is limited to contents: read (below).
+
 name: e2e
 
 on:
   push:
     branches: [main]
-  # pull_request_target so fork PRs can access repository secrets (chat e2e).
-  # NOTE: the workflow definition is loaded from the base branch, so this only
-  # takes effect for fork PRs after it lands on main. The jobs check out the PR
-  # head explicitly (see the checkout steps) so the PR's code is what runs.
-  # Security: the PR's checked-out code runs with the secret in scope; the
-  # GITHUB_TOKEN is limited to contents: read (below).
   pull_request_target:
   workflow_dispatch:
 
@@ -16,33 +22,16 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Unit tests + static checks
+  e2e:
+    name: End-to-end (kind)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       # pull_request_target checks out the base branch by default; check out the
       # PR head so we test the PR's code (fall back to the current ref for
       # push / workflow_dispatch events). actions/checkout refuses fork-PR
       # checkouts in a pull_request_target workflow (the "pwn request" vector);
       # we explicitly opt in -- accepted trade-off, contributors are trusted.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.ref }}
-          allow-unsafe-pr-checkout: true
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-      - run: go vet ./...
-      - run: go test ./...
-
-  e2e:
-    name: End-to-end (kind)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: test
-    steps:
-      # Same PR-head checkout + unsafe-pr-checkout opt-in as the test job.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}

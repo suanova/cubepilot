@@ -1,0 +1,38 @@
+# golangci-lint configuration (v2 schema). Tuned so the tree lints clean; the
+# `//nolint:staticcheck` markers cover the two intentional deprecation usages
+# (kubebuilder scheme.Builder scaffolding and the TaskTemplateDefaults
+# compatibility shim). In v2, gofmt/goimports live under `formatters` and
+# gosimple is merged into staticcheck.
+version: "2"
+run:
+  go: "1.26"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

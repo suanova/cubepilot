@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -29,8 +28,8 @@ type taskDTO struct {
 	Name       string     `json:"name"`
 	Prompt     string     `json:"prompt"`
 	Schedule   string     `json:"schedule"`
-	State      string     `json:"state"`    // Enabled | Paused
-	Enabled    bool       `json:"enabled"`   // derived from State (wire compat)
+	State      string     `json:"state"`   // Enabled | Paused
+	Enabled    bool       `json:"enabled"` // derived from State (wire compat)
 	Creator    string     `json:"creator"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
@@ -339,13 +338,4 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown task action"})
 	}
-}
-
-// lookupTask is a small helper for handlers that need a Task CR.
-func (s *Server) lookupTask(ctx context.Context, id string) (*v1alpha1.Task, error) {
-	var task v1alpha1.Task
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: id}, &task); err != nil {
-		return nil, err
-	}
-	return &task, nil
 }

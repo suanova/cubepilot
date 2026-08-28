@@ -118,7 +118,7 @@ func (r *Registry) Write(w http.ResponseWriter) {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		b.WriteString(fmt.Sprintf("# TYPE %s counter\n", n))
+		fmt.Fprintf(&b, "# TYPE %s counter\n", n)
 		labels := r.counters[n]
 		lkeys := make([]string, 0, len(labels))
 		for l := range labels {
@@ -127,9 +127,9 @@ func (r *Registry) Write(w http.ResponseWriter) {
 		sort.Strings(lkeys)
 		for _, l := range lkeys {
 			if l == "" {
-				b.WriteString(fmt.Sprintf("%s %d\n", n, labels[l]))
+				fmt.Fprintf(&b, "%s %d\n", n, labels[l])
 			} else {
-				b.WriteString(fmt.Sprintf("%s{label=%q} %d\n", n, l, labels[l]))
+				fmt.Fprintf(&b, "%s{label=%q} %d\n", n, l, labels[l])
 			}
 		}
 	}
@@ -141,16 +141,16 @@ func (r *Registry) Write(w http.ResponseWriter) {
 	}
 	sort.Strings(gkeys)
 	for _, n := range gkeys {
-		b.WriteString(fmt.Sprintf("# TYPE %s gauge\n%s %d\n", n, n, r.gauges[n]))
+		fmt.Fprintf(&b, "# TYPE %s gauge\n%s %d\n", n, n, r.gauges[n])
 	}
 
 	// Histograms (P95 + avg).
 	b.WriteString("# TYPE cubepilot_first_token_ms summary\n")
-	b.WriteString(fmt.Sprintf("cubepilot_first_token_ms_p95 %d\n", pct95(r.firstTokenMs[""])))
-	b.WriteString(fmt.Sprintf("cubepilot_first_token_ms_avg %d\n", avg(r.firstTokenMs[""])))
+	fmt.Fprintf(&b, "cubepilot_first_token_ms_p95 %d\n", pct95(r.firstTokenMs[""]))
+	fmt.Fprintf(&b, "cubepilot_first_token_ms_avg %d\n", avg(r.firstTokenMs[""]))
 	b.WriteString("# TYPE cubepilot_turn_ms summary\n")
-	b.WriteString(fmt.Sprintf("cubepilot_turn_ms_p95 %d\n", pct95(r.turnMs[""])))
-	b.WriteString(fmt.Sprintf("cubepilot_turn_ms_avg %d\n", avg(r.turnMs[""])))
+	fmt.Fprintf(&b, "cubepilot_turn_ms_p95 %d\n", pct95(r.turnMs[""]))
+	fmt.Fprintf(&b, "cubepilot_turn_ms_avg %d\n", avg(r.turnMs[""]))
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = w.Write([]byte(b.String()))

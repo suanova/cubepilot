@@ -26,14 +26,6 @@ func (s AgentSpec) pvcName(user string) string { return ResourceName("data", use
 func (s AgentSpec) svcName(user string) string { return ResourceName("agent", user) }
 func (s AgentSpec) podName(user string) string { return ResourceName("agent", user) }
 
-func agentLabels(user string) map[string]string {
-	return map[string]string{AgentLabelApp: "true", AgentLabelUser: user}
-}
-
-func (s AgentSpec) labels(user string) map[string]string {
-	return agentLabels(user)
-}
-
 // DataPVC returns the per-user PVC that persists sessions/memory (FR-M2-004).
 func (s AgentSpec) DataPVC(user string) *corev1.PersistentVolumeClaim {
 	return s.DataPVCFor(s.pvcName(user), user, "1Gi")

@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -214,7 +213,3 @@ func TestHandleTaskRunsOwnerScoped(t *testing.T) {
 		t.Errorf("cross-user taskrun status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
-
-var _ = context.Background

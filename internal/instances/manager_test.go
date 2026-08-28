@@ -28,15 +28,6 @@ func testManager(t *testing.T, objs ...client.Object) *Manager {
 	return New(cl, config.Config{DefaultUser: "zhang.wei"})
 }
 
-func template(name string, models []v1alpha1.TemplateModelSpec) *v1alpha1.AgentTemplate {
-	return &v1alpha1.AgentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha1.AgentTemplateSpec{
-			Models: models,
-		},
-	}
-}
-
 func instance(user, selected string) *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(user, v1alpha1.DefaultAgentName)},

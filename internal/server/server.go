@@ -15,10 +15,10 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/metrics"
+	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
