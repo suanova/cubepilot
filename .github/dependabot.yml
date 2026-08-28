@@ -1,15 +1,45 @@
 # Keep Go, npm, and GitHub Actions dependencies up to date.
+#
+# `groups` bundle related dependencies into a single pull request so that
+# coupled packages (e.g. react with react-dom) are upgraded together instead
+# of being split across PRs that break each other's peer dependencies.
 version: 2
 updates:
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # k8s.io packages and controller-runtime stay in lockstep: every
+      # controller-runtime release targets a specific k8s.io minor version.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/controller-runtime"
   - package-ecosystem: "npm"
     directory: "/web"
     schedule:
       interval: "weekly"
+    groups:
+      # react, react-dom and their type definitions must share a major version.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      # @vitejs/plugin-react declares a peer dependency on a vite version range.
+      vite:
+        patterns:
+          - "vite"
+          - "@vitejs/plugin-react"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # GitHub Actions are independent of each other; bundle them to keep the
+      # weekly update to a single low-risk PR.
+      actions:
+        patterns:
+          - "*"
