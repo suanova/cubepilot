@@ -30,14 +30,11 @@ jobs:
       - run: go test ./...
       - run: go mod verify
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.64.8
-          # The v1.64.8 prebuilt binary is built with Go 1.24 and refuses to
-          # target Go 1.26 (the module version in .golangci.yaml run.go). Build
-          # from source with setup-go's Go 1.26 so the linter matches the
-          # module's Go version -- same binary as a local `go install`.
-          install-mode: goinstall
+          version: v2.13.2
+          # .golangci.yaml targets the module's Go 1.26; the v2 prebuilt binary
+          # is built with a newer Go, so the default binary install works.
       # Fast chart sanity (the e2e job does a real helm upgrade --install, which
       # also renders the chart; lint catches malformed charts before that).
       - name: Install helm (chart lint)
