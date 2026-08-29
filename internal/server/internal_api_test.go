@@ -212,7 +212,7 @@ func TestInternalGatewayConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if string(rec.Body.Bytes()) != string(raw) {
+	if rec.Body.String() != string(raw) {
 		t.Errorf("body = %q, want the rendered openclaw.json", rec.Body.String())
 	}
 
