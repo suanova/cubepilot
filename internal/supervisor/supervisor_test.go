@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/suanova/cubepilot/internal/resolver"
 )
@@ -185,36 +184,5 @@ func TestApplyGatewayConfigDisabled(t *testing.T) {
 	changed, err := s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
 	if err != nil || changed {
 		t.Errorf("empty ConfigPath: changed=%v err=%v, want no-op", changed, err)
-	}
-}
-
-// TestSeedGatewayConfigFallback verifies the cold-start seed: when the internal
-// API is unreachable, the mounted read-only config is copied to the writable
-// path so the gateway still boots with the operator's config.
-func TestSeedGatewayConfigFallback(t *testing.T) {
-	dir := t.TempDir()
-	seed := filepath.Join(dir, "seed", "openclaw.json")
-	if err := os.MkdirAll(filepath.Dir(seed), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(seed, []byte(`{"gateway":{"mode":"local"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	s := New(Config{
-		ConfigPath: filepath.Join(dir, "gateway", "openclaw.json"),
-		SeedPath:   seed,
-		APIURL:     "http://127.0.0.1:1", // unreachable -> fall back to seed
-	})
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-	if err := s.seedGatewayConfig(ctx); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	got, err := os.ReadFile(s.cfg.ConfigPath)
-	if err != nil {
-		t.Fatalf("read written config: %v", err)
-	}
-	if string(got) != `{"gateway":{"mode":"local"}}` {
-		t.Errorf("config = %q, want the seeded content", got)
 	}
 }

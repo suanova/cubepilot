@@ -8,10 +8,10 @@
 //
 // The gateway config (LLM providers / model allowlist) is rendered by the
 // operator into the openclaw-config Secret and pulled by the supervisor from
-// the internal API (GET /internal/gateway/config) into a writable path; when
-// the content changes the gateway is gracefully restarted. The read-only
-// Secret mount is used only as a cold-start seed. This is how providers are
-// added/edited post-install without touching Pods or scripts/setup.sh.
+// the internal API (GET /internal/gateway/config) into openclaw's default
+// config path; when the content changes the gateway is gracefully restarted.
+// This is how providers are added/edited post-install without touching Pods or
+// scripts/setup.sh.
 package supervisor
 
 import (
@@ -49,15 +49,11 @@ type Config struct {
 	GatewayCmd []string
 	// PollInterval is how often the resolved config is re-fetched.
 	PollInterval time.Duration
-	// ConfigPath is the writable gateway config file (openclaw.json) the
-	// supervisor renders from the internal API. The gateway reads it at startup
-	// (OPENCLAW_CONFIG_PATH); when the pulled content changes the supervisor
-	// restarts the gateway so the new config applies. Empty disables the pull.
+	// ConfigPath is the gateway config file (openclaw.json) the supervisor
+	// renders from the internal API; the gateway reads it from openclaw's
+	// default path. When the pulled content changes the supervisor restarts the
+	// gateway so the new config applies. Empty disables the pull.
 	ConfigPath string
-	// SeedPath is the read-only openclaw-config Secret mount used as a
-	// cold-start fallback when the internal API is unreachable before the
-	// gateway starts. Empty disables the fallback.
-	SeedPath string
 }
 
 // LoadFromEnv builds a Config from the environment with sane defaults.
@@ -68,8 +64,7 @@ func LoadFromEnv() Config {
 		Workspace:    getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
 		GatewayCmd:   []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
 		PollInterval: 10 * time.Second,
-		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/gateway/openclaw.json"),
-		SeedPath:     getenv("CUBEPILOT_CONFIG_SEED", "/home/node/.openclaw/openclaw.json"),
+		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
 	}
 }
 
@@ -116,10 +111,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if _, err := s.poll(ctx); err != nil {
 		log.Printf("supervisor: initial config poll: %v (runtime defaults apply until next poll)", err)
 	}
-	// Ensure the writable gateway config exists before the gateway starts:
-	// pull it from the internal API, falling back to the mounted Secret seed.
-	if err := s.seedGatewayConfig(ctx); err != nil {
-		log.Printf("supervisor: seed gateway config: %v (gateway starts with defaults)", err)
+	// Pull the gateway config before the gateway starts; on failure the gateway
+	// starts with defaults (or the last PVC copy) and the poll self-heals.
+	if _, err := s.refreshGatewayConfig(ctx); err != nil {
+		log.Printf("supervisor: initial gateway config fetch: %v", err)
 	}
 	if err := s.startGateway(ctx); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -212,30 +207,6 @@ func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return s.applyGatewayConfig(data)
-}
-
-// seedGatewayConfig ensures the writable gateway config exists before the
-// gateway starts: pull it from the internal API (fast path), falling back to
-// the read-only mounted Secret seed when the API is unreachable (cold start).
-func (s *Supervisor) seedGatewayConfig(ctx context.Context) error {
-	if s.cfg.ConfigPath == "" {
-		return nil
-	}
-	if data, err := s.fetchGatewayConfig(ctx); err == nil {
-		_, err := s.applyGatewayConfig(data)
-		return err
-	} else {
-		log.Printf("supervisor: fetch gateway config: %v (seeding from mounted config)", err)
-	}
-	if s.cfg.SeedPath == "" {
-		return nil
-	}
-	data, err := os.ReadFile(s.cfg.SeedPath)
-	if err != nil {
-		return err
-	}
-	_, err = s.applyGatewayConfig(data)
-	return err
 }
 
 // poll fetches the resolved config and applies it (renders skills, records
