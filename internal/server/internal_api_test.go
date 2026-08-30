@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -192,5 +193,32 @@ func TestAgentConfigDefaultModelAligned(t *testing.T) {
 	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "", nil))
 	if resp.Config.Model != "" {
 		t.Errorf("model = %q, want empty after Runtime Default save", resp.Config.Model)
+	}
+}
+
+// TestInternalGatewayConfig verifies the supervisor-facing endpoint that serves
+// the operator-rendered openclaw.json from the openclaw-config Secret (the
+// pull-based replacement for waiting on the kubelet Secret-volume sync).
+func TestInternalGatewayConfig(t *testing.T) {
+	raw := []byte(`{"models":{"providers":{"deepseek-v4-flash":{"api":"openai-completions"}}}}`)
+	s := platformTestServerStore(t, nil,
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName},
+			Data:       map[string][]byte{"openclaw.json": raw, "gatewayToken": []byte("tok")},
+		},
+	)
+
+	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/gateway/config", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != string(raw) {
+		t.Errorf("body = %q, want the rendered openclaw.json", rec.Body.String())
+	}
+
+	// Missing Secret -> 503, so the supervisor falls back to its mounted seed.
+	rec = doReq(t, platformTestServerStore(t, nil).Handler(), http.MethodGet, "/internal/gateway/config", "", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("missing secret status = %d, want 503", rec.Code)
 	}
 }

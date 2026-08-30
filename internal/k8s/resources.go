@@ -181,7 +181,9 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
-					{Name: "OPENCLAW_CONFIG_PATH", Value: "/home/node/.openclaw/openclaw.json"},
+					// The gateway reads openclaw.json from its default path
+					// (~/.openclaw/openclaw.json); the supervisor renders it by pulling
+					// the operator's config from the internal API.
 					{Name: "OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS", Value: "1"},
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
@@ -201,7 +203,6 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// The workspace is the default ~/.openclaw/workspace (= PVC
 					// root / workspace subdir); no explicit mount or env needed.
 					{Name: "data", MountPath: "/home/node/.openclaw"},
-					{Name: "config", MountPath: "/home/node/.openclaw/openclaw.json", SubPath: "openclaw.json"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
 				},
@@ -218,12 +219,6 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					Name: "data",
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName},
-					},
-				},
-				{
-					Name: "config",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{SecretName: ConfigSecretName},
 					},
 				},
 				{

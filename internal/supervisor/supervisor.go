@@ -6,11 +6,12 @@
 // of the final architecture: CRDs declare -> operator resolves -> supervisor
 // renders -> OpenClaw executes.
 //
-// The gateway config (LLM providers / model allowlist, mounted from the
-// openclaw-config Secret as openclaw.json) is also watched: the gateway loads
-// it at startup, so when the file changes the gateway is gracefully restarted.
-// This is how providers are added/edited post-install (by patching the Secret)
-// without touching Pods or scripts/setup.sh.
+// The gateway config (LLM providers / model allowlist) is rendered by the
+// operator into the openclaw-config Secret and pulled by the supervisor from
+// the internal API (GET /internal/gateway/config) into openclaw's default
+// config path; when the content changes the gateway is gracefully restarted.
+// This is how providers are added/edited post-install without touching Pods or
+// scripts/setup.sh.
 package supervisor
 
 import (
@@ -48,10 +49,10 @@ type Config struct {
 	GatewayCmd []string
 	// PollInterval is how often the resolved config is re-fetched.
 	PollInterval time.Duration
-	// ConfigPath is the gateway config file (openclaw.json, mounted from the
-	// openclaw-config Secret). The gateway reads it at startup; when it changes
-	// the supervisor restarts the gateway so the new config applies. Empty
-	// disables the file watch.
+	// ConfigPath is the gateway config file (openclaw.json) the supervisor
+	// renders from the internal API; the gateway reads it from openclaw's
+	// default path. When the pulled content changes the supervisor restarts the
+	// gateway so the new config applies. Empty disables the pull.
 	ConfigPath string
 }
 
@@ -110,13 +111,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if _, err := s.poll(ctx); err != nil {
 		log.Printf("supervisor: initial config poll: %v (runtime defaults apply until next poll)", err)
 	}
+	// Pull the gateway config before the gateway starts; on failure the gateway
+	// starts with defaults (or the last PVC copy) and the poll self-heals.
+	if _, err := s.refreshGatewayConfig(ctx); err != nil {
+		log.Printf("supervisor: initial gateway config fetch: %v", err)
+	}
 	if err := s.startGateway(ctx); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
 	}
-	// Baseline the gateway config file so edits (e.g. a provider added to the
-	// openclaw-config Secret post-install) are detected relative to what the
-	// gateway just loaded, not treated as a change on the first tick.
-	s.snapshotConfigHash()
 
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
@@ -130,8 +132,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if err != nil {
 				log.Printf("supervisor: poll: %v", err)
 			}
-			if s.configHashChanged() {
-				log.Printf("supervisor: gateway config file changed; restarting")
+			// Pull the rendered gateway config so provider/model allowlist
+			// changes apply without waiting on the kubelet Secret-volume sync.
+			gcChanged, gcerr := s.refreshGatewayConfig(ctx)
+			if gcerr != nil {
+				log.Printf("supervisor: refresh gateway config: %v", gcerr)
+			}
+			if gcChanged {
+				log.Printf("supervisor: gateway config changed; restarting")
 				changed = true
 			}
 			if changed {
@@ -144,36 +152,61 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-// hashFile returns the sha256 hex of the gateway config file, or "" when the
-// file is missing (e.g. the Secret is not mounted yet).
-func (s *Supervisor) hashFile() string {
-	data, err := os.ReadFile(s.cfg.ConfigPath)
+// fetchGatewayConfig pulls the operator-rendered gateway config (openclaw.json)
+// from the internal API. This is the pull-based replacement for waiting on the
+// kubelet Secret-volume sync: the supervisor renders the file itself.
+func (s *Supervisor) fetchGatewayConfig(ctx context.Context) ([]byte, error) {
+	u := fmt.Sprintf("%s/internal/gateway/config", strings.TrimRight(s.cfg.APIURL, "/"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return ""
+		return nil, err
 	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum)
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
 }
 
-// snapshotConfigHash records the current gateway config file as the baseline.
-func (s *Supervisor) snapshotConfigHash() {
-	s.lastCfgHash = s.hashFile()
-}
-
-// configHashChanged reports whether the gateway config file differs from the
-// last snapshot (and records the new hash). A missing file reports no change
-// but does not reset the baseline, so a transient mount gap never triggers a
-// restart. No-op when no ConfigPath is configured.
-func (s *Supervisor) configHashChanged() bool {
+// applyGatewayConfig writes the gateway config to the writable ConfigPath when
+// its content changed, and reports whether a gateway restart is needed. Same
+// content is a no-op, so the poll never restarts for an unchanged config.
+func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if s.cfg.ConfigPath == "" {
-		return false
+		return false, nil
 	}
-	h := s.hashFile()
-	if h == "" || h == s.lastCfgHash {
-		return false
+	h := fmt.Sprintf("%x", sha256.Sum256(data))
+	if h == s.lastCfgHash {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.cfg.ConfigPath), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(s.cfg.ConfigPath, data, 0o644); err != nil {
+		return false, err
 	}
 	s.lastCfgHash = h
-	return true
+	return true, nil
+}
+
+// refreshGatewayConfig pulls the latest gateway config and applies it.
+func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
+	if s.cfg.ConfigPath == "" {
+		return false, nil
+	}
+	data, err := s.fetchGatewayConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+	return s.applyGatewayConfig(data)
 }
 
 // poll fetches the resolved config and applies it (renders skills, records
