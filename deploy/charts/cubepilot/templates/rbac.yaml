@@ -194,3 +194,32 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccounts.agent }}
     namespace: {{ .Release.Namespace }}
+
+# --- Agent: read credential Secrets. The kubelet resolves the secretKeyRef
+# env vars that carry each model's apiKey into the pod (the gateway reads them
+# as $CUBEPILOT_LLM_* env refs); the literal key never lands in the rendered
+# config or the PVC. ---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.serviceAccounts.agent }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.serviceAccounts.agent }}
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.serviceAccounts.agent }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccounts.agent }}
+    namespace: {{ .Release.Namespace }}

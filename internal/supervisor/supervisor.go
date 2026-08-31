@@ -195,7 +195,7 @@ func (s *Supervisor) waitForInitialConfig(ctx context.Context) error {
 // from the internal API. This is the pull-based replacement for waiting on the
 // kubelet Secret-volume sync: the supervisor renders the file itself.
 func (s *Supervisor) fetchGatewayConfig(ctx context.Context) ([]byte, error) {
-	u := fmt.Sprintf("%s/internal/gateway/config", strings.TrimRight(s.cfg.APIURL, "/"))
+	u := fmt.Sprintf("%s/internal/gateway/config/%s", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(s.cfg.User))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

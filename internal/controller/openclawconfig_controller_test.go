@@ -37,8 +37,11 @@ func TestOpenClawConfigReconcile(t *testing.T) {
 	if !strings.Contains(jsonData, `"deepseek-v4-flash/deepseek-v4-flash"`) {
 		t.Errorf("openclaw.json missing primary ref: %s", jsonData)
 	}
-	if !strings.Contains(jsonData, `"apiKey": "sk-real"`) {
-		t.Errorf("openclaw.json missing apiKey: %s", jsonData)
+	if !strings.Contains(jsonData, `"apiKey": "$CUBEPILOT_LLM_DEEPSEEK_V4_FLASH"`) {
+		t.Errorf("openclaw.json apiKey should be an env ref ($CUBEPILOT_LLM_...): %s", jsonData)
+	}
+	if strings.Contains(jsonData, "sk-real") {
+		t.Errorf("openclaw.json must not contain the literal credential: %s", jsonData)
 	}
 	if tok := string(sec.Data["gatewayToken"]); len(tok) != 64 {
 		t.Errorf("gatewayToken length = %d, want 64", len(tok))

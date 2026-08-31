@@ -62,7 +62,7 @@ func (s *Server) Handler() http.Handler {
 	// its resolved config and the rendered gateway config here; not exposed
 	// through the Portal.
 	mux.HandleFunc("/internal/agents/", s.handleInternalAgentConfig)
-	mux.HandleFunc("/internal/gateway/config", s.handleInternalGatewayConfig)
+	mux.HandleFunc("/internal/gateway/config/{user}", s.handleInternalGatewayConfig)
 	return logRequests(mux)
 }
 

@@ -7,7 +7,7 @@ import (
 
 func TestRender(t *testing.T) {
 	providers := []Provider{
-		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "sk-1", Model: "deepseek-v4-flash"},
+		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "CUBEPILOT_LLM_DEEPSEEK_V4_FLASH", Model: "deepseek-v4-flash"},
 		{Key: "qwen", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5-72b"}, // public, no key
 	}
 	b, err := Render("tok", "deepseek-v4-flash/deepseek-v4-flash", providers)
@@ -36,7 +36,8 @@ func TestRender(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	d := cfg.Models.Providers["deepseek-v4-flash"]
-	if d.API != "openai-completions" || d.APIKey != "sk-1" || d.Models[0].ID != "deepseek-v4-flash" {
+	// The credential is rendered as an env reference ($ENV), never a literal key.
+	if d.API != "openai-completions" || d.APIKey != "$CUBEPILOT_LLM_DEEPSEEK_V4_FLASH" || d.Models[0].ID != "deepseek-v4-flash" {
 		t.Errorf("deepseek provider wrong: %+v", d)
 	}
 	q := cfg.Models.Providers["qwen"]

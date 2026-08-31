@@ -20,6 +20,11 @@ type AgentSpec struct {
 	// AgentUser is the instance owner (the supervisor's CUBEPILOT_AGENT_USER
 	// -- it pulls the resolved config for exactly this user).
 	AgentUser string
+	// CredentialEnv are env vars injecting model credential Secret keys
+	// (secretKeyRef, key "apiKey") into the supervisor container. They let the
+	// gateway resolve the $CUBEPILOT_LLM_* env refs rendered in openclaw.json
+	// without any literal key landing in the config file or the PVC.
+	CredentialEnv []corev1.EnvVar
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -177,7 +182,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						Drop: []corev1.Capability{"ALL"},
 					},
 				},
-				Env: []corev1.EnvVar{
+				Env: append([]corev1.EnvVar{
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
@@ -197,7 +202,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 							},
 						},
 					},
-				},
+				}, s.CredentialEnv...),
 				Ports: []corev1.ContainerPort{{ContainerPort: port}},
 				VolumeMounts: []corev1.VolumeMount{
 					// The workspace is the default ~/.openclaw/workspace (= PVC

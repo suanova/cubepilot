@@ -53,7 +53,10 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 					log.Printf("openclaw-config: model %q credential %q not ready (%v), skipping", m.Name, m.CredentialRef.Name, err)
 					continue
 				}
-				p.APIKey = string(sec.Data["apiKey"])
+				// Reference the credential by env var name only; the literal key
+				// stays in the Secret and the Pod env (the agent reconciler
+				// injects it), never in the rendered config or the PVC.
+				p.APIKey = k8s.EnvNameForModel(m.Name)
 			}
 			if t.Spec.DefaultModel == m.Name && primary == "" {
 				primary = m.Name + "/" + m.Name

@@ -282,13 +282,21 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 }
 
 // handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
-// for the agent supervisor: GET /internal/gateway/config. The operator renders
-// it into the openclaw-config Secret from the AgentTemplate models; the
-// supervisor pulls it here so provider/model changes apply without waiting on
-// the kubelet Secret-volume sync (design §3.3 / issue #6).
+// handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
+// for one instance's supervisor: GET /internal/gateway/config/{user}. The
+// operator renders the shared config (providers + allowlist; apiKey as $ENV
+// refs, never literal) into the openclaw-config Secret; the API overrides the
+// primary model with the user's selectedModel so each instance's config
+// reflects its owner (design §3.2). Pulled here so provider/model changes
+// apply without waiting on the kubelet Secret-volume sync (issue #6).
 func (s *Server) handleInternalGatewayConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	user := r.PathValue("user")
+	if user == "" {
+		http.NotFound(w, r)
 		return
 	}
 	if s.cr == nil {
@@ -305,6 +313,47 @@ func (s *Server) handleInternalGatewayConfig(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway config empty"})
 		return
 	}
+	// Per-user primary: the shared config carries the template default; a user
+	// with an explicit selectedModel gets it as their instance's primary. A
+	// resolution error is logged and the default kept (chat stays fail-closed
+	// per request; the config must not fail the pod boot).
+	if model, err := s.mgr.SelectedModelFor(r.Context(), user); err != nil {
+		s.logf("gateway config primary for %s: %v", user, err)
+	} else if model != "" {
+		// SelectedModelFor already returns the <provider>/<model> primary ref.
+		if over := gatewayConfigWithPrimary(raw, model); over != nil {
+			raw = over
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(raw)
+}
+
+// gatewayConfigWithPrimary returns the openclaw.json bytes with
+// agents.defaults.model.primary set to primary (the <provider>/<model> ref),
+// preserving the shared allowlist and everything else. nil when the path is
+// absent or the JSON is malformed (caller keeps the original).
+func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	agents, ok := cfg["agents"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	def, ok := agents["defaults"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if modelCfg, ok := def["model"].(map[string]any); ok {
+		modelCfg["primary"] = primary
+	} else {
+		def["model"] = map[string]any{"primary": primary}
+	}
+	// Keep the same 2-space indentation the operator's Render uses.
+	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+		return b
+	}
+	return nil
 }

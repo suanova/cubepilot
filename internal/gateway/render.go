@@ -12,8 +12,12 @@ import (
 type Provider struct {
 	Key     string // provider key = model Name
 	BaseURL string // endpoint
-	APIKey  string // from the credentialRef Secret when present; "" for public models
-	Model   string // model name = backend id
+	// APIKey is the env var name (k8s.EnvNameForModel) carrying the credential
+	// from the credentialRef Secret; it is rendered as a $ENV reference so the
+	// literal key never lands in the config file or the PVC. Empty for public
+	// models (no apiKey in the rendered config).
+	APIKey string
+	Model  string // model name = backend id
 }
 
 // Render builds the openclaw.json bytes for the given providers. Static
@@ -29,7 +33,9 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			"models":  []map[string]string{{"id": p.Model, "name": p.Model}},
 		}
 		if p.APIKey != "" {
-			pv["apiKey"] = p.APIKey
+			// $ENV shorthand: OpenClaw resolves it from the Pod env, which the
+			// instance reconciler injects from the credential Secret.
+			pv["apiKey"] = "$" + p.APIKey
 		}
 		providersOut[p.Key] = pv
 		modelsOut[p.Key+"/"+p.Model] = map[string]string{"alias": p.Model}
