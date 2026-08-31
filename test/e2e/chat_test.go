@@ -26,11 +26,26 @@ var _ = Describe("Chat (SSE)", Label("chat"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		var types []string
-		for _, ev := range events {
+		var deltaIdx, doneIdx = -1, -1
+		for i, ev := range events {
 			types = append(types, ev.Event)
+			switch ev.Event {
+			case openclaw.EventMessageDelta:
+				if deltaIdx < 0 {
+					deltaIdx = i
+				}
+			case openclaw.EventMessageDone:
+				if doneIdx < 0 {
+					doneIdx = i
+				}
+			}
 		}
 		Expect(types).To(ContainElement(openclaw.EventMessageDelta))
 		Expect(types).To(ContainElement(openclaw.EventMessageDone))
+		// A reply streams message_delta before the terminal message_done.
+		Expect(deltaIdx).To(BeNumerically(">=", 0))
+		Expect(doneIdx).To(BeNumerically(">=", 0))
+		Expect(deltaIdx).To(BeNumerically("<", doneIdx))
 
 		var done map[string]any
 		for _, ev := range events {

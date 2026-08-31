@@ -52,12 +52,17 @@ func (f *Framework) PortForward(ctx context.Context, svcName string, servicePort
 	select {
 	case <-readyCh:
 	case err := <-runErr:
+		close(stopCh)
 		return "", nil, fmt.Errorf("port-forward %s failed: %w", svcName, err)
 	case <-time.After(30 * time.Second):
+		// The forwarder may still be running -- stop it so it doesn't leak a
+		// listener after we return.
+		close(stopCh)
 		return "", nil, fmt.Errorf("port-forward %s timed out", svcName)
 	}
 	ports, err := pf.GetPorts()
 	if err != nil {
+		close(stopCh)
 		return "", nil, fmt.Errorf("read port-forward port: %w", err)
 	}
 	if len(ports) != 1 {

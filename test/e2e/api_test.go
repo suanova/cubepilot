@@ -37,16 +37,33 @@ var _ = Describe("Public API", func() {
 	})
 
 	It("lists agent templates including the builtin", func() {
-		data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/agenttemplates", nil)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(code).To(Equal(http.StatusOK))
-		items, ok := data["agentTemplates"].([]any)
-		Expect(ok).To(BeTrue())
-		Expect(items).NotTo(BeEmpty())
+		// Ginkgo randomizes spec order, so this spec may run before the
+		// operator's bootstrap has created the template (and the API's client
+		// cache may lag) -- poll until the builtin appears.
 		var names []string
-		for _, it := range items {
-			names = append(names, nestedString(it.(map[string]any), "metadata", "name"))
-		}
+		Eventually(func() error {
+			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/agenttemplates", nil)
+			if err != nil {
+				return err
+			}
+			if code != http.StatusOK {
+				return fmt.Errorf("agenttemplates returned %d", code)
+			}
+			items, ok := data["agentTemplates"].([]any)
+			if !ok {
+				return fmt.Errorf("agentTemplates key missing: %v", data)
+			}
+			names = names[:0]
+			for _, it := range items {
+				names = append(names, nestedString(it.(map[string]any), "metadata", "name"))
+			}
+			for _, n := range names {
+				if n == controller.BuiltinAgentName {
+					return nil
+				}
+			}
+			return fmt.Errorf("builtin template %s not listed yet", controller.BuiltinAgentName)
+		}).Should(Succeed())
 		Expect(names).To(ContainElement(controller.BuiltinAgentName))
 	})
 

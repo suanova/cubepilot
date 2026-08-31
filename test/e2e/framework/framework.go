@@ -62,6 +62,12 @@ func New(kubeconfig string) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("controller-runtime client: %w", err)
 	}
+	// Validate the users list: a value such as "," trims to zero users, and the
+	// specs index Users[0] -- fail with a config error instead of panicking.
+	users := splitUsers(getenv("CUBEPILOT_USERS", "zhang.wei,li.ming"))
+	if len(users) == 0 {
+		return nil, fmt.Errorf("CUBEPILOT_USERS must contain at least one user")
+	}
 	return &Framework{
 		RestConfig:   cfg,
 		KubeClient:   kc,
@@ -69,7 +75,7 @@ func New(kubeconfig string) (*Framework, error) {
 		CtrlClient:   cc,
 		Namespace:    getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
 		DefaultUser:  getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
-		Users:        splitUsers(getenv("CUBEPILOT_USERS", "zhang.wei,li.ming")),
+		Users:        users,
 	}, nil
 }
 
