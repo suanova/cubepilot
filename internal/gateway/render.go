@@ -4,7 +4,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -33,7 +32,7 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 		pv := map[string]any{
 			"api":     "openai-completions",
 			"baseUrl": p.BaseURL,
-			"models":  []map[string]string{{"id": p.Model, "name": p.Model}},
+			"models":  []any{map[string]any{"id": p.Model, "name": p.Model}},
 		}
 		if p.APIKey != "" {
 			// File SecretRef into the supervisor-written keys.json; OpenClaw
@@ -46,7 +45,7 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			}
 		}
 		providersOut[p.Key] = pv
-		modelsOut[p.Key+"/"+p.Model] = map[string]string{"alias": p.Model}
+		modelsOut[p.Key+"/"+p.Model] = map[string]any{"alias": p.Model}
 	}
 	cfg := map[string]any{
 		"models": map[string]any{"providers": providersOut},
@@ -83,7 +82,10 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			},
 		},
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// Deterministic bytes (sorted keys): a random key order would make the
+	// supervisor's change-detection hash fire on every poll and reload the
+	// gateway constantly even when nothing changed.
+	b, err := MarshalSorted(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("render openclaw.json: %w", err)
 	}

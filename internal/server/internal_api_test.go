@@ -261,7 +261,7 @@ func TestInternalGatewayConfigPerUserPrimary(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"primary": "deepseek-v4-pro-0813/deepseek-v4-pro-0813"`) {
+	if !strings.Contains(rec.Body.String(), `"primary":"deepseek-v4-pro-0813/deepseek-v4-pro-0813"`) {
 		t.Errorf("primary not overridden per user: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "deepseek-v4-flash-0731/deepseek-v4-flash-0731") {

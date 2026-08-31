@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -351,8 +352,10 @@ func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
 	} else {
 		def["model"] = map[string]any{"primary": primary}
 	}
-	// Keep the same 2-space indentation the operator's Render uses.
-	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+	// Deterministic bytes: encoding/json orders map keys randomly, which would
+	// make the supervisor's change-detection hash fire on every poll and reload
+	// the gateway constantly even when nothing changed.
+	if b, err := gateway.MarshalSorted(cfg); err == nil {
 		return b
 	}
 	return nil
