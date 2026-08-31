@@ -27,7 +27,9 @@ jobs:
           go-version: '1.26'
       - run: go vet ./...
       - run: go build ./...
-      - run: go test ./...
+      # Exclude test/ (the Ginkgo e2e suite) -- it needs a live cluster and runs
+      # in e2e.yaml. vet above still type-checks it.
+      - run: go test $(go list ./... | grep -v /test/)
       - run: go mod verify
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
