@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -86,5 +87,25 @@ func TestRenderEmpty(t *testing.T) {
 	}
 	if len(b) == 0 {
 		t.Fatal("empty render")
+	}
+}
+
+// TestRenderDeterministic verifies the render output is byte-stable for the
+// same input (sorted keys) and still human-readable (indented).
+func TestRenderDeterministic(t *testing.T) {
+	providers := []Provider{{Key: "a", BaseURL: "https://x", Model: "a"}, {Key: "b", BaseURL: "https://y", Model: "b", APIKey: "CUBEPILOT_LLM_B"}}
+	b1, err := Render("tok", "a/a", providers)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	b2, err := Render("tok", "a/a", providers)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if string(b1) != string(b2) {
+		t.Errorf("Render not deterministic:\n%s\n---\n%s", b1, b2)
+	}
+	if !bytes.Contains(b1, []byte("\n  ")) {
+		t.Errorf("Render should be indented JSON for humans: %s", b1)
 	}
 }
