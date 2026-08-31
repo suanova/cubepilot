@@ -96,11 +96,11 @@ func InstanceName(user, agent string) string {
 	return Sanitize(user) + "-" + Sanitize(agent)
 }
 
-// EnvNameForModel derives the env var name that carries a model credential's
-// apiKey into the agent Pod. The operator renders openclaw.json with an env
-// reference ($ENV_NAME) in place of a literal key, and the instance reconciler
-// injects the matching secretKeyRef; both must derive the same name, and the
-// result must match OpenClaw's $UPPER env shorthand ([A-Z][A-Z0-9_]{0,127}).
+// EnvNameForModel derives the stable identifier used for a model credential's
+// apiKey across the credential-delivery path: the file SecretRef id rendered
+// into openclaw.json ("/"+name) and the matching key in the emptyDir keys.json
+// the supervisor writes. The operator render, the resolver's credential list
+// and the supervisor must all derive the same name.
 func EnvNameForModel(name string) string {
 	const prefix = "CUBEPILOT_LLM_"
 	var b strings.Builder

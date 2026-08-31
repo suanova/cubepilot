@@ -246,3 +246,30 @@ func TestSyncCredentials(t *testing.T) {
 		t.Fatalf("sync #2: %v", err)
 	}
 }
+
+// TestSyncCredentialsSkipsWriteOnError verifies a failed Secret read aborts the
+// sync without writing a partial keys.json (a live credential is never dropped
+// by a transient read error).
+func TestSyncCredentialsSkipsWriteOnError(t *testing.T) {
+	dir := t.TempDir()
+	cl := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ok", Namespace: "cubepilot"},
+		Data:       map[string][]byte{"apiKey": []byte("sk-good")},
+	})
+	s := New(Config{CredentialsPath: filepath.Join(dir, "keys.json")})
+	s.k8s = cl
+	s.ns = "cubepilot"
+
+	cfg := &resolver.ResolvedAgentConfig{
+		Credentials: []resolver.ResolvedCredential{
+			{Env: "K_GOOD", SecretName: "ok"},
+			{Env: "K_MISSING", SecretName: "missing"},
+		},
+	}
+	if err := s.syncCredentials(context.Background(), cfg); err == nil {
+		t.Fatal("expected error for a missing credential Secret")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keys.json")); !os.IsNotExist(err) {
+		t.Error("keys.json must not be written when a credential read fails")
+	}
+}

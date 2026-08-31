@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
-	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -285,8 +284,9 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 // handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
 // handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
 // for one instance's supervisor: GET /internal/gateway/config/{user}. The
-// operator renders the shared config (providers + allowlist; apiKey as $ENV
-// refs, never literal) into the openclaw-config Secret; the API overrides the
+// operator renders the shared config (providers + allowlist; apiKey as file
+// SecretRefs into the emptyDir keys.json, never literal) into the openclaw-config
+// Secret; the API overrides the
 // primary model with the user's selectedModel so each instance's config
 // reflects its owner (design §3.2). Pulled here so provider/model changes
 // apply without waiting on the kubelet Secret-volume sync (issue #6).
@@ -347,15 +347,24 @@ func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
 	if !ok {
 		return nil
 	}
+	// Only override when the target is actually in the allowlist: the operator
+	// drops models with an empty endpoint or a missing credential Secret, so a
+	// selection validated only against the template model list could otherwise
+	// point primary at a provider that was never rendered (chat would fail).
+	if allow, ok := def["models"].(map[string]any); ok {
+		if _, ok := allow[primary]; !ok {
+			return nil
+		}
+	}
 	if modelCfg, ok := def["model"].(map[string]any); ok {
 		modelCfg["primary"] = primary
 	} else {
 		def["model"] = map[string]any{"primary": primary}
 	}
-	// Deterministic bytes: encoding/json orders map keys randomly, which would
-	// make the supervisor's change-detection hash fire on every poll and reload
-	// the gateway constantly even when nothing changed.
-	if b, err := gateway.MarshalSorted(cfg); err == nil {
+	// encoding/json sorts map keys deterministically (Go 1.12+), so the bytes
+	// are stable for the same semantic config; json.MarshalIndent keeps the file
+	// human-readable.
+	if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
 		return b
 	}
 	return nil

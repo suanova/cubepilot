@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -82,10 +83,7 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			},
 		},
 	}
-	// Deterministic bytes (sorted keys): a random key order would make the
-	// supervisor's change-detection hash fire on every poll and reload the
-	// gateway constantly even when nothing changed.
-	b, err := MarshalSorted(cfg)
+	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("render openclaw.json: %w", err)
 	}

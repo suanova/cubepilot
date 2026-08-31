@@ -162,10 +162,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			select {
 			case werr := <-s.waitCh:
 				log.Printf("supervisor: gateway exited (%v); respawning", werr)
+				s.cmd = nil // drop the dead child so a failed start retries next tick
+			default:
+			}
+			// s.cmd is nil right after a crash (or a failed respawn): retry each
+			// tick so a transient start failure doesn't wedge the gateway dead
+			// forever.
+			if s.cmd == nil {
 				if err := s.startGateway(ctx); err != nil {
 					log.Printf("supervisor: respawn: %v", err)
 				}
-			default:
 			}
 			changed, err := s.poll(ctx)
 			if err != nil {
@@ -242,8 +248,10 @@ func (s *Supervisor) syncCredentials(ctx context.Context, cfg *resolver.Resolved
 	for _, cred := range cfg.Credentials {
 		sec, err := client.CoreV1().Secrets(ns).Get(ctx, cred.SecretName, metav1.GetOptions{})
 		if err != nil {
-			log.Printf("supervisor: credential %q: %v", cred.SecretName, err)
-			continue
+			// Never write a partial keys.json: dropping a failed Secret's key
+			// would break a live credential. Keep the last-good file and retry
+			// on the next poll.
+			return fmt.Errorf("credential %q: %w", cred.SecretName, err)
 		}
 		if v := string(sec.Data["apiKey"]); v != "" {
 			keys[cred.Env] = v
@@ -466,6 +474,10 @@ func (s *Supervisor) startGateway(ctx context.Context) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
+		// Leave no stale child: a nil cmd lets the tick's crash recovery retry,
+		// and stopGateway returns immediately instead of waiting on a channel
+		// that (with no child) would never signal.
+		s.cmd = nil
 		return err
 	}
 	s.cmd = cmd
@@ -483,6 +495,12 @@ func (s *Supervisor) stopGateway() {
 	s.cmdMu.Lock()
 	defer s.cmdMu.Unlock()
 	if s.cmd == nil || s.cmd.Process == nil {
+		return
+	}
+	// The child may already have exited and been reaped (crash) with the exit
+	// signalled on waitCh; don't block forever on the drained channel.
+	if s.cmd.ProcessState != nil {
+		s.cmd = nil
 		return
 	}
 	_ = s.cmd.Process.Signal(syscall.SIGTERM)

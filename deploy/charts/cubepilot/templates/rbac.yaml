@@ -195,10 +195,10 @@ subjects:
     name: {{ .Values.serviceAccounts.agent }}
     namespace: {{ .Release.Namespace }}
 
-# --- Agent: read credential Secrets. The kubelet resolves the secretKeyRef
-# env vars that carry each model's apiKey into the pod (the gateway reads them
-# as $CUBEPILOT_LLM_* env refs); the literal key never lands in the rendered
-# config or the PVC. ---
+# --- Agent: read credential Secrets. The supervisor (in-cluster SA) reads the
+# model credential Secrets and writes their apiKeys into the pod's emptyDir
+# keys.json, which the gateway's file secret provider reads. The literal key
+# never lands in the rendered config or the PVC. ---
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
