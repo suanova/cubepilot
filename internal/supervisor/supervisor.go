@@ -67,10 +67,10 @@ type Config struct {
 // LoadFromEnv builds a Config from the environment with sane defaults.
 func LoadFromEnv() Config {
 	return Config{
-		APIURL:       getenv("CUBEPILOT_API_URL", "http://cubepilot-api.cubepilot.svc:8080"),
-		User:         os.Getenv("CUBEPILOT_AGENT_USER"),
-		Workspace:    getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
-		GatewayCmd:   []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
+		APIURL:          getenv("CUBEPILOT_API_URL", "http://cubepilot-api.cubepilot.svc:8080"),
+		User:            os.Getenv("CUBEPILOT_AGENT_USER"),
+		Workspace:       getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
+		GatewayCmd:      []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
 		PollInterval:    10 * time.Second,
 		ConfigPath:      getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
 		CredentialsPath: getenv("CUBEPILOT_CREDENTIALS_PATH", k8s.CredentialsPath),
@@ -496,4 +496,3 @@ func (s *Supervisor) stopGateway() {
 	}
 	s.cmd = nil
 }
-

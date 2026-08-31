@@ -18,7 +18,7 @@ func TestRender(t *testing.T) {
 	var cfg struct {
 		Models struct {
 			Providers map[string]struct {
-				API    string `json:"api"`
+				API    string          `json:"api"`
 				APIKey json.RawMessage `json:"apiKey"`
 				Models []struct {
 					ID   string `json:"id"`
