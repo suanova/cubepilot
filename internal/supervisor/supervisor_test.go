@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/suanova/cubepilot/internal/resolver"
 )
@@ -184,5 +189,87 @@ func TestApplyGatewayConfigDisabled(t *testing.T) {
 	changed, err := s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
 	if err != nil || changed {
 		t.Errorf("empty ConfigPath: changed=%v err=%v, want no-op", changed, err)
+	}
+}
+
+// TestGatewayCrashSignalsRespawn verifies the crash-recovery wiring: a started
+// gateway child that exits signals waitCh, which Run consumes to respawn.
+func TestGatewayCrashSignalsRespawn(t *testing.T) {
+	s := New(Config{GatewayCmd: []string{"sh", "-c", "sleep 0.3"}})
+	if err := s.startGateway(context.Background()); err != nil {
+		t.Fatalf("startGateway: %v", err)
+	}
+	select {
+	case err := <-s.waitCh:
+		if err != nil {
+			t.Errorf("Wait returned %v, want nil (clean exit)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitCh not signaled after gateway child exited")
+	}
+}
+
+// TestSyncCredentials verifies the supervisor reads the credential Secrets and
+// writes keys.json (the gateway's file secret provider input), and that an
+// unchanged sync is a no-op.
+func TestSyncCredentials(t *testing.T) {
+	dir := t.TempDir()
+	cl := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: "cubepilot"},
+		Data:       map[string][]byte{"apiKey": []byte("sk-1")},
+	})
+	s := New(Config{CredentialsPath: filepath.Join(dir, "keys.json")})
+	s.k8s = cl
+	s.ns = "cubepilot"
+
+	cfg := &resolver.ResolvedAgentConfig{
+		Credentials: []resolver.ResolvedCredential{
+			{Env: "CUBEPILOT_LLM_X", SecretName: "cubepilot-llm"},
+		},
+	}
+	if err := s.syncCredentials(context.Background(), cfg); err != nil {
+		t.Fatalf("syncCredentials: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "keys.json"))
+	if err != nil {
+		t.Fatalf("read keys: %v", err)
+	}
+	var keys map[string]string
+	if err := json.Unmarshal(data, &keys); err != nil {
+		t.Fatalf("unmarshal keys: %v", err)
+	}
+	if keys["CUBEPILOT_LLM_X"] != "sk-1" {
+		t.Errorf("keys = %v, want CUBEPILOT_LLM_X=sk-1", keys)
+	}
+	// Unchanged content -> no rewrite (hash guard).
+	if err := s.syncCredentials(context.Background(), cfg); err != nil {
+		t.Fatalf("sync #2: %v", err)
+	}
+}
+
+// TestSyncCredentialsSkipsWriteOnError verifies a failed Secret read aborts the
+// sync without writing a partial keys.json (a live credential is never dropped
+// by a transient read error).
+func TestSyncCredentialsSkipsWriteOnError(t *testing.T) {
+	dir := t.TempDir()
+	cl := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ok", Namespace: "cubepilot"},
+		Data:       map[string][]byte{"apiKey": []byte("sk-good")},
+	})
+	s := New(Config{CredentialsPath: filepath.Join(dir, "keys.json")})
+	s.k8s = cl
+	s.ns = "cubepilot"
+
+	cfg := &resolver.ResolvedAgentConfig{
+		Credentials: []resolver.ResolvedCredential{
+			{Env: "K_GOOD", SecretName: "ok"},
+			{Env: "K_MISSING", SecretName: "missing"},
+		},
+	}
+	if err := s.syncCredentials(context.Background(), cfg); err == nil {
+		t.Fatal("expected error for a missing credential Secret")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keys.json")); !os.IsNotExist(err) {
+		t.Error("keys.json must not be written when a credential read fails")
 	}
 }

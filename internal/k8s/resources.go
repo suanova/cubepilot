@@ -205,6 +205,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "data", MountPath: "/home/node/.openclaw"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
+					// The supervisor writes the model credential keys here
+					// (keys.json); the gateway's file secret provider reads them.
+					// EmptyDir (memory) so keys never persist on the PVC.
+					{Name: "cubepilot-keys", MountPath: CredentialsDir},
 				},
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler: corev1.ProbeHandler{
@@ -231,6 +235,14 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					Name: "scratch",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					// Credential keys for the gateway's file secret provider;
+					// memory-backed so keys never touch node disk or the PVC.
+					Name: "cubepilot-keys",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
 					},
 				},
 			},

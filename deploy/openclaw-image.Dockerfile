@@ -30,7 +30,9 @@ RUN apt-get update \
 
 # The agent-pod supervisor (pid 1): pulls the resolved agent config (internal
 # API), renders skills into the PVC workspace, and runs the OpenClaw gateway
-# as a child process (graceful restart on config change -- never a pod delete).
+# as a child process. The gateway owns its own reload (config reloader watches
+# openclaw.json), so the supervisor never restarts the gateway for a config
+# change.
 COPY --from=supervisor-build /out/cubepilot-supervisor /usr/local/bin/cubepilot-supervisor
 
 # Workspace persona (AGENTS.md / SOUL.md) seed for the per-instance PVC; the

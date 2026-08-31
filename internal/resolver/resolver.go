@@ -66,6 +66,16 @@ type ResolvedAgentConfig struct {
 	// (empty = no domain skills; atomic skills are overlays and do
 	// not appear here).
 	Skills []ResolvedSkill `json:"skills,omitempty"`
+	// Credentials lists the model credential Secrets the supervisor must read
+	// to deliver apiKeys to the gateway's file secret provider (design §6).
+	Credentials []ResolvedCredential `json:"credentials,omitempty"`
+}
+
+// ResolvedCredential maps a rendered apiKey key name (k8s.EnvNameForModel, the
+// keys.json JSON key) to the Secret holding its value.
+type ResolvedCredential struct {
+	Env        string `json:"env"`
+	SecretName string `json:"secretName"`
 }
 
 // Empty reports whether the config is the zero default (no instance -- the
@@ -136,6 +146,22 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
 			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
 			cfg.Instructions = def.Spec.Instructions
+			// Credential mapping for the gateway's file secret provider: the
+			// supervisor reads these Secrets and writes keys.json into the
+			// pod's emptyDir (design §6).
+			for _, m := range def.Spec.Models {
+				// Match the renderer's eligibility rule: models with an empty
+				// endpoint are dropped from the rendered config, so their
+				// credentials must not appear either (a missing Secret on an
+				// ineligible model would otherwise block valid ones).
+				if m.Endpoint == "" || m.CredentialRef == nil || m.CredentialRef.Name == "" {
+					continue
+				}
+				cfg.Credentials = append(cfg.Credentials, ResolvedCredential{
+					Env:        k8s.EnvNameForModel(m.Name),
+					SecretName: m.CredentialRef.Name,
+				})
+			}
 			// User instructions append after the template instructions
 			// (design §3.2: final instructions = platform safety & execution
 			// constraints + template instructions + user instructions, combined

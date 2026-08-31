@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -208,7 +209,7 @@ func TestInternalGatewayConfig(t *testing.T) {
 		},
 	)
 
-	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/gateway/config", "", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/gateway/config/li.ming", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -217,8 +218,98 @@ func TestInternalGatewayConfig(t *testing.T) {
 	}
 
 	// Missing Secret -> 503, so the supervisor falls back to its mounted seed.
-	rec = doReq(t, platformTestServerStore(t, nil).Handler(), http.MethodGet, "/internal/gateway/config", "", nil)
+	rec = doReq(t, platformTestServerStore(t, nil).Handler(), http.MethodGet, "/internal/gateway/config/li.ming", "", nil)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("missing secret status = %d, want 503", rec.Code)
+	}
+}
+
+// TestInternalGatewayConfigPerUserPrimary verifies a user with an explicit
+// selectedModel gets it as the config primary (each instance reflects its
+// owner; design §3.2), while the shared providers/allowlist are preserved.
+func TestInternalGatewayConfigPerUserPrimary(t *testing.T) {
+	raw := []byte(`{"models":{"providers":{"deepseek-v4-pro-0813":{"api":"openai-completions"}}},"agents":{"defaults":{"model":{"primary":"deepseek-v4-flash-0731/deepseek-v4-flash-0731"},"models":{"deepseek-v4-flash-0731/deepseek-v4-flash-0731":{"alias":"deepseek-v4-flash-0731"},"deepseek-v4-pro-0813/deepseek-v4-pro-0813":{"alias":"deepseek-v4-pro-0813"}}}}}`)
+	s := platformTestServerStore(t, nil,
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName},
+			Data:       map[string][]byte{"openclaw.json": raw, "gatewayToken": []byte("tok")},
+		},
+		// The template the instance references (must contain the selected model).
+		&v1alpha1.AgentTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+			Spec: v1alpha1.AgentTemplateSpec{
+				DefaultModel: "deepseek-v4-flash-0731",
+				Models: []v1alpha1.TemplateModelSpec{
+					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com"},
+					{Name: "deepseek-v4-pro-0813", Endpoint: "https://api.deepseek.com"},
+				},
+			},
+		},
+		// An instance with an explicit selectedModel (resolver looks it up by
+		// name without a namespace).
+		&v1alpha1.AgentInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
+			Spec: v1alpha1.AgentInstanceSpec{
+				Owner:         "li.ming",
+				TemplateRef:   "agent-for-cloud",
+				SelectedModel: "deepseek-v4-pro-0813",
+			},
+		},
+	)
+
+	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/gateway/config/li.ming", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"primary": "deepseek-v4-pro-0813/deepseek-v4-pro-0813"`) {
+		t.Errorf("primary not overridden per user: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "deepseek-v4-flash-0731/deepseek-v4-flash-0731") {
+		t.Errorf("allowlist must be preserved: %s", rec.Body.String())
+	}
+}
+
+// TestInternalGatewayConfigPrimaryNotInAllowlist verifies a selection pointing
+// at a model the operator dropped (empty endpoint, so absent from the rendered
+// allowlist) leaves primary unchanged instead of referencing a missing provider.
+func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
+	raw := []byte(`{"models":{"providers":{"deepseek-v4-flash-0731":{"api":"openai-completions"}}},"agents":{"defaults":{"model":{"primary":"deepseek-v4-flash-0731/deepseek-v4-flash-0731"},"models":{"deepseek-v4-flash-0731/deepseek-v4-flash-0731":{"alias":"deepseek-v4-flash-0731"}}}}}`)
+	s := platformTestServerStore(t, nil,
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName},
+			Data:       map[string][]byte{"openclaw.json": raw, "gatewayToken": []byte("tok")},
+		},
+		// The dropped model IS in the template (so the resolver accepts the
+		// selection) but has an empty endpoint, so the operator's renderer never
+		// puts it in the allowlist.
+		&v1alpha1.AgentTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+			Spec: v1alpha1.AgentTemplateSpec{
+				DefaultModel: "deepseek-v4-flash-0731",
+				Models: []v1alpha1.TemplateModelSpec{
+					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com"},
+					{Name: "deepseek-v4-dropped", Endpoint: ""},
+				},
+			},
+		},
+		&v1alpha1.AgentInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
+			Spec: v1alpha1.AgentInstanceSpec{
+				Owner:         "li.ming",
+				TemplateRef:   "agent-for-cloud",
+				SelectedModel: "deepseek-v4-dropped",
+			},
+		},
+	)
+
+	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/gateway/config/li.ming", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "deepseek-v4-dropped") {
+		t.Errorf("primary must not point at a dropped model: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"primary":"deepseek-v4-flash-0731/deepseek-v4-flash-0731"`) {
+		t.Errorf("primary should stay the operator default: %s", rec.Body.String())
 	}
 }

@@ -6,14 +6,21 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 // Provider is one OpenClaw models.providers entry derived from a template model.
 type Provider struct {
 	Key     string // provider key = model Name
 	BaseURL string // endpoint
-	APIKey  string // from the credentialRef Secret when present; "" for public models
-	Model   string // model name = backend id
+	// APIKey is the credential key name (k8s.EnvNameForModel) rendered as a
+	// file SecretRef ({source:"file", provider:cubepilot-keys, id:"/<name>"})
+	// into the emptyDir JSON file the supervisor writes. The literal key never
+	// lands in the config file, the PVC, or the network response. Empty for
+	// public models (no apiKey in the rendered config).
+	APIKey string
+	Model  string // model name = backend id
 }
 
 // Render builds the openclaw.json bytes for the given providers. Static
@@ -26,13 +33,20 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 		pv := map[string]any{
 			"api":     "openai-completions",
 			"baseUrl": p.BaseURL,
-			"models":  []map[string]string{{"id": p.Model, "name": p.Model}},
+			"models":  []any{map[string]any{"id": p.Model, "name": p.Model}},
 		}
 		if p.APIKey != "" {
-			pv["apiKey"] = p.APIKey
+			// File SecretRef into the supervisor-written keys.json; OpenClaw
+			// reads the file per-resolution, so a new model's key works without
+			// a restart (the config hot-reloads; the supervisor wrote the key).
+			pv["apiKey"] = map[string]any{
+				"source":   "file",
+				"provider": k8s.CredProviderName,
+				"id":       "/" + p.APIKey,
+			}
 		}
 		providersOut[p.Key] = pv
-		modelsOut[p.Key+"/"+p.Model] = map[string]string{"alias": p.Model}
+		modelsOut[p.Key+"/"+p.Model] = map[string]any{"alias": p.Model}
 	}
 	cfg := map[string]any{
 		"models": map[string]any{"providers": providersOut},
@@ -56,6 +70,17 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 		"tools": map[string]any{
 			"exec":     map[string]any{"security": "full", "ask": "off"},
 			"sessions": map[string]any{"visibility": "all"},
+		},
+		// The file-secret provider that resolves the per-model apiKey refs from
+		// the keys.json the supervisor writes into the emptyDir.
+		"secrets": map[string]any{
+			"providers": map[string]any{
+				k8s.CredProviderName: map[string]any{
+					"source": "file",
+					"path":   k8s.CredentialsPath,
+					"mode":   "json",
+				},
+			},
 		},
 	}
 	b, err := json.MarshalIndent(cfg, "", "  ")

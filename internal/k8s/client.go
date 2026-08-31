@@ -3,6 +3,8 @@
 package k8s
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -19,6 +21,24 @@ const (
 	ServiceAccountName   = "cubepilot-agent"
 	AgentLabelApp        = "cubepilot-agent"
 	AgentLabelUser       = "cubepilot/user"
+)
+
+// Credential key delivery (design §6): the operator renders each model's
+// apiKey in openclaw.json as a file SecretRef pointing at a JSON file the
+// supervisor writes into an emptyDir (never onto the PVC or in the network
+// response). These constants are shared by the renderer (which produces the
+// ref + the secrets.providers entry), the pod builder (which mounts the
+// emptyDir) and the supervisor (which writes the file).
+const (
+	// CredProviderName is the OpenClaw file-secret provider name in
+	// openclaw.json; mode "json", path CredentialsPath.
+	CredProviderName = "cubepilot-keys"
+	// CredentialsDir is the emptyDir mount path inside the agent pod.
+	CredentialsDir = "/mnt/cubepilot-keys"
+	// CredentialsFile is the JSON file the supervisor writes (all model keys).
+	CredentialsFile = "keys.json"
+	// CredentialsPath is the full path the provider reads.
+	CredentialsPath = CredentialsDir + "/" + CredentialsFile
 )
 
 // NewClient returns a clientset using in-cluster config when available, otherwise
@@ -76,4 +96,34 @@ func ResourceName(prefix, user string) string {
 // key is user + agent (design §3.2). Both segments are sanitized to DNS-1123.
 func InstanceName(user, agent string) string {
 	return Sanitize(user) + "-" + Sanitize(agent)
+}
+
+// EnvNameForModel derives the stable identifier used for a model credential's
+// apiKey across the credential-delivery path: the file SecretRef id rendered
+// into openclaw.json ("/"+name) and the matching key in the emptyDir keys.json
+// the supervisor writes. The operator render, the resolver's credential list
+// and the supervisor must all derive the same name.
+//
+// A short hash of the original model name is appended so distinct names that
+// sanitize identically (e.g. "foo-bar" vs "foo_bar", or case variants) still
+// map to distinct keys instead of one model's apiKey silently serving another.
+func EnvNameForModel(name string) string {
+	const prefix = "CUBEPILOT_LLM_"
+	var b strings.Builder
+	b.Grow(len(name) + len(prefix) + 5)
+	b.WriteString(prefix)
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c - 'a' + 'A')
+		case (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'):
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	sum := sha256.Sum256([]byte(name))
+	fmt.Fprintf(&b, "_%x", sum[:2])
+	return b.String()
 }

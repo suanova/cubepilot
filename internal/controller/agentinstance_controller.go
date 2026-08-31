@@ -93,6 +93,10 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 			fmt.Sprintf("runtime %q not supported by phase-one controller", agent.Spec.Runtime))
 	}
 
+	// Model credential keys are delivered by the supervisor (it reads the
+	// credential Secrets and writes them into the pod's emptyDir keys.json that
+	// the gateway's file secret provider reads) -- no env injection here.
+
 	// Ensure PVC / Service / Pod exist (provision + self-heal; the resident
 	// policy is declared by the spec).
 	spec := k8s.AgentSpec{

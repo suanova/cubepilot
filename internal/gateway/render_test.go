@@ -1,13 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
 
 func TestRender(t *testing.T) {
 	providers := []Provider{
-		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "sk-1", Model: "deepseek-v4-flash"},
+		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "CUBEPILOT_LLM_DEEPSEEK_V4_FLASH", Model: "deepseek-v4-flash"},
 		{Key: "qwen", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5-72b"}, // public, no key
 	}
 	b, err := Render("tok", "deepseek-v4-flash/deepseek-v4-flash", providers)
@@ -17,8 +18,8 @@ func TestRender(t *testing.T) {
 	var cfg struct {
 		Models struct {
 			Providers map[string]struct {
-				API    string `json:"api"`
-				APIKey string `json:"apiKey"`
+				API    string          `json:"api"`
+				APIKey json.RawMessage `json:"apiKey"`
 				Models []struct {
 					ID   string `json:"id"`
 					Name string `json:"name"`
@@ -31,17 +32,40 @@ func TestRender(t *testing.T) {
 				Models map[string]any `json:"models"`
 			} `json:"defaults"`
 		} `json:"agents"`
+		Secrets struct {
+			Providers map[string]struct {
+				Source string `json:"source"`
+				Path   string `json:"path"`
+				Mode   string `json:"mode"`
+			} `json:"providers"`
+		} `json:"secrets"`
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	d := cfg.Models.Providers["deepseek-v4-flash"]
-	if d.API != "openai-completions" || d.APIKey != "sk-1" || d.Models[0].ID != "deepseek-v4-flash" {
-		t.Errorf("deepseek provider wrong: %+v", d)
+	// The credential is a file SecretRef into the supervisor-written keys.json,
+	// never a literal key.
+	var keyRef struct {
+		Source   string `json:"source"`
+		Provider string `json:"provider"`
+		ID       string `json:"id"`
+	}
+	if err := json.Unmarshal(d.APIKey, &keyRef); err != nil {
+		t.Fatalf("apiKey should be a file SecretRef object: %s", d.APIKey)
+	}
+	if d.API != "openai-completions" || keyRef.Source != "file" || keyRef.Provider != "cubepilot-keys" ||
+		keyRef.ID != "/CUBEPILOT_LLM_DEEPSEEK_V4_FLASH" || d.Models[0].ID != "deepseek-v4-flash" {
+		t.Errorf("deepseek provider wrong: %+v (apiKey=%s)", d, d.APIKey)
 	}
 	q := cfg.Models.Providers["qwen"]
-	if q.APIKey != "" || q.Models[0].ID != "qwen2.5-72b" {
+	if len(q.APIKey) != 0 || q.Models[0].ID != "qwen2.5-72b" {
 		t.Errorf("public provider should be keyless: %+v", q)
+	}
+	// The file-secret provider must point at the emptyDir keys.json.
+	sp := cfg.Secrets.Providers["cubepilot-keys"]
+	if sp.Source != "file" || sp.Path != "/mnt/cubepilot-keys/keys.json" || sp.Mode != "json" {
+		t.Errorf("secrets.providers.cubepilot-keys wrong: %+v", sp)
 	}
 	// model = {primary} and the allowlist lives at agents.defaults.models
 	// (siblings) -- this is the OpenClaw schema the old jq produced.
@@ -63,5 +87,25 @@ func TestRenderEmpty(t *testing.T) {
 	}
 	if len(b) == 0 {
 		t.Fatal("empty render")
+	}
+}
+
+// TestRenderDeterministic verifies the render output is byte-stable for the
+// same input (sorted keys) and still human-readable (indented).
+func TestRenderDeterministic(t *testing.T) {
+	providers := []Provider{{Key: "a", BaseURL: "https://x", Model: "a"}, {Key: "b", BaseURL: "https://y", Model: "b", APIKey: "CUBEPILOT_LLM_B"}}
+	b1, err := Render("tok", "a/a", providers)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	b2, err := Render("tok", "a/a", providers)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if string(b1) != string(b2) {
+		t.Errorf("Render not deterministic:\n%s\n---\n%s", b1, b2)
+	}
+	if !bytes.Contains(b1, []byte("\n  ")) {
+		t.Errorf("Render should be indented JSON for humans: %s", b1)
 	}
 }
