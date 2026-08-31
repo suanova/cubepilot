@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suanova/cubepilot/internal/resolver"
 )
@@ -184,5 +185,22 @@ func TestApplyGatewayConfigDisabled(t *testing.T) {
 	changed, err := s.applyGatewayConfig([]byte(`{"models":{"providers":{}}}`))
 	if err != nil || changed {
 		t.Errorf("empty ConfigPath: changed=%v err=%v, want no-op", changed, err)
+	}
+}
+
+// TestGatewayCrashSignalsRespawn verifies the crash-recovery wiring: a started
+// gateway child that exits signals waitCh, which Run consumes to respawn.
+func TestGatewayCrashSignalsRespawn(t *testing.T) {
+	s := New(Config{GatewayCmd: []string{"sh", "-c", "sleep 0.3"}})
+	if err := s.startGateway(context.Background()); err != nil {
+		t.Fatalf("startGateway: %v", err)
+	}
+	select {
+	case err := <-s.waitCh:
+		if err != nil {
+			t.Errorf("Wait returned %v, want nil (clean exit)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitCh not signaled after gateway child exited")
 	}
 }

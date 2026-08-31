@@ -83,8 +83,9 @@ type Supervisor struct {
 	mu      sync.Mutex
 	current string // last applied config revision
 
-	cmdMu sync.Mutex
-	cmd   *exec.Cmd
+	cmdMu  sync.Mutex
+	cmd    *exec.Cmd
+	waitCh chan error // receives the gateway child's Wait result when it exits
 
 	// lastCfgHash is the sha256 of the gateway config file as last loaded (or
 	// detected); configHashChanged compares against it. Only touched by Run.
@@ -99,22 +100,25 @@ func New(cfg Config) *Supervisor {
 	}
 }
 
-// Run is the supervisor main loop: apply the current config, start the
-// gateway, then poll the resolved config and reload (render skills +
-// graceful restart) on revision change.
+// Run is the supervisor main loop: wait for the initial config, start the
+// gateway, then poll the resolved config and write rendered skills + gateway
+// config. The gateway owns its own reload: its config reloader watches
+// openclaw.json (chokidar) and re-scans workspace skills, so the supervisor
+// never restarts the gateway for a config change. It does respawn the gateway
+// if the child process crashes (the operator only re-creates Failed pods, so
+// a dead gateway inside a live supervisor would otherwise wedge the pod
+// NotReady forever), and stops the gateway on shutdown.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if s.cfg.User == "" {
 		return fmt.Errorf("CUBEPILOT_AGENT_USER is required")
 	}
-	// Apply the current config before the first start so the gateway boots
-	// with the right skills already in place (no boot-time restart).
-	if _, err := s.poll(ctx); err != nil {
-		log.Printf("supervisor: initial config poll: %v (runtime defaults apply until next poll)", err)
-	}
-	// Pull the gateway config before the gateway starts; on failure the gateway
-	// starts with defaults (or the last PVC copy) and the poll self-heals.
-	if _, err := s.refreshGatewayConfig(ctx); err != nil {
-		log.Printf("supervisor: initial gateway config fetch: %v", err)
+	// The gateway refuses to boot without a valid openclaw.json
+	// (gateway.mode=local), so wait for the resolved config and the rendered
+	// gateway config to apply before starting it. Booting earlier would leave
+	// the gateway permanently unready: the gateway reloads config itself and
+	// the supervisor never restarts it, so there is no second chance.
+	if err := s.waitForInitialConfig(ctx); err != nil {
+		return err
 	}
 	if err := s.startGateway(ctx); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -128,6 +132,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			s.stopGateway()
 			return ctx.Err()
 		case <-ticker.C:
+			// Crash recovery: the gateway child exited unexpectedly -> respawn.
+			// Config changes never trigger this; the gateway reloads itself.
+			select {
+			case werr := <-s.waitCh:
+				log.Printf("supervisor: gateway exited (%v); respawning", werr)
+				if err := s.startGateway(ctx); err != nil {
+					log.Printf("supervisor: respawn: %v", err)
+				}
+			default:
+			}
 			changed, err := s.poll(ctx)
 			if err != nil {
 				log.Printf("supervisor: poll: %v", err)
@@ -138,16 +152,41 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if gcerr != nil {
 				log.Printf("supervisor: refresh gateway config: %v", gcerr)
 			}
-			if gcChanged {
-				log.Printf("supervisor: gateway config changed; restarting")
-				changed = true
+			// The gateway reloads itself: its config reloader watches
+			// openclaw.json, so writing the updated files is sufficient.
+			if changed || gcChanged {
+				log.Printf("supervisor: config updated (resolved=%v gateway=%v); OpenClaw reloads it", changed, gcChanged)
 			}
-			if changed {
-				log.Printf("supervisor: restarting gateway for new config")
-				if err := s.restartGateway(ctx); err != nil {
-					log.Printf("supervisor: restart: %v", err)
-				}
-			}
+		}
+	}
+}
+
+// waitForInitialConfig retries fetching the resolved agent config and the
+// rendered gateway config until both apply. The OpenClaw gateway refuses to
+// boot without gateway.mode=local, so the supervisor waits rather than start a
+// gateway that can never become ready (nothing would restart it later).
+// Backoff doubles up to a cap; the context bounds the wait.
+func (s *Supervisor) waitForInitialConfig(ctx context.Context) error {
+	backoff := 2 * time.Second
+	for {
+		_, pollErr := s.poll(ctx)
+		if pollErr != nil {
+			log.Printf("supervisor: initial config poll: %v (retrying)", pollErr)
+		}
+		_, gwErr := s.refreshGatewayConfig(ctx)
+		if gwErr != nil {
+			log.Printf("supervisor: initial gateway config fetch: %v (retrying)", gwErr)
+		}
+		if pollErr == nil && gwErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
 		}
 	}
 }
@@ -210,9 +249,8 @@ func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
 }
 
 // poll fetches the resolved config and applies it (renders skills, records
-// the revision). It reports whether the gateway must restart (revision
-// changed). The gateway loads skills at startup, so a config change requires
-// a graceful restart -- never a pod delete: sessions/PVC/IP survive.
+// the revision). It reports whether the resolved config changed so the caller
+// can log it; the gateway reloads skills itself, so no restart is needed.
 func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	cfg, err := s.fetchConfig(ctx)
 	if err != nil {
@@ -227,7 +265,7 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 }
 
 // applyConfig renders the skills when the revision changed and records it.
-// Returns whether the gateway needs a restart.
+// Returns whether the resolved config changed (for logging only).
 func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -317,6 +355,11 @@ func (s *Supervisor) startGateway(ctx context.Context) error {
 		return err
 	}
 	s.cmd = cmd
+	// Reap the child and signal its exit so Run can respawn it on crash.
+	s.waitCh = make(chan error, 1)
+	go func() {
+		s.waitCh <- cmd.Wait()
+	}()
 	log.Printf("supervisor: gateway started (pid %d)", cmd.Process.Pid)
 	return nil
 }
@@ -329,23 +372,14 @@ func (s *Supervisor) stopGateway() {
 		return
 	}
 	_ = s.cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() {
-		_ = s.cmd.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		_ = s.cmd.Process.Kill()
-		<-done
+	if s.waitCh != nil {
+		select {
+		case <-s.waitCh: // the Wait goroutine reaps the child
+		case <-time.After(30 * time.Second):
+			_ = s.cmd.Process.Kill()
+			<-s.waitCh
+		}
 	}
 	s.cmd = nil
 }
 
-// restartGateway gracefully restarts the gateway process (SIGTERM -> wait ->
-// start). The pod and its PVC/IP survive; only the process is recycled.
-func (s *Supervisor) restartGateway(ctx context.Context) error {
-	s.stopGateway()
-	return s.startGateway(ctx)
-}
