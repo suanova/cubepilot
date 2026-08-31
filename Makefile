@@ -4,7 +4,9 @@
 # developers run repeatedly.
 #
 #   make build      build both Go binaries into bin/
-#   make test       go vet + go test ./...
+#   make test       go vet + unit tests (excludes the test/e2e suite)
+#   make test-e2e   bring up the stack (scripts/setup.sh) and run the Ginkgo
+#                   e2e suite (test/e2e) against it
 #   make web        build the Vue SPA (type-check + vite build)
 #   make images     build the four images (registry-addressed)
 #   make push       push the four images to $(IMAGE_REGISTRY)
@@ -18,7 +20,8 @@
 #   make clean      remove build artifacts
 #
 # Overridable: IMAGE_REGISTRY (default harbor.isuanova.com/suanova),
-#              IMAGE_TAG (default local), NAMESPACE, HELM_RELEASE.
+#              IMAGE_TAG (default local), NAMESPACE, HELM_RELEASE,
+#              KUBECONFIG (default $(HOME)/.kube/config).
 
 BIN_DIR      ?= bin
 IMAGE_REGISTRY ?= harbor.isuanova.com/suanova
@@ -26,13 +29,18 @@ IMAGE_TAG    ?= local
 NAMESPACE    ?= cubepilot
 HELM_RELEASE ?= cubepilot
 CHART_DIR    ?= deploy/charts/cubepilot
+KUBECONFIG   ?= $(HOME)/.kube/config
 
 GO       ?= go
 DOCKER   ?= docker
 HELM     ?= helm
 NPM      ?= npm
 
-.PHONY: build test web images push lint deploy undeploy clean
+# OCM-style package scoping: `go test` skips test/e2e (it needs a live
+# cluster); go vet still covers the whole module, including the e2e suite.
+GO_TEST_PACKAGES = $(shell $(GO) list ./... | grep -v '/test/')
+
+.PHONY: build test test-e2e web images push lint deploy undeploy clean
 
 ## Build both Go binaries (linux/amd64, matching the container runtime).
 build:
@@ -40,10 +48,22 @@ build:
 	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -o $(BIN_DIR)/cubepilot-operator ./cmd/cubepilot-operator
 	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -o $(BIN_DIR)/cubepilot-api ./cmd/cubepilot-api
 
-## vet + unit tests.
+## vet + unit tests (excludes the cluster-backed e2e suite).
 test:
 	$(GO) vet ./...
-	$(GO) test ./...
+	$(GO) test $(GO_TEST_PACKAGES)
+
+## End-to-end: bring up the stack via scripts/setup.sh, then run the compiled
+## Ginkgo suite (test/e2e) against it. CUBEPILOT_LLM_APIKEY is required (use
+## sk-placeholder for a deploy-only run); CUBEPILOT_E2E_CHAT=1 enables the
+## chat spec (needs a real provider key).
+test-e2e:
+	@[ -n "$(CUBEPILOT_LLM_APIKEY)" ] || (echo "CUBEPILOT_LLM_APIKEY is required (use sk-placeholder for deploy-only)" && exit 1)
+	scripts/setup.sh
+	@mkdir -p $(BIN_DIR)
+	$(GO) test -c ./test/e2e -o $(BIN_DIR)/e2e.test
+	KUBECONFIG=$(KUBECONFIG) CUBEPILOT_NAMESPACE=$(NAMESPACE) \
+		./$(BIN_DIR)/e2e.test -test.v -ginkgo.v -ginkgo.fail-fast
 
 ## Build the Vue SPA (strict type-check via vue-tsc, then vite build).
 web:

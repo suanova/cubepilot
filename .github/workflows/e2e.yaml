@@ -1,8 +1,9 @@
-# The secret-gated end-to-end test (kind): deploys the full stack and, when a
-# real LLM apiKey is configured, runs a conversational chat e2e. Kept on
-# `pull_request_target` so fork PRs can access repository secrets. The
-# secret-free fast checks (Go build/test/lint, helm lint, web build) live in
-# ci.yaml on plain `pull_request`.
+# The secret-gated end-to-end test (kind): deploys the full stack via
+# scripts/setup.sh and runs the Ginkgo e2e suite (test/e2e); the SSE chat spec
+# runs when a real LLM apiKey is configured. Kept on `pull_request_target` so
+# fork PRs can access repository secrets. The secret-free fast checks (Go
+# build/test/lint, helm lint, web build) live in ci.yaml on plain
+# `pull_request`.
 #
 # NOTE: the workflow definition is loaded from the base branch, so this only
 # takes effect for fork PRs after it lands on main. The job checks out the PR
@@ -53,6 +54,10 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+
       - name: Pre-pull base images (de-risk BuildKit metadata pulls)
         run: |
           docker pull harbor.isuanova.com/library/golang:1.26-bookworm
@@ -65,8 +70,8 @@ jobs:
       # GitHub secret CUBEPILOT_LLM_APIKEY and (if not DeepSeek) the endpoint /
       # model name as repo variables CUBEPILOT_LLM_ENDPOINT /
       # CUBEPILOT_LLM_MODEL. Without the secret the job still runs the deploy
-      # path with a placeholder key.
-      - name: Run e2e (deploy, or deploy + chat when the provider secret is set)
+      # path with a placeholder key; the chat spec is filtered out.
+      - name: Run e2e (Ginkgo binary; chat gated on the provider secret)
         env:
           CHAT_KEY: ${{ secrets.CUBEPILOT_LLM_APIKEY }}
           CHAT_ENDPOINT: ${{ vars.CUBEPILOT_LLM_ENDPOINT }}
@@ -78,10 +83,16 @@ jobs:
             CUBEPILOT_LLM_APIKEY="$CHAT_KEY" \
             CUBEPILOT_LLM_ENDPOINT="${CHAT_ENDPOINT:-https://api.deepseek.com}" \
             CUBEPILOT_LLM_MODEL="${CHAT_MODEL:-deepseek-v4-flash}" \
-            CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
+            scripts/setup.sh
+            go test -c ./test/e2e -o bin/e2e.test
+            CUBEPILOT_E2E_CHAT=1 KUBECONFIG="$HOME/.kube/config" ./bin/e2e.test \
+              -test.v -ginkgo.v -ginkgo.fail-fast
             echo "::endgroup::"
           else
             echo "::group::e2e deploy only (placeholder provider)"
-            CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh
+            CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/setup.sh
+            go test -c ./test/e2e -o bin/e2e.test
+            CUBEPILOT_E2E_CHAT=0 KUBECONFIG="$HOME/.kube/config" ./bin/e2e.test \
+              -test.v -ginkgo.v -ginkgo.fail-fast -ginkgo.label-filter='!chat'
             echo "::endgroup::"
           fi
