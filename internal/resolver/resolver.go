@@ -150,7 +150,11 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			// supervisor reads these Secrets and writes keys.json into the
 			// pod's emptyDir (design §6).
 			for _, m := range def.Spec.Models {
-				if m.CredentialRef == nil || m.CredentialRef.Name == "" {
+				// Match the renderer's eligibility rule: models with an empty
+				// endpoint are dropped from the rendered config, so their
+				// credentials must not appear either (a missing Secret on an
+				// ineligible model would otherwise block valid ones).
+				if m.Endpoint == "" || m.CredentialRef == nil || m.CredentialRef.Name == "" {
 					continue
 				}
 				cfg.Credentials = append(cfg.Credentials, ResolvedCredential{

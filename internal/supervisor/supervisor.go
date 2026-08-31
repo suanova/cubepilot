@@ -233,7 +233,11 @@ func (s *Supervisor) waitForInitialConfig(ctx context.Context) error {
 // a no-op; written atomically. A nil/empty config or a missing Secret is
 // skipped (the gateway's provider keeps whatever it last had).
 func (s *Supervisor) syncCredentials(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
-	if s.cfg.CredentialsPath == "" || cfg == nil || len(cfg.Credentials) == 0 {
+	// A nil cfg means the poll failed or there is no instance config; keep the
+	// last-good file. An empty Credentials list is authoritative: removed
+	// credentials must disappear from keys.json (the gateway would otherwise
+	// keep resolving a revoked key until pod recreation).
+	if s.cfg.CredentialsPath == "" || cfg == nil {
 		return nil
 	}
 	client, err := s.k8sClient()

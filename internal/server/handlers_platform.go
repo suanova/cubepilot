@@ -347,14 +347,18 @@ func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
 	if !ok {
 		return nil
 	}
-	// Only override when the target is actually in the allowlist: the operator
-	// drops models with an empty endpoint or a missing credential Secret, so a
-	// selection validated only against the template model list could otherwise
-	// point primary at a provider that was never rendered (chat would fail).
-	if allow, ok := def["models"].(map[string]any); ok {
-		if _, ok := allow[primary]; !ok {
-			return nil
-		}
+	// Fail closed: only override when the allowlist is present and the target is
+	// actually in it. The operator drops models with an empty endpoint or a
+	// missing credential Secret, so a selection validated only against the
+	// template model list could otherwise point primary at a provider that was
+	// never rendered (chat would fail); a stale/malformed Secret must keep its
+	// original bytes too.
+	allow, ok := def["models"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := allow[primary]; !ok {
+		return nil
 	}
 	if modelCfg, ok := def["model"].(map[string]any); ok {
 		modelCfg["primary"] = primary

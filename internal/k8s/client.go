@@ -3,6 +3,8 @@
 package k8s
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -101,10 +103,14 @@ func InstanceName(user, agent string) string {
 // into openclaw.json ("/"+name) and the matching key in the emptyDir keys.json
 // the supervisor writes. The operator render, the resolver's credential list
 // and the supervisor must all derive the same name.
+//
+// A short hash of the original model name is appended so distinct names that
+// sanitize identically (e.g. "foo-bar" vs "foo_bar", or case variants) still
+// map to distinct keys instead of one model's apiKey silently serving another.
 func EnvNameForModel(name string) string {
 	const prefix = "CUBEPILOT_LLM_"
 	var b strings.Builder
-	b.Grow(len(name) + len(prefix))
+	b.Grow(len(name) + len(prefix) + 5)
 	b.WriteString(prefix)
 	for i := 0; i < len(name); i++ {
 		c := name[i]
@@ -117,5 +123,7 @@ func EnvNameForModel(name string) string {
 			b.WriteByte('_')
 		}
 	}
+	sum := sha256.Sum256([]byte(name))
+	fmt.Fprintf(&b, "_%x", sum[:2])
 	return b.String()
 }
