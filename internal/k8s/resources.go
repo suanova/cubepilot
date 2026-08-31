@@ -20,11 +20,6 @@ type AgentSpec struct {
 	// AgentUser is the instance owner (the supervisor's CUBEPILOT_AGENT_USER
 	// -- it pulls the resolved config for exactly this user).
 	AgentUser string
-	// CredentialEnv are env vars injecting model credential Secret keys
-	// (secretKeyRef, key "apiKey") into the supervisor container. They let the
-	// gateway resolve the $CUBEPILOT_LLM_* env refs rendered in openclaw.json
-	// without any literal key landing in the config file or the PVC.
-	CredentialEnv []corev1.EnvVar
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -182,7 +177,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						Drop: []corev1.Capability{"ALL"},
 					},
 				},
-				Env: append([]corev1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_HOME", Value: "/home/node"},
 					{Name: "OPENCLAW_STATE_DIR", Value: "/home/node/.openclaw"},
@@ -202,7 +197,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 							},
 						},
 					},
-				}, s.CredentialEnv...),
+				},
 				Ports: []corev1.ContainerPort{{ContainerPort: port}},
 				VolumeMounts: []corev1.VolumeMount{
 					// The workspace is the default ~/.openclaw/workspace (= PVC
@@ -210,6 +205,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "data", MountPath: "/home/node/.openclaw"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
+					// The supervisor writes the model credential keys here
+					// (keys.json); the gateway's file secret provider reads them.
+					// EmptyDir (memory) so keys never persist on the PVC.
+					{Name: "cubepilot-keys", MountPath: CredentialsDir},
 				},
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler: corev1.ProbeHandler{
@@ -236,6 +235,14 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					Name: "scratch",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					// Credential keys for the gateway's file secret provider;
+					// memory-backed so keys never touch node disk or the PVC.
+					Name: "cubepilot-keys",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
 					},
 				},
 			},

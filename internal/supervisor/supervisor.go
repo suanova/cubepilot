@@ -31,6 +31,11 @@ import (
 	"syscall"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
 )
 
@@ -51,9 +56,12 @@ type Config struct {
 	PollInterval time.Duration
 	// ConfigPath is the gateway config file (openclaw.json) the supervisor
 	// renders from the internal API; the gateway reads it from openclaw's
-	// default path. When the pulled content changes the supervisor restarts the
-	// gateway so the new config applies. Empty disables the pull.
+	// default path and reloads it itself. Empty disables the pull.
 	ConfigPath string
+	// CredentialsPath is the keys.json the supervisor writes (model apiKeys read
+	// from the credential Secrets) for the gateway's file secret provider.
+	// Empty disables the credential sync.
+	CredentialsPath string
 }
 
 // LoadFromEnv builds a Config from the environment with sane defaults.
@@ -63,8 +71,9 @@ func LoadFromEnv() Config {
 		User:         os.Getenv("CUBEPILOT_AGENT_USER"),
 		Workspace:    getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
 		GatewayCmd:   []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
-		PollInterval: 10 * time.Second,
-		ConfigPath:   getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
+		PollInterval:    10 * time.Second,
+		ConfigPath:      getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
+		CredentialsPath: getenv("CUBEPILOT_CREDENTIALS_PATH", k8s.CredentialsPath),
 	}
 }
 
@@ -90,6 +99,17 @@ type Supervisor struct {
 	// lastCfgHash is the sha256 of the gateway config file as last loaded (or
 	// detected); configHashChanged compares against it. Only touched by Run.
 	lastCfgHash string
+
+	// lastCfg is the most recently fetched resolved config (for the credential
+	// sync). Only touched by Run.
+	lastCfg *resolver.ResolvedAgentConfig
+
+	// credential key delivery (design §6): the supervisor reads the model
+	// credential Secrets and writes keys.json into the pod's emptyDir for the
+	// gateway's file secret provider.
+	k8s          kubernetes.Interface
+	ns           string
+	lastKeysHash string
 }
 
 // New returns a Supervisor for the given config.
@@ -120,6 +140,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.waitForInitialConfig(ctx); err != nil {
 		return err
 	}
+	// Write the credential keys before the gateway boots so its file secret
+	// provider can resolve model apiKeys on the first LLM call.
+	if err := s.syncCredentials(ctx, s.lastCfg); err != nil {
+		log.Printf("supervisor: credential sync at boot: %v", err)
+	}
 	if err := s.startGateway(ctx); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
 	}
@@ -145,6 +170,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			changed, err := s.poll(ctx)
 			if err != nil {
 				log.Printf("supervisor: poll: %v", err)
+			}
+			// Refresh credential keys before writing openclaw.json so the
+			// gateway never sees a ref to a missing key (new model / rotation).
+			if err := s.syncCredentials(ctx, s.lastCfg); err != nil {
+				log.Printf("supervisor: credential sync: %v", err)
 			}
 			// Pull the rendered gateway config so provider/model allowlist
 			// changes apply without waiting on the kubelet Secret-volume sync.
@@ -189,6 +219,88 @@ func (s *Supervisor) waitForInitialConfig(ctx context.Context) error {
 			backoff *= 2
 		}
 	}
+}
+
+// syncCredentials writes the model credential keys (from the referenced
+// Secrets) into the pod's emptyDir keys.json that the gateway's file secret
+// provider reads (design §6). Content-hash guarded so a poll with no change is
+// a no-op; written atomically. A nil/empty config or a missing Secret is
+// skipped (the gateway's provider keeps whatever it last had).
+func (s *Supervisor) syncCredentials(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
+	if s.cfg.CredentialsPath == "" || cfg == nil || len(cfg.Credentials) == 0 {
+		return nil
+	}
+	client, err := s.k8sClient()
+	if err != nil {
+		return fmt.Errorf("k8s client: %w", err)
+	}
+	ns, err := s.namespace()
+	if err != nil {
+		return fmt.Errorf("namespace: %w", err)
+	}
+	keys := map[string]string{}
+	for _, cred := range cfg.Credentials {
+		sec, err := client.CoreV1().Secrets(ns).Get(ctx, cred.SecretName, metav1.GetOptions{})
+		if err != nil {
+			log.Printf("supervisor: credential %q: %v", cred.SecretName, err)
+			continue
+		}
+		if v := string(sec.Data["apiKey"]); v != "" {
+			keys[cred.Env] = v
+		}
+	}
+	data, err := json.Marshal(keys)
+	if err != nil {
+		return fmt.Errorf("marshal keys: %w", err)
+	}
+	h := fmt.Sprintf("%x", sha256.Sum256(data))
+	if h == s.lastKeysHash {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.cfg.CredentialsPath), 0o755); err != nil {
+		return err
+	}
+	tmp := s.cfg.CredentialsPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.cfg.CredentialsPath); err != nil {
+		return err
+	}
+	s.lastKeysHash = h
+	log.Printf("supervisor: credential keys synced (%d)", len(keys))
+	return nil
+}
+
+// k8sClient lazily builds an in-cluster Kubernetes client (the pod's SA token)
+// used to read the model credential Secrets.
+func (s *Supervisor) k8sClient() (kubernetes.Interface, error) {
+	if s.k8s != nil {
+		return s.k8s, nil
+	}
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	c, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.k8s = c
+	return s.k8s, nil
+}
+
+// namespace returns the pod's namespace (from the projected SA token).
+func (s *Supervisor) namespace() (string, error) {
+	if s.ns != "" {
+		return s.ns, nil
+	}
+	b, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return "", err
+	}
+	s.ns = strings.TrimSpace(string(b))
+	return s.ns, nil
 }
 
 // fetchGatewayConfig pulls the operator-rendered gateway config (openclaw.json)
@@ -259,8 +371,10 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	if cfg.Empty() {
 		// No instance config yet -- the gateway runs with its runtime
 		// defaults; nothing to render.
+		s.lastCfg = nil
 		return false, nil
 	}
+	s.lastCfg = cfg
 	return s.applyConfig(ctx, cfg)
 }
 

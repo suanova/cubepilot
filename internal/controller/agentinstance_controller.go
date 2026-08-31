@@ -93,36 +93,18 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 			fmt.Sprintf("runtime %q not supported by phase-one controller", agent.Spec.Runtime))
 	}
 
-	// Inject each model's credential Secret as an env var so the gateway can
-	// resolve the $CUBEPILOT_LLM_* refs in openclaw.json; the literal key stays
-	// in the Secret and never lands in the rendered config or the PVC.
-	var credEnv []corev1.EnvVar
-	if agent != nil {
-		for _, m := range agent.Spec.Models {
-			if m.CredentialRef == nil || m.CredentialRef.Name == "" {
-				continue
-			}
-			credEnv = append(credEnv, corev1.EnvVar{
-				Name: k8s.EnvNameForModel(m.Name),
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: m.CredentialRef.Name},
-						Key:                  "apiKey",
-					},
-				},
-			})
-		}
-	}
+	// Model credential keys are delivered by the supervisor (it reads the
+	// credential Secrets and writes them into the pod's emptyDir keys.json that
+	// the gateway's file secret provider reads) -- no env injection here.
 
 	// Ensure PVC / Service / Pod exist (provision + self-heal; the resident
 	// policy is declared by the spec).
 	spec := k8s.AgentSpec{
-		Namespace:     r.Cfg.Namespace,
-		Image:         r.Cfg.AgentImage,
-		GatewayToken:  r.Cfg.GatewayToken,
-		Port:          int32(r.Cfg.AgentPort),
-		AgentUser:     inst.Spec.Owner,
-		CredentialEnv: credEnv,
+		Namespace:    r.Cfg.Namespace,
+		Image:        r.Cfg.AgentImage,
+		GatewayToken: r.Cfg.GatewayToken,
+		Port:         int32(r.Cfg.AgentPort),
+		AgentUser:    inst.Spec.Owner,
 	}
 	pvcName, size := inst.EffectiveDataVolume()
 	podName := k8s.ResourceName("agent", inst.Name)

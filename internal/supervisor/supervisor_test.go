@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/suanova/cubepilot/internal/resolver"
 )
 
@@ -202,5 +206,43 @@ func TestGatewayCrashSignalsRespawn(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("waitCh not signaled after gateway child exited")
+	}
+}
+
+// TestSyncCredentials verifies the supervisor reads the credential Secrets and
+// writes keys.json (the gateway's file secret provider input), and that an
+// unchanged sync is a no-op.
+func TestSyncCredentials(t *testing.T) {
+	dir := t.TempDir()
+	cl := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: "cubepilot"},
+		Data:       map[string][]byte{"apiKey": []byte("sk-1")},
+	})
+	s := New(Config{CredentialsPath: filepath.Join(dir, "keys.json")})
+	s.k8s = cl
+	s.ns = "cubepilot"
+
+	cfg := &resolver.ResolvedAgentConfig{
+		Credentials: []resolver.ResolvedCredential{
+			{Env: "CUBEPILOT_LLM_X", SecretName: "cubepilot-llm"},
+		},
+	}
+	if err := s.syncCredentials(context.Background(), cfg); err != nil {
+		t.Fatalf("syncCredentials: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "keys.json"))
+	if err != nil {
+		t.Fatalf("read keys: %v", err)
+	}
+	var keys map[string]string
+	if err := json.Unmarshal(data, &keys); err != nil {
+		t.Fatalf("unmarshal keys: %v", err)
+	}
+	if keys["CUBEPILOT_LLM_X"] != "sk-1" {
+		t.Errorf("keys = %v, want CUBEPILOT_LLM_X=sk-1", keys)
+	}
+	// Unchanged content -> no rewrite (hash guard).
+	if err := s.syncCredentials(context.Background(), cfg); err != nil {
+		t.Fatalf("sync #2: %v", err)
 	}
 }

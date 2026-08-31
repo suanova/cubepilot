@@ -21,6 +21,24 @@ const (
 	AgentLabelUser       = "cubepilot/user"
 )
 
+// Credential key delivery (design §6): the operator renders each model's
+// apiKey in openclaw.json as a file SecretRef pointing at a JSON file the
+// supervisor writes into an emptyDir (never onto the PVC or in the network
+// response). These constants are shared by the renderer (which produces the
+// ref + the secrets.providers entry), the pod builder (which mounts the
+// emptyDir) and the supervisor (which writes the file).
+const (
+	// CredProviderName is the OpenClaw file-secret provider name in
+	// openclaw.json; mode "json", path CredentialsPath.
+	CredProviderName = "cubepilot-keys"
+	// CredentialsDir is the emptyDir mount path inside the agent pod.
+	CredentialsDir = "/mnt/cubepilot-keys"
+	// CredentialsFile is the JSON file the supervisor writes (all model keys).
+	CredentialsFile = "keys.json"
+	// CredentialsPath is the full path the provider reads.
+	CredentialsPath = CredentialsDir + "/" + CredentialsFile
+)
+
 // NewClient returns a clientset using in-cluster config when available, otherwise
 // the kubeconfig from CUBEPILOT_KUBECONFIG or ~/.kube/config (local dev).
 func NewClient() (*kubernetes.Clientset, error) {
