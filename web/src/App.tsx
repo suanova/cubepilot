@@ -5,6 +5,7 @@ import TasksView from '@/views/TasksView'
 import AuditView from '@/views/AuditView'
 import AgentView from '@/views/AgentView'
 import SkillsView from '@/views/SkillsView'
+import MarketView from '@/views/MarketView'
 import { useToast } from '@/stores/toast'
 import { getCurrentUser } from '@/api/client'
 
@@ -14,6 +15,7 @@ const VIEW_TITLES: Record<string, string> = {
   audit: 'Audit',
   agent: 'Agent Config',
   skills: 'Skills',
+  market: 'Market',
 }
 
 function BucketIcon() {
@@ -76,6 +78,14 @@ function SkillIcon() {
   )
 }
 
+function MarketIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l1.5-5h15L21 9M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0M4 9v11h16V9M9 20v-6h6v6" />
+    </svg>
+  )
+}
+
 export default function App() {
   const { visible: toastVisible, message: toastMessage } = useToast()
   const { pathname } = useLocation()
@@ -120,6 +130,10 @@ export default function App() {
             <SkillIcon />
             <span>Skills</span>
           </NavLink>
+          <NavLink to="/market" className={navCls}>
+            <MarketIcon />
+            <span>Market</span>
+          </NavLink>
         </nav>
         <div className="sidebar-foot">
           <div className="user">
@@ -154,6 +168,7 @@ export default function App() {
             <Route path="/audit" element={<AuditView />} />
             <Route path="/agent" element={<AgentView />} />
             <Route path="/skills" element={<SkillsView />} />
+            <Route path="/market" element={<MarketView />} />
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
