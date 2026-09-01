@@ -130,6 +130,50 @@ func TestValidateSkillTar(t *testing.T) {
 	if err := ValidateSkillTar([]byte("not a tar")); err == nil {
 		t.Fatal("non-gzip payload should be rejected")
 	}
+	// A root SKILL.md that is a symlink (not a regular file) is rejected.
+	sym := mustTarWithHeader(t, &tar.Header{Name: "SKILL.md", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777})
+	if err := ValidateSkillTar(sym); err == nil {
+		t.Fatal("symlink SKILL.md should be rejected")
+	}
+}
+
+// TestValidateSkillTarLimits verifies the decompression-bomb guards: too many
+// entries or too many decompressed bytes are rejected.
+func TestValidateSkillTarLimits(t *testing.T) {
+	oldEntries, oldBytes := maxSkillEntries, maxSkillDecompressed
+	defer func() { maxSkillEntries, maxSkillDecompressed = oldEntries, oldBytes }()
+
+	maxSkillDecompressed = 32 // any file over 32 bytes trips the cap
+	big := mustPack(t, fstest.MapFS{"SKILL.md": {Data: bytes.Repeat([]byte("x"), 64)}})
+	if err := ValidateSkillTar(big); err == nil {
+		t.Fatal("archive above the decompressed cap should be rejected")
+	}
+
+	maxSkillDecompressed = 100 << 20
+	maxSkillEntries = 2
+	many := mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("x")}, "a": {Data: []byte("1")}, "b": {Data: []byte("2")}})
+	if err := ValidateSkillTar(many); err == nil {
+		t.Fatal("archive above the entry cap should be rejected")
+	}
+}
+
+// mustTarWithHeader builds a one-entry gzip tar with the given header (a
+// zero-size entry; used for the symlink SKILL.md case).
+func mustTarWithHeader(t *testing.T, hdr *tar.Header) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func sha256Hex(data []byte) string {

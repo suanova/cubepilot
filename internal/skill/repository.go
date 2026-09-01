@@ -177,10 +177,24 @@ func ExtractTar(r io.Reader, destDir string) error {
 	}
 }
 
+// Validation caps for the user-facing publish path (CWE-409): the request
+// body is limited to maxSkillTarSize *compressed*, but a small gzip can expand
+// far beyond that, so validation caps how much it will decompress and how many
+// entries it will read. Skills are text (SKILL.md + scripts + references);
+// 100 MiB / 1000 entries is generous. Vars (not consts) so tests can lower
+// them.
+var (
+	maxSkillEntries      int64 = 1000
+	maxSkillDecompressed int64 = 100 << 20
+)
+
 // ValidateSkillTar reports whether data is a publishable skill archive: a
-// readable gzip tar whose root contains SKILL.md. The user-facing publish
-// endpoint uses this to reject a wrong-folder upload before anything is
-// persisted (the internal seed path already guarantees SKILL.md).
+// readable gzip tar whose root contains a regular-file SKILL.md. The
+// user-facing publish endpoint uses this to reject a wrong-folder upload
+// before anything is persisted (the internal seed path already guarantees
+// SKILL.md). The whole stream is consumed to EOF so a truncated archive is
+// rejected, and the walk is bounded (entry count + decompressed bytes) to
+// guard against decompression bombs.
 func ValidateSkillTar(data []byte) error {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -188,16 +202,32 @@ func ValidateSkillTar(data []byte) error {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	foundSkill := false
+	var entries, size int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
+			if foundSkill {
+				return nil
+			}
 			return errors.New("skill archive has no SKILL.md")
 		}
 		if err != nil {
 			return fmt.Errorf("tar: %w", err)
 		}
+		entries++
+		if entries > maxSkillEntries {
+			return errors.New("skill archive has too many entries")
+		}
+		size += hdr.Size
+		if size > maxSkillDecompressed {
+			return errors.New("skill archive decompresses beyond the size limit")
+		}
 		if filepath.Clean(filepath.FromSlash(hdr.Name)) == "SKILL.md" {
-			return nil
+			if hdr.Typeflag != tar.TypeReg {
+				return errors.New("root SKILL.md must be a regular file")
+			}
+			foundSkill = true
 		}
 	}
 }
