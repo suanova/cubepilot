@@ -15,8 +15,10 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -466,16 +468,15 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 	return nil
 }
 
-// syncSkill pulls one skill's tar and extracts it, unless the .sha256 marker
-// already matches the desired revision.
+// syncSkill pulls one skill's tar, verifies its sha256 (when the CRD carries
+// one), and extracts it — unless the .sha256 marker already matches the
+// desired revision. The installed dir is preserved until the new content is
+// fully fetched, verified and extracted (a failure leaves the old skill).
 func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
 	dir := filepath.Join(skillsDir, rs.Name)
 	marker := filepath.Join(dir, ".sha256")
 	if b, err := os.ReadFile(marker); err == nil && string(b) == rs.Revision {
 		return nil // unchanged -- no pull
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
 	}
 	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(rs.Name))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -490,17 +491,38 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
 	}
-	// Extract into a temp dir then rename, so a corrupt tar never leaves a
-	// half-extracted skill behind.
+	tarBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if rs.Sha256 != "" {
+		h := sha256.Sum256(tarBytes)
+		if got := hex.EncodeToString(h[:]); got != rs.Sha256 {
+			return fmt.Errorf("skill %s: sha256 mismatch (%s != %s)", rs.Name, got, rs.Sha256)
+		}
+	}
+	// Stage into a temp dir first; the installed dir stays untouched.
 	tmpDir, err := os.MkdirTemp(skillsDir, "."+rs.Name+".tmp-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
-	if err := skill.ExtractTar(resp.Body, tmpDir); err != nil {
+	if err := skill.ExtractTar(bytes.NewReader(tarBytes), tmpDir); err != nil {
 		return err
 	}
+	// Swap: move the current dir aside, bring the staged dir in, drop the
+	// backup only after the swap succeeds.
+	backup := dir + ".backup"
+	if _, err := os.Lstat(dir); err == nil {
+		if err := os.Rename(dir, backup); err != nil {
+			return err
+		}
+	}
 	if err := os.Rename(tmpDir, dir); err != nil {
+		_ = os.Rename(backup, dir) // best-effort restore
+		return err
+	}
+	if err := os.RemoveAll(backup); err != nil {
 		return err
 	}
 	if err := os.WriteFile(marker, []byte(rs.Revision), 0o644); err != nil {

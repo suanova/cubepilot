@@ -36,8 +36,22 @@ type Repository interface {
 // relative to Root (the volume mount point).
 type PathRepository struct{ Root string }
 
+// safeJoin joins rel under root and rejects paths that would escape root
+// (absolute or ".." traversal), so a CRD-supplied source.path can never
+// read/write outside the repository volume.
+func safeJoin(root, rel string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes repository root: %q", rel)
+	}
+	return filepath.Join(root, clean), nil
+}
+
 func (r *PathRepository) Write(ctx context.Context, relPath string, src fs.FS) (string, error) {
-	abs := filepath.Join(r.Root, relPath)
+	abs, err := safeJoin(r.Root, relPath)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(abs), err)
 	}
@@ -68,7 +82,10 @@ func (r *PathRepository) Write(ctx context.Context, relPath string, src fs.FS) (
 // WriteBytes writes data (a gzip tar) to relPath atomically (temp + rename)
 // and returns its sha256. On any error the temp file is removed.
 func (r *PathRepository) WriteBytes(ctx context.Context, relPath string, data []byte) (string, error) {
-	abs := filepath.Join(r.Root, relPath)
+	abs, err := safeJoin(r.Root, relPath)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(abs), err)
 	}
@@ -97,11 +114,19 @@ func (r *PathRepository) WriteBytes(ctx context.Context, relPath string, data []
 }
 
 func (r *PathRepository) Open(ctx context.Context, relPath string) (io.ReadCloser, error) {
-	return os.Open(filepath.Join(r.Root, relPath))
+	abs, err := safeJoin(r.Root, relPath)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(abs)
 }
 
 func (r *PathRepository) Extract(ctx context.Context, relPath, destDir string) error {
-	f, err := os.Open(filepath.Join(r.Root, relPath))
+	abs, err := safeJoin(r.Root, relPath)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(abs)
 	if err != nil {
 		return err
 	}
@@ -201,12 +226,12 @@ func ExtractTar(r io.Reader, destDir string) error {
 }
 
 // writeTar packs the files of src (walked recursively) into a gzip tar on w.
+// Close errors from the tar and gzip writers are propagated so a truncated
+// archive is never reported as a successful write.
 func writeTar(w io.Writer, src fs.FS) error {
 	gz := gzip.NewWriter(w)
-	defer gz.Close()
 	tw := tar.NewWriter(gz)
-	defer tw.Close() // must flush the tar trailer before gz closes
-	return fs.WalkDir(src, ".", func(path string, d fs.DirEntry, err error) error {
+	walkErr := fs.WalkDir(src, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -235,4 +260,14 @@ func writeTar(w io.Writer, src fs.FS) error {
 		}
 		return closeErr
 	})
+	// Flush the tar trailer, then the gzip stream (order matters).
+	twCloseErr := tw.Close()
+	gzCloseErr := gz.Close()
+	if walkErr != nil {
+		return walkErr
+	}
+	if twCloseErr != nil {
+		return twCloseErr
+	}
+	return gzCloseErr
 }

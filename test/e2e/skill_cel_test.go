@@ -24,6 +24,7 @@ var _ = Describe("Skill CEL validation", func() {
 				Visibility:  v1alpha1.SkillVisibilityPlatform,
 				Source: v1alpha1.SkillSource{
 					Type: v1alpha1.SkillSourcePath,
+					Path: "skills/x/v1.tar.gz", // valid path, but s3 is forbidden for Path
 					S3:   &v1alpha1.SkillS3Source{Bucket: "b", Key: "k"},
 				},
 			},
@@ -45,7 +46,7 @@ var _ = Describe("Skill CEL validation", func() {
 		Expect(err).To(HaveOccurred(), "type=Path without path must be rejected by CEL")
 	})
 
-	It("rejects source.type=S3 with path and no s3", func() {
+	It("rejects source.type=S3 with path set", func() {
 		bad := &v1alpha1.Skill{
 			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-s3"},
 			Spec: v1alpha1.SkillSpec{
@@ -53,12 +54,13 @@ var _ = Describe("Skill CEL validation", func() {
 				Visibility:  v1alpha1.SkillVisibilityPlatform,
 				Source: v1alpha1.SkillSource{
 					Type: v1alpha1.SkillSourceS3,
+					S3:   &v1alpha1.SkillS3Source{Bucket: "b", Key: "k"}, // valid s3, but path is forbidden for S3
 					Path: "skills/x/v1.tar.gz",
 				},
 			},
 		}
 		err := fw.CtrlClient.Create(ctx, bad)
-		Expect(err).To(HaveOccurred(), "type=S3 with path (no s3) must be rejected by CEL")
+		Expect(err).To(HaveOccurred(), "type=S3 with path set must be rejected by CEL")
 	})
 
 	It("accepts a valid source.type=Path skill", func() {

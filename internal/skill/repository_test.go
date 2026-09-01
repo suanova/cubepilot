@@ -167,6 +167,38 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// TestPathTraversalRejected verifies a CRD-supplied source.path can never
+// read/write outside the repository root.
+func TestPathTraversalRejected(t *testing.T) {
+	root := t.TempDir()
+	repo := &PathRepository{Root: root}
+	data := mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("x")}})
+	for _, rel := range []string{"../../etc/passwd", "/etc/passwd", "../x.tar.gz", "a/../../x.tar.gz"} {
+		if _, err := repo.Open(t.Context(), rel); err == nil {
+			t.Errorf("Open(%q) escaped root", rel)
+		}
+		if _, err := repo.WriteBytes(t.Context(), rel, data); err == nil {
+			t.Errorf("WriteBytes(%q) escaped root", rel)
+		}
+		if err := repo.Extract(t.Context(), rel, t.TempDir()); err == nil {
+			t.Errorf("Extract(%q) escaped root", rel)
+		}
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write(p []byte) (int, error) { return 0, errors.New("boom") }
+
+// TestWriteTarPropagatesWriterError verifies an output-writer failure during
+// archive creation is returned (a truncated archive is never a success).
+func TestWriteTarPropagatesWriterError(t *testing.T) {
+	err := writeTar(failWriter{}, fstest.MapFS{"SKILL.md": {Data: []byte("x")}})
+	if err == nil {
+		t.Fatal("writeTar with a failing writer should error")
+	}
+}
+
 type brokenFS struct{}
 
 func (brokenFS) Open(string) (fs.File, error)          { return nil, errors.New("boom") }

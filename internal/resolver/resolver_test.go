@@ -59,7 +59,7 @@ func skillWithSource(name, path string) *v1alpha1.Skill {
 			DisplayName: "Skill " + name,
 			Description: "Description " + name,
 			Visibility:  v1alpha1.SkillVisibilityPlatform,
-			Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path},
+			Source: v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path, Sha256: "sha-" + name},
 		},
 	}
 }
@@ -121,6 +121,9 @@ func TestResolveMergesFields(t *testing.T) {
 	}
 	if cap.Path != "skills/cluster-inspection/v1.tar.gz" {
 		t.Errorf("skill path = %q, want skills/cluster-inspection/v1.tar.gz", cap.Path)
+	}
+	if cap.Sha256 != "sha-cluster-inspection" {
+		t.Errorf("skill sha256 = %q, want sha-cluster-inspection", cap.Sha256)
 	}
 	if cfg.Revision == "" {
 		t.Error("empty revision")

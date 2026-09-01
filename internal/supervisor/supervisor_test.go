@@ -69,9 +69,10 @@ func TestSyncSkills(t *testing.T) {
 	}
 	// Seed the "repo" with the skill tar.
 	repo := &skill.PathRepository{Root: t.TempDir()}
-	if _, err := repo.Write(t.Context(), "cluster-inspection/v1.tar.gz", fstest.MapFS{
+	sha1, err := repo.Write(t.Context(), "cluster-inspection/v1.tar.gz", fstest.MapFS{
 		"SKILL.md": {Data: []byte("# Cluster Intelligent Inspection\n\nRead-only inspection.")},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,7 +83,7 @@ func TestSyncSkills(t *testing.T) {
 	cfg := &resolver.ResolvedAgentConfig{
 		Revision: "abc123",
 		Skills: []resolver.ResolvedSkill{
-			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Revision: "rev1"},
+			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha1, Revision: "rev1"},
 		},
 	}
 
@@ -109,6 +110,65 @@ func TestSyncSkills(t *testing.T) {
 	// no-op even if the server were gone).
 	if err := s.syncSkills(context.Background(), cfg); err != nil {
 		t.Fatalf("re-sync: %v", err)
+	}
+}
+
+// TestSyncSkillRejectsShaMismatch verifies a downloaded tar whose content does
+// not match the CRD's source.sha256 is rejected (and nothing is installed).
+func TestSyncSkillRejectsShaMismatch(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	if _, err := repo.Write(t.Context(), "bad/v1.tar.gz", fstest.MapFS{
+		"SKILL.md": {Data: []byte("# good content\n")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := testAPI(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{
+		Revision: "r",
+		Skills: []resolver.ResolvedSkill{
+			{Name: "bad", Path: "bad/v1.tar.gz", Sha256: "deadbeef", Revision: "rev1"}, // wrong digest
+		},
+	}
+	if err := s.syncSkills(context.Background(), cfg); err == nil {
+		t.Fatal("sha256 mismatch should error")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "skills", "bad")); !os.IsNotExist(err) {
+		t.Errorf("skill dir should not be installed on mismatch: %v", err)
+	}
+}
+
+// TestSyncSkillPreservesOldOnFailure verifies a failed fetch/extract leaves
+// the previously installed skill directory intact (stage-then-swap).
+func TestSyncSkillPreservesOldOnFailure(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, "skills", "good")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".sha256"), []byte("rev-old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The repo has no tar for "good" -> the API 404s the fetch.
+	srv := testAPI(t, nil, "", t.TempDir())
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{
+		Revision: "r",
+		Skills: []resolver.ResolvedSkill{
+			{Name: "good", Path: "good/v1.tar.gz", Revision: "rev-new"},
+		},
+	}
+	if err := s.syncSkills(context.Background(), cfg); err == nil {
+		t.Fatal("missing tar should error")
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != "old content" {
+		t.Errorf("old skill not preserved: %q, %v", b, err)
 	}
 }
 

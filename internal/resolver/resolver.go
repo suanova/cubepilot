@@ -28,7 +28,8 @@ import (
 // extracts it into workspace/skills/<name>/).
 type ResolvedSkill struct {
 	Name     string `json:"name"`
-	Path     string `json:"path,omitempty"` // repo-relative tar path (skills/<name>/vN.tar.gz)
+	Path     string `json:"path,omitempty"`   // repo-relative tar path (skills/<name>/vN.tar.gz)
+	Sha256   string `json:"sha256,omitempty"` // content fingerprint, when published/backfilled
 	Revision string `json:"revision"`
 }
 
@@ -208,12 +209,18 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	}
 	for i := range skills.Items {
 		skill := &skills.Items[i]
+		// Unreachable content (missing/moved tar) is excluded; empty phase
+		// (e.g. a manually applied skill) is treated as available.
+		if skill.Status.Phase == v1alpha1.SkillPhaseUnreachable {
+			continue
+		}
 		if len(restrict) > 0 && !restrict[skill.Name] {
 			continue
 		}
 		cfg.Skills = append(cfg.Skills, ResolvedSkill{
 			Name:     skill.Name,
 			Path:     skill.Spec.Source.Path,
+			Sha256:   skill.Spec.Source.Sha256,
 			Revision: skill.Revision(),
 		})
 	}
