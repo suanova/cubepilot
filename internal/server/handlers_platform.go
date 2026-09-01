@@ -420,13 +420,13 @@ func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) 
 // are text; a few MB is generous).
 const maxSkillTarSize = 10 << 20
 
-// handlePublishSkill is the skill publish primitive: POST
+// handlePublishSkill is the skill publish endpoint: POST
 // /internal/skills/{name}/publish (internal API, cluster-only). The body is a
 // gzip tar of the skill directory; metadata comes via query params
 // (displayName, description, visibility, builtin). The API owns the
 // repository: it writes the tar atomically (versioned, sha256) and upserts
-// the Skill CRD (status.phase=Available). The operator seeds presets and #23's
-// Portal upload both call this endpoint.
+// the Skill CRD (status.phase=Available). The startup seed and #23's Portal
+// upload both use this path.
 func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -456,59 +456,65 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty skill tar"})
 		return
 	}
-	if s.cr == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "k8s client unavailable"})
-		return
-	}
-	repo := &skill.PathRepository{Root: s.cfg.SkillsDir}
-	sha := sha256Hex(body)
-	ver, stored, err := skill.ResolveVersion(r.Context(), repo, name, sha)
+	skillCR, err := s.publishSkill(r.Context(), name, displayName, q.Get("description"), visibility, body, q.Get("builtin") == "true")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	writeJSON(w, http.StatusOK, skillCR)
+}
+
+// publishSkill is the shared publish primitive used by the HTTP endpoint and
+// the startup seed: it writes the tar atomically (versioned, sha256) into the
+// repository and upserts the Skill CRD (status.phase=Available).
+func (s *Server) publishSkill(ctx context.Context, name, displayName, description string,
+	visibility v1alpha1.SkillVisibility, tar []byte, builtin bool) (*v1alpha1.Skill, error) {
+	if s.cr == nil {
+		return nil, fmt.Errorf("k8s client unavailable")
+	}
+	repo := &skill.PathRepository{Root: s.cfg.SkillsDir}
+	sha := sha256Hex(tar)
+	ver, stored, err := skill.ResolveVersion(ctx, repo, name, sha)
+	if err != nil {
+		return nil, err
+	}
 	if !stored {
-		if _, err := repo.WriteBytes(r.Context(), fmt.Sprintf("skills/%s/%s.tar.gz", name, ver), body); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+		if _, err := repo.WriteBytes(ctx, fmt.Sprintf("skills/%s/%s.tar.gz", name, ver), tar); err != nil {
+			return nil, err
 		}
 	}
 
 	// Upsert the Skill CRD.
 	key := client.ObjectKey{Name: name}
 	var skillCR v1alpha1.Skill
-	err = s.cr.Get(r.Context(), key, &skillCR)
+	err = s.cr.Get(ctx, key, &skillCR)
 	switch {
 	case err == nil:
-		skillCR.Spec = publishSpec(displayName, q.Get("description"), visibility, name, ver, sha)
-		if q.Get("builtin") == "true" {
+		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
+		if builtin {
 			addBuiltinLabels(&skillCR)
 		}
-		if err := s.cr.Update(r.Context(), &skillCR); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+		if err := s.cr.Update(ctx, &skillCR); err != nil {
+			return nil, err
 		}
 	case apierrors.IsNotFound(err):
 		skillCR = v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
-		if q.Get("builtin") == "true" {
+		if builtin {
 			addBuiltinLabels(&skillCR)
 		}
-		skillCR.Spec = publishSpec(displayName, q.Get("description"), visibility, name, ver, sha)
-		if err := s.cr.Create(r.Context(), &skillCR); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
+		if err := s.cr.Create(ctx, &skillCR); err != nil {
+			return nil, err
 		}
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
+		return nil, err
 	}
 	// status subresource: mark Available.
-	if err := s.patchSkillPhase(r.Context(), name, v1alpha1.SkillPhaseAvailable); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
+	if err := s.patchSkillPhase(ctx, name, v1alpha1.SkillPhaseAvailable); err != nil {
+		return nil, err
 	}
 	skillCR.Status.Phase = v1alpha1.SkillPhaseAvailable
-	writeJSON(w, http.StatusOK, skillCR)
+	return &skillCR, nil
 }
 
 func publishSpec(displayName, description string, visibility v1alpha1.SkillVisibility, name, ver, sha string) v1alpha1.SkillSpec {

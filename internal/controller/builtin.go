@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // BuiltinAgentName is the preset platform agent (design §5.1: agent-for-cloud
@@ -28,16 +28,11 @@ const BuiltinAgentName = "agent-for-cloud"
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
 
-// BuiltinSkills are the preset domain skills the builtin agent
-// references (design §3.3.1 domain layer). Generated from the embedded
-// SKILL.md files: the agent gets exactly the skills the platform ships.
-var BuiltinSkills = func() []string {
-	names, err := presetSkillNames()
-	if err != nil {
-		return []string{"cluster-inspection"}
-	}
-	return names
-}()
+// BuiltinSkills are the preset domain skills the builtin agent references
+// (design §3.3.1 domain layer): the agent gets exactly the skills the platform
+// ships. The content lives with the skill package; the API seeds the Skill
+// CRDs at startup.
+var BuiltinSkills = skill.BuiltinSkillNames()
 
 // BuiltinModels returns the preset inline model entries for the builtin
 // AgentTemplate (design §3.3: models are inlined in the template -- no
@@ -143,10 +138,6 @@ type BuiltinBootstrapReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Cfg    config.Config
-	// APIURL is the platform internal API base URL, used to publish the preset
-	// skills (POST /internal/skills/{name}/publish). The API owns the
-	// repository and the Skill CRD registration.
-	APIURL string
 }
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
@@ -179,20 +170,11 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint, modelName)); err != nil {
 		return err
 	}
-	// 2. Domain skills: publish the embedded presets to the skill API (the API
-	// owns the repository + the Skill CRD registration). If the API is not up
-	// yet the periodic reconcile retries (self-healing).
-	if r.APIURL == "" {
-		return fmt.Errorf("skill API not configured (set CUBEPILOT_API_URL)")
-	}
-	if _, err := PublishBuiltinSkills(ctx, r.APIURL, nil); err != nil {
-		return fmt.Errorf("publish skills: %w", err)
-	}
-	// 3. Task template.
+	// 2. Task template.
 	if err := r.createIfMissing(ctx, BuiltinTaskTemplate()); err != nil {
 		return err
 	}
-	// 4. Per-user builtin agent instances (auto-instantiated per user;
+	// 3. Per-user builtin agent instances (auto-instantiated per user;
 	// resident).
 	for _, user := range r.Cfg.Users {
 		inst := &v1alpha1.AgentInstance{

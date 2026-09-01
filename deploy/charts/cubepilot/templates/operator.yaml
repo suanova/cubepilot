@@ -31,10 +31,6 @@ spec:
               value: {{ .Values.operator.metricsAddr | quote }}
             - name: CUBEPILOT_PROBE_ADDR
               value: {{ .Values.operator.probeAddr | quote }}
-            # The operator publishes the preset skills to the API (the API owns
-            # the skill repository).
-            - name: CUBEPILOT_API_URL
-              value: http://{{ .Values.api.name }}.{{ .Release.Namespace }}.svc:8080
           ports:
             - name: metrics
               containerPort: 8082

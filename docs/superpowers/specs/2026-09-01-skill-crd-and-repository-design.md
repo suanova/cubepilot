@@ -136,23 +136,11 @@ type PathRepository struct{ Root string }
 
 ## 4. Preset publishing
 
-The four embedded presets (`internal/controller/skills/{cluster-inspection,dev-environment,inference-service,kubectl-platform}/SKILL.md`) become repo tars. The **API owns the repository**; the operator only supplies the content by calling the publish endpoint (which is also the #23 Portal publish primitive).
+The four embedded presets (`internal/skill/skills/{cluster-inspection,dev-environment,inference-service,kubectl-platform}/SKILL.md`) become repo tars. The **API self-seeds them at startup** — it owns the repository, so it also owns the builtin seed (no operator→API publish dependency):
 
-`internal/controller/skill_source.go` is rewritten:
-
-- `skillsFS` (go:embed) stays; `parseSKILL` / `skillTitle` / `presetSkillNames` stay (the operator decides what is builtin + parses the metadata).
-- `BuiltinSkillDefinitions()` is replaced by `PublishBuiltinSkills(ctx, apiURL, httpClient)`:
-
-```go
-// PublishBuiltinSkills publishes the embedded preset skills to the skill API
-// (POST /internal/skills/{name}/publish, gzip tar body + metadata) and
-// returns the resulting Skill CRs. The API owns the repository and the Skill
-// CRD registration.
-func PublishBuiltinSkills(ctx context.Context, apiURL string, httpClient *http.Client) ([]*v1alpha1.Skill, error)
-```
-
-- The `BuiltinBootstrapReconciler` (`internal/controller/builtin.go`) gains an `APIURL string` field (from `config.APIURL`). `ensureBuiltin` publishes each preset (pack to a gzip tar via `skill.Pack`, POST to the API with `displayName` / `description` / `builtin=true`). If the API is not up yet, the periodic reconcile retries (self-healing).
-- The operator does **not** mount the shared volume and does **not** register Skill CRDs — the API does both.
+- The embed + parse helpers live in `internal/skill/skill_source.go`: `BuiltinSkillNames()` and `PackBuiltinSkill(name) → (tar, displayName, description, err)` (shared by the API seed and the operator's `agent-for-cloud.Skills` name list).
+- `internal/server/skill_seed.go`: `Server.SeedBuiltinSkills(ctx)` runs in a goroutine at API startup (`cmd/cubepilot-api/main.go`), calling the same `publishSkill` primitive as the HTTP endpoint for each preset — retries every 30s until the repository/k8s client is ready.
+- The operator does **not** publish or register skills at all: `BuiltinBootstrapReconciler` only ensures agent-for-cloud, the task template and per-user instances; `BuiltinSkills` is just `skill.BuiltinSkillNames()`.
 
 ## 5. Internal API: skill endpoints
 
@@ -164,8 +152,8 @@ The API server owns the repository (write + serve). Internal endpoints:
   2. `repo.WriteBytes` the tar atomically when the content is new.
   3. Upsert the `Skill` CRD (`source.path` = `skills/<name>/vN.tar.gz`, `source.sha256`, labels when `builtin=true`), set `status.phase=Available`.
   4. Returns the `Skill` CR.
-  This endpoint is the #23 Portal publish primitive; the operator seeds presets through it, and #23 adds the user-facing wrapper + upload UI.
-- The API server mounts the shared repo volume (read-write: publish + serve). The operator does **not** mount it.
+  This endpoint is the #23 Portal publish primitive and the API's builtin startup seed uses the same `publishSkill` logic; #23 adds the user-facing wrapper + upload UI.
+- The API server mounts the shared repo volume (read-write: seed + publish + serve). The operator does **not** mount it.
 
 Alternative considered: `GET /internal/skills/tar?path=...`. Rejected — the supervisor knows the skill *name* from the resolved config; name-based keeps the API the resolver of `source` (consistent with "the CRD registers where").
 

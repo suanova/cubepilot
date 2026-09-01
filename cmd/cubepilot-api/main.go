@@ -38,9 +38,10 @@ func main() {
 		log.Fatalf("k8s rest config: %v", err)
 	}
 
-	// Read-only controller-runtime client for the platform CRDs. The API
-	// process never writes CRDs -- the operator owns the control plane
-	// (credential minimization, design §3.3.4).
+	// Controller-runtime client for the platform CRDs. The API stays read-only
+	// on most CRDs (the operator owns the control plane, credential
+	// minimization, design §3.3.4) except Skills: the API owns the skill
+	// repository, so it writes Skill CRs via publish + the startup seed.
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
@@ -81,6 +82,10 @@ func main() {
 	mgrInstances := instances.New(cr, cfg)
 
 	srv := server.New(cfg, mgrInstances, st, catalog, cr)
+
+	// Seed the builtin skills into the repository + Skill CRDs (the API owns
+	// the skill lifecycle). Retries in the background until it converges.
+	go srv.SeedBuiltinSkills(ctx)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,

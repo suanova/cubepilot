@@ -13,6 +13,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -434,4 +435,50 @@ func doRawPost(t *testing.T, h http.Handler, path string, data []byte) *httptest
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// TestSeedBuiltinSkills verifies the API's startup seed registers the embedded
+// presets into the repository + Skill CRDs (Platform/Path/Available + builtin
+// label), idempotently.
+func TestSeedBuiltinSkills(t *testing.T) {
+	skillsDir := t.TempDir()
+	s := platformTestServerSkillsDir(t, skillsDir)
+
+	if err := s.seedBuiltinSkillsOnce(t.Context()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var list v1alpha1.SkillList
+	if err := s.cr.List(t.Context(), &list); err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	if len(list.Items) != len(skill.BuiltinSkillNames()) {
+		t.Fatalf("skills = %d, want %d", len(list.Items), len(skill.BuiltinSkillNames()))
+	}
+	for _, sk := range list.Items {
+		if sk.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
+			t.Errorf("skill %s: visibility = %q, want Platform", sk.Name, sk.Spec.Visibility)
+		}
+		if sk.Spec.Source.Type != v1alpha1.SkillSourcePath || sk.Spec.Source.Path == "" {
+			t.Errorf("skill %s: source = %+v, want Path with a path", sk.Name, sk.Spec.Source)
+		}
+		if sk.Labels["cubepilot/builtin"] != "true" {
+			t.Errorf("skill %s: builtin label missing", sk.Name)
+		}
+		if _, err := os.Stat(filepath.Join(skillsDir, "skills", sk.Name, "v1.tar.gz")); err != nil {
+			t.Errorf("skill %s: tar missing in repo: %v", sk.Name, err)
+		}
+	}
+
+	// Idempotent: re-seeding keeps the same versioned path.
+	before := list.Items[0].Spec.Source.Path
+	if err := s.seedBuiltinSkillsOnce(t.Context()); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	var after v1alpha1.Skill
+	if err := s.cr.Get(t.Context(), client.ObjectKey{Name: list.Items[0].Name}, &after); err != nil {
+		t.Fatalf("re-get: %v", err)
+	}
+	if after.Spec.Source.Path != before {
+		t.Errorf("re-seed changed path %q -> %q", before, after.Spec.Source.Path)
+	}
 }
