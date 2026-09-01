@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -93,19 +95,76 @@ func TestExtractRejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestPackSha256Stable(t *testing.T) {
-	src := fstest.MapFS{"SKILL.md": {Data: []byte("x")}}
-	a, err := PackSha256(src)
+func TestWriteBytesThenExtract(t *testing.T) {
+	root := t.TempDir()
+	repo := &PathRepository{Root: root}
+	data := mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("# x\n")}})
+	sha, err := repo.WriteBytes(t.Context(), "skills/a/v1.tar.gz", data)
 	if err != nil {
+		t.Fatalf("WriteBytes: %v", err)
+	}
+	// read back: sha matches and Extract works.
+	dest := filepath.Join(t.TempDir(), "ws", "skills", "a")
+	if err := repo.Extract(t.Context(), "skills/a/v1.tar.gz", dest); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "SKILL.md")); err != nil || string(b) != "# x\n" {
+		t.Fatalf("SKILL.md = %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "skills", "a", "v1.tar.gz")); err != nil {
+		t.Fatalf("target not written: %v", err)
+	}
+	if sha == "" {
+		t.Fatal("WriteBytes returned empty sha")
+	}
+	// no temp files left
+	matches, _ := filepath.Glob(filepath.Join(root, "skills", "a", "*.tmp-*"))
+	if len(matches) != 0 {
+		t.Fatalf("temp files left: %v", matches)
+	}
+}
+
+func TestResolveVersion(t *testing.T) {
+	root := t.TempDir()
+	repo := &PathRepository{Root: root}
+	v1 := mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("v1")}})
+	v2 := mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("v2")}})
+	sha1 := sha256Hex(v1)
+	sha2 := sha256Hex(v2)
+
+	// Nothing stored -> next version v1, not stored.
+	ver, stored, err := ResolveVersion(t.Context(), repo, "a", sha1)
+	if err != nil || stored || ver != "v1" {
+		t.Fatalf("empty repo: ver=%q stored=%v err=%v", ver, stored, err)
+	}
+	if _, err := repo.WriteBytes(t.Context(), "skills/a/v1.tar.gz", v1); err != nil {
 		t.Fatal(err)
 	}
-	b, err := PackSha256(src)
+
+	// Same content -> v1 already stored.
+	ver, stored, err = ResolveVersion(t.Context(), repo, "a", sha1)
+	if err != nil || !stored || ver != "v1" {
+		t.Fatalf("same content: ver=%q stored=%v err=%v", ver, stored, err)
+	}
+	// New content -> next version v2, not stored.
+	ver, stored, err = ResolveVersion(t.Context(), repo, "a", sha2)
+	if err != nil || stored || ver != "v2" {
+		t.Fatalf("new content: ver=%q stored=%v err=%v", ver, stored, err)
+	}
+}
+
+func mustPack(t *testing.T, src fs.FS) []byte {
+	t.Helper()
+	data, err := Pack(src)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Pack: %v", err)
 	}
-	if a != b || a == "" {
-		t.Fatalf("PackSha256 not deterministic: %q %q", a, b)
-	}
+	return data
+}
+
+func sha256Hex(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
 type brokenFS struct{}

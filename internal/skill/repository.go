@@ -2,10 +2,12 @@ package skill
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -63,6 +65,37 @@ func (r *PathRepository) Write(ctx context.Context, relPath string, src fs.FS) (
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// WriteBytes writes data (a gzip tar) to relPath atomically (temp + rename)
+// and returns its sha256. On any error the temp file is removed.
+func (r *PathRepository) WriteBytes(ctx context.Context, relPath string, data []byte) (string, error) {
+	abs := filepath.Join(r.Root, relPath)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(abs), err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(abs), "."+filepath.Base(abs)+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after successful rename
+	h := sha256.New()
+	if _, err := io.Copy(tmp, io.TeeReader(bytes.NewReader(data), h)); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpName, abs); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func (r *PathRepository) Open(ctx context.Context, relPath string) (io.ReadCloser, error) {
 	return os.Open(filepath.Join(r.Root, relPath))
 }
@@ -76,14 +109,39 @@ func (r *PathRepository) Extract(ctx context.Context, relPath, destDir string) e
 	return ExtractTar(f, destDir)
 }
 
-// PackSha256 returns the sha256 of the tar that would be produced for src,
-// without writing it. Used by the seed to detect content changes.
-func PackSha256(src fs.FS) (string, error) {
-	h := sha256.New()
-	if err := writeTar(h, src); err != nil {
-		return "", err
+// Pack builds the gzip tar bytes for src (a skill directory), for callers
+// that publish the content over the wire (operator -> API publish endpoint).
+func Pack(src fs.FS) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeTar(&buf, src); err != nil {
+		return nil, err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return buf.Bytes(), nil
+}
+
+// ResolveVersion returns the version label for publishing name with content
+// hash sha: the existing vN whose stored tar content matches sha (stored=true,
+// no write needed), or the next unused vN (stored=false, caller writes it).
+func ResolveVersion(ctx context.Context, repo Repository, name, sha string) (string, bool, error) {
+	for v := 1; ; v++ {
+		p := fmt.Sprintf("skills/%s/v%d.tar.gz", name, v)
+		rc, err := repo.Open(ctx, p)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return fmt.Sprintf("v%d", v), false, nil
+			}
+			return "", false, err
+		}
+		h := sha256.New()
+		if _, err := io.Copy(h, rc); err != nil {
+			rc.Close()
+			return "", false, err
+		}
+		rc.Close()
+		if hex.EncodeToString(h.Sum(nil)) == sha {
+			return fmt.Sprintf("v%d", v), true, nil
+		}
+	}
 }
 
 // ExtractTar unpacks an arbitrary gzip tar stream (a repo read, an HTTP
