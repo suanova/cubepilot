@@ -18,6 +18,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // BuiltinAgentName is the preset platform agent (design §5.1: agent-for-cloud
@@ -93,9 +94,6 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 	}
 }
 
-// BuiltinSkillDefinitions is generated from the embedded SKILL.md files
-// (see skill_source.go) -- one source of truth for preset domain skills.
-
 // BuiltinTaskTemplate returns the preset daily-inspection template
 // (design §3.3.2).
 func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
@@ -146,6 +144,9 @@ type BuiltinBootstrapReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Cfg    config.Config
+	// Repo is the skill repository (shared volume), used to seed the preset
+	// skill tars before registering their Skill CRDs.
+	Repo skill.Repository
 }
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
@@ -178,13 +179,22 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint, modelName)); err != nil {
 		return err
 	}
-	// 2. Domain skills (generated from embedded SKILL.md).
-	skills, err := BuiltinSkillDefinitions()
-	if err != nil {
-		return fmt.Errorf("skill definitions: %w", err)
+	// 2. Domain skills (packed into the skill repository + Skill CRDs). The
+	// tars are written before the CRDs so a resolver/supervisor never sees a
+	// CRD whose content is missing.
+	if r.Repo == nil {
+		return fmt.Errorf("skill repository not configured (set CUBEPILOT_SKILLS_DIR)")
 	}
-	for _, skill := range skills {
-		if err := r.createIfMissing(ctx, skill); err != nil {
+	skills, err := SeedBuiltinSkills(ctx, r.Repo)
+	if err != nil {
+		return fmt.Errorf("seed skills: %w", err)
+	}
+	for _, s := range skills {
+		if err := r.createIfMissing(ctx, s); err != nil {
+			return err
+		}
+		// status subresource: mark the seeded skill Available (idempotent).
+		if err := r.patchSkillPhase(ctx, s.Name, v1alpha1.SkillPhaseAvailable); err != nil {
 			return err
 		}
 	}
@@ -217,6 +227,13 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// patchSkillPhase sets status.phase via the status subresource (idempotent).
+func (r *BuiltinBootstrapReconciler) patchSkillPhase(ctx context.Context, name string, phase v1alpha1.SkillPhase) error {
+	skillCR := &v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	patch := fmt.Sprintf(`{"status":{"phase":%q}}`, phase)
+	return r.Status().Patch(ctx, skillCR, client.RawPatch(types.MergePatchType, []byte(patch)))
 }
 
 func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj client.Object) error {

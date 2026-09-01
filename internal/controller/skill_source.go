@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strings"
@@ -11,14 +15,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
-// skillsFS embeds the preset skill SKILL.md files. Each
-// skills/<name>/SKILL.md is the single source of truth for one preset
-// domain skill: the bootstrap renders it into a Skill CRD, and the
-// resolver/supervisor renders the CRD back into a runtime skill (design
-// §3.4: Skill is the platform truth, the runtime skill is its OpenClaw
-// presentation).
+// skillsFS embeds the preset skill directories. Each skills/<name>/ is the
+// single source of truth for one preset skill: the bootstrap seeds it into
+// the skill repository as a versioned tar and registers a Skill CRD
+// referencing the tar (design §3.4: content lives in the repository; the CRD
+// registers where + which version).
 //
 //go:embed skills/*/SKILL.md
 var skillsFS embed.FS
@@ -88,11 +92,12 @@ func presetSkillNames() ([]string, error) {
 	return names, nil
 }
 
-// BuiltinSkillDefinitions returns the preset domain skills
-// generated from the embedded SKILL.md files. The Skill CRD carries the
-// platform semantics (title/description/instructions); the resolver renders
-// the CRD back into the runtime skill -- one source, two presentations.
-func BuiltinSkillDefinitions() ([]*v1alpha1.Skill, error) {
+// SeedBuiltinSkills packs the embedded preset skill directories into the
+// repository as versioned tars (skills/<name>/v1.tar.gz) and returns the
+// Skill CRDs referencing them (source.path + source.sha256 backfilled).
+// Idempotent: an existing version whose content matches is not rewritten; a
+// content change writes the next version.
+func SeedBuiltinSkills(ctx context.Context, repo skill.Repository) ([]*v1alpha1.Skill, error) {
 	names, err := presetSkillNames()
 	if err != nil {
 		return nil, err
@@ -100,6 +105,14 @@ func BuiltinSkillDefinitions() ([]*v1alpha1.Skill, error) {
 	var out []*v1alpha1.Skill
 	for _, name := range names {
 		meta, body, err := loadSkill(name)
+		if err != nil {
+			return nil, err
+		}
+		sub, err := fs.Sub(skillsFS, "skills/"+name)
+		if err != nil {
+			return nil, err
+		}
+		ver, sha, err := seedVersion(ctx, repo, name, sub)
 		if err != nil {
 			return nil, err
 		}
@@ -112,13 +125,44 @@ func BuiltinSkillDefinitions() ([]*v1alpha1.Skill, error) {
 				},
 			},
 			Spec: v1alpha1.SkillSpec{
-				Type:         v1alpha1.SkillDomain,
-				Title:        skillTitle(body),
-				Description:  meta.Description,
-				OwnerModule:  "Platform",
-				Instructions: body,
+				DisplayName: skillTitle(body),
+				Description: meta.Description,
+				Visibility:  v1alpha1.SkillVisibilityPlatform,
+				Source: v1alpha1.SkillSource{
+					Type:   v1alpha1.SkillSourcePath,
+					Path:   fmt.Sprintf("skills/%s/%s.tar.gz", name, ver),
+					Sha256: sha,
+				},
 			},
+			Status: v1alpha1.SkillStatus{Phase: v1alpha1.SkillPhaseAvailable},
 		})
 	}
 	return out, nil
+}
+
+// seedVersion writes the skill dir as skills/<name>/vN.tar.gz, bumping N when
+// the packed content differs from an existing version; returns the version
+// label and the tar sha256.
+func seedVersion(ctx context.Context, repo skill.Repository, name string, sub fs.FS) (string, string, error) {
+	packed, err := skill.PackSha256(sub)
+	if err != nil {
+		return "", "", err
+	}
+	for v := 1; ; v++ {
+		p := fmt.Sprintf("skills/%s/v%d.tar.gz", name, v)
+		rc, err := repo.Open(ctx, p)
+		if err != nil {
+			sha, err := repo.Write(ctx, p, sub)
+			return fmt.Sprintf("v%d", v), sha, err
+		}
+		h := sha256.New()
+		if _, err := io.Copy(h, rc); err != nil {
+			rc.Close()
+			return "", "", err
+		}
+		rc.Close()
+		if hex.EncodeToString(h.Sum(nil)) == packed {
+			return fmt.Sprintf("v%d", v), packed, nil
+		}
+	}
 }

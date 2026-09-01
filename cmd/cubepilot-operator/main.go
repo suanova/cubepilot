@@ -31,6 +31,7 @@ import (
 	"github.com/suanova/cubepilot/internal/logrlog"
 	"github.com/suanova/cubepilot/internal/runner"
 	"github.com/suanova/cubepilot/internal/scheduler"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 func main() {
@@ -116,6 +117,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Cfg:    cfg,
+		Repo:   &skill.PathRepository{Root: cfg.SkillsDir},
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("builtin bootstrap controller: %v", err)
 	}

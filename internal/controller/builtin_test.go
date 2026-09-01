@@ -11,6 +11,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -83,13 +84,16 @@ func TestInstanceNameFor(t *testing.T) {
 // (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Skill{}).
+		Build()
 	r := &BuiltinBootstrapReconciler{
 		Client: cl,
 		Scheme: scheme,
 		Cfg: config.Config{
 			Users: []string{"zhang.wei", "li.ming"},
 		},
+		Repo: &skill.PathRepository{Root: t.TempDir()},
 	}
 	if err := r.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -101,13 +105,25 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 
-	// Skills exist.
+	// Skills exist, seeded from the repository with a source path + Platform
+	// visibility (marketplace shape).
 	var caps v1alpha1.SkillList
 	if err := cl.List(context.Background(), &caps); err != nil {
 		t.Fatalf("list skills: %v", err)
 	}
 	if len(caps.Items) != len(BuiltinSkills) {
 		t.Errorf("skills = %d, want %d", len(caps.Items), len(BuiltinSkills))
+	}
+	for _, s := range caps.Items {
+		if s.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
+			t.Errorf("skill %s: visibility = %q, want Platform", s.Name, s.Spec.Visibility)
+		}
+		if s.Spec.Source.Type != v1alpha1.SkillSourcePath || s.Spec.Source.Path == "" {
+			t.Errorf("skill %s: source = %+v, want Path with a path", s.Name, s.Spec.Source)
+		}
+		if s.Status.Phase != v1alpha1.SkillPhaseAvailable {
+			t.Errorf("skill %s: phase = %q, want Available", s.Name, s.Status.Phase)
+		}
 	}
 
 	// TaskTemplate exists.
