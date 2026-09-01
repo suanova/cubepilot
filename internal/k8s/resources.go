@@ -147,9 +147,20 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						RunAsNonRoot:             boolPtr(true),
 						RunAsUser:                int64Ptr(1000),
 						RunAsGroup:               int64Ptr(1000),
+						ReadOnlyRootFilesystem:   boolPtr(true),
 						AllowPrivilegeEscalation: boolPtr(false),
 						Capabilities: &corev1.Capabilities{
 							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("1"),
+							corev1.ResourceMemory: resource.MustParse("2Gi"),
 						},
 					},
 				},
@@ -175,6 +186,16 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					AllowPrivilegeEscalation: boolPtr(false),
 					Capabilities: &corev1.Capabilities{
 						Drop: []corev1.Capability{"ALL"},
+					},
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("1"),
+						corev1.ResourceMemory: resource.MustParse("2Gi"),
 					},
 				},
 				Env: []corev1.EnvVar{
