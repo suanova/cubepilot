@@ -226,6 +226,11 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "data", MountPath: "/home/node/.openclaw"},
 					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
+					// OpenClaw's gateway keeps its SQLite worker cache under
+					// ~/.cache (since 2026.8.1 it hard-fails when this dir is
+					// unwritable) -- the emptyDir keeps it writable alongside the
+					// read-only root filesystem.
+					{Name: "cache", MountPath: "/home/node/.cache"},
 					// The supervisor writes the model credential keys here
 					// (keys.json); the gateway's file secret provider reads them.
 					// EmptyDir (memory) so keys never persist on the PVC.
@@ -254,6 +259,13 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				},
 				{
 					Name: "scratch",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					// Gateway cache dir (see the supervisor container mount).
+					Name: "cache",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},

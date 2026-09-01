@@ -129,3 +129,37 @@ func TestPodForResourceLimits(t *testing.T) {
 		}
 	}
 }
+
+// TestPodForGatewayCache verifies the supervisor container gets a writable
+// emptyDir at /home/node/.cache: the OpenClaw gateway (>= 2026.8.1) keeps its
+// SQLite worker cache under ~/.cache and hard-fails to start when the dir is
+// read-only, which it is by default under the container's readOnlyRootFilesystem.
+func TestPodForGatewayCache(t *testing.T) {
+	pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+
+	sc := containerByName(t, pod, "supervisor")
+	var cacheMount *corev1.VolumeMount
+	for i := range sc.VolumeMounts {
+		if sc.VolumeMounts[i].MountPath == "/home/node/.cache" {
+			cacheMount = &sc.VolumeMounts[i]
+			break
+		}
+	}
+	if cacheMount == nil {
+		t.Fatal("supervisor: no mount at /home/node/.cache (gateway cache dir)")
+	}
+
+	var cacheVol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == cacheMount.Name {
+			cacheVol = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if cacheVol == nil {
+		t.Fatalf("supervisor: mount %q has no matching volume", cacheMount.Name)
+	}
+	if cacheVol.EmptyDir == nil {
+		t.Errorf("volume %q is not an emptyDir", cacheMount.Name)
+	}
+}
