@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -420,6 +421,10 @@ func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) 
 // are text; a few MB is generous).
 const maxSkillTarSize = 10 << 20
 
+// skillNamePattern matches a DNS subdomain (a Skill CR name is cluster-scoped):
+// lowercase alphanumerics with '-' / '.' separators, alphanumeric start and end.
+var skillNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
 // handlePublishSkill is the user-facing skill publish endpoint: POST
 // /api/skills/{name}/publish. The body is a gzip tar of the skill directory
 // (packed client-side by the Portal); metadata comes via query params
@@ -437,6 +442,13 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 	displayName := q.Get("displayName")
 	if name == "" || displayName == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and displayName are required"})
+		return
+	}
+	// The name becomes both a repository path segment and the Skill CR name;
+	// validate it as a DNS subdomain so an invalid upload is rejected before
+	// any tar is persisted (the CRD would reject the name and orphan the tar).
+	if len(name) > 253 || !skillNamePattern.MatchString(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid skill name: use a lowercase DNS-style slug"})
 		return
 	}
 	if v := q.Get("visibility"); v != "" && v != string(v1alpha1.SkillVisibilityPlatform) {
@@ -508,6 +520,9 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
 		if opts.Builtin {
 			addBuiltinLabels(&skillCR)
+		} else if skillCR.Labels != nil {
+			// A user re-publish of a builtin name must not keep the builtin marker.
+			delete(skillCR.Labels, "cubepilot/builtin")
 		}
 		addPublisherAnnotation(&skillCR, opts.Publisher)
 		if err := s.cr.Update(ctx, &skillCR); err != nil {
@@ -534,6 +549,8 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 	return &skillCR, nil
 }
 
+// addPublisherAnnotation records who published the skill (the Portal identity
+// header, or "system" for the builtin seed) on the Skill CR.
 func addPublisherAnnotation(skillCR *v1alpha1.Skill, publisher string) {
 	if skillCR.Annotations == nil {
 		skillCR.Annotations = map[string]string{}

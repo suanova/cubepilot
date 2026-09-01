@@ -447,6 +447,39 @@ func TestPublishSkill(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("visibility=User status = %d, want 400", rec.Code)
 	}
+
+	// Invalid (non-DNS) skill name -> 400, nothing persisted.
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/Bad_Name/publish?displayName=Bad", tar1, "li.ming")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid name status = %d, want 400", rec.Code)
+	}
+}
+
+// TestPublishSkillClearsBuiltinLabel verifies a user re-publish of a builtin
+// skill name drops the cubepilot/builtin marker (the CR becomes user-owned).
+func TestPublishSkillClearsBuiltinLabel(t *testing.T) {
+	skillsDir := t.TempDir()
+	s := platformTestServerSkillsDir(t, skillsDir)
+
+	tar1 := mustPackBytes(t, "# v1\n")
+	if _, err := s.publishSkill(t.Context(), "harbor", "Harbor", "", v1alpha1.SkillVisibilityPlatform, tar1, publishOptions{Builtin: true, Publisher: "system"}); err != nil {
+		t.Fatalf("seed builtin: %v", err)
+	}
+
+	rec := doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var cr v1alpha1.Skill
+	if err := s.cr.Get(t.Context(), client.ObjectKey{Name: "harbor"}, &cr); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if cr.Labels["cubepilot/builtin"] == "true" {
+		t.Error("user publish retained the cubepilot/builtin label")
+	}
+	if cr.Annotations["cubepilot/publisher"] != "li.ming" {
+		t.Errorf("publisher = %q, want li.ming", cr.Annotations["cubepilot/publisher"])
+	}
 }
 
 func mustPackBytes(t *testing.T, skillBody string) []byte {
