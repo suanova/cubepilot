@@ -1,0 +1,131 @@
+package k8s
+
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+)
+
+func testAgentSpec() AgentSpec {
+	return AgentSpec{
+		Namespace:    "cubepilot",
+		Image:        "registry.example/cubepilot-agent:test",
+		GatewayToken: "test-token",
+		Port:         8080,
+		AgentUser:    "alice",
+	}
+}
+
+// containerByName returns the named container from the rendered pod.
+func containerByName(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
+	t.Helper()
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name == name {
+			return c
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("container %q not found in pod %q", name, pod.Name)
+	return corev1.Container{}
+}
+
+// assertNonPrivilegedContainer checks the per-container baseline fields every
+// runtime container must carry (design §6: non-root, no privilege escalation,
+// drop ALL capabilities, read-only root filesystem).
+func assertNonPrivilegedContainer(t *testing.T, c corev1.Container) {
+	t.Helper()
+	if c.SecurityContext == nil {
+		t.Fatalf("container %q: SecurityContext is nil", c.Name)
+	}
+	sc := c.SecurityContext
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Errorf("container %q: RunAsNonRoot not set to true", c.Name)
+	}
+	if sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
+		t.Errorf("container %q: RunAsUser = %v, want 1000", c.Name, sc.RunAsUser)
+	}
+	if sc.RunAsGroup == nil || *sc.RunAsGroup != 1000 {
+		t.Errorf("container %q: RunAsGroup = %v, want 1000", c.Name, sc.RunAsGroup)
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("container %q: AllowPrivilegeEscalation not set to false", c.Name)
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("container %q: ReadOnlyRootFilesystem not set to true", c.Name)
+	}
+	if sc.Capabilities == nil {
+		t.Fatalf("container %q: Capabilities is nil", c.Name)
+	}
+	dropAll := false
+	for _, cap := range sc.Capabilities.Drop {
+		if cap == "ALL" {
+			dropAll = true
+			break
+		}
+	}
+	if !dropAll {
+		t.Errorf("container %q: Capabilities.Drop does not include ALL", c.Name)
+	}
+}
+
+// TestPodForSecurityBaseline verifies every runtime container of a rendered
+// instance Pod carries the design §6 minimum-privilege baseline: non-root,
+// seccomp RuntimeDefault, drop ALL capabilities, no privilege escalation, and
+// a read-only root filesystem.
+func TestPodForSecurityBaseline(t *testing.T) {
+	pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+
+	psc := pod.Spec.SecurityContext
+	if psc == nil {
+		t.Fatal("pod SecurityContext is nil")
+	}
+	if psc.RunAsNonRoot == nil || !*psc.RunAsNonRoot {
+		t.Error("pod RunAsNonRoot not set to true")
+	}
+	if psc.SeccompProfile == nil || psc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod SeccompProfile = %+v, want RuntimeDefault", psc.SeccompProfile)
+	}
+
+	// seed-workspace is an InitContainer (writes only to the mounted PVC).
+	assertNonPrivilegedContainer(t, containerByName(t, pod, "seed-workspace"))
+	assertNonPrivilegedContainer(t, containerByName(t, pod, "supervisor"))
+}
+
+// TestPodForResourceLimits verifies the supervisor container declares resource
+// requests and limits so the pod is scheduleable and bounded.
+func TestPodForResourceLimits(t *testing.T) {
+	pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+
+	want := []struct {
+		name     string
+		requests map[corev1.ResourceName]string
+		limits   map[corev1.ResourceName]string
+	}{
+		{
+			name:     "supervisor",
+			requests: map[corev1.ResourceName]string{corev1.ResourceCPU: "100m", corev1.ResourceMemory: "512Mi"},
+			limits:   map[corev1.ResourceName]string{corev1.ResourceCPU: "1", corev1.ResourceMemory: "2Gi"},
+		},
+	}
+
+	for _, tc := range want {
+		c := containerByName(t, pod, tc.name)
+		for name, wantStr := range tc.requests {
+			got, ok := c.Resources.Requests[name]
+			if !ok || got.Cmp(resource.MustParse(wantStr)) != 0 {
+				t.Errorf("container %q: Requests[%s] = %v, want %s", tc.name, name, got.String(), wantStr)
+			}
+		}
+		for name, wantStr := range tc.limits {
+			got, ok := c.Resources.Limits[name]
+			if !ok || got.Cmp(resource.MustParse(wantStr)) != 0 {
+				t.Errorf("container %q: Limits[%s] = %v, want %s", tc.name, name, got.String(), wantStr)
+			}
+		}
+	}
+}

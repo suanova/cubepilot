@@ -358,7 +358,7 @@ schema 发现：runtime Pod 挂**两个 kubeconfig**——用户 kubeconfig（�
 - TaskRun 在运行前再次校验身份和授权，不依赖创建任务时的权限。
 - 凭据由平台托管为 Secret，以文件挂载或短期令牌注入 Pod；Template、Instance、PVC 和审计记录中不存明文密钥。
 - 模型端点与凭据内联在 AgentTemplate 的 `models` 里（每项含 endpoint；credentialRef 可选，public 模型没有），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
-- 每实例独占 Pod 和 PVC，使用非 root、`readOnlyRootFilesystem`、`seccomp RuntimeDefault`、`drop ALL capabilities`、资源限制和 egress 白名单。
+- 每实例独占 Pod 和 PVC，使用非 root、`readOnlyRootFilesystem`、`seccomp RuntimeDefault`、`drop ALL capabilities`、资源限制；egress 白名单延后（依赖 CNI 网络策略，模型端点需按实例动态放行）。
 
 ---
 
@@ -469,7 +469,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 | 凭据最小化 | 实例仅持声明且经授权的类型化凭据；定期轮换、失效即时吊销；禁止集群管理员凭据 | 一 |
 | 物理隔离 | 一实例一 Pod 一 PVC；内置与自建 Agent 数据互相隔离 | 一 |
 | Prompt 注入防护 | 用户输入与系统指令区分；工具返回作数据不作指令；高危操作须确认 | 一 |
-| 实例最小权限 | 非 root、seccomp RuntimeDefault、drop ALL capabilities、readOnlyRootFilesystem、egress 白名单 | 一 |
+| 实例最小权限 | 非 root、seccomp RuntimeDefault、drop ALL capabilities、readOnlyRootFilesystem、资源限制（egress 白名单延后） | 一 |
 | 确认护栏 | 阶段一简单 HITL（命令匹配、尽力而为）；阶段二完整 HITL（本人确认、拒绝/超时 fail-closed、不重试被拒） | 一（简单）/ 二（完整） |
 | Agent 配额 | 每用户 Agent 数 + 全平台实例数上限；超限拒绝创建 | 三 |
 | 自定义 Agent 边界 | 阶段二配置托管（工具来自技能市场）；阶段三代码托管需镜像审核 + 强化沙箱 + 评测 | 二 / 三 |

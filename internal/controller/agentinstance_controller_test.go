@@ -245,3 +245,73 @@ func TestAgentInstanceReconcileRemovesDataPVCOnDelete(t *testing.T) {
 		t.Errorf("instance not reclaimed after finalize (err=%v)", err)
 	}
 }
+
+// TestEnsurePodRecreatesOnSecurityDrift verifies a Pod whose immutable security
+// spec (image, security context, resource limits) drifted is deleted and
+// recreated so it converges on the current baseline -- e.g. an instance Pod
+// created before the operator gained the design §6 baseline
+// (readOnlyRootFilesystem, resource limits) is rolled onto it. Mirrors the
+// failed-Pod healing path.
+func TestEnsurePodRecreatesOnSecurityDrift(t *testing.T) {
+	spec := agentSpec()
+	desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+
+	// A pod created before the baseline landed: writable init-container root
+	// filesystem and no resource limits on the supervisor.
+	stale := desired.DeepCopy()
+	stale.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem = nil
+	stale.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+
+	r, cl := newTestReconciler(t)
+	if err := cl.Create(context.Background(), stale); err != nil {
+		t.Fatalf("seed stale pod: %v", err)
+	}
+	if err := r.ensurePod(context.Background(), desired); err != nil {
+		t.Fatalf("ensurePod: %v", err)
+	}
+
+	var got corev1.Pod
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
+		t.Fatalf("get pod after drift: %v", err)
+	}
+	if got.Spec.InitContainers[0].SecurityContext == nil ||
+		got.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem == nil ||
+		!*got.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("pod not rolled onto baseline: init container root not read-only")
+	}
+	if got.Spec.Containers[0].Resources.Limits == nil {
+		t.Error("pod not rolled onto baseline: supervisor resource limits missing")
+	}
+}
+
+// TestEnsurePodDoesNotRecreateOnConfigDrift guards the in-place config reload
+// design: config-derived spec fields (env) must never trigger a Pod delete --
+// the supervisor applies config changes in place, so the Pod (and its
+// sessions/PVC/IP) has to survive.
+func TestEnsurePodDoesNotRecreateOnConfigDrift(t *testing.T) {
+	spec := agentSpec()
+	desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+	existing := desired.DeepCopy()
+	for i := range existing.Spec.Containers[0].Env {
+		if existing.Spec.Containers[0].Env[i].Name == "OPENCLAW_HOME" {
+			existing.Spec.Containers[0].Env[i].Value = "/home/other"
+		}
+	}
+	existing.UID = types.UID("seed-uid")
+
+	r, cl := newTestReconciler(t)
+	if err := cl.Create(context.Background(), existing); err != nil {
+		t.Fatalf("seed pod: %v", err)
+	}
+	if err := r.ensurePod(context.Background(), desired); err != nil {
+		t.Fatalf("ensurePod: %v", err)
+	}
+
+	var got corev1.Pod
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got.UID != existing.UID {
+		t.Errorf("pod was recreated on config drift (uid %s -> %s)", existing.UID, got.UID)
+	}
+}
