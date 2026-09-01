@@ -52,15 +52,14 @@ func instance(user, templateRef, selected string) *v1alpha1.AgentInstance {
 	}
 }
 
-func domainCap(name, instructions string) *v1alpha1.Skill {
+func skillWithSource(name, path string) *v1alpha1.Skill {
 	return &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.SkillSpec{
-			Type:         v1alpha1.SkillDomain,
-			Title:        "Skill " + name,
-			Description:  "Description " + name,
-			Instructions: instructions,
-			Uses:         []string{"kubectl-platform"},
+			DisplayName: "Skill " + name,
+			Description: "Description " + name,
+			Visibility:  v1alpha1.SkillVisibilityPlatform,
+			Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path},
 		},
 	}
 }
@@ -78,8 +77,8 @@ func TestResolveNoInstance(t *testing.T) {
 	}
 }
 
-// TestResolveMergesFields verifies agent definition fields and domain
-// skills land in the resolved config.
+// TestResolveMergesFields verifies agent definition fields and skills (as
+// content references) land in the resolved config.
 func TestResolveMergesFields(t *testing.T) {
 	r := testResolver(t,
 		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
@@ -89,11 +88,7 @@ func TestResolveMergesFields(t *testing.T) {
 			}
 		}),
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		domainCap("cluster-inspection", "Read-only cluster inspection."),
-		&v1alpha1.Skill{ // atomic -- must NOT appear in skills
-			ObjectMeta: metav1.ObjectMeta{Name: "some-atomic"},
-			Spec:       v1alpha1.SkillSpec{Type: v1alpha1.SkillAtomic},
-		},
+		skillWithSource("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
 	)
 
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
@@ -118,11 +113,14 @@ func TestResolveMergesFields(t *testing.T) {
 		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
 	}
 	if len(cfg.Skills) != 1 {
-		t.Fatalf("skills = %d, want 1 (atomic excluded)", len(cfg.Skills))
+		t.Fatalf("skills = %d, want 1", len(cfg.Skills))
 	}
 	cap := cfg.Skills[0]
 	if cap.Name != "cluster-inspection" || cap.Revision == "" {
 		t.Errorf("skill = %+v", cap)
+	}
+	if cap.Path != "skills/cluster-inspection/v1.tar.gz" {
+		t.Errorf("skill path = %q, want skills/cluster-inspection/v1.tar.gz", cap.Path)
 	}
 	if cfg.Revision == "" {
 		t.Error("empty revision")
@@ -168,25 +166,6 @@ func TestResolveOutsideAllowlist(t *testing.T) {
 	}
 }
 
-// TestResolveSkillScopedByAgents verifies skill.Agents restricts
-// visibility.
-func TestResolveSkillScopedByAgents(t *testing.T) {
-	scoped := domainCap("scoped", "Visible only to a specific agent.")
-	scoped.Spec.Agents = []string{"other-agent"}
-	r := testResolver(t,
-		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		domainCap("open", "Visible to everyone."),
-		scoped,
-	)
-	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
-	if err != nil {
-		t.Fatalf("ResolveForUser: %v", err)
-	}
-	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "open" {
-		t.Errorf("skills = %+v, want only open", cfg.Skills)
-	}
-}
-
 // TestResolveEnabledSkills verifies the instance-level skill subset
 // (design §3.2: the instance may restrict to enabledSkills; empty = all
 // visible).
@@ -195,8 +174,8 @@ func TestResolveEnabledSkills(t *testing.T) {
 	inst.Spec.EnabledSkills = []string{"cluster-inspection"}
 	r := testResolver(t,
 		inst,
-		domainCap("cluster-inspection", "Read-only cluster inspection."),
-		domainCap("dev-environment", "Development environment management."),
+		skillWithSource("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
+		skillWithSource("dev-environment", "skills/dev-environment/v1.tar.gz"),
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {
@@ -212,7 +191,7 @@ func TestResolveEnabledSkills(t *testing.T) {
 func TestResolveRevisionStable(t *testing.T) {
 	base := []client.Object{
 		instance("li.ming", v1alpha1.DefaultAgentName, ""),
-		domainCap("cluster-inspection", "Read-only cluster inspection."),
+		skillWithSource("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
 	}
 	r1 := testResolver(t, base...)
 	cfg1, err := r1.ResolveForUser(context.Background(), "li.ming")
@@ -229,7 +208,7 @@ func TestResolveRevisionStable(t *testing.T) {
 		t.Errorf("revision not stable: %q vs %q", cfg1.Revision, cfg2.Revision)
 	}
 
-	changed := domainCap("cluster-inspection", "Read-only cluster inspection - added one more check.")
+	changed := skillWithSource("cluster-inspection", "skills/cluster-inspection/v2.tar.gz")
 	r3 := testResolver(t, instance("li.ming", v1alpha1.DefaultAgentName, ""), changed)
 	cfg3, err := r3.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {

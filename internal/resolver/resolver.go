@@ -23,16 +23,13 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// ResolvedSkill is the domain skill content an agent may use --
-// the skill source. The supervisor renders it into workspace/skills/<name>/.
+// ResolvedSkill is one enabled skill's content reference (design §3.4: the
+// content lives in the repository; the supervisor pulls the tar by name and
+// extracts it into workspace/skills/<name>/).
 type ResolvedSkill struct {
-	Name         string               `json:"name"`
-	Title        string               `json:"title,omitempty"`
-	Description  string               `json:"description,omitempty"`
-	Instructions string               `json:"instructions,omitempty"`
-	Uses         []string             `json:"uses,omitempty"`
-	Files        []v1alpha1.SkillFile `json:"files,omitempty"`
-	Revision     string               `json:"revision"`
+	Name     string `json:"name"`
+	Path     string `json:"path,omitempty"` // repo-relative tar path (skills/<name>/vN.tar.gz)
+	Revision string `json:"revision"`
 }
 
 // ResolvedAgentConfig is the immutable, fully-resolved configuration for one
@@ -211,23 +208,13 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	}
 	for i := range skills.Items {
 		skill := &skills.Items[i]
-		if skill.Spec.Type != v1alpha1.SkillDomain {
-			continue
-		}
-		if len(skill.Spec.Agents) > 0 && !contains(skill.Spec.Agents, cfg.Agent) {
-			continue
-		}
 		if len(restrict) > 0 && !restrict[skill.Name] {
 			continue
 		}
 		cfg.Skills = append(cfg.Skills, ResolvedSkill{
-			Name:         skill.Name,
-			Title:        skill.Spec.Title,
-			Description:  skill.Spec.Description,
-			Instructions: skill.Spec.Instructions,
-			Uses:         skill.Spec.Uses,
-			Files:        skill.Spec.Files,
-			Revision:     skill.Revision(),
+			Name:     skill.Name,
+			Path:     skill.Spec.Source.Path,
+			Revision: skill.Revision(),
 		})
 	}
 
@@ -247,44 +234,4 @@ func (r *Resolver) resolveModel(selected string, def v1alpha1.AgentTemplate) (st
 		}
 	}
 	return "", fmt.Errorf("model %q is not available in template %q (add it under Agent config -> LLM Config, then select it again)", selected, def.Name)
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// RenderSkill converts a resolved domain skill into an OpenClaw
-// SKILL.md (design §3.3.1: the skill name equals the Skill name so
-// platform accounting and runtime skills share one identity). The body is
-// the skill instructions; description + uses feed the frontmatter.
-func RenderSkill(skill ResolvedSkill) (string, error) {
-	if skill.Name == "" {
-		return "", fmt.Errorf("skill has no name")
-	}
-	var b strings.Builder
-	b.WriteString("---\n")
-	fmt.Fprintf(&b, "name: %s\n", skill.Name)
-	if skill.Description != "" {
-		fmt.Fprintf(&b, "description: %s\n", skill.Description)
-	}
-	if len(skill.Uses) > 0 {
-		b.WriteString("metadata:\n  openclaw:\n    requires:\n")
-		for _, u := range skill.Uses {
-			fmt.Fprintf(&b, "      - %s\n", u)
-		}
-	}
-	b.WriteString("---\n\n")
-	if skill.Title != "" {
-		fmt.Fprintf(&b, "# %s\n\n", skill.Title)
-	}
-	if skill.Instructions != "" {
-		b.WriteString(strings.TrimSpace(skill.Instructions))
-		b.WriteString("\n")
-	}
-	return b.String(), nil
 }
