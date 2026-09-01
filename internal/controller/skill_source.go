@@ -1,28 +1,28 @@
 package controller
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // skillsFS embeds the preset skill directories. Each skills/<name>/ is the
-// single source of truth for one preset skill: the bootstrap seeds it into
-// the skill repository as a versioned tar and registers a Skill CRD
-// referencing the tar (design §3.4: content lives in the repository; the CRD
-// registers where + which version).
+// single source of truth for one preset skill: the bootstrap publishes it to
+// the skill API (which owns the repository + Skill CRD registration, design
+// §3.4).
 //
 //go:embed skills/*/SKILL.md
 var skillsFS embed.FS
@@ -92,15 +92,18 @@ func presetSkillNames() ([]string, error) {
 	return names, nil
 }
 
-// SeedBuiltinSkills packs the embedded preset skill directories into the
-// repository as versioned tars (skills/<name>/v1.tar.gz) and returns the
-// Skill CRDs referencing them (source.path + source.sha256 backfilled).
-// Idempotent: an existing version whose content matches is not rewritten; a
-// content change writes the next version.
-func SeedBuiltinSkills(ctx context.Context, repo skill.Repository) ([]*v1alpha1.Skill, error) {
+// PublishBuiltinSkills publishes the embedded preset skills to the skill API
+// (POST /internal/skills/{name}/publish, gzip tar body + metadata) and returns
+// the resulting Skill CRs. The API owns the repository and the Skill CRD
+// registration; the operator only supplies the content (design §3.4 publish
+// flow). Idempotent: re-publishing identical content returns the same version.
+func PublishBuiltinSkills(ctx context.Context, apiURL string, httpClient *http.Client) ([]*v1alpha1.Skill, error) {
 	names, err := presetSkillNames()
 	if err != nil {
 		return nil, err
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
 	var out []*v1alpha1.Skill
 	for _, name := range names {
@@ -112,57 +115,35 @@ func SeedBuiltinSkills(ctx context.Context, repo skill.Repository) ([]*v1alpha1.
 		if err != nil {
 			return nil, err
 		}
-		ver, sha, err := seedVersion(ctx, repo, name, sub)
+		tar, err := skill.Pack(sub)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &v1alpha1.Skill{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-				Labels: map[string]string{
-					"app.kubernetes.io/part-of": "cubepilot",
-					"cubepilot/builtin":         "true",
-				},
-			},
-			Spec: v1alpha1.SkillSpec{
-				DisplayName: skillTitle(body),
-				Description: meta.Description,
-				Visibility:  v1alpha1.SkillVisibilityPlatform,
-				Source: v1alpha1.SkillSource{
-					Type:   v1alpha1.SkillSourcePath,
-					Path:   fmt.Sprintf("skills/%s/%s.tar.gz", name, ver),
-					Sha256: sha,
-				},
-			},
-			Status: v1alpha1.SkillStatus{Phase: v1alpha1.SkillPhaseAvailable},
-		})
+		u := fmt.Sprintf("%s/internal/skills/%s/publish?displayName=%s&description=%s&builtin=true",
+			strings.TrimRight(apiURL, "/"), url.PathEscape(name),
+			url.QueryEscape(skillTitle(body)), url.QueryEscape(meta.Description))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(tar))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/gzip")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("publish %s: %w", name, err)
+		}
+		payload, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read publish %s: %w", name, readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("publish %s: %d: %s", name, resp.StatusCode, strings.TrimSpace(string(payload)))
+		}
+		var skillCR v1alpha1.Skill
+		if err := json.Unmarshal(payload, &skillCR); err != nil {
+			return nil, fmt.Errorf("decode publish %s: %w", name, err)
+		}
+		out = append(out, &skillCR)
 	}
 	return out, nil
-}
-
-// seedVersion writes the skill dir as skills/<name>/vN.tar.gz, bumping N when
-// the packed content differs from an existing version; returns the version
-// label and the tar sha256.
-func seedVersion(ctx context.Context, repo skill.Repository, name string, sub fs.FS) (string, string, error) {
-	packed, err := skill.PackSha256(sub)
-	if err != nil {
-		return "", "", err
-	}
-	for v := 1; ; v++ {
-		p := fmt.Sprintf("skills/%s/v%d.tar.gz", name, v)
-		rc, err := repo.Open(ctx, p)
-		if err != nil {
-			sha, err := repo.Write(ctx, p, sub)
-			return fmt.Sprintf("v%d", v), sha, err
-		}
-		h := sha256.New()
-		if _, err := io.Copy(h, rc); err != nil {
-			rc.Close()
-			return "", "", err
-		}
-		rc.Close()
-		if hex.EncodeToString(h.Sum(nil)) == packed {
-			return fmt.Sprintf("v%d", v), packed, nil
-		}
-	}
 }

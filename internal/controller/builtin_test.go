@@ -2,16 +2,19 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
-	"github.com/suanova/cubepilot/internal/skill"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -80,20 +83,37 @@ func TestInstanceNameFor(t *testing.T) {
 }
 
 // TestBootstrapEnsure verifies the builtin bootstrap creates the Agent,
-// Skills, TaskTemplate and per-user instances idempotently
-// (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
+// publishes the preset skills to the skill API, creates the TaskTemplate and
+// per-user instances idempotently (design §3.1 / §5.3).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.Skill{}).
-		Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	// The skill API the operator publishes presets to (the API owns the
+	// repository + Skill CRD registration).
+	var published []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/skills/{name}/publish", func(w http.ResponseWriter, r *http.Request) {
+		published = append(published, r.PathValue("name"))
+		_ = json.NewEncoder(w).Encode(&v1alpha1.Skill{
+			ObjectMeta: metav1.ObjectMeta{Name: r.PathValue("name")},
+			Spec: v1alpha1.SkillSpec{
+				DisplayName: r.URL.Query().Get("displayName"),
+				Visibility:  v1alpha1.SkillVisibilityPlatform,
+				Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: "skills/" + r.PathValue("name") + "/v1.tar.gz"},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
 	r := &BuiltinBootstrapReconciler{
 		Client: cl,
 		Scheme: scheme,
 		Cfg: config.Config{
 			Users: []string{"zhang.wei", "li.ming"},
 		},
-		Repo: &skill.PathRepository{Root: t.TempDir()},
+		APIURL: srv.URL,
 	}
 	if err := r.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -105,24 +125,19 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 
-	// Skills exist, seeded from the repository with a source path + Platform
-	// visibility (marketplace shape).
-	var caps v1alpha1.SkillList
-	if err := cl.List(context.Background(), &caps); err != nil {
-		t.Fatalf("list skills: %v", err)
+	// Every preset skill was published to the skill API.
+	if len(published) != len(BuiltinSkills) {
+		t.Fatalf("published skills = %d, want %d (%v)", len(published), len(BuiltinSkills), published)
 	}
-	if len(caps.Items) != len(BuiltinSkills) {
-		t.Errorf("skills = %d, want %d", len(caps.Items), len(BuiltinSkills))
-	}
-	for _, s := range caps.Items {
-		if s.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
-			t.Errorf("skill %s: visibility = %q, want Platform", s.Name, s.Spec.Visibility)
+	for _, name := range BuiltinSkills {
+		found := false
+		for _, p := range published {
+			if p == name {
+				found = true
+			}
 		}
-		if s.Spec.Source.Type != v1alpha1.SkillSourcePath || s.Spec.Source.Path == "" {
-			t.Errorf("skill %s: source = %+v, want Path with a path", s.Name, s.Spec.Source)
-		}
-		if s.Status.Phase != v1alpha1.SkillPhaseAvailable {
-			t.Errorf("skill %s: phase = %q, want Available", s.Name, s.Status.Phase)
+		if !found {
+			t.Errorf("preset %s not published (got %v)", name, published)
 		}
 	}
 
