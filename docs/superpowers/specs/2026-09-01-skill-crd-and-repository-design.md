@@ -221,7 +221,7 @@ func (s *Supervisor) syncSkills(ctx, cfg) error {
 ## 8. Config & deployment
 
 - `internal/config/config.go`: add `SkillsDir string` (env `CUBEPILOT_SKILLS_DIR`, default `/var/lib/cubepilot/skills`) — consumed only by the API server (publish + serve); and `APIURL string` (env `CUBEPILOT_API_URL`, default `http://cubepilot-api.cubepilot.svc:8080`) — consumed by the operator (publish). The agent Pods do **not** mount the repo.
-- Chart (`deploy/charts/cubepilot/`): add a shared repo volume (`values.skillRepo`: `storageClassName` / `size`, or `existingClaim`) mounted into the **API server** (RW) at `CUBEPILOT_SKILLS_DIR`. The operator needs no volume — it publishes over HTTP. For kind e2e the chart can default to a `hostPath` on the node (single-node kind); production uses a CephFS RWX volume (design §2.2). This is platform-install provisioning; the code only consumes `SkillsDir`.
+- Chart (`deploy/charts/cubepilot/`): a skill-repo volume (`values.api.skillRepo`: `storageClassName` / `accessModes` / `size`, or `existingClaim`) mounted into the **API server** (RW) at `CUBEPILOT_SKILLS_DIR`. The operator needs no volume — it publishes over HTTP. AccessModes default to `ReadWriteOnce` (the API is single-replica and kind's default StorageClass is RWO-only); production multi-replica API sets `[ReadWriteMany]` with a CephFS StorageClass (design §2.2). This is platform-install provisioning; the code only consumes `SkillsDir`.
 
 ## 9. Testing
 

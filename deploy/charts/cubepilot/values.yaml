@@ -57,14 +57,16 @@ api:
   dataDir: /opt/cubepilot/data
   storage: 1Gi
   storageClassName: ""
-  # skillRepo is the shared skill repository (design §2.2: RWX, e.g. CephFS in
-  # production; kind single-node can use the default StorageClass / hostPath).
-  # Only the API server mounts it (publish + serve); the operator publishes
-  # over HTTP.
+  # skillRepo is the shared skill repository (design §2.2). Only the API
+  # server mounts it (publish + serve); the operator publishes over HTTP. The
+  # API is single-replica, so ReadWriteOnce is the default (works on kind's
+  # local-path StorageClass); production multi-replica sets accessModes
+  # [ReadWriteMany] with a CephFS RWX StorageClass.
   skillRepo:
     storageClassName: ""
+    accessModes: [ReadWriteOnce]
     size: 1Gi
-    # existingClaim: ""    # reuse an existing RWX PVC instead of creating one
+    # existingClaim: ""    # reuse an existing PVC instead of creating one
   resources: {}
   nodeSelector: {}
   tolerations: []

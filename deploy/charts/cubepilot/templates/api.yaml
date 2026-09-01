@@ -89,9 +89,10 @@ spec:
     requests:
       storage: {{ .Values.api.storage }}
 ---
-# Shared skill repository (design §2.2: RWX, e.g. CephFS in production). Only
-# the API server mounts it; the operator publishes skills over HTTP. Skipped
-# when api.skillRepo.existingClaim reuses a pre-provisioned PVC.
+# Shared skill repository (design §2.2). Only the API server mounts it; the
+# operator publishes skills over HTTP. AccessModes default to ReadWriteOnce
+# (single-replica API, kind-friendly); production multi-replica sets RWX with a
+# CephFS StorageClass. Skipped when api.skillRepo.existingClaim is set.
 {{- if not .Values.api.skillRepo.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -99,7 +100,7 @@ metadata:
   name: {{ .Values.api.name }}-skill-repo
   namespace: {{ .Release.Namespace }}
 spec:
-  accessModes: [ReadWriteMany]
+  accessModes: {{ toYaml .Values.api.skillRepo.accessModes | nindent 2 }}
   {{- with .Values.api.skillRepo.storageClassName }}
   storageClassName: {{ . }}
   {{- end }}
