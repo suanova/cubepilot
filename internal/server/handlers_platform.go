@@ -619,6 +619,9 @@ func (s *Server) visibleSkillNames(ctx context.Context) ([]string, error) {
 		if sk.Status.Phase == v1alpha1.SkillPhaseUnreachable {
 			continue
 		}
+		if sk.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
+			continue
+		}
 		names = append(names, sk.Name)
 	}
 	return names, nil
@@ -666,13 +669,24 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "skill is unreachable (missing content)"})
 		return
 	}
-	inst, ok, err := s.toggleSkillInstance(r.Context(), s.userOf(r))
+	if skillCR.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "phase 1 supports only Platform-visible skills"})
+		return
+	}
+	me := s.userOf(r)
+	inst, ok, err := s.toggleSkillInstance(r.Context(), me)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	if !ok {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "provision your instance on the Agent Config page first"})
+		return
+	}
+	if inst.Spec.Owner != me {
+		// The instance name derives from a sanitized (lowercased) identity, so a
+		// case-variant caller can resolve the same name; never let them mutate it.
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "not your instance"})
 		return
 	}
 	// Idempotent: already enabled, or the all-enabled baseline, stays unchanged.
@@ -703,13 +717,27 @@ func (s *Server) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	inst, ok, err := s.toggleSkillInstance(r.Context(), s.userOf(r))
+	// Reject unknown skills before any allow-list materialization (an unknown
+	// name is not in the all-enabled baseline either).
+	var skillCR v1alpha1.Skill
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	me := s.userOf(r)
+	inst, ok, err := s.toggleSkillInstance(r.Context(), me)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	if !ok {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "provision your instance on the Agent Config page first"})
+		return
+	}
+	if inst.Spec.Owner != me {
+		// The instance name derives from a sanitized (lowercased) identity, so a
+		// case-variant caller can resolve the same name; never let them mutate it.
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "not your instance"})
 		return
 	}
 	if len(inst.Spec.EnabledSkills) == 0 {

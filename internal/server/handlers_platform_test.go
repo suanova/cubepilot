@@ -305,6 +305,16 @@ func TestInstallSkill(t *testing.T) {
 		t.Fatalf("unknown skill status = %d, want 404", rec.Code)
 	}
 
+	// A case-variant identity resolves the same (sanitized/lowercased) instance
+	// name but does not own it -> 403.
+	liUpper := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
+	liUpper.Spec.Owner = "LI.MING"
+	sUpper := platformTestServer(t, liUpper, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
+	rec = doReq(t, sUpper.Handler(), http.MethodPost, "/api/skills/harbor/install", "li.ming", nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("case-variant owner status = %d, want 403", rec.Code)
+	}
+
 	// Unreachable skill -> 409.
 	unreach := internalTestCap("broken", "skills/broken/v1.tar.gz")
 	unreach.Status.Phase = v1alpha1.SkillPhaseUnreachable
@@ -364,6 +374,12 @@ func TestUninstallSkill(t *testing.T) {
 	}](t, rec)
 	if len(base.EnabledSkills) != 1 || base.EnabledSkills[0] != "scan" {
 		t.Errorf("materialized = %v, want [scan]", base.EnabledSkills)
+	}
+
+	// Unknown skill -> 404 (rejected before any allow-list materialization).
+	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/nope/uninstall", "li.ming", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown skill uninstall status = %d, want 404", rec.Code)
 	}
 
 	// No instance -> 409.
