@@ -6,7 +6,7 @@
 # Pin the openclaw base to a release tag (never :latest). If a newer tag is
 # wanted, mirror it from ghcr.io/openclaw/openclaw into
 # harbor.isuanova.com/library (scripts/mirror-base-images.sh).
-ARG OPENCLAW_IMAGE_TAG=2026.6.33
+ARG OPENCLAW_IMAGE_TAG=2026.8.1
 
 FROM harbor.isuanova.com/library/golang:1.26-bookworm AS supervisor-build
 WORKDIR /src
