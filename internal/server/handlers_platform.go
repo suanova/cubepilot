@@ -590,3 +590,141 @@ func (s *Server) patchSkillPhase(ctx context.Context, name string, phase v1alpha
 	patch := fmt.Sprintf(`{"status":{"phase":%q}}`, phase)
 	return s.cr.Status().Patch(ctx, skillCR, client.RawPatch(types.MergePatchType, []byte(patch)))
 }
+
+// ---- Skill install/uninstall (design §3.2: enabledSkills subset) ----
+
+// toggleSkillInstance fetches the caller's AgentInstance (one per user +
+// DefaultAgentName). ok=false when the user has not provisioned yet.
+func (s *Server) toggleSkillInstance(ctx context.Context, user string) (v1alpha1.AgentInstance, bool, error) {
+	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(ctx, client.ObjectKey{Name: name}, &inst); err != nil {
+		if apierrors.IsNotFound(err) {
+			return inst, false, nil
+		}
+		return inst, false, err
+	}
+	return inst, true, nil
+}
+
+// visibleSkillNames lists the currently available Platform skills (Unreachable
+// excluded) — the baseline the resolver enables when enabledSkills is empty.
+func (s *Server) visibleSkillNames(ctx context.Context) ([]string, error) {
+	var list v1alpha1.SkillList
+	if err := s.cr.List(ctx, &list); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, sk := range list.Items {
+		if sk.Status.Phase == v1alpha1.SkillPhaseUnreachable {
+			continue
+		}
+		names = append(names, sk.Name)
+	}
+	return names, nil
+}
+
+func containsSkill(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutSkill returns names minus name (order preserved).
+func withoutSkill(names []string, name string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != name {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// handleInstallSkill serves POST /api/skills/{name}/install — adds the skill
+// to the caller's enabledSkills. Empty enabledSkills means "all enabled"
+// (resolver baseline), so installing an already-enabled skill is a no-op.
+func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" || s.cr == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var skillCR v1alpha1.Skill
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if skillCR.Status.Phase == v1alpha1.SkillPhaseUnreachable {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "skill is unreachable (missing content)"})
+		return
+	}
+	inst, ok, err := s.toggleSkillInstance(r.Context(), s.userOf(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "provision your instance on the Agent Config page first"})
+		return
+	}
+	// Idempotent: already enabled, or the all-enabled baseline, stays unchanged.
+	if len(inst.Spec.EnabledSkills) == 0 || containsSkill(inst.Spec.EnabledSkills, name) {
+		writeJSON(w, http.StatusOK, map[string]any{"enabledSkills": inst.Spec.EnabledSkills})
+		return
+	}
+	inst.Spec.EnabledSkills = append(inst.Spec.EnabledSkills, name)
+	if err := s.cr.Update(r.Context(), &inst); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabledSkills": inst.Spec.EnabledSkills})
+}
+
+// handleUninstallSkill serves POST /api/skills/{name}/uninstall — removes the
+// skill from the caller's enabledSkills. On the all-enabled baseline (empty
+// set) the allow-list is materialized to the visible skills minus the one, so
+// only the uninstalled skill stops loading and later publishes do not
+// re-enable it.
+func (s *Server) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" || s.cr == nil {
+		http.NotFound(w, r)
+		return
+	}
+	inst, ok, err := s.toggleSkillInstance(r.Context(), s.userOf(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "provision your instance on the Agent Config page first"})
+		return
+	}
+	if len(inst.Spec.EnabledSkills) == 0 {
+		names, err := s.visibleSkillNames(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		inst.Spec.EnabledSkills = withoutSkill(names, name)
+	} else {
+		inst.Spec.EnabledSkills = withoutSkill(inst.Spec.EnabledSkills, name)
+	}
+	if err := s.cr.Update(r.Context(), &inst); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabledSkills": inst.Spec.EnabledSkills})
+}

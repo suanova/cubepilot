@@ -243,3 +243,133 @@ func TestHandleTaskRunsOwnerScoped(t *testing.T) {
 		t.Errorf("cross-user taskrun status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestInstallSkill verifies POST /api/skills/{name}/install: appends on a
+// non-empty set, is a no-op on the all-enabled baseline, and rejects unknown /
+// unreachable skills and unprovisioned users.
+func TestInstallSkill(t *testing.T) {
+	li := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
+	li.Spec.EnabledSkills = []string{"harbor"}
+	s := platformTestServer(t, li,
+		internalTestCap("harbor", "skills/harbor/v1.tar.gz"),
+		internalTestCap("scan", "skills/scan/v1.tar.gz"))
+
+	// Append to a non-empty set.
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/install", "li.ming", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	got := decode[struct {
+		EnabledSkills []string `json:"enabledSkills"`
+	}](t, rec)
+	if len(got.EnabledSkills) != 2 || got.EnabledSkills[0] != "harbor" || got.EnabledSkills[1] != "scan" {
+		t.Errorf("enabledSkills = %v, want [harbor scan]", got.EnabledSkills)
+	}
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(t.Context(), client.ObjectKey{Name: li.Name}, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.EnabledSkills) != 2 || inst.Spec.EnabledSkills[1] != "scan" {
+		t.Errorf("instance enabledSkills = %v, want [harbor scan]", inst.Spec.EnabledSkills)
+	}
+
+	// Idempotent re-install.
+	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/install", "li.ming", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-install: status = %d", rec.Code)
+	}
+	again := decode[struct {
+		EnabledSkills []string `json:"enabledSkills"`
+	}](t, rec)
+	if len(again.EnabledSkills) != 2 {
+		t.Errorf("re-install changed the set: %v", again.EnabledSkills)
+	}
+
+	// All-enabled baseline (empty set): installing is a no-op that stays empty.
+	s2 := platformTestServer(t, internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+		internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
+	rec = doReq(t, s2.Handler(), http.MethodPost, "/api/skills/harbor/install", "zhang.wei", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("baseline install: status = %d", rec.Code)
+	}
+	base := decode[struct {
+		EnabledSkills []string `json:"enabledSkills"`
+	}](t, rec)
+	if len(base.EnabledSkills) != 0 {
+		t.Errorf("baseline install should stay empty (all-enabled): %v", base.EnabledSkills)
+	}
+
+	// Unknown skill -> 404.
+	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/nope/install", "li.ming", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown skill status = %d, want 404", rec.Code)
+	}
+
+	// Unreachable skill -> 409.
+	unreach := internalTestCap("broken", "skills/broken/v1.tar.gz")
+	unreach.Status.Phase = v1alpha1.SkillPhaseUnreachable
+	s3 := platformTestServer(t, li, unreach)
+	rec = doReq(t, s3.Handler(), http.MethodPost, "/api/skills/broken/install", "li.ming", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unreachable skill status = %d, want 409", rec.Code)
+	}
+
+	// No instance -> 409.
+	s4 := platformTestServer(t, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
+	rec = doReq(t, s4.Handler(), http.MethodPost, "/api/skills/harbor/install", "nobody", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("no-instance status = %d, want 409", rec.Code)
+	}
+}
+
+// TestUninstallSkill verifies POST /api/skills/{name}/uninstall: removes from a
+// non-empty set, materializes the allow-list from the all-enabled baseline, is
+// idempotent, and rejects unprovisioned users.
+func TestUninstallSkill(t *testing.T) {
+	li := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
+	li.Spec.EnabledSkills = []string{"harbor", "scan"}
+	s := platformTestServer(t, li,
+		internalTestCap("harbor", "skills/harbor/v1.tar.gz"),
+		internalTestCap("scan", "skills/scan/v1.tar.gz"))
+
+	// Remove one from a non-empty set.
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/uninstall", "li.ming", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("uninstall: status = %d", rec.Code)
+	}
+	got := decode[struct {
+		EnabledSkills []string `json:"enabledSkills"`
+	}](t, rec)
+	if len(got.EnabledSkills) != 1 || got.EnabledSkills[0] != "harbor" {
+		t.Errorf("enabledSkills = %v, want [harbor]", got.EnabledSkills)
+	}
+
+	// Idempotent re-uninstall of an absent skill.
+	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/uninstall", "li.ming", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-uninstall: status = %d", rec.Code)
+	}
+
+	// All-enabled baseline: uninstall materializes the visible skills minus the
+	// one, so a later publish does not re-enable it.
+	s2 := platformTestServer(t, internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+		internalTestCap("harbor", "skills/harbor/v1.tar.gz"),
+		internalTestCap("scan", "skills/scan/v1.tar.gz"))
+	rec = doReq(t, s2.Handler(), http.MethodPost, "/api/skills/harbor/uninstall", "zhang.wei", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("baseline uninstall: status = %d", rec.Code)
+	}
+	base := decode[struct {
+		EnabledSkills []string `json:"enabledSkills"`
+	}](t, rec)
+	if len(base.EnabledSkills) != 1 || base.EnabledSkills[0] != "scan" {
+		t.Errorf("materialized = %v, want [scan]", base.EnabledSkills)
+	}
+
+	// No instance -> 409.
+	s3 := platformTestServer(t, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
+	rec = doReq(t, s3.Handler(), http.MethodPost, "/api/skills/harbor/uninstall", "nobody", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("no-instance status = %d, want 409", rec.Code)
+	}
+}

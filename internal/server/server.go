@@ -56,6 +56,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/llms", s.handleAddLLM)
 	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
+	mux.HandleFunc("/api/skills/{name}/install", s.handleInstallSkill)
+	mux.HandleFunc("/api/skills/{name}/uninstall", s.handleUninstallSkill)
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)
