@@ -58,7 +58,7 @@ func platformTestServerSkillsDir(t *testing.T, skillsDir string, objs ...client.
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&v1alpha1.TaskRun{}, &v1alpha1.AgentInstance{}, &v1alpha1.Task{}).
+		WithStatusSubresource(&v1alpha1.TaskRun{}, &v1alpha1.AgentInstance{}, &v1alpha1.Task{}, &v1alpha1.Skill{}).
 		WithObjects(objs...).
 		Build()
 	cfg := config.Config{DefaultUser: "zhang.wei", SkillsDir: skillsDir}

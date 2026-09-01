@@ -86,10 +86,14 @@ type Config struct {
 	// ("0" disables).
 	ProbeAddr string
 
-	// SkillsDir is the skill repository root (shared volume). Control plane
-	// only: the operator seeds it, the API serves tars from it; agent Pods
-	// never mount it (the supervisor pulls over HTTP).
+	// SkillsDir is the skill repository root (shared volume). Owned by the API
+	// server (publish + serve); agent Pods never mount it (the supervisor pulls
+	// over HTTP).
 	SkillsDir string
+
+	// APIURL is the platform internal API base URL. The operator uses it to
+	// publish the preset skills (POST /internal/skills/{name}/publish).
+	APIURL string
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -112,6 +116,7 @@ func Load() Config {
 		MetricsAddr:    getenv("CUBEPILOT_METRICS_ADDR", "0"),
 		ProbeAddr:      getenv("CUBEPILOT_PROBE_ADDR", "0"),
 		SkillsDir:      getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
+		APIURL:         getenv("CUBEPILOT_API_URL", "http://cubepilot-api.cubepilot.svc:8080"),
 	}
 	users := getenv("CUBEPILOT_USERS", "zhang.wei,li.ming")
 	for _, u := range strings.Split(users, ",") {

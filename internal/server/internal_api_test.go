@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,4 +354,84 @@ func TestInternalSkillTar(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing skill status = %d, want 404", rec.Code)
 	}
+}
+
+// TestInternalPublishSkill verifies the publish primitive: it stores the tar
+// atomically (versioned), upserts the Skill CRD with source.path + sha256,
+// marks phase Available, and is idempotent per content.
+func TestInternalPublishSkill(t *testing.T) {
+	skillsDir := t.TempDir()
+	s := platformTestServerSkillsDir(t, skillsDir)
+
+	tar1 := mustPackBytes(t, "# Harbor v1\n")
+	rec := doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor&builtin=true", tar1)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish #1: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var published v1alpha1.Skill
+	if err := json.Unmarshal(rec.Body.Bytes(), &published); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if published.Spec.Source.Path != "skills/harbor/v1.tar.gz" {
+		t.Errorf("source.path = %q, want skills/harbor/v1.tar.gz", published.Spec.Source.Path)
+	}
+	if published.Spec.Source.Sha256 == "" {
+		t.Error("sha256 not backfilled")
+	}
+	if published.Labels["cubepilot/builtin"] != "true" {
+		t.Errorf("builtin label missing: %v", published.Labels)
+	}
+	if published.Status.Phase != v1alpha1.SkillPhaseAvailable {
+		t.Errorf("phase = %q, want Available", published.Status.Phase)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "skills", "harbor", "v1.tar.gz")); err != nil {
+		t.Fatalf("tar not stored: %v", err)
+	}
+
+	// Same content -> same version, no rewrite.
+	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", tar1)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish #2: status = %d", rec.Code)
+	}
+	var again v1alpha1.Skill
+	_ = json.Unmarshal(rec.Body.Bytes(), &again)
+	if again.Spec.Source.Path != "skills/harbor/v1.tar.gz" {
+		t.Errorf("re-publish changed version: %q", again.Spec.Source.Path)
+	}
+
+	// New content -> v2.
+	tar2 := mustPackBytes(t, "# Harbor v2\n")
+	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", tar2)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish v2: status = %d", rec.Code)
+	}
+	var v2 v1alpha1.Skill
+	_ = json.Unmarshal(rec.Body.Bytes(), &v2)
+	if v2.Spec.Source.Path != "skills/harbor/v2.tar.gz" {
+		t.Errorf("new content version = %q, want v2", v2.Spec.Source.Path)
+	}
+
+	// Missing displayName -> 400.
+	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish", tar1)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing displayName status = %d, want 400", rec.Code)
+	}
+}
+
+func mustPackBytes(t *testing.T, skillBody string) []byte {
+	t.Helper()
+	data, err := skill.Pack(fstest.MapFS{"SKILL.md": {Data: []byte(skillBody)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func doRawPost(t *testing.T, h http.Handler, path string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
