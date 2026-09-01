@@ -148,9 +148,9 @@ The API server owns the repository (write + serve). Internal endpoints:
 
 - `GET /internal/skills/{name}/tar` → looks up the `Skill` CRD, resolves `spec.source.path`, streams the tar bytes via `repo.Open`. 404 when the Skill or its tar is missing.
 - `POST /api/skills/{name}/publish` → the **user-facing** publish endpoint (issue #23): body is a gzip tar of the skill directory (packed client-side by the Portal); metadata via query (`displayName`, `description`). Phase 1 forces `visibility=Platform` and records the publisher identity (`X-CubePilot-User`) as the `cubepilot/publisher` annotation. Behavior:
-  1. sha256 of the body; `skill.ResolveVersion` finds an existing version with matching content (no rewrite) or the next unused `vN`.
-  2. `repo.WriteBytes` the tar atomically when the content is new.
-  3. `skill.ValidateSkillTar` (gzip tar + root `SKILL.md`) rejects a wrong-folder upload before anything is persisted.
+  1. `skill.ValidateSkillTar` (gzip tar + root regular-file `SKILL.md`, bounded by decompressed-byte and entry-count caps) rejects a wrong-folder or decompression-bomb archive **before anything is persisted**.
+  2. sha256 of the body; `skill.ResolveVersion` finds an existing version with matching content (no rewrite) or the next unused `vN`.
+  3. `repo.WriteBytes` the tar atomically when the content is new.
   4. Upsert the `Skill` CRD (`source.path` = `skills/<name>/vN.tar.gz`, `source.sha256`, `cubepilot/publisher` annotation), set `status.phase=Available`.
   5. Returns the `Skill` CR.
   `publishSkill` is the shared primitive: the API's builtin startup seed calls it directly with `Publisher: "system"`. (The #22 internal `POST /internal/skills/{name}/publish` was removed in #23 — the Portal reaches only `/api/*` (nginx) and nothing in-cluster consumed it.)
