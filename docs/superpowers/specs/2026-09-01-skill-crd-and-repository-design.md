@@ -91,11 +91,12 @@ New package `internal/skill/repository.go`:
 // Repository is the skill content store (design §3.4: shared file volume in
 // phase 1; S3 in phase 2). The backend is transparent to the CRD and the
 // loading flow — differences are only in addressing + how the injector gets
-// the tar (mount read vs network pull).
+// the tar (mount read vs network pull). Tars are gzip-compressed (.tar.gz).
 type Repository interface {
     // Write packs src (a skill directory: SKILL.md + optional scripts/,
-    // references/) into a tar at relPath, atomically (temp file + rename),
-    // and returns the tar's sha256. On any error the temp file is removed.
+    // references/) into a gzip tar at relPath, atomically (temp file +
+    // rename), and returns the tar's sha256. On any error the temp file is
+    // removed.
     Write(ctx context.Context, relPath string, src fs.FS) (string, error)
     // Open returns a reader for the tar at relPath (for read-back / serving).
     Open(ctx context.Context, relPath string) (io.ReadCloser, error)
@@ -105,10 +106,19 @@ type Repository interface {
     Extract(ctx context.Context, relPath, destDir string) error
 }
 
-// ExtractTar unpacks an arbitrary tar stream (from a repo read, an HTTP
+// ExtractTar unpacks an arbitrary gzip tar stream (from a repo read, an HTTP
 // fetch, or a temp file) into destDir with the same traversal protection.
 // Used by PathRepository.Extract and by the supervisor's HTTP-pull path.
 func ExtractTar(r io.Reader, destDir string) error
+
+// Pack builds the gzip tar bytes for src (a skill directory), for callers
+// that publish the content over the wire (operator -> API publish endpoint).
+func Pack(src fs.FS) ([]byte, error)
+
+// ResolveVersion returns the version label for publishing name with content
+// hash sha: the existing vN whose stored tar content matches sha (stored=true,
+// no write needed), or the next unused vN (stored=false, caller writes it).
+func ResolveVersion(ctx context.Context, repo Repository, name, sha string) (string, bool, error)
 
 // PathRepository is the shared-file-volume implementation: relPath is relative
 // to root (the volume mount point).
@@ -124,35 +134,38 @@ type PathRepository struct{ Root string }
 - No temp files left behind after success or failure (failed rename: target directory removed after the temp was created).
 - Extract → correct structure in `destDir`; corrupt tar (truncated) → error; traversal entry (`../evil`) → error, nothing written outside `destDir`.
 
-## 4. Preset seeding
+## 4. Preset publishing
 
-The four embedded presets (`internal/controller/skills/{cluster-inspection,dev-environment,inference-service,kubectl-platform}/SKILL.md`) become repo tars.
+The four embedded presets (`internal/controller/skills/{cluster-inspection,dev-environment,inference-service,kubectl-platform}/SKILL.md`) become repo tars. The **API owns the repository**; the operator only supplies the content by calling the publish endpoint (which is also the #23 Portal publish primitive).
 
 `internal/controller/skill_source.go` is rewritten:
 
-- `skillsFS` (go:embed) stays; `parseSKILL` / `presetSkillNames` stay (name/description for the CRD).
-- `BuiltinSkillDefinitions()` is replaced by:
+- `skillsFS` (go:embed) stays; `parseSKILL` / `skillTitle` / `presetSkillNames` stay (the operator decides what is builtin + parses the metadata).
+- `BuiltinSkillDefinitions()` is replaced by `PublishBuiltinSkills(ctx, apiURL, httpClient)`:
 
 ```go
-// SeedBuiltinSkills packs the embedded preset skill directories into the
-// repository as versioned tars (skills/<name>/v1.tar.gz) and returns the
-// Skill CRDs referencing them (source.path + source.sha256 backfilled).
-// Idempotent: pack once, compare the freshly packed sha256 against the
-// existing tar's sha256 (read back from the repo); identical content is not
-// rewritten (the CRD keeps its path), a content change writes a new version
-// (v2, ...) and points the CRD at it.
-func SeedBuiltinSkills(ctx context.Context, repo skill.Repository) ([]*v1alpha1.Skill, error)
+// PublishBuiltinSkills publishes the embedded preset skills to the skill API
+// (POST /internal/skills/{name}/publish, gzip tar body + metadata) and
+// returns the resulting Skill CRs. The API owns the repository and the Skill
+// CRD registration.
+func PublishBuiltinSkills(ctx context.Context, apiURL string, httpClient *http.Client) ([]*v1alpha1.Skill, error)
 ```
 
-- The `BuiltinBootstrapReconciler` (`internal/controller/builtin.go`) gains a `Repo skill.Repository` field (built from `config.SkillsDir`). `ensureBuiltin` seeds the repository (writing tars) before creating the Skill CRDs (`createIfMissing`). On a successful seed the Skill `status.phase` is set to `Available` (patch the status subresource). Seeding happens before CRD creation so a resolver/supervisor never sees a CRD whose tar is missing.
-- The chart mounts the shared repo volume into the **operator** (read-write).
+- The `BuiltinBootstrapReconciler` (`internal/controller/builtin.go`) gains an `APIURL string` field (from `config.APIURL`). `ensureBuiltin` publishes each preset (pack to a gzip tar via `skill.Pack`, POST to the API with `displayName` / `description` / `builtin=true`). If the API is not up yet, the periodic reconcile retries (self-healing).
+- The operator does **not** mount the shared volume and does **not** register Skill CRDs — the API does both.
 
-## 5. Internal API: skill tar endpoint
+## 5. Internal API: skill endpoints
 
-The API server owns the repository read side. Add an internal endpoint:
+The API server owns the repository (write + serve). Internal endpoints:
 
-- `GET /internal/skills/{name}/tar` → looks up the `Skill` CRD, resolves `spec.source.path`, streams the tar bytes via `repo.Open` (with `Content-Length` when known). 404 when the Skill or its tar is missing. Authenticated as internal (same bearer convention as the existing `/internal/agents/{user}/config`).
-- The API server mounts the shared repo volume (read-only is enough for #22; read-write when #23 publish lands).
+- `GET /internal/skills/{name}/tar` → looks up the `Skill` CRD, resolves `spec.source.path`, streams the tar bytes via `repo.Open`. 404 when the Skill or its tar is missing.
+- `POST /internal/skills/{name}/publish` → the publish primitive: body is a gzip tar of the skill directory; metadata via query (`displayName`, `description`, `visibility`, `builtin`). Behavior:
+  1. sha256 of the body; `skill.ResolveVersion` finds an existing version with matching content (no rewrite) or the next unused `vN`.
+  2. `repo.WriteBytes` the tar atomically when the content is new.
+  3. Upsert the `Skill` CRD (`source.path` = `skills/<name>/vN.tar.gz`, `source.sha256`, labels when `builtin=true`), set `status.phase=Available`.
+  4. Returns the `Skill` CR.
+  This endpoint is the #23 Portal publish primitive; the operator seeds presets through it, and #23 adds the user-facing wrapper + upload UI.
+- The API server mounts the shared repo volume (read-write: publish + serve). The operator does **not** mount it.
 
 Alternative considered: `GET /internal/skills/tar?path=...`. Rejected — the supervisor knows the skill *name* from the resolved config; name-based keeps the API the resolver of `source` (consistent with "the CRD registers where").
 
@@ -207,8 +220,8 @@ func (s *Supervisor) syncSkills(ctx, cfg) error {
 
 ## 8. Config & deployment
 
-- `internal/config/config.go`: add `SkillsDir string` (env `CUBEPILOT_SKILLS_DIR`, default e.g. `/var/lib/cubepilot/skills`). Used by the operator (seed) and the API server (serve). The agent Pods do **not** mount the repo.
-- Chart (`deploy/charts/cubepilot/`): add a shared repo volume (`values.skillRepo`: `storageClassName` / `size`, or `existingClaim`). Mount into the operator (RW) and the API server (RW). For kind e2e the chart can default to a `hostPath` on the node (single-node kind) — production uses a CephFS RWX volume (design §2.2). This is platform-install provisioning; the code only consumes `SkillsDir`.
+- `internal/config/config.go`: add `SkillsDir string` (env `CUBEPILOT_SKILLS_DIR`, default `/var/lib/cubepilot/skills`) — consumed only by the API server (publish + serve); and `APIURL string` (env `CUBEPILOT_API_URL`, default `http://cubepilot-api.cubepilot.svc:8080`) — consumed by the operator (publish). The agent Pods do **not** mount the repo.
+- Chart (`deploy/charts/cubepilot/`): add a shared repo volume (`values.skillRepo`: `storageClassName` / `size`, or `existingClaim`) mounted into the **API server** (RW) at `CUBEPILOT_SKILLS_DIR`. The operator needs no volume — it publishes over HTTP. For kind e2e the chart can default to a `hostPath` on the node (single-node kind); production uses a CephFS RWX volume (design §2.2). This is platform-install provisioning; the code only consumes `SkillsDir`.
 
 ## 9. Testing
 
