@@ -54,6 +54,9 @@ var _ = Describe("Chat (SSE)", Label("chat"), func() {
 			}
 		}
 		Expect(done).NotTo(BeNil(), "message_done event should carry a data payload")
-		Expect(done["error"]).To(BeEmpty())
+		// A successful turn omits the error key entirely (Event.Marshal uses
+		// json:",omitempty" on the empty error), so done["error"] is nil; a real
+		// error would be a non-empty string. Accept either clean form.
+		Expect(done["error"]).To(SatisfyAny(BeNil(), BeEmpty()), "message_done should carry no error")
 	})
 })
