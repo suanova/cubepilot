@@ -420,13 +420,13 @@ func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) 
 // are text; a few MB is generous).
 const maxSkillTarSize = 10 << 20
 
-// handlePublishSkill is the skill publish endpoint: POST
-// /internal/skills/{name}/publish (internal API, cluster-only). The body is a
-// gzip tar of the skill directory; metadata comes via query params
-// (displayName, description, visibility, builtin). The API owns the
-// repository: it writes the tar atomically (versioned, sha256) and upserts
-// the Skill CRD (status.phase=Available). The startup seed and #23's Portal
-// upload both use this path.
+// handlePublishSkill is the user-facing skill publish endpoint: POST
+// /api/skills/{name}/publish. The body is a gzip tar of the skill directory
+// (packed client-side by the Portal); metadata comes via query params
+// (displayName, description). Phase 1 forces visibility=Platform and records
+// the publisher identity (X-CubePilot-User) on the Skill CR. The API owns the
+// repository: atomic write, versioning and sha256 are the #22 publishSkill
+// primitive, shared with the builtin seed.
 func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -439,11 +439,7 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and displayName are required"})
 		return
 	}
-	visibility := v1alpha1.SkillVisibility(q.Get("visibility"))
-	if visibility == "" {
-		visibility = v1alpha1.SkillVisibilityPlatform
-	}
-	if visibility != v1alpha1.SkillVisibilityPlatform {
+	if v := q.Get("visibility"); v != "" && v != string(v1alpha1.SkillVisibilityPlatform) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "phase 1 supports only visibility=Platform"})
 		return
 	}
@@ -460,12 +456,14 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty skill tar"})
 		return
 	}
-	// Reject malformed / non-gzip archives before they are persisted.
-	if err := skill.ValidateTar(body); err != nil {
+	// Reject malformed / wrong-folder archives (no root SKILL.md) before
+	// anything is persisted.
+	if err := skill.ValidateSkillTar(body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid skill tar: " + err.Error()})
 		return
 	}
-	skillCR, err := s.publishSkill(r.Context(), name, displayName, q.Get("description"), visibility, body, q.Get("builtin") == "true")
+	skillCR, err := s.publishSkill(r.Context(), name, displayName, q.Get("description"),
+		v1alpha1.SkillVisibilityPlatform, body, publishOptions{Publisher: s.userOf(r)})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -473,11 +471,19 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, skillCR)
 }
 
+// publishOptions carries the non-body dimensions of a publish: Builtin (seed
+// only — user uploads are never builtin) and Publisher (the identity header
+// for Portal uploads, "system" for the builtin seed), recorded on the CR.
+type publishOptions struct {
+	Builtin   bool
+	Publisher string
+}
+
 // publishSkill is the shared publish primitive used by the HTTP endpoint and
 // the startup seed: it writes the tar atomically (versioned, sha256) into the
 // repository and upserts the Skill CRD (status.phase=Available).
 func (s *Server) publishSkill(ctx context.Context, name, displayName, description string,
-	visibility v1alpha1.SkillVisibility, tar []byte, builtin bool) (*v1alpha1.Skill, error) {
+	visibility v1alpha1.SkillVisibility, tar []byte, opts publishOptions) (*v1alpha1.Skill, error) {
 	if s.cr == nil {
 		return nil, fmt.Errorf("k8s client unavailable")
 	}
@@ -500,17 +506,19 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 	switch {
 	case err == nil:
 		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
-		if builtin {
+		if opts.Builtin {
 			addBuiltinLabels(&skillCR)
 		}
+		addPublisherAnnotation(&skillCR, opts.Publisher)
 		if err := s.cr.Update(ctx, &skillCR); err != nil {
 			return nil, err
 		}
 	case apierrors.IsNotFound(err):
 		skillCR = v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
-		if builtin {
+		if opts.Builtin {
 			addBuiltinLabels(&skillCR)
 		}
+		addPublisherAnnotation(&skillCR, opts.Publisher)
 		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
 		if err := s.cr.Create(ctx, &skillCR); err != nil {
 			return nil, err
@@ -524,6 +532,13 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 	}
 	skillCR.Status.Phase = v1alpha1.SkillPhaseAvailable
 	return &skillCR, nil
+}
+
+func addPublisherAnnotation(skillCR *v1alpha1.Skill, publisher string) {
+	if skillCR.Annotations == nil {
+		skillCR.Annotations = map[string]string{}
+	}
+	skillCR.Annotations["cubepilot/publisher"] = publisher
 }
 
 func publishSpec(displayName, description string, visibility v1alpha1.SkillVisibility, name, ver, sha string) v1alpha1.SkillSpec {

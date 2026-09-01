@@ -356,15 +356,16 @@ func TestInternalSkillTar(t *testing.T) {
 	}
 }
 
-// TestInternalPublishSkill verifies the publish primitive: it stores the tar
-// atomically (versioned), upserts the Skill CRD with source.path + sha256,
-// marks phase Available, and is idempotent per content.
-func TestInternalPublishSkill(t *testing.T) {
+// TestPublishSkill verifies the user-facing publish endpoint: it stores the
+// tar atomically (versioned), upserts the Skill CRD (source.path + sha256 +
+// publisher annotation), marks phase Available, and is idempotent per content.
+func TestPublishSkill(t *testing.T) {
 	skillsDir := t.TempDir()
 	s := platformTestServerSkillsDir(t, skillsDir)
 
+	// The identity header is recorded as the publisher on the Skill CR.
 	tar1 := mustPackBytes(t, "# Harbor v1\n")
-	rec := doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor&builtin=true", tar1)
+	rec := doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish #1: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -378,8 +379,11 @@ func TestInternalPublishSkill(t *testing.T) {
 	if published.Spec.Source.Sha256 == "" {
 		t.Error("sha256 not backfilled")
 	}
-	if published.Labels["cubepilot/builtin"] != "true" {
-		t.Errorf("builtin label missing: %v", published.Labels)
+	if published.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
+		t.Errorf("visibility = %q, want Platform", published.Spec.Visibility)
+	}
+	if published.Annotations["cubepilot/publisher"] != "li.ming" {
+		t.Errorf("publisher = %q, want li.ming", published.Annotations["cubepilot/publisher"])
 	}
 	if published.Status.Phase != v1alpha1.SkillPhaseAvailable {
 		t.Errorf("phase = %q, want Available", published.Status.Phase)
@@ -389,7 +393,7 @@ func TestInternalPublishSkill(t *testing.T) {
 	}
 
 	// Same content -> same version, no rewrite.
-	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", tar1)
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish #2: status = %d", rec.Code)
 	}
@@ -401,7 +405,7 @@ func TestInternalPublishSkill(t *testing.T) {
 
 	// New content -> v2.
 	tar2 := mustPackBytes(t, "# Harbor v2\n")
-	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", tar2)
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar2, "li.ming")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish v2: status = %d", rec.Code)
 	}
@@ -412,13 +416,19 @@ func TestInternalPublishSkill(t *testing.T) {
 	}
 
 	// Missing displayName -> 400.
-	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish", tar1)
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish", tar1, "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing displayName status = %d, want 400", rec.Code)
 	}
 
+	// A tar without root SKILL.md -> 400, nothing persisted.
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", mustPackBytesNoSkill(t, "# scripts only\n"), "li.ming")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("no-SKILL.md status = %d, want 400", rec.Code)
+	}
+
 	// Malformed / non-gzip body -> 400, nothing persisted.
-	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", []byte("not a tar"))
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", []byte("not a tar"), "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid tar status = %d, want 400", rec.Code)
 	}
@@ -427,9 +437,15 @@ func TestInternalPublishSkill(t *testing.T) {
 	}
 
 	// Oversized body -> 413.
-	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", make([]byte, maxSkillTarSize+1))
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", make([]byte, maxSkillTarSize+1), "li.ming")
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized status = %d, want 413", rec.Code)
+	}
+
+	// Non-Platform visibility -> 400 (phase 1).
+	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor&visibility=User", tar1, "li.ming")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("visibility=User status = %d, want 400", rec.Code)
 	}
 }
 
@@ -442,10 +458,22 @@ func mustPackBytes(t *testing.T, skillBody string) []byte {
 	return data
 }
 
-func doRawPost(t *testing.T, h http.Handler, path string, data []byte) *httptest.ResponseRecorder {
+func mustPackBytesNoSkill(t *testing.T, body string) []byte {
+	t.Helper()
+	data, err := skill.Pack(fstest.MapFS{"scripts/x.sh": {Data: []byte(body)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func doRawPostAs(t *testing.T, h http.Handler, path string, data []byte, user string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/gzip")
+	if user != "" {
+		req.Header.Set("X-CubePilot-User", user)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -477,6 +505,9 @@ func TestSeedBuiltinSkills(t *testing.T) {
 		}
 		if sk.Labels["cubepilot/builtin"] != "true" {
 			t.Errorf("skill %s: builtin label missing", sk.Name)
+		}
+		if sk.Annotations["cubepilot/publisher"] != "system" {
+			t.Errorf("skill %s: publisher = %q, want system", sk.Name, sk.Annotations["cubepilot/publisher"])
 		}
 		if _, err := os.Stat(filepath.Join(skillsDir, "skills", sk.Name, "v1.tar.gz")); err != nil {
 			t.Errorf("skill %s: tar missing in repo: %v", sk.Name, err)
