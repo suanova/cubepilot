@@ -177,22 +177,6 @@ func ExtractTar(r io.Reader, destDir string) error {
 	}
 }
 
-// ValidateTar reports whether data is a readable gzip tar with at least one
-// entry. Used by the publish path to reject malformed / non-gzip archives
-// before they are persisted or registered.
-func ValidateTar(data []byte) error {
-	gz, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("gzip: %w", err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	if _, err := tr.Next(); err != nil {
-		return fmt.Errorf("tar: %w", err) // also rejects an empty archive (io.EOF)
-	}
-	return nil
-}
-
 // ValidateSkillTar reports whether data is a publishable skill archive: a
 // readable gzip tar whose root contains SKILL.md. The user-facing publish
 // endpoint uses this to reject a wrong-folder upload before anything is
