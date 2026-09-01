@@ -193,6 +193,31 @@ func ValidateTar(data []byte) error {
 	return nil
 }
 
+// ValidateSkillTar reports whether data is a publishable skill archive: a
+// readable gzip tar whose root contains SKILL.md. The user-facing publish
+// endpoint uses this to reject a wrong-folder upload before anything is
+// persisted (the internal seed path already guarantees SKILL.md).
+func ValidateSkillTar(data []byte) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return errors.New("skill archive has no SKILL.md")
+		}
+		if err != nil {
+			return fmt.Errorf("tar: %w", err)
+		}
+		if filepath.Clean(filepath.FromSlash(hdr.Name)) == "SKILL.md" {
+			return nil
+		}
+	}
+}
+
 // writeTar packs the files of src (walked recursively) into a gzip tar on w.
 // Close errors from the tar and gzip writers are propagated so a truncated
 // archive is never reported as a successful write.

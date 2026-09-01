@@ -123,6 +123,24 @@ func TestValidateTar(t *testing.T) {
 	}
 }
 
+// TestValidateSkillTar verifies the user-facing publish validation: a gzip tar
+// with SKILL.md at its root passes; a tar without one (or nested only) and a
+// non-gzip payload are rejected.
+func TestValidateSkillTar(t *testing.T) {
+	if err := ValidateSkillTar(mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("x")}})); err != nil {
+		t.Fatalf("valid skill tar rejected: %v", err)
+	}
+	if err := ValidateSkillTar(mustPack(t, fstest.MapFS{"scripts/x.sh": {Data: []byte("x")}})); err == nil {
+		t.Fatal("tar without root SKILL.md should be rejected")
+	}
+	if err := ValidateSkillTar(mustPack(t, fstest.MapFS{"sub/SKILL.md": {Data: []byte("x")}})); err == nil {
+		t.Fatal("nested SKILL.md should be rejected")
+	}
+	if err := ValidateSkillTar([]byte("not a tar")); err == nil {
+		t.Fatal("non-gzip payload should be rejected")
+	}
+}
+
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
