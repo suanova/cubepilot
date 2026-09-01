@@ -3,7 +3,7 @@ CubePilot installed.
 Components:
   operator  {{ .Values.operator.name }}   (control plane, leader election)
   api       {{ .Values.api.name }}        (REST/SSE + metadata store)
-  web       {{ .Values.web.name }}        (Vue SPA, nginx)
+  web       {{ .Values.web.name }}        (React SPA, nginx)
 
 Access the portal:
   kubectl -n {{ .Release.Namespace }} port-forward svc/cubepilot 8080:8080

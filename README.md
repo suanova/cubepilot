@@ -51,7 +51,7 @@ internal/k8s            client-go + Pod/PVC/Service builders
 internal/openclaw       OpenClaw HTTP client + event mapping (with tests)
 internal/server         REST/SSE handlers (no static serving)
 internal/store          platform metadata store (JSON on PVC)
-web/                    Portal SPA -- Vue 3 + TypeScript + Vite (independent
+web/                    Portal SPA -- React 19 + TypeScript + Vite (independent
                         component; nginx serves it and proxies /api)
 internal/controller/skills/   embedded skill catalog SKILL.md × 4
 workspace/              SOUL.md / AGENTS.md

@@ -1,4 +1,4 @@
-# CubePilot Portal image — multi-stage: build the Vue SPA on node, serve it
+# CubePilot Portal image — multi-stage: build the React SPA on node, serve it
 # with nginx (which also reverse-proxies /api to the cubepilot-api service).
 #
 # Build:  docker build -t harbor.isuanova.com/suanova/cubepilot-web:<tag> -f web/Dockerfile web

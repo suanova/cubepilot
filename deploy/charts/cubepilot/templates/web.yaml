@@ -1,5 +1,5 @@
 # Web -- independent frontend component (design §9 / §11.1). Serves the built
-# Vue SPA and reverse-proxies /api to the API service (web/nginx.conf).
+# React SPA and reverse-proxies /api to the API service (web/nginx.conf).
 # Replicas > 1 is safe: the SPA is fully stateless.
 apiVersion: apps/v1
 kind: Deployment

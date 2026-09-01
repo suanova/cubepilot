@@ -8,20 +8,29 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/openclaw"
 )
+
+// manager is the narrow slice of the Instance Manager that Runner depends on:
+// warm the instance, resolve its gateway URL and the per-turn model override.
+// Depending on the interface (not *instances.Manager) keeps Runner
+// unit-testable and lets the scheduler run against any resolution backend.
+type manager interface {
+	Ensure(ctx context.Context, user string) error
+	BaseURL(user string) string
+	SelectedModelFor(ctx context.Context, user string) (string, error)
+}
 
 // Runner executes one task turn through the creator's agent instance and
 // returns the collected text.
 type Runner struct {
-	mgr   *instances.Manager
+	mgr   manager
 	token string
 }
 
-// New returns a Runner for the given Instance Manager facade and gateway
-// token (shared across agent instances).
-func New(mgr *instances.Manager, token string) *Runner {
+// New returns a Runner for the given instance manager and gateway token
+// (shared across agent instances). *instances.Manager satisfies manager.
+func New(mgr manager, token string) *Runner {
 	return &Runner{mgr: mgr, token: token}
 }
 

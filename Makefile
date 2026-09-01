@@ -7,7 +7,7 @@
 #   make test       go vet + unit tests (excludes the test/e2e suite)
 #   make test-e2e   bring up the stack (scripts/setup.sh) and run the Ginkgo
 #                   e2e suite (test/e2e) against it
-#   make web        build the Vue SPA (type-check + vite build)
+#   make web        build the React SPA (type-check + vite build)
 #   make images     build the four images (registry-addressed)
 #   make push       push the four images to $(IMAGE_REGISTRY)
 #   make lint       helm lint + helm template sanity check
@@ -65,7 +65,7 @@ test-e2e:
 	KUBECONFIG=$(KUBECONFIG) CUBEPILOT_NAMESPACE=$(NAMESPACE) \
 		./$(BIN_DIR)/e2e.test -test.v -ginkgo.v -ginkgo.fail-fast
 
-## Build the Vue SPA (strict type-check via vue-tsc, then vite build).
+## Build the React SPA (strict type-check via tsc, then vite build).
 web:
 	cd web && $(NPM) run build
 
