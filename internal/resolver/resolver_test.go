@@ -59,7 +59,7 @@ func skillWithSource(name, path string) *v1alpha1.Skill {
 			DisplayName: "Skill " + name,
 			Description: "Description " + name,
 			Visibility:  v1alpha1.SkillVisibilityPlatform,
-			Source: v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path, Sha256: "sha-" + name},
+			Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path, Sha256: "sha-" + name},
 		},
 	}
 }
