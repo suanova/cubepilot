@@ -3,12 +3,14 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -16,10 +18,12 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/suanova/cubepilot/internal/resolver"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
-// testAPI serves a fixed resolved config on /internal/agents/{user}/config.
-func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user string) *httptest.Server {
+// testAPI serves a fixed resolved config on /internal/agents/{user}/config and
+// skill tars on /internal/skills/{name}/tar from a skill.PathRepository.
+func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/agents/"+user+"/config", func(w http.ResponseWriter, r *http.Request) {
@@ -28,14 +32,47 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user string) *http
 			t.Errorf("encode: %v", err)
 		}
 	})
+	mux.HandleFunc("/internal/skills/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/internal/skills/")
+		name, tail, ok := strings.Cut(rest, "/")
+		if !ok || tail != "tar" || name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		rc, err := (&skill.PathRepository{Root: skillsDir}).Open(r.Context(), name+"/v1.tar.gz")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Type", "application/gzip")
+		if _, err := io.Copy(w, rc); err != nil {
+			t.Errorf("copy tar: %v", err)
+		}
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-// TestRenderSkills verifies the supervisor renders resolved skills
-// into workspace/skills/<name>/SKILL.md and clears stale entries.
-func TestRenderSkills(t *testing.T) {
+// seedTar packs a single SKILL.md into the repo and returns its sha256.
+func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) string {
+	t.Helper()
+	data, err := skill.Pack(fstest.MapFS{"SKILL.md": {Data: []byte(body)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err := repo.WriteBytes(t.Context(), relPath, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+// TestSyncSkills verifies the supervisor pulls a skill tar from the internal
+// API, extracts it into workspace/skills/<name>/, writes the .sha256 marker,
+// clears stale entries, and skips an unchanged skill.
+func TestSyncSkills(t *testing.T) {
 	ws := t.TempDir()
 	// Pre-existing stale skill dir that must be cleared.
 	if err := os.MkdirAll(filepath.Join(ws, "skills", "stale"), 0o755); err != nil {
@@ -44,27 +81,99 @@ func TestRenderSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "skills", "stale", "SKILL.md"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Seed the "repo" with the skill tar.
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha1 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Cluster Intelligent Inspection\n\nRead-only inspection.")
 
-	s := New(Config{Workspace: ws})
+	// The test server serves the tars; the supervisor pulls from cfg.APIURL.
+	srv := testAPI(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
 	cfg := &resolver.ResolvedAgentConfig{
 		Revision: "abc123",
 		Skills: []resolver.ResolvedSkill{
-			{Name: "cluster-inspection", Title: "Cluster Intelligent Inspection", Description: "Inspect the cluster", Instructions: "Read-only inspection.", Revision: "rev1"},
+			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha1, Revision: "rev1"},
 		},
 	}
-	if err := s.renderSkills(context.Background(), cfg); err != nil {
-		t.Fatalf("renderSkills: %v", err)
+
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("syncSkills: %v", err)
 	}
 
-	skill, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
+	skillBody, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read skill: %v", err)
 	}
-	if !strings.Contains(string(skill), "name: cluster-inspection") || !strings.Contains(string(skill), "Read-only inspection.") {
-		t.Errorf("skill content wrong: %s", skill)
+	if !strings.Contains(string(skillBody), "Read-only inspection.") {
+		t.Errorf("skill content wrong: %s", skillBody)
+	}
+	marker, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", ".sha256"))
+	if err != nil || string(marker) != "rev1" {
+		t.Errorf("marker = %q, %v; want rev1", marker, err)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "skills", "stale")); !os.IsNotExist(err) {
 		t.Errorf("stale skill dir not cleared")
+	}
+
+	// Same revision -> no re-pull (the API client is untouched; re-sync is a
+	// no-op even if the server were gone).
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+}
+
+// TestSyncSkillRejectsShaMismatch verifies a downloaded tar whose content does
+// not match the CRD's source.sha256 is rejected (and nothing is installed).
+func TestSyncSkillRejectsShaMismatch(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	_ = seedTar(t, repo, "bad/v1.tar.gz", "# good content\n")
+	srv := testAPI(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{
+		Revision: "r",
+		Skills: []resolver.ResolvedSkill{
+			{Name: "bad", Path: "bad/v1.tar.gz", Sha256: "deadbeef", Revision: "rev1"}, // wrong digest
+		},
+	}
+	if err := s.syncSkills(context.Background(), cfg); err == nil {
+		t.Fatal("sha256 mismatch should error")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "skills", "bad")); !os.IsNotExist(err) {
+		t.Errorf("skill dir should not be installed on mismatch: %v", err)
+	}
+}
+
+// TestSyncSkillPreservesOldOnFailure verifies a failed fetch/extract leaves
+// the previously installed skill directory intact (stage-then-swap).
+func TestSyncSkillPreservesOldOnFailure(t *testing.T) {
+	ws := t.TempDir()
+	dir := filepath.Join(ws, "skills", "good")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".sha256"), []byte("rev-old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The repo has no tar for "good" -> the API 404s the fetch.
+	srv := testAPI(t, nil, "", t.TempDir())
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{
+		Revision: "r",
+		Skills: []resolver.ResolvedSkill{
+			{Name: "good", Path: "good/v1.tar.gz", Revision: "rev-new"},
+		},
+	}
+	if err := s.syncSkills(context.Background(), cfg); err == nil {
+		t.Fatal("missing tar should error")
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != "old content" {
+		t.Errorf("old skill not preserved: %q, %v", b, err)
 	}
 }
 
@@ -76,7 +185,7 @@ func TestPollNoChange(t *testing.T) {
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
 	}
-	srv := testAPI(t, cfg, "li.ming")
+	srv := testAPI(t, cfg, "li.ming", "")
 
 	s := New(Config{APIURL: srv.URL, User: "li.ming", Workspace: ws})
 	// First poll: applies the config for the first time ("" -> fixed) --
@@ -102,20 +211,26 @@ func TestPollNoChange(t *testing.T) {
 	}
 }
 
-// TestPollRendersOnChange verifies a revision change re-renders skills.
-func TestPollRendersOnChange(t *testing.T) {
+// TestPollSyncsOnChange verifies a skill content revision change re-pulls the
+// tar (the .sha256 marker advances).
+func TestPollSyncsOnChange(t *testing.T) {
 	ws := t.TempDir()
-	s := New(Config{Workspace: ws})
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	_ = seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 1.")
+
+	srv := testAPI(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
 
 	cfg1 := &resolver.ResolvedAgentConfig{
 		Revision: "rev-1",
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
 		Skills: []resolver.ResolvedSkill{
-			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 1", Revision: "r1"},
+			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Revision: "r1"},
 		},
 	}
-	if err := s.renderSkills(context.Background(), cfg1); err != nil {
+	if err := s.syncSkills(context.Background(), cfg1); err != nil {
 		t.Fatal(err)
 	}
 	s.current = "rev-1"
@@ -125,18 +240,15 @@ func TestPollRendersOnChange(t *testing.T) {
 		Agent:    "agent-for-cloud",
 		Instance: "li-ming-agent-for-cloud",
 		Skills: []resolver.ResolvedSkill{
-			{Name: "cluster-inspection", Title: "Inspection", Description: "d", Instructions: "Version 2: added one more check.", Revision: "r2"},
+			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Revision: "r2"},
 		},
 	}
-	if err := s.renderSkills(context.Background(), cfg2); err != nil {
+	if err := s.syncSkills(context.Background(), cfg2); err != nil {
 		t.Fatal(err)
 	}
-	skill, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(skill), "Version 2") {
-		t.Errorf("skill not re-rendered: %s", skill)
+	marker, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", ".sha256"))
+	if err != nil || string(marker) != "r2" {
+		t.Errorf("marker = %q, %v; want r2", marker, err)
 	}
 }
 

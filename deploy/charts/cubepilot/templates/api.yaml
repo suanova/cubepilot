@@ -1,6 +1,7 @@
 # API -- Portal REST/SSE + JSON metadata store. Stateless except the single
 # RWO PVC -> single replica today; shared storage enables replicas > 1
 # (design §9 / §11.1).
+{{- $skillRepo := default dict .Values.api.skillRepo }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,6 +30,8 @@ spec:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}
             - name: CUBEPILOT_DATA_DIR
               value: {{ .Values.api.dataDir }}
+            - name: CUBEPILOT_SKILLS_DIR
+              value: /var/lib/cubepilot/skills
           ports:
             - containerPort: 8080
           livenessProbe:
@@ -45,6 +48,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.api.dataDir }}
+            - name: skill-repo
+              mountPath: /var/lib/cubepilot/skills
           {{- with .Values.api.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -61,6 +66,14 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-data
+        - name: skill-repo
+          {{- if $skillRepo.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ $skillRepo.existingClaim }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.api.name }}-skill-repo
+          {{- end }}
 ---
 # Metadata store for tasks / reports / audit / agent config (JSON "tables").
 apiVersion: v1
@@ -76,6 +89,26 @@ spec:
   resources:
     requests:
       storage: {{ .Values.api.storage }}
+---
+# Shared skill repository (design §2.2). Only the API server mounts it; the
+# operator publishes skills over HTTP. AccessModes default to ReadWriteOnce
+# (single-replica API, kind-friendly); production multi-replica sets RWX with a
+# CephFS StorageClass. Skipped when api.skillRepo.existingClaim is set.
+{{- if not $skillRepo.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.api.name }}-skill-repo
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: {{ toYaml (default (list "ReadWriteOnce") $skillRepo.accessModes) | nindent 2 }}
+  {{- with $skillRepo.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $skillRepo.size | default "1Gi" }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

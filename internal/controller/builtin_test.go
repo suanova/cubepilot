@@ -11,6 +11,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -79,11 +80,12 @@ func TestInstanceNameFor(t *testing.T) {
 }
 
 // TestBootstrapEnsure verifies the builtin bootstrap creates the Agent,
-// Skills, TaskTemplate and per-user instances idempotently
-// (design §3.1 / §5.3: the builtin agent is auto-instantiated per user).
+// TaskTemplate and per-user instances idempotently (design §3.1 / §5.3). The
+// builtin Skill CRDs are seeded by the API (covered in internal/server).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
 	r := &BuiltinBootstrapReconciler{
 		Client: cl,
 		Scheme: scheme,
@@ -100,14 +102,8 @@ func TestBootstrapEnsure(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &agent); err != nil {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
-
-	// Skills exist.
-	var caps v1alpha1.SkillList
-	if err := cl.List(context.Background(), &caps); err != nil {
-		t.Fatalf("list skills: %v", err)
-	}
-	if len(caps.Items) != len(BuiltinSkills) {
-		t.Errorf("skills = %d, want %d", len(caps.Items), len(BuiltinSkills))
+	if len(agent.Spec.Skills) != len(skill.BuiltinSkillNames()) {
+		t.Errorf("agent skills = %v, want the builtin presets", agent.Spec.Skills)
 	}
 
 	// TaskTemplate exists.

@@ -9,37 +9,24 @@ import (
 )
 
 // TestToolSetForAgent verifies the effective tool set computation
-// (design §3.3.1: generic tools are available by default; Agent.tools[] only
-// references Skills; Skill.agents[] decides the visible subset).
+// (design §3.3.1: generic tools are available by default; each referenced
+// Skill contributes its name).
 func TestToolSetForAgent(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
 		Spec: v1alpha1.AgentTemplateSpec{
-			Skills: []string{"cluster-inspection", "dev-environment"},
+			Skills: []string{"harbor", "cluster-inspection"},
 		},
 	}
-	caps := []v1alpha1.Skill{
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster-inspection"},
-			Spec: v1alpha1.SkillSpec{
-				Type: v1alpha1.SkillDomain,
-				Uses: []string{"resource-manager", "kubectl-platform"},
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "dev-environment"},
-			Spec: v1alpha1.SkillSpec{
-				Type:   v1alpha1.SkillAtomic,
-				Agents: []string{"other-agent"}, // NOT visible to agent-for-cloud
-			},
-		},
+	skills := []v1alpha1.Skill{
+		{ObjectMeta: metav1.ObjectMeta{Name: "harbor"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "cluster-inspection"}},
 	}
-	got := ToolSetForAgent(agent, caps)
+	got := ToolSetForAgent(agent, skills)
 	want := map[string]bool{
 		"list-kinds": true, "describe-kind": true, "resource-manager": true,
-		"kubectl-raw": true, "kubectl-platform": true, "cluster-inspection": true,
+		"kubectl-raw": true, "harbor": true, "cluster-inspection": true,
 	}
-	// dev-environment must be excluded (agents[] visibility).
 	if len(got) != len(want) {
 		t.Fatalf("tool set size = %d, want %d (%v)", len(got), len(want), got)
 	}
@@ -50,50 +37,49 @@ func TestToolSetForAgent(t *testing.T) {
 	}
 }
 
-// TestValidateSkill verifies the registration validation rules
-// (design §3.3.1: atomic must have override+target; domain must have
-// instructions; a missing target CRD -> fail-fast).
+// TestValidateSkill verifies the registration validation rules (design
+// §3.4: source discriminant mirrors the CEL rules; phase 1 = Platform only).
 func TestValidateSkill(t *testing.T) {
-	c := &Catalog{schemas: map[string]*CRDSchema{
-		"dev.suanova.io/DevEnvironment": {
-			Group: "dev.suanova.io", Version: "v1alpha1", Kind: "DevEnvironment", Plural: "devenvironments",
-		},
-	}}
+	c := &Catalog{}
 
-	// Valid atomic.
 	ok := &v1alpha1.Skill{
-		ObjectMeta: metav1.ObjectMeta{Name: "dev-environment"},
+		ObjectMeta: metav1.ObjectMeta{Name: "harbor"},
 		Spec: v1alpha1.SkillSpec{
-			Type:     v1alpha1.SkillAtomic,
-			Override: true,
-			Target:   &v1alpha1.SkillTarget{Group: "dev.suanova.io", Version: "v1alpha1", Kind: "DevEnvironment"},
+			DisplayName: "Harbor",
+			Visibility:  v1alpha1.SkillVisibilityPlatform,
+			Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: "skills/harbor/v1.tar.gz"},
 		},
 	}
 	if err := c.ValidateSkill(ok); err != nil {
-		t.Errorf("valid atomic rejected: %v", err)
+		t.Errorf("valid skill rejected: %v", err)
 	}
 
-	// Atomic without override -> reject.
-	noOverride := ok.DeepCopy()
-	noOverride.Spec.Override = false
-	if err := c.ValidateSkill(noOverride); err == nil {
-		t.Error("atomic without override accepted")
+	// type=Path without path -> reject.
+	noPath := ok.DeepCopy()
+	noPath.Spec.Source.Path = ""
+	if err := c.ValidateSkill(noPath); err == nil {
+		t.Error("type=Path without path accepted")
 	}
 
-	// Atomic targeting a missing CRD -> fail-fast.
-	badTarget := ok.DeepCopy()
-	badTarget.Spec.Target = &v1alpha1.SkillTarget{Group: "x.io", Kind: "Missing"}
-	if err := c.ValidateSkill(badTarget); err == nil {
-		t.Error("atomic with missing target accepted")
+	// type=Path with s3 -> reject (mutually exclusive).
+	withS3 := ok.DeepCopy()
+	withS3.Spec.Source.S3 = &v1alpha1.SkillS3Source{Bucket: "b", Key: "k"}
+	if err := c.ValidateSkill(withS3); err == nil {
+		t.Error("type=Path with s3 accepted")
 	}
 
-	// Domain without instructions -> reject.
-	dom := &v1alpha1.Skill{
-		ObjectMeta: metav1.ObjectMeta{Name: "d"},
-		Spec:       v1alpha1.SkillSpec{Type: v1alpha1.SkillDomain},
+	// visibility:User -> reject in phase 1.
+	userVis := ok.DeepCopy()
+	userVis.Spec.Visibility = v1alpha1.SkillVisibilityUser
+	if err := c.ValidateSkill(userVis); err == nil {
+		t.Error("visibility:User accepted in phase 1")
 	}
-	if err := c.ValidateSkill(dom); err == nil {
-		t.Error("domain without instructions accepted")
+
+	// source.type=S3 -> reject in phase 1.
+	s3 := ok.DeepCopy()
+	s3.Spec.Source = v1alpha1.SkillSource{Type: v1alpha1.SkillSourceS3}
+	if err := c.ValidateSkill(s3); err == nil {
+		t.Error("source.type=S3 accepted in phase 1")
 	}
 }
 

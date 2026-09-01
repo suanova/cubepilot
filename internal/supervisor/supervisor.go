@@ -15,8 +15,10 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +39,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // Config carries the supervisor's own configuration (from env).
@@ -399,8 +402,8 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 		return false, nil // no change -- skills are current
 	}
 	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
-	if err := s.renderSkills(ctx, cfg); err != nil {
-		return false, fmt.Errorf("render skills: %w", err)
+	if err := s.syncSkills(ctx, cfg); err != nil {
+		return false, fmt.Errorf("sync skills: %w", err)
 	}
 	s.current = cfg.Revision
 	return true, nil
@@ -432,38 +435,102 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	return &cfg, nil
 }
 
-// renderSkills writes the resolved domain skills into
-// Workspace/skills/<name>/SKILL.md (clearing stale entries first). The
-// gateway discovers skills under the workspace at startup.
-func (s *Supervisor) renderSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
+// syncSkills pulls the enabled skills' tars from the internal API and
+// extracts them into Workspace/skills/<name>/ (clearing stale dirs first).
+// A skill is re-pulled only when its content revision differs from the
+// .sha256 marker on the PVC (which survives pod restarts). The gateway
+// hot-reloads the extracted files itself; the supervisor never restarts it.
+func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
 	skillsDir := filepath.Join(s.cfg.Workspace, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return err
 	}
-	// Clear the skills dir so removed skills disappear too.
+	wanted := make(map[string]*resolver.ResolvedSkill, len(cfg.Skills))
+	for i := range cfg.Skills {
+		wanted[cfg.Skills[i].Name] = &cfg.Skills[i]
+	}
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
+		if _, ok := wanted[e.Name()]; !ok {
+			if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	for name, skill := range wanted {
+		if err := s.syncSkill(ctx, *skill, skillsDir); err != nil {
+			return fmt.Errorf("sync skill %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// syncSkill pulls one skill's tar, verifies its sha256 (when the CRD carries
+// one), and extracts it — unless the .sha256 marker already matches the
+// desired revision. The installed dir is preserved until the new content is
+// fully fetched, verified and extracted (a failure leaves the old skill).
+func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
+	dir := filepath.Join(skillsDir, rs.Name)
+	marker := filepath.Join(dir, ".sha256")
+	if b, err := os.ReadFile(marker); err == nil && string(b) == rs.Revision {
+		return nil // unchanged -- no pull
+	}
+	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(rs.Name))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
+	}
+	tarBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if rs.Sha256 != "" {
+		h := sha256.Sum256(tarBytes)
+		if got := hex.EncodeToString(h[:]); got != rs.Sha256 {
+			return fmt.Errorf("skill %s: sha256 mismatch (%s != %s)", rs.Name, got, rs.Sha256)
+		}
+	}
+	// Stage into a temp dir first; the installed dir stays untouched.
+	tmpDir, err := os.MkdirTemp(skillsDir, "."+rs.Name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := skill.ExtractTar(bytes.NewReader(tarBytes), tmpDir); err != nil {
+		return err
+	}
+	// Write the marker into the staged dir, so a marker failure aborts before
+	// the swap and the installed skill stays untouched.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".sha256"), []byte(rs.Revision), 0o644); err != nil {
+		return err
+	}
+	// Swap: move the current dir aside, bring the staged dir in, drop the
+	// backup only after the swap succeeds.
+	backup := dir + ".backup"
+	if _, err := os.Lstat(dir); err == nil {
+		if err := os.Rename(dir, backup); err != nil {
 			return err
 		}
 	}
-	for _, skill := range cfg.Skills {
-		rendered, err := resolver.RenderSkill(skill)
-		if err != nil {
-			return fmt.Errorf("render %s: %w", skill.Name, err)
-		}
-		dir := filepath.Join(skillsDir, skill.Name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(rendered), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", skill.Name, err)
-		}
-		log.Printf("supervisor: skill %s/%s rendered (%d bytes)", skill.Name, skill.Revision, len(rendered))
+	if err := os.Rename(tmpDir, dir); err != nil {
+		_ = os.Rename(backup, dir) // best-effort restore
+		return err
 	}
+	if err := os.RemoveAll(backup); err != nil {
+		return err
+	}
+	log.Printf("supervisor: skill %s/%s extracted", rs.Name, rs.Revision)
 	return nil
 }
 

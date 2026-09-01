@@ -158,41 +158,37 @@ func (c *Catalog) FindKind(kind string) *CRDSchema {
 	return nil
 }
 
-// ValidateSkill validates a Skill registration (design §3.4:
-// the target CRD does not exist / has no schema -> registration validation
-// fails fast).
+// ValidateSkill validates a Skill registration (design §3.4): the source
+// discriminant mirrors the CRD CEL rules (guards the logic without an API
+// server) and phase 1 admits only Platform visibility.
 func (c *Catalog) ValidateSkill(skill *v1alpha1.Skill) error {
-	switch skill.Spec.Type {
-	case v1alpha1.SkillAtomic:
-		if !skill.Spec.Override {
-			return fmt.Errorf("atomic skill %s must set override=true", skill.Name)
-		}
-		if skill.Spec.Target == nil {
-			return fmt.Errorf("atomic skill %s must set spec.target (bound CRD)", skill.Name)
-		}
-		schema := c.SchemaFor(skill.Spec.Target.Group, skill.Spec.Target.Kind)
-		if schema == nil {
-			return fmt.Errorf("atomic skill %s: target CRD %s/%s not found in cluster (fail-fast)",
-				skill.Name, skill.Spec.Target.Group, skill.Spec.Target.Kind)
-		}
-		if len(schema.OpenAPI) == 0 && skill.Spec.Target.Group == "" {
-			return fmt.Errorf("atomic skill %s: target CRD %s has no schema", skill.Name, skill.Spec.Target.Kind)
-		}
-	case v1alpha1.SkillDomain:
-		if skill.Spec.Instructions == "" && skill.Spec.ContentRef == "" {
-			return fmt.Errorf("domain skill %s must set instructions or contentRef", skill.Name)
-		}
+	switch skill.Spec.Visibility {
+	case v1alpha1.SkillVisibilityPlatform:
+		// OK — phase 1 only.
+	case v1alpha1.SkillVisibilityTenant, v1alpha1.SkillVisibilityUser:
+		return fmt.Errorf("skill %s: visibility %q is phase 2 (only Platform in phase 1)", skill.Name, skill.Spec.Visibility)
 	default:
-		return fmt.Errorf("skill %s: unknown type %q", skill.Name, skill.Spec.Type)
+		return fmt.Errorf("skill %s: invalid visibility %q", skill.Name, skill.Spec.Visibility)
+	}
+	switch skill.Spec.Source.Type {
+	case v1alpha1.SkillSourcePath:
+		if skill.Spec.Source.Path == "" {
+			return fmt.Errorf("skill %s: source.type=Path requires source.path", skill.Name)
+		}
+		if skill.Spec.Source.S3 != nil {
+			return fmt.Errorf("skill %s: source.type=Path forbids source.s3", skill.Name)
+		}
+	case v1alpha1.SkillSourceS3:
+		return fmt.Errorf("skill %s: source.type=S3 is phase 2", skill.Name)
+	default:
+		return fmt.Errorf("skill %s: invalid source.type %q", skill.Name, skill.Spec.Source.Type)
 	}
 	return nil
 }
 
 // ToolSetForAgent computes the effective tool set for an AgentTemplate
-// definition: generic tools are always available; the template's skills[]
-// references Skills (atomic + domain) whose visibility (spec.agents[])
-// admits the template (design §3.4: Skill.agents[] and RBAC jointly decide
-// the visible subset).
+// definition: generic tools are always available; each referenced Skill
+// (all Platform-visible in phase 1) contributes its name (design §3.4).
 func ToolSetForAgent(agent *v1alpha1.AgentTemplate, skills []v1alpha1.Skill) []string {
 	set := map[string]bool{}
 	for _, t := range GenericTools {
@@ -200,16 +196,8 @@ func ToolSetForAgent(agent *v1alpha1.AgentTemplate, skills []v1alpha1.Skill) []s
 	}
 	for _, ref := range agent.Spec.Skills {
 		for _, skill := range skills {
-			if skill.Name != ref {
-				continue
-			}
-			// Visibility: empty agents[] = visible to all.
-			if len(skill.Spec.Agents) > 0 && !contains(skill.Spec.Agents, agent.Name) {
-				continue
-			}
-			set[ref] = true
-			for _, u := range skill.Spec.Uses {
-				set[u] = true
+			if skill.Name == ref {
+				set[ref] = true
 			}
 		}
 	}
@@ -219,15 +207,6 @@ func ToolSetForAgent(agent *v1alpha1.AgentTemplate, skills []v1alpha1.Skill) []s
 	}
 	sort.Strings(out)
 	return out
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // CRDExists reports whether a CRD (group/kind) is present (for Skill

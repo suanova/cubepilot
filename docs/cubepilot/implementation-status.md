@@ -27,8 +27,8 @@
 
 > 以下为设计已要求、但实现尚未同步的项。**请不要把设计文档改回旧版来迁就实现；实现应逐步对齐本节。**
 
-1. **技能市场（Skill 登记 CRD 已重命名对齐，对象存储/发布安装未建）**。
-   新设计 §3.4：能力分两层，skill 为多文件目录（SKILL.md + scripts/references），经「技能市场」发布/安装（`Skill` CRD 登记 + S3/对象存储 tar 包 + sha256 校验），`AgentTemplate.skills` 声明默认、实例 `enabledSkills` 用户子集。代码现状：`Capability` CRD 已重命名为 `Skill`（2026-08-27），**Skill CRD 存在**但仅承载内嵌目录登记（type/title/description/instructions/files），**对象存储技能仓库、source path/S3 + sha256、visibility 及发布/安装流程未建**（SKILL.md 由 supervisor 从内嵌配置渲染到 `workspace/skills`）。→ 技能市场发布/安装是设计一期明确验收项，**尚未实现**。
+1. **技能市场（CRD + 仓库已建；发布/安装 UI 未建）**。
+   新设计 §3.4：能力分两层，skill 为多文件目录（SKILL.md + scripts/references），经「技能市场」发布/安装（`Skill` CRD 登记 + 共享文件卷 tar 包 + sha256 校验；对象存储 S3 源属阶段二），`AgentTemplate.skills` 声明默认、实例 `enabledSkills` 用户子集。代码现状（2026-09-01，issue #22）：**Skill CRD 已切换为 marketplace schema**（displayName/visibility/source(type/path/sha256) + status.phase，CEL 校验 source 判别字段）；**共享文件卷仓库已建**（API 独占：发布接口 `POST /internal/skills/{name}/publish` 原子写版本化 tar + 建 CRD，supervisor 经 `GET /internal/skills/{name}/tar` 拉取解压到 PVC）；内置预设由 operator 经发布接口 seed。→ 剩余：**Portal 发布/安装 UI（#23/#24）**、对象存储 S3 源、用户私有技能（`visibility: User`）属阶段二。
 
 2. **简单 HITL ——设计一期要求，代码执行侧未接入**。
    设计 §5：一期写操作**靠命令匹配（动词/资源白名单）命中即暂停确认的简单 HITL**（尽力而为）。代码现状：`confirmPolicy` 字段已进 AgentTemplate 对象模型（内置模板默认 `ConfirmWrites`），`confirm_pending`/`confirm_resolved` 事件已在合约定义，但**执行侧（OpenClaw exec kubectl 前）未接入命令匹配与暂停确认**。→ HITL 为设计一期交付项，实现侧缺口。
@@ -60,7 +60,7 @@
 ## 本次对齐变更清单（2026-08-27）
 
 - **API group → `ai.cubestack.io`**：所有 CRD 从 `assistant.suanova.io` 迁到设计示例的 `ai.cubestack.io`（groupversion_info、RBAC markers/finalizer、catalog SchemaFor 默认 group、CRD yaml 文件名与内容、chart rbac.yaml、e2e 断言、文档）。
-- **Capability → Skill 重命名**：`Capability`/`CapabilitySpec`/`CapabilityList` → `Skill`/`SkillSpec`/`SkillList`，`CapabilityType` → `SkillType`，`internal/capability` → `internal/skill`；`TaskTemplateSpec.Capabilities` → `Skills`，`TaskRunStatus.CapabilityRevision` → `SkillRevision`（设计 §3.5 字段名）；`/api/capabilities` → `/api/skills`；CRD `capabilities` → `skills`；web UI 同步。**保留现有目录登记 schema**（type/title/description/instructions/files），完整技能市场字段（source/S3/sha256/visibility）仍属阶段二。
+- **Capability → Skill 重命名**：`Capability`/`CapabilitySpec`/`CapabilityList` → `Skill`/`SkillSpec`/`SkillList`，`CapabilityType` → `SkillType`，`internal/capability` → `internal/skill`；`TaskTemplateSpec.Capabilities` → `Skills`，`TaskRunStatus.CapabilityRevision` → `SkillRevision`（设计 §3.5 字段名）；`/api/capabilities` → `/api/skills`；CRD `capabilities` → `skills`；web UI 同步。**保留现有目录登记 schema**（type/title/description/instructions/files），完整技能市场字段（source path/sha256/visibility）与发布/安装流程属阶段一 Skill-market epic（issue #21 / #22 / #23 / #24，Path 源 + Platform 可见性）；仅对象存储 S3 源与用户私有技能（`visibility: User`）属阶段二（设计 §3.4）。
 - **删除陈旧 CRD yaml**：`config/crd/bases` 中遗留的 `agents`、`models`（无对应类型）随 controller-gen 重生成删除；CRD 集合收敛为设计六件：`agenttemplates / agentinstances / skills / tasktemplates / tasks / taskruns`。
 - **issue #9 补全**：内置 `agent-for-cloud` 增加内联 External 模型（Platform + External，设计 §3.1）；`TemplateModelSpec.Validate()` + CEL `XValidation` 拒绝非法 External 组合（§3.3）；新增 AgentTemplate 序列化 / revision / 非法组合单元测试。
 
@@ -69,7 +69,7 @@
 - 集中 Tool/MCP Gateway（统一执行边界 + 完整 HITL + 审计）。
 - Keycloak OIDC 鉴权替换 `X-CubePilot-User`。
 - 模型凭据托管、轮换与 egress 白名单；两把 kubeconfig 补齐。
-- 技能市场完整落地（Skill CRD + 对象存储 + 发布/安装 + 用户私有技能 visibility）。
+- 技能市场（Path 源 + Platform 可见性 + 发布/安装）是**阶段一**交付项（设计阶段一清单，issue #21/#22/#23/#24）；阶段二仅剩：对象存储 S3 技能源、用户私有技能（`visibility: User`）。
 - AgentTemplate/AgentInstance 版本化 Revision、用户自建模板、service 身份。
 - 多 Agent/多 Runtime 形态，TaskRun 显式记录 Agent；trajectory / 工具调用索引 / 确认决定。
 

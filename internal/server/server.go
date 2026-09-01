@@ -63,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 	// through the Portal.
 	mux.HandleFunc("/internal/agents/", s.handleInternalAgentConfig)
 	mux.HandleFunc("/internal/gateway/config/{user}", s.handleInternalGatewayConfig)
+	mux.HandleFunc("/internal/skills/{name}/tar", s.handleInternalSkillTar)
+	mux.HandleFunc("/internal/skills/{name}/publish", s.handlePublishSkill)
 	return logRequests(mux)
 }
 

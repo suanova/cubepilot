@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // BuiltinAgentName is the preset platform agent (design §5.1: agent-for-cloud
@@ -28,16 +28,11 @@ const BuiltinAgentName = "agent-for-cloud"
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
 
-// BuiltinSkills are the preset domain skills the builtin agent
-// references (design §3.3.1 domain layer). Generated from the embedded
-// SKILL.md files: the agent gets exactly the skills the platform ships.
-var BuiltinSkills = func() []string {
-	names, err := presetSkillNames()
-	if err != nil {
-		return []string{"cluster-inspection"}
-	}
-	return names
-}()
+// BuiltinSkills are the preset domain skills the builtin agent references
+// (design §3.3.1 domain layer): the agent gets exactly the skills the platform
+// ships. The content lives with the skill package; the API seeds the Skill
+// CRDs at startup.
+var BuiltinSkills = skill.BuiltinSkillNames()
 
 // BuiltinModels returns the preset inline model entries for the builtin
 // AgentTemplate (design §3.3: models are inlined in the template -- no
@@ -92,9 +87,6 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 		},
 	}
 }
-
-// BuiltinSkillDefinitions is generated from the embedded SKILL.md files
-// (see skill_source.go) -- one source of truth for preset domain skills.
 
 // BuiltinTaskTemplate returns the preset daily-inspection template
 // (design §3.3.2).
@@ -178,21 +170,11 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint, modelName)); err != nil {
 		return err
 	}
-	// 2. Domain skills (generated from embedded SKILL.md).
-	skills, err := BuiltinSkillDefinitions()
-	if err != nil {
-		return fmt.Errorf("skill definitions: %w", err)
-	}
-	for _, skill := range skills {
-		if err := r.createIfMissing(ctx, skill); err != nil {
-			return err
-		}
-	}
-	// 3. Task template.
+	// 2. Task template.
 	if err := r.createIfMissing(ctx, BuiltinTaskTemplate()); err != nil {
 		return err
 	}
-	// 4. Per-user builtin agent instances (auto-instantiated per user;
+	// 3. Per-user builtin agent instances (auto-instantiated per user;
 	// resident).
 	for _, user := range r.Cfg.Users {
 		inst := &v1alpha1.AgentInstance{

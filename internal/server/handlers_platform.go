@@ -1,18 +1,25 @@
 package server
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // ---- AgentTemplate definitions (design §3.1 / §4.6: phase one = builtin
@@ -372,4 +379,182 @@ func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
 		return b
 	}
 	return nil
+}
+
+// handleInternalSkillTar serves the tar for one skill: GET
+// /internal/skills/{name}/tar (internal API, cluster-only). The supervisor
+// pulls this to extract skills into the instance PVC workspace/skills.
+func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "k8s client unavailable"})
+		return
+	}
+	var skillCR v1alpha1.Skill
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	repo := &skill.PathRepository{Root: s.cfg.SkillsDir}
+	rc, err := repo.Open(r.Context(), skillCR.Spec.Source.Path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "skill tar not found"})
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/gzip")
+	if _, err := io.Copy(w, rc); err != nil {
+		return
+	}
+}
+
+// maxSkillTarSize caps a published skill tar (SKILL.md + scripts + references
+// are text; a few MB is generous).
+const maxSkillTarSize = 10 << 20
+
+// handlePublishSkill is the skill publish endpoint: POST
+// /internal/skills/{name}/publish (internal API, cluster-only). The body is a
+// gzip tar of the skill directory; metadata comes via query params
+// (displayName, description, visibility, builtin). The API owns the
+// repository: it writes the tar atomically (versioned, sha256) and upserts
+// the Skill CRD (status.phase=Available). The startup seed and #23's Portal
+// upload both use this path.
+func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
+		return
+	}
+	name := r.PathValue("name")
+	q := r.URL.Query()
+	displayName := q.Get("displayName")
+	if name == "" || displayName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and displayName are required"})
+		return
+	}
+	visibility := v1alpha1.SkillVisibility(q.Get("visibility"))
+	if visibility == "" {
+		visibility = v1alpha1.SkillVisibilityPlatform
+	}
+	if visibility != v1alpha1.SkillVisibilityPlatform {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "phase 1 supports only visibility=Platform"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSkillTarSize+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if len(body) > maxSkillTarSize {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "skill tar exceeds the size limit"})
+		return
+	}
+	if len(body) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty skill tar"})
+		return
+	}
+	// Reject malformed / non-gzip archives before they are persisted.
+	if err := skill.ValidateTar(body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid skill tar: " + err.Error()})
+		return
+	}
+	skillCR, err := s.publishSkill(r.Context(), name, displayName, q.Get("description"), visibility, body, q.Get("builtin") == "true")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, skillCR)
+}
+
+// publishSkill is the shared publish primitive used by the HTTP endpoint and
+// the startup seed: it writes the tar atomically (versioned, sha256) into the
+// repository and upserts the Skill CRD (status.phase=Available).
+func (s *Server) publishSkill(ctx context.Context, name, displayName, description string,
+	visibility v1alpha1.SkillVisibility, tar []byte, builtin bool) (*v1alpha1.Skill, error) {
+	if s.cr == nil {
+		return nil, fmt.Errorf("k8s client unavailable")
+	}
+	repo := &skill.PathRepository{Root: s.cfg.SkillsDir}
+	sha := sha256Hex(tar)
+	ver, stored, err := skill.ResolveVersion(ctx, repo, name, sha)
+	if err != nil {
+		return nil, err
+	}
+	if !stored {
+		if _, err := repo.WriteBytes(ctx, fmt.Sprintf("skills/%s/%s.tar.gz", name, ver), tar); err != nil {
+			return nil, err
+		}
+	}
+
+	// Upsert the Skill CRD.
+	key := client.ObjectKey{Name: name}
+	var skillCR v1alpha1.Skill
+	err = s.cr.Get(ctx, key, &skillCR)
+	switch {
+	case err == nil:
+		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
+		if builtin {
+			addBuiltinLabels(&skillCR)
+		}
+		if err := s.cr.Update(ctx, &skillCR); err != nil {
+			return nil, err
+		}
+	case apierrors.IsNotFound(err):
+		skillCR = v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		if builtin {
+			addBuiltinLabels(&skillCR)
+		}
+		skillCR.Spec = publishSpec(displayName, description, visibility, name, ver, sha)
+		if err := s.cr.Create(ctx, &skillCR); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+	// status subresource: mark Available.
+	if err := s.patchSkillPhase(ctx, name, v1alpha1.SkillPhaseAvailable); err != nil {
+		return nil, err
+	}
+	skillCR.Status.Phase = v1alpha1.SkillPhaseAvailable
+	return &skillCR, nil
+}
+
+func publishSpec(displayName, description string, visibility v1alpha1.SkillVisibility, name, ver, sha string) v1alpha1.SkillSpec {
+	return v1alpha1.SkillSpec{
+		DisplayName: displayName,
+		Description: description,
+		Visibility:  visibility,
+		Source: v1alpha1.SkillSource{
+			Type:   v1alpha1.SkillSourcePath,
+			Path:   fmt.Sprintf("skills/%s/%s.tar.gz", name, ver),
+			Sha256: sha,
+		},
+	}
+}
+
+func addBuiltinLabels(skillCR *v1alpha1.Skill) {
+	if skillCR.Labels == nil {
+		skillCR.Labels = map[string]string{}
+	}
+	skillCR.Labels["app.kubernetes.io/part-of"] = "cubepilot"
+	skillCR.Labels["cubepilot/builtin"] = "true"
+}
+
+func sha256Hex(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
+// patchSkillPhase sets status.phase via the status subresource (idempotent).
+func (s *Server) patchSkillPhase(ctx context.Context, name string, phase v1alpha1.SkillPhase) error {
+	skillCR := &v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	patch := fmt.Sprintf(`{"status":{"phase":%q}}`, phase)
+	return s.cr.Status().Patch(ctx, skillCR, client.RawPatch(types.MergePatchType, []byte(patch)))
 }

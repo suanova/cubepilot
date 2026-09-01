@@ -107,12 +107,20 @@ metadata:
   name: {{ .Values.api.name }}
 rules:
   # handleAddLLM updates only the builtin AgentTemplate (POST /api/llms); the
-  # other platform CRDs stay read-only for the API (credential minimization).
+  # other platform CRDs stay read-only for the API (credential minimization),
+  # except Skills: the API owns the skill repository, so it creates/updates the
+  # Skill CRs + status when publishing (operator seed / Portal publish).
   - apiGroups: ["ai.cubestack.io"]
     resources: ["agenttemplates"]
     verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["ai.cubestack.io"]
-    resources: ["skills", "tasktemplates", "taskruns"]
+    resources: ["skills"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["skills/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["ai.cubestack.io"]
+    resources: ["tasktemplates", "taskruns"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["ai.cubestack.io"]
     resources: ["tasks", "agentinstances"]
