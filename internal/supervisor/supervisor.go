@@ -37,6 +37,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // Config carries the supervisor's own configuration (from env).
@@ -399,8 +400,8 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 		return false, nil // no change -- skills are current
 	}
 	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
-	if err := s.renderSkills(ctx, cfg); err != nil {
-		return false, fmt.Errorf("render skills: %w", err)
+	if err := s.syncSkills(ctx, cfg); err != nil {
+		return false, fmt.Errorf("sync skills: %w", err)
 	}
 	s.current = cfg.Revision
 	return true, nil
@@ -432,38 +433,80 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	return &cfg, nil
 }
 
-// renderSkills writes the resolved domain skills into
-// Workspace/skills/<name>/SKILL.md (clearing stale entries first). The
-// gateway discovers skills under the workspace at startup.
-func (s *Supervisor) renderSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
+// syncSkills pulls the enabled skills' tars from the internal API and
+// extracts them into Workspace/skills/<name>/ (clearing stale dirs first).
+// A skill is re-pulled only when its content revision differs from the
+// .sha256 marker on the PVC (which survives pod restarts). The gateway
+// hot-reloads the extracted files itself; the supervisor never restarts it.
+func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
 	skillsDir := filepath.Join(s.cfg.Workspace, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return err
 	}
-	// Clear the skills dir so removed skills disappear too.
+	wanted := make(map[string]*resolver.ResolvedSkill, len(cfg.Skills))
+	for i := range cfg.Skills {
+		wanted[cfg.Skills[i].Name] = &cfg.Skills[i]
+	}
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
-			return err
+		if _, ok := wanted[e.Name()]; !ok {
+			if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
+				return err
+			}
 		}
 	}
-	for _, skill := range cfg.Skills {
-		rendered, err := resolver.RenderSkill(skill)
-		if err != nil {
-			return fmt.Errorf("render %s: %w", skill.Name, err)
+	for name, skill := range wanted {
+		if err := s.syncSkill(ctx, *skill, skillsDir); err != nil {
+			return fmt.Errorf("sync skill %s: %w", name, err)
 		}
-		dir := filepath.Join(skillsDir, skill.Name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(rendered), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", skill.Name, err)
-		}
-		log.Printf("supervisor: skill %s/%s rendered (%d bytes)", skill.Name, skill.Revision, len(rendered))
 	}
+	return nil
+}
+
+// syncSkill pulls one skill's tar and extracts it, unless the .sha256 marker
+// already matches the desired revision.
+func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
+	dir := filepath.Join(skillsDir, rs.Name)
+	marker := filepath.Join(dir, ".sha256")
+	if b, err := os.ReadFile(marker); err == nil && string(b) == rs.Revision {
+		return nil // unchanged -- no pull
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(rs.Name))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
+	}
+	// Extract into a temp dir then rename, so a corrupt tar never leaves a
+	// half-extracted skill behind.
+	tmpDir, err := os.MkdirTemp(skillsDir, "."+rs.Name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := skill.ExtractTar(resp.Body, tmpDir); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpDir, dir); err != nil {
+		return err
+	}
+	if err := os.WriteFile(marker, []byte(rs.Revision), 0o644); err != nil {
+		return err
+	}
+	log.Printf("supervisor: skill %s/%s extracted", rs.Name, rs.Revision)
 	return nil
 }
 
