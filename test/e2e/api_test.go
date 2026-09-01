@@ -68,7 +68,9 @@ var _ = Describe("Public API", func() {
 	})
 
 	It("returns the caller's own instances", func() {
-		var names []string
+		// The operator instantiates the builtin agent per user after its
+		// bootstrap (which publishes skills first), so wait until the caller's
+		// own instance appears rather than asserting on the first 200.
 		Eventually(func() error {
 			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/instances",
 				map[string]string{"X-CubePilot-User": fw.DefaultUser})
@@ -82,13 +84,13 @@ var _ = Describe("Public API", func() {
 			if !ok {
 				return fmt.Errorf("instances key missing: %v", data)
 			}
-			names = names[:0]
 			for _, it := range items {
-				names = append(names, nestedString(it.(map[string]any), "metadata", "name"))
+				if nestedString(it.(map[string]any), "metadata", "name") == controller.InstanceNameFor(fw.DefaultUser, controller.BuiltinAgentName) {
+					return nil
+				}
 			}
-			return nil
+			return fmt.Errorf("own instance %q not present in %v", controller.InstanceNameFor(fw.DefaultUser, controller.BuiltinAgentName), items)
 		}).Should(Succeed())
-		Expect(names).To(ContainElement(controller.InstanceNameFor(fw.DefaultUser, controller.BuiltinAgentName)))
 	})
 
 	It("serves the portal HTML", func() {
