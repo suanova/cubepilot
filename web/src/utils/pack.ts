@@ -20,9 +20,17 @@ function ustarHeader(path: string, size: number): Uint8Array {
   let prefix = ''
   let name = path
   if (enc.encode(path).length > 100) {
+    // Split on a '/' such that the encoded prefix fits the 155-byte ustar
+    // field and the encoded name fits the 100-byte field — measuring both
+    // with TextEncoder, so a multibyte prefix throws PackError instead of
+    // letting h.set overflow (RangeError).
     let split = -1
-    for (let i = Math.min(154, path.length - 1); i >= 0; i--) {
-      if (path[i] === '/' && enc.encode(path.slice(i + 1)).length <= 100) {
+    for (let i = path.length - 1; i >= 0; i--) {
+      if (
+        path[i] === '/' &&
+        enc.encode(path.slice(0, i)).length <= 155 &&
+        enc.encode(path.slice(i + 1)).length <= 100
+      ) {
         split = i
         break
       }

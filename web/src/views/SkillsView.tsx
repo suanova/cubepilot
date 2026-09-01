@@ -16,6 +16,7 @@ function specStr(sk: PlatformObject, key: string): string {
 
 export default function SkillsView() {
   const [skills, setSkills] = useState<PlatformObject[]>([])
+  const [listError, setListError] = useState('')
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
@@ -27,8 +28,10 @@ export default function SkillsView() {
   async function loadSkills() {
     try {
       setSkills(await api.listSkills())
+      setListError('')
     } catch (e) {
       console.error('loadSkills', e)
+      setListError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -153,7 +156,11 @@ export default function SkillsView() {
               <span className="card-hint">Platform-visible skills in the market - installed per instance (issue #24)</span>
             </div>
             <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
-              {skills.length ? (
+              {listError ? (
+                <div style={{ color: 'var(--danger)', padding: '8px 0' }}>
+                  Failed to load skills: {listError}
+                </div>
+              ) : skills.length ? (
                 skills.map((sk) => {
                   const phase = typeof sk.status?.phase === 'string' ? sk.status.phase : ''
                   return (
