@@ -61,7 +61,7 @@ api:
   nodeSelector: {}
   tolerations: []
 
-# --- web (independent Vue SPA, stateless, nginx) --------------------------
+# --- web (independent React SPA, stateless, nginx) ------------------------
 web:
   name: cubepilot-web
   replicas: 2
