@@ -16,6 +16,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -245,13 +246,64 @@ func (r *AgentInstanceReconciler) ensureService(ctx context.Context, svc *corev1
 	return err
 }
 
+// instanceSecurity captures the Pod spec fields that are both immutable after
+// creation and part of the design §6 minimum-privilege baseline: identity,
+// image, security contexts and resource limits. Config-derived fields (env,
+// mounts, probes) are deliberately excluded: the supervisor applies config
+// changes in place, so those must never trigger a Pod delete.
+type instanceSecurity struct {
+	ServiceAccountName string
+	PodSecurityContext *corev1.PodSecurityContext
+	Containers         map[string]containerSecurity
+	InitContainers     map[string]containerSecurity
+}
+
+type containerSecurity struct {
+	Image           string
+	SecurityContext *corev1.SecurityContext
+	Resources       corev1.ResourceRequirements
+}
+
+// securityFingerprint extracts the immutable security subset of a Pod spec for
+// drift comparison (see instanceSecurity).
+func securityFingerprint(pod *corev1.Pod) instanceSecurity {
+	f := instanceSecurity{
+		ServiceAccountName: pod.Spec.ServiceAccountName,
+		PodSecurityContext: pod.Spec.SecurityContext,
+		Containers:         map[string]containerSecurity{},
+		InitContainers:     map[string]containerSecurity{},
+	}
+	for _, c := range pod.Spec.Containers {
+		f.Containers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+	}
+	for _, c := range pod.Spec.InitContainers {
+		f.InitContainers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+	}
+	return f
+}
+
+// ensurePod creates a missing Pod, and recreates an existing one whose
+// immutable security spec drifted (e.g. the operator was upgraded with a
+// stricter design §6 baseline) so it converges -- mirroring the failed-Pod
+// healing path. Only the security fingerprint is compared, so a config change
+// never deletes the Pod (the supervisor reloads in place; the Pod and its
+// sessions/PVC/IP must survive).
 func (r *AgentInstanceReconciler) ensurePod(ctx context.Context, pod *corev1.Pod) error {
 	var existing corev1.Pod
 	err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing)
 	if apierrors.IsNotFound(err) {
 		return r.Create(ctx, pod)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if !equality.Semantic.DeepEqual(securityFingerprint(&existing), securityFingerprint(pod)) {
+		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, pod)
+	}
+	return nil
 }
 
 func (r *AgentInstanceReconciler) getPod(ctx context.Context, name string) (*corev1.Pod, error) {
