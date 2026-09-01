@@ -74,4 +74,9 @@ export const api = {
     apiFetch<{ skills: PlatformObject[] }>('/api/skills').then((d) => d.skills),
   listTaskRuns: () =>
     apiFetch<{ taskruns: PlatformObject[] }>('/api/taskruns').then((d) => d.taskruns),
+  publishSkill: (name: string, opts: { displayName: string; description?: string }, tar: Uint8Array<ArrayBuffer>) =>
+    apiFetch<PlatformObject>(
+      `/api/skills/${encodeURIComponent(name)}/publish?displayName=${encodeURIComponent(opts.displayName)}${opts.description ? `&description=${encodeURIComponent(opts.description)}` : ''}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: tar },
+    ),
 }

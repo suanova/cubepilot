@@ -38,7 +38,7 @@ func (s *Server) seedBuiltinSkillsOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.publishSkill(ctx, name, displayName, description, v1alpha1.SkillVisibilityPlatform, tar, true); err != nil {
+		if _, err := s.publishSkill(ctx, name, displayName, description, v1alpha1.SkillVisibilityPlatform, tar, publishOptions{Builtin: true, Publisher: "system"}); err != nil {
 			return err
 		}
 	}

@@ -55,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/instances", s.handleInstances)
 	mux.HandleFunc("/api/llms", s.handleAddLLM)
 	mux.HandleFunc("/api/skills", s.handleSkills)
+	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
 	mux.HandleFunc("/api/kinds", s.handleKinds)
@@ -64,7 +65,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/internal/agents/", s.handleInternalAgentConfig)
 	mux.HandleFunc("/internal/gateway/config/{user}", s.handleInternalGatewayConfig)
 	mux.HandleFunc("/internal/skills/{name}/tar", s.handleInternalSkillTar)
-	mux.HandleFunc("/internal/skills/{name}/publish", s.handlePublishSkill)
 	return logRequests(mux)
 }
 
