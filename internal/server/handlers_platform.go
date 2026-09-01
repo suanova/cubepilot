@@ -447,13 +447,22 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "phase 1 supports only visibility=Platform"})
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxSkillTarSize))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSkillTarSize+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if len(body) > maxSkillTarSize {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "skill tar exceeds the size limit"})
+		return
+	}
 	if len(body) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty skill tar"})
+		return
+	}
+	// Reject malformed / non-gzip archives before they are persisted.
+	if err := skill.ValidateTar(body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid skill tar: " + err.Error()})
 		return
 	}
 	skillCR, err := s.publishSkill(r.Context(), name, displayName, q.Get("description"), visibility, body, q.Get("builtin") == "true")

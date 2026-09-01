@@ -114,6 +114,15 @@ func mustPack(t *testing.T, src fs.FS) []byte {
 	return data
 }
 
+func TestValidateTar(t *testing.T) {
+	if err := ValidateTar([]byte("not a tar")); err == nil {
+		t.Fatal("non-gzip payload should be rejected")
+	}
+	if err := ValidateTar(mustPack(t, fstest.MapFS{"SKILL.md": {Data: []byte("x")}})); err != nil {
+		t.Fatalf("valid tar rejected: %v", err)
+	}
+}
+
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])

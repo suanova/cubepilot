@@ -510,6 +510,11 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if err := skill.ExtractTar(bytes.NewReader(tarBytes), tmpDir); err != nil {
 		return err
 	}
+	// Write the marker into the staged dir, so a marker failure aborts before
+	// the swap and the installed skill stays untouched.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".sha256"), []byte(rs.Revision), 0o644); err != nil {
+		return err
+	}
 	// Swap: move the current dir aside, bring the staged dir in, drop the
 	// backup only after the swap succeeds.
 	backup := dir + ".backup"
@@ -523,9 +528,6 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 		return err
 	}
 	if err := os.RemoveAll(backup); err != nil {
-		return err
-	}
-	if err := os.WriteFile(marker, []byte(rs.Revision), 0o644); err != nil {
 		return err
 	}
 	log.Printf("supervisor: skill %s/%s extracted", rs.Name, rs.Revision)

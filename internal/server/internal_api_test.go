@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -414,6 +415,21 @@ func TestInternalPublishSkill(t *testing.T) {
 	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish", tar1)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing displayName status = %d, want 400", rec.Code)
+	}
+
+	// Malformed / non-gzip body -> 400, nothing persisted.
+	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", []byte("not a tar"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid tar status = %d, want 400", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "skills", "harbor", "v3.tar.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("invalid tar should not be persisted: %v", err)
+	}
+
+	// Oversized body -> 413.
+	rec = doRawPost(t, s.Handler(), "/internal/skills/harbor/publish?displayName=Harbor", make([]byte, maxSkillTarSize+1))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status = %d, want 413", rec.Code)
 	}
 }
 
