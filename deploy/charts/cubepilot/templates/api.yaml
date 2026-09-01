@@ -29,6 +29,8 @@ spec:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}
             - name: CUBEPILOT_DATA_DIR
               value: {{ .Values.api.dataDir }}
+            - name: CUBEPILOT_SKILLS_DIR
+              value: /var/lib/cubepilot/skills
           ports:
             - containerPort: 8080
           livenessProbe:
@@ -45,6 +47,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.api.dataDir }}
+            - name: skill-repo
+              mountPath: /var/lib/cubepilot/skills
           {{- with .Values.api.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -61,6 +65,14 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-data
+        - name: skill-repo
+          {{- if .Values.api.skillRepo.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.api.skillRepo.existingClaim }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.api.name }}-skill-repo
+          {{- end }}
 ---
 # Metadata store for tasks / reports / audit / agent config (JSON "tables").
 apiVersion: v1
@@ -76,6 +88,22 @@ spec:
   resources:
     requests:
       storage: {{ .Values.api.storage }}
+---
+# Shared skill repository (design §2.2: RWX, e.g. CephFS in production). Only
+# the API server mounts it; the operator publishes skills over HTTP.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.api.name }}-skill-repo
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: [ReadWriteMany]
+  {{- with .Values.api.skillRepo.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.api.skillRepo.size }}
 ---
 apiVersion: v1
 kind: Service
