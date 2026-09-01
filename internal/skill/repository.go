@@ -2,6 +2,7 @@ package skill
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -85,13 +86,19 @@ func PackSha256(src fs.FS) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// ExtractTar unpacks an arbitrary tar stream (a repo read, an HTTP fetch, or
-// a temp file) into destDir, rejecting path traversal (".." escapes).
+// ExtractTar unpacks an arbitrary gzip tar stream (a repo read, an HTTP
+// fetch, or a temp file) into destDir, rejecting path traversal (".."
+// escapes).
 func ExtractTar(r io.Reader, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return err
 	}
-	tr := tar.NewReader(r)
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -135,10 +142,12 @@ func ExtractTar(r io.Reader, destDir string) error {
 	}
 }
 
-// writeTar packs the files of src (walked recursively) into a tar on w.
+// writeTar packs the files of src (walked recursively) into a gzip tar on w.
 func writeTar(w io.Writer, src fs.FS) error {
-	tw := tar.NewWriter(w)
-	defer tw.Close()
+	gz := gzip.NewWriter(w)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close() // must flush the tar trailer before gz closes
 	return fs.WalkDir(src, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

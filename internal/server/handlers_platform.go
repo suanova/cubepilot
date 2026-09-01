@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -10,9 +11,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 // ---- AgentTemplate definitions (design §3.1 / §4.6: phase one = builtin
@@ -372,4 +375,39 @@ func gatewayConfigWithPrimary(raw []byte, primary string) []byte {
 		return b
 	}
 	return nil
+}
+
+// handleInternalSkillTar serves the tar for one skill: GET
+// /internal/skills/{name}/tar (internal API, cluster-only). The supervisor
+// pulls this to extract skills into the instance PVC workspace/skills.
+func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "k8s client unavailable"})
+		return
+	}
+	var skillCR v1alpha1.Skill
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	repo := &skill.PathRepository{Root: s.cfg.SkillsDir}
+	rc, err := repo.Open(r.Context(), skillCR.Spec.Source.Path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "skill tar not found"})
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/gzip")
+	if _, err := io.Copy(w, rc); err != nil {
+		return
+	}
 }

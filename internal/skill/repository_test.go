@@ -3,6 +3,7 @@ package skill
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"io/fs"
 	"os"
@@ -70,7 +71,8 @@ func TestExtractRejectsTraversal(t *testing.T) {
 	outside := t.TempDir()
 	dest := filepath.Join(outside, "dest")
 	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
 	if err := tw.WriteHeader(&tar.Header{Name: "../evil", Mode: 0o644, Size: 4, Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +80,7 @@ func TestExtractRejectsTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	tw.Close()
+	gz.Close()
 	if err := os.WriteFile(filepath.Join(root, "t.tar"), buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -47,6 +47,25 @@ func platformTestServerStore(t *testing.T, st *store.Store, objs ...client.Objec
 	return New(cfg, mgr, st, nil, cl)
 }
 
+// platformTestServerSkillsDir is platformTestServerStore with a skill repo
+// dir configured (for the internal skill tar endpoint).
+func platformTestServerSkillsDir(t *testing.T, skillsDir string, objs ...client.Object) *Server {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add platform types: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.TaskRun{}, &v1alpha1.AgentInstance{}, &v1alpha1.Task{}).
+		WithObjects(objs...).
+		Build()
+	cfg := config.Config{DefaultUser: "zhang.wei", SkillsDir: skillsDir}
+	mgr := instances.New(cl, cfg)
+	return New(cfg, mgr, nil, nil, cl)
+}
+
 func doReq(t *testing.T, h http.Handler, method, path, user string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer

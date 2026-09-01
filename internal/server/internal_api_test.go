@@ -2,8 +2,11 @@ package server
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -11,6 +14,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
+	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -38,14 +42,14 @@ func internalTestInstance(user, agentRef string) *v1alpha1.AgentInstance {
 	}
 }
 
-func internalTestCap(name, instructions string) *v1alpha1.Skill {
+func internalTestCap(name, path string) *v1alpha1.Skill {
 	return &v1alpha1.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.SkillSpec{
-			Type:         v1alpha1.SkillDomain,
-			Title:        "Skill " + name,
-			Description:  "Description " + name,
-			Instructions: instructions,
+			DisplayName: "Skill " + name,
+			Description: "Description " + name,
+			Visibility:  v1alpha1.SkillVisibilityPlatform,
+			Source:      v1alpha1.SkillSource{Type: v1alpha1.SkillSourcePath, Path: path},
 		},
 	}
 }
@@ -56,7 +60,7 @@ func TestInternalAgentConfig(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
+		internalTestCap("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
 	)
 
 	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
@@ -105,7 +109,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	s1 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestCap("cluster-inspection", "Read-only cluster inspection."),
+		internalTestCap("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
 	)
 	rec1 := doReq(t, s1.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
 	cfg1 := decode[resolver.ResolvedAgentConfig](t, rec1)
@@ -113,7 +117,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	s2 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
-		internalTestCap("cluster-inspection", "Read-only cluster inspection - added one more check."),
+		internalTestCap("cluster-inspection", "skills/cluster-inspection/v2.tar.gz"),
 	)
 	rec2 := doReq(t, s2.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
 	cfg2 := decode[resolver.ResolvedAgentConfig](t, rec2)
@@ -311,5 +315,40 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"primary":"deepseek-v4-flash-0731/deepseek-v4-flash-0731"`) {
 		t.Errorf("primary should stay the operator default: %s", rec.Body.String())
+	}
+}
+
+// TestInternalSkillTar verifies the supervisor-facing endpoint that serves a
+// skill's tar from the repository (for extract-into-PVC loading).
+func TestInternalSkillTar(t *testing.T) {
+	skillsDir := t.TempDir()
+	repo := &skill.PathRepository{Root: skillsDir}
+	if _, err := repo.Write(t.Context(), "skills/harbor/v1.tar.gz", fstest.MapFS{
+		"SKILL.md": {Data: []byte("# Harbor\n")},
+	}); err != nil {
+		t.Fatalf("seed tar: %v", err)
+	}
+	s := platformTestServerSkillsDir(t, skillsDir, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
+
+	rec := doReq(t, s.Handler(), http.MethodGet, "/internal/skills/harbor/tar", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/gzip" {
+		t.Errorf("content-type = %q, want application/gzip", ct)
+	}
+	// The body must be a valid gzip tar that extracts to SKILL.md.
+	tmp := t.TempDir()
+	if err := skill.ExtractTar(rec.Body, tmp); err != nil {
+		t.Fatalf("extract tar body: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md missing after extract: %v", err)
+	}
+
+	// Missing skill CR -> 404.
+	rec = doReq(t, s.Handler(), http.MethodGet, "/internal/skills/missing/tar", "", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing skill status = %d, want 404", rec.Code)
 	}
 }
