@@ -37,6 +37,7 @@ export default function AgentView() {
   const [cfg, setCfg] = useState<AgentConfig>({})
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [skills, setSkills] = useState<Array<{ name: string; enabled: boolean }>>([])
+  const [hasInstance, setHasInstance] = useState(false)
   const [provisioning, setProvisioning] = useState(false)
   const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
   const [defaultModel, setDefaultModel] = useState('')
@@ -61,13 +62,16 @@ export default function AgentView() {
   }
 
   // The toggle list comes from the real enabledSkills (AgentInstance CR); an
-  // empty set is the resolver's "all enabled" baseline.
+  // empty set is the resolver's "all enabled" baseline. Without an instance
+  // there is no workspace to install into, so the toggles are all off instead.
   async function loadSkills() {
     try {
       const [skillList, instances] = await Promise.all([api.listSkills(), api.listInstances()])
-      const enabled = enabledSkillsFromInstances(instances)
-      const on = enabled.length === 0 ? new Set(skillList.map((s) => s.metadata.name)) : new Set(enabled)
-      const toggleable = skillList.filter((sk) => !LOCKED_SYSTEM_SKILLS.includes(sk.metadata.name))
+      const has = instances.length > 0
+      setHasInstance(has)
+      const enabled = has ? enabledSkillsFromInstances(instances) : []
+      const on = !has ? new Set<string>() : enabled.length === 0 ? new Set(skillList.map((s) => s.metadata.name)) : new Set(enabled)
+      const toggleable = skillList.filter((sk) => sk.status?.phase !== 'Unreachable' && !LOCKED_SYSTEM_SKILLS.includes(sk.metadata.name))
       setSkills(toggleable.map((sk) => ({ name: sk.metadata.name, enabled: on.has(sk.metadata.name) })))
     } catch (e) {
       console.error('loadSkills', e)
@@ -110,6 +114,10 @@ export default function AgentView() {
   async function toggleSkill(name: string) {
     const cur = skills.find((s) => s.name === name)
     if (!cur) return
+    if (!hasInstance) {
+      showToast('Provision your instance on the Agent Config page first')
+      return
+    }
     try {
       if (cur.enabled) {
         await api.uninstallSkill(name)
