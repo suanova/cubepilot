@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api } from '@/api'
 import type { AgentConfig, AgentStatus } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
+import { enabledSkillsFromInstances } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
 
 const SKILL_LABELS: Record<string, string> = {
@@ -11,6 +12,10 @@ const SKILL_LABELS: Record<string, string> = {
   'inference-service': 'Inference Service',
   inspection: 'Smart Inspection',
 }
+
+// kubectl-platform is shown locked in the System section; keep it out of the
+// toggleable Platform-skills list.
+const LOCKED_SYSTEM_SKILLS = ['kubectl-platform']
 
 interface TemplateModel {
   name: string
@@ -55,13 +60,27 @@ export default function AgentView() {
     }
   }
 
+  // The toggle list comes from the real enabledSkills (AgentInstance CR); an
+  // empty set is the resolver's "all enabled" baseline.
+  async function loadSkills() {
+    try {
+      const [skillList, instances] = await Promise.all([api.listSkills(), api.listInstances()])
+      const enabled = enabledSkillsFromInstances(instances)
+      const on = enabled.length === 0 ? new Set(skillList.map((s) => s.metadata.name)) : new Set(enabled)
+      const toggleable = skillList.filter((sk) => !LOCKED_SYSTEM_SKILLS.includes(sk.metadata.name))
+      setSkills(toggleable.map((sk) => ({ name: sk.metadata.name, enabled: on.has(sk.metadata.name) })))
+    } catch (e) {
+      console.error('loadSkills', e)
+    }
+  }
+
   async function loadAgentView() {
     try {
       const [c, st] = await Promise.all([api.agentConfig(), api.agentStatus()])
       setCfg(c)
       setStatus(st)
-      setSkills(c.skills || [])
       await loadTemplate()
+      await loadSkills()
     } catch (e) {
       console.error('loadAgentView', e)
     }
@@ -86,8 +105,21 @@ export default function AgentView() {
     }
   }
 
-  function toggleSkill(name: string) {
-    setSkills((prev) => prev.map((s) => (s.name === name ? { ...s, enabled: !s.enabled } : s)))
+  // Toggle writes the real enabledSkills (install/uninstall); the supervisor
+  // picks it up on its next sync. Errors surface via toast.
+  async function toggleSkill(name: string) {
+    const cur = skills.find((s) => s.name === name)
+    if (!cur) return
+    try {
+      if (cur.enabled) {
+        await api.uninstallSkill(name)
+      } else {
+        await api.installSkill(name)
+      }
+      await loadSkills()
+    } catch (e) {
+      showToast('Skill update failed: ' + (e instanceof Error ? e.message : String(e)))
+    }
   }
 
   async function saveAgentConfig() {
@@ -98,7 +130,9 @@ export default function AgentView() {
       return
     }
     try {
-      await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt, skills })
+      // Skills are persisted by the toggle above (enabledSkills); the store
+      // preference is inert, so the save is model + systemPrompt only.
+      await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt })
       showToast('Config saved - system prompt takes effect immediately')
     } catch (e) {
       showToast('Save failed: ' + e)
