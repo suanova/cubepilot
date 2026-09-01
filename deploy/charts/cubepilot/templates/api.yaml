@@ -90,7 +90,9 @@ spec:
       storage: {{ .Values.api.storage }}
 ---
 # Shared skill repository (design §2.2: RWX, e.g. CephFS in production). Only
-# the API server mounts it; the operator publishes skills over HTTP.
+# the API server mounts it; the operator publishes skills over HTTP. Skipped
+# when api.skillRepo.existingClaim reuses a pre-provisioned PVC.
+{{- if not .Values.api.skillRepo.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -104,6 +106,7 @@ spec:
   resources:
     requests:
       storage: {{ .Values.api.skillRepo.size }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
