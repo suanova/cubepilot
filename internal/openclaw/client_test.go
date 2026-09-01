@@ -91,9 +91,9 @@ func TestClient_GetHistory(t *testing.T) {
 }
 
 func TestClient_GetHistory_DefaultsLimit(t *testing.T) {
-	var limit string
+	limit := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limit = r.URL.Query().Get("limit")
+		limit <- r.URL.Query().Get("limit")
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
@@ -101,15 +101,15 @@ func TestClient_GetHistory_DefaultsLimit(t *testing.T) {
 	if _, err := New(srv.URL, "s").GetHistory(t.Context(), "conv-1", 0); err != nil {
 		t.Fatalf("GetHistory: %v", err)
 	}
-	if limit != "100" {
-		t.Errorf("default limit = %q, want 100", limit)
+	if l := <-limit; l != "100" {
+		t.Errorf("default limit = %q, want 100", l)
 	}
 }
 
 func TestClient_SetModel_SendsOverrideHeader(t *testing.T) {
-	var gotHeader string
+	gotHeader := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("x-openclaw-model")
+		gotHeader <- r.Header.Get("x-openclaw-model")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -120,15 +120,15 @@ func TestClient_SetModel_SendsOverrideHeader(t *testing.T) {
 	if err := c.StreamChat(t.Context(), ChatParams{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
 		t.Fatalf("StreamChat: %v", err)
 	}
-	if gotHeader != "gpt-4o" {
-		t.Errorf("x-openclaw-model = %q, want gpt-4o", gotHeader)
+	if h := <-gotHeader; h != "gpt-4o" {
+		t.Errorf("x-openclaw-model = %q, want gpt-4o", h)
 	}
 }
 
 func TestClient_NoModelOverride_OmitsHeader(t *testing.T) {
-	var gotHeader string
+	gotHeader := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("x-openclaw-model")
+		gotHeader <- r.Header.Get("x-openclaw-model")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -137,7 +137,7 @@ func TestClient_NoModelOverride_OmitsHeader(t *testing.T) {
 	if err := New(srv.URL, "secret").StreamChat(t.Context(), ChatParams{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
 		t.Fatalf("StreamChat: %v", err)
 	}
-	if gotHeader != "" {
-		t.Errorf("x-openclaw-model = %q, want empty (no override set)", gotHeader)
+	if h := <-gotHeader; h != "" {
+		t.Errorf("x-openclaw-model = %q, want empty (no override set)", h)
 	}
 }

@@ -17,13 +17,16 @@ type fakeManager struct {
 	ensureCalled bool
 }
 
+// Ensure records that warming was requested for user.
 func (f *fakeManager) Ensure(ctx context.Context, user string) error {
 	f.ensureCalled = true
 	return nil
 }
 
+// BaseURL returns the fake gateway URL.
 func (f *fakeManager) BaseURL(user string) string { return f.baseURL }
 
+// SelectedModelFor returns the configured model override, or the modelErr.
 func (f *fakeManager) SelectedModelFor(ctx context.Context, user string) (string, error) {
 	return f.model, f.modelErr
 }
@@ -38,9 +41,9 @@ func TestRunTask_CollectsDeltasAndSendsModelOverride(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{\"content\":\"world.\"}}]}\n\n" +
 		"data: [DONE]\n\n"
 
-	var gotModelHeader string
+	gotHeader := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotModelHeader = r.Header.Get("x-openclaw-model")
+		gotHeader <- r.Header.Get("x-openclaw-model")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(sse))
 	}))
@@ -57,17 +60,19 @@ func TestRunTask_CollectsDeltasAndSendsModelOverride(t *testing.T) {
 	if !mgr.ensureCalled {
 		t.Error("Ensure was not called before the turn")
 	}
-	if gotModelHeader != "gpt-4o" {
-		t.Errorf("x-openclaw-model = %q, want gpt-4o", gotModelHeader)
+	// The handler runs on the server's goroutine; hand its capture back over a
+	// buffered channel so the read is synchronized (no data race under -race).
+	if h := <-gotHeader; h != "gpt-4o" {
+		t.Errorf("x-openclaw-model = %q, want gpt-4o", h)
 	}
 }
 
 func TestRunTask_NoModelOverrideWithoutSelection(t *testing.T) {
 	// With an empty SelectedModelFor the request must NOT carry the override
 	// header (the runtime's configured model is used).
-	var gotModelHeader string
+	gotHeader := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotModelHeader = r.Header.Get("x-openclaw-model")
+		gotHeader <- r.Header.Get("x-openclaw-model")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -77,8 +82,8 @@ func TestRunTask_NoModelOverrideWithoutSelection(t *testing.T) {
 	if _, err := r.RunTask(t.Context(), "creator", "conv-1", "hi"); err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
-	if gotModelHeader != "" {
-		t.Errorf("x-openclaw-model = %q, want empty", gotModelHeader)
+	if h := <-gotHeader; h != "" {
+		t.Errorf("x-openclaw-model = %q, want empty", h)
 	}
 }
 
