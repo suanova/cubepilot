@@ -327,9 +327,7 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 func TestInternalSkillTar(t *testing.T) {
 	skillsDir := t.TempDir()
 	repo := &skill.PathRepository{Root: skillsDir}
-	if _, err := repo.Write(t.Context(), "skills/harbor/v1.tar.gz", fstest.MapFS{
-		"SKILL.md": {Data: []byte("# Harbor\n")},
-	}); err != nil {
+	if _, err := repo.WriteBytes(t.Context(), "skills/harbor/v1.tar.gz", mustPackBytes(t, "# Harbor\n")); err != nil {
 		t.Fatalf("seed tar: %v", err)
 	}
 	s := platformTestServerSkillsDir(t, skillsDir, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))

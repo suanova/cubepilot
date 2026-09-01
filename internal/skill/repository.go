@@ -19,17 +19,14 @@ import (
 // Repository is the skill content store (design §3.4: shared file volume in
 // phase 1; S3 in phase 2). The backend is transparent to the CRD and the
 // loading flow — differences are only in addressing + how the injector gets
-// the tar (mount read vs network pull).
+// the tar (mount read vs network pull). The operations are the two the
+// platform actually performs: publish a tar (WriteBytes) and serve it (Open).
 type Repository interface {
-	// Write packs src (a skill directory: SKILL.md + optional scripts/,
-	// references/) into a tar at relPath, atomically (temp file + rename),
-	// and returns the tar's sha256. On any error the temp file is removed.
-	Write(ctx context.Context, relPath string, src fs.FS) (string, error)
+	// WriteBytes writes data (a gzip tar) to relPath atomically (temp +
+	// rename) and returns its sha256. On any error the temp file is removed.
+	WriteBytes(ctx context.Context, relPath string, data []byte) (string, error)
 	// Open returns a reader for the tar at relPath (read-back / serving).
 	Open(ctx context.Context, relPath string) (io.ReadCloser, error)
-	// Extract unpacks the tar at relPath into destDir, preserving the
-	// directory structure and rejecting path traversal.
-	Extract(ctx context.Context, relPath, destDir string) error
 }
 
 // PathRepository is the shared-file-volume implementation: relPath is
@@ -45,38 +42,6 @@ func safeJoin(root, rel string) (string, error) {
 		return "", fmt.Errorf("path escapes repository root: %q", rel)
 	}
 	return filepath.Join(root, clean), nil
-}
-
-func (r *PathRepository) Write(ctx context.Context, relPath string, src fs.FS) (string, error) {
-	abs, err := safeJoin(r.Root, relPath)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(abs), err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(abs), "."+filepath.Base(abs)+".tmp-*")
-	if err != nil {
-		return "", err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after successful rename
-	h := sha256.New()
-	if err := writeTar(io.MultiWriter(tmp, h), src); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmpName, abs); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // WriteBytes writes data (a gzip tar) to relPath atomically (temp + rename)
@@ -119,19 +84,6 @@ func (r *PathRepository) Open(ctx context.Context, relPath string) (io.ReadClose
 		return nil, err
 	}
 	return os.Open(abs)
-}
-
-func (r *PathRepository) Extract(ctx context.Context, relPath, destDir string) error {
-	abs, err := safeJoin(r.Root, relPath)
-	if err != nil {
-		return err
-	}
-	f, err := os.Open(abs)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return ExtractTar(f, destDir)
 }
 
 // Pack builds the gzip tar bytes for src (a skill directory), for callers

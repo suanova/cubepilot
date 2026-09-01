@@ -55,6 +55,20 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir st
 	return srv
 }
 
+// seedTar packs a single SKILL.md into the repo and returns its sha256.
+func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) string {
+	t.Helper()
+	data, err := skill.Pack(fstest.MapFS{"SKILL.md": {Data: []byte(body)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err := repo.WriteBytes(t.Context(), relPath, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
 // TestSyncSkills verifies the supervisor pulls a skill tar from the internal
 // API, extracts it into workspace/skills/<name>/, writes the .sha256 marker,
 // clears stale entries, and skips an unchanged skill.
@@ -69,12 +83,7 @@ func TestSyncSkills(t *testing.T) {
 	}
 	// Seed the "repo" with the skill tar.
 	repo := &skill.PathRepository{Root: t.TempDir()}
-	sha1, err := repo.Write(t.Context(), "cluster-inspection/v1.tar.gz", fstest.MapFS{
-		"SKILL.md": {Data: []byte("# Cluster Intelligent Inspection\n\nRead-only inspection.")},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sha1 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Cluster Intelligent Inspection\n\nRead-only inspection.")
 
 	// The test server serves the tars; the supervisor pulls from cfg.APIURL.
 	srv := testAPI(t, nil, "", repo.Root)
@@ -118,11 +127,7 @@ func TestSyncSkills(t *testing.T) {
 func TestSyncSkillRejectsShaMismatch(t *testing.T) {
 	ws := t.TempDir()
 	repo := &skill.PathRepository{Root: t.TempDir()}
-	if _, err := repo.Write(t.Context(), "bad/v1.tar.gz", fstest.MapFS{
-		"SKILL.md": {Data: []byte("# good content\n")},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = seedTar(t, repo, "bad/v1.tar.gz", "# good content\n")
 	srv := testAPI(t, nil, "", repo.Root)
 	s := New(Config{Workspace: ws, APIURL: srv.URL})
 	s.http = srv.Client()
@@ -211,11 +216,7 @@ func TestPollNoChange(t *testing.T) {
 func TestPollSyncsOnChange(t *testing.T) {
 	ws := t.TempDir()
 	repo := &skill.PathRepository{Root: t.TempDir()}
-	if _, err := repo.Write(t.Context(), "cluster-inspection/v1.tar.gz", fstest.MapFS{
-		"SKILL.md": {Data: []byte("# Inspection\n\nVersion 1.")},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 1.")
 
 	srv := testAPI(t, nil, "", repo.Root)
 	s := New(Config{Workspace: ws, APIURL: srv.URL})
