@@ -165,6 +165,7 @@ func bootstrapEnsure(ctx context.Context, mgr ctrl.Manager, cfg config.Config) e
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Cfg:    cfg,
+		APIURL: cfg.APIURL,
 	}
 	return b.Ensure(ctx)
 }

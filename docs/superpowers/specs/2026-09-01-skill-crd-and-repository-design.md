@@ -216,7 +216,7 @@ func (s *Supervisor) syncSkills(ctx, cfg) error {
 - `internal/server/handlers_platform.go`: `handleSkills` (GET `/api/skills`) returns the marketplace shape (`displayName` / `visibility` / `source` / `status.phase`). Add the internal `/internal/skills/{name}/tar` handler (§5).
 - Web UI (`web/src/api/types.ts`, `web/src/api/index.ts`, `web/src/views/...`): follow the renamed fields (`title` → `displayName`, drop `instructions`, add `visibility`/`source`/`phase`). `listSkills` stays.
 - e2e (`scripts/e2e.sh`, `test/e2e/bootstrap_test.go`): CRD set assertions unchanged (`skills`); builtin-skill label assertion stays; add a CEL rejection case (§9).
-- RBAC: the operator already has `skills;skills/status` verbs; the API server already has full `skills` + `skills/status` grants (`deploy/charts/cubepilot/templates/rbac.yaml`) for `/api/skills`, so the new internal tar endpoint needs no RBAC change.
+- RBAC: the operator already has `skills;skills/status` verbs; the API's ClusterRole gains `create/update/patch` on `skills` + `skills/status` (`deploy/charts/cubepilot/templates/rbac.yaml`) so the publish endpoint can upsert Skill CRs — it was previously read-only on skills.
 
 ## 8. Config & deployment
 

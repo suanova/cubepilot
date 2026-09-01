@@ -1,6 +1,7 @@
 # API -- Portal REST/SSE + JSON metadata store. Stateless except the single
 # RWO PVC -> single replica today; shared storage enables replicas > 1
 # (design §9 / §11.1).
+{{- $skillRepo := default dict .Values.api.skillRepo }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,9 +67,9 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-data
         - name: skill-repo
-          {{- if .Values.api.skillRepo.existingClaim }}
+          {{- if $skillRepo.existingClaim }}
           persistentVolumeClaim:
-            claimName: {{ .Values.api.skillRepo.existingClaim }}
+            claimName: {{ $skillRepo.existingClaim }}
           {{- else }}
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-skill-repo
@@ -93,20 +94,20 @@ spec:
 # operator publishes skills over HTTP. AccessModes default to ReadWriteOnce
 # (single-replica API, kind-friendly); production multi-replica sets RWX with a
 # CephFS StorageClass. Skipped when api.skillRepo.existingClaim is set.
-{{- if not .Values.api.skillRepo.existingClaim }}
+{{- if not $skillRepo.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.api.name }}-skill-repo
   namespace: {{ .Release.Namespace }}
 spec:
-  accessModes: {{ toYaml .Values.api.skillRepo.accessModes | nindent 2 }}
-  {{- with .Values.api.skillRepo.storageClassName }}
+  accessModes: {{ toYaml (default (list "ReadWriteOnce") $skillRepo.accessModes) | nindent 2 }}
+  {{- with $skillRepo.storageClassName }}
   storageClassName: {{ . }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.api.skillRepo.size }}
+      storage: {{ $skillRepo.size | default "1Gi" }}
 {{- end }}
 ---
 apiVersion: v1
