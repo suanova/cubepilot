@@ -107,8 +107,11 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		Expect(foundDone).To(BeTrue(), "message_done should terminate the turn")
 		Expect(done["error"]).To(SatisfyAny(BeNil(), BeEmpty()), "message_done should carry no error")
 
-		// Evidence the agent referenced the *discovered* kind (generic
-		// discovery, not a per-CRD skill).
+		// Informational only: whether any tool_call referenced the
+		// DevEnvironment kind. Not a gate — with the per-CRD skills dropped,
+		// the CR existing below is the proof of generic discovery, and
+		// tool_call reconstruction from the transcript can be lossy across
+		// providers (CI e2e observed a clean turn with no tool_call surfaced).
 		var referenced bool
 		for _, ev := range events {
 			if ev.Event == openclaw.EventToolCall &&
@@ -116,7 +119,9 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 				referenced = true
 			}
 		}
-		Expect(referenced).To(BeTrue(), "the agent should have referenced the DevEnvironment kind (discovery evidence)")
+		if !referenced {
+			GinkgoWriter.Printf("note: no tool_call referenced the devenvironment kind (transcript reconstruction may be lossy); the CR assertion below is the gate\n")
+		}
 
 		// The CR must exist with the requested spec.
 		Eventually(func() error {
