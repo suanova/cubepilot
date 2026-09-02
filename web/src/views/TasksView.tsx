@@ -4,6 +4,7 @@ import { api } from '@/api'
 import { getCurrentUser } from '@/api/client'
 import type { Report, Task } from '@/api/types'
 import { downloadText, fmtDuration, fmtTime } from '@/utils/format'
+import { cronDescription, lowercaseFirst } from '@/utils/cron'
 import { showToast } from '@/stores/toast'
 
 const TASK_TEMPLATES: Record<string, { name: string; cron: string; prompt: string }> = {
@@ -69,6 +70,13 @@ export default function TasksView() {
   }
   function triggerLabel(t: Task): string {
     return t.schedule && t.schedule.trim() ? 'Scheduled + Manual' : 'Manual only'
+  }
+  function scheduleCell(t: Task): string {
+    if (!t.schedule || !t.schedule.trim()) return 'Manual only'
+    const desc = cronDescription(t.schedule)
+    // Stored schedules are server-validated; fall back to the raw value only if
+    // the frontend ever fails to describe one.
+    return desc.text ?? t.schedule
   }
 
   useEffect(() => {
@@ -178,6 +186,19 @@ export default function TasksView() {
       showToast('Please enter a task prompt')
       return
     }
+    if (trigger === 'Cron') {
+      const cron = cronDescription(form.cron)
+      if (!form.cron.trim()) {
+        // An empty schedule silently becomes Manual server-side; require an
+        // explicit choice so the form matches the saved task.
+        showToast('Enter a schedule, or switch the trigger to Manual')
+        return
+      }
+      if (cron.error) {
+        showToast(cron.error)
+        return
+      }
+    }
     const schedule = trigger === 'Cron' ? form.cron.trim() : ''
     try {
       const task = await api.createTask({ name, prompt, schedule })
@@ -272,7 +293,7 @@ export default function TasksView() {
                       <td style={{ fontWeight: 600 }}>{t.name}</td>
                       <td>{taskKindLabel(t)}</td>
                       <td>{triggerLabel(t)}</td>
-                      <td>{t.schedule && t.schedule.trim() ? t.schedule : 'Manual only'}</td>
+                      <td title={t.schedule && t.schedule.trim() ? `Cron: ${t.schedule.trim()}` : undefined}>{scheduleCell(t)}</td>
                       <td>
                         <span className={`pill ${t.enabled ? 'success' : 'neutral'}`}>{statusPill(t)}</span>
                       </td>
@@ -517,17 +538,32 @@ export default function TasksView() {
                   </button>
                 </div>
               </div>
-              {trigger === 'Cron' && (
-                <div className="field" style={{ marginBottom: 0 }}>
-                  <label className="label">Schedule (Cron) - empty = manual only</label>
-                  <input
-                    className="input mono"
-                    aria-label="Schedule"
-                    value={form.cron}
-                    onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
-                  />
-                </div>
-              )}
+              {trigger === 'Cron' &&
+                (() => {
+                  const cron = cronDescription(form.cron)
+                  return (
+                    <div className="field" style={{ marginBottom: 0 }}>
+                      <label className="label">Schedule (Cron, 5 fields)</label>
+                      <input
+                        className="input mono"
+                        aria-label="Schedule"
+                        value={form.cron}
+                        onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
+                      />
+                      {cron.error ? (
+                        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--danger)' }}>{cron.error}</div>
+                      ) : cron.text ? (
+                        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--success)' }}>
+                          Runs {lowercaseFirst(cron.text)}
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
+                          No schedule set - enter one, or switch the trigger to Manual for a manual-only task
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
               <div className="notice">
                 <WarnIcon />
                 <span>
