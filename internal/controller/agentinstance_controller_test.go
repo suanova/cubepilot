@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -69,6 +70,20 @@ func agentSpec() k8s.AgentSpec {
 func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceReconciler, client.Client) {
 	t.Helper()
 	scheme := testScheme(t)
+	// The operator reconciles the per-user kubeconfig Secrets (issue #19
+	// Option B); seed the platform (agent-kubeconfig) and the test owner's
+	// per-user Secret so Reconcile does not requeue on a missing Secret.
+	secrets := []client.Object{
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: testNamespace},
+			Data:       map[string][]byte{"config": []byte("platform-kubeconfig")},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor("zhang.wei"), Namespace: testNamespace},
+			Data:       map[string][]byte{"config": []byte("user-kubeconfig")},
+		},
+	}
+	objs = append(objs, secrets...)
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
@@ -89,10 +104,27 @@ func reconcileInstance(r *AgentInstanceReconciler, t *testing.T) {
 
 // provisionInstance reconciles twice: the first pass only adds the
 // AgentInstance finalizer (early return), the second actually provisions.
+
 func provisionInstance(r *AgentInstanceReconciler, t *testing.T) {
 	t.Helper()
 	reconcileInstance(r, t)
 	reconcileInstance(r, t)
+}
+
+// kubeconfigRevForTest mirrors Reconcile's kubeconfig-revision annotation: it
+// reads the seeded kubeconfig Secrets (fake client assigns resourceVersion 999)
+// so a test-seeded "already converged" Pod carries the exact annotation the
+// controller computes.
+func kubeconfigRevForTest(t *testing.T, cl client.Client) string {
+	t.Helper()
+	var us, ps corev1.Secret
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: k8s.UserKubeconfigSecretFor("zhang.wei")}, &us); err != nil {
+		t.Fatalf("get user kubeconfig secret: %v", err)
+	}
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: k8s.KubeconfigSecretName}, &ps); err != nil {
+		t.Fatalf("get platform kubeconfig secret: %v", err)
+	}
+	return k8s.UserKubeconfigSecretFor("zhang.wei") + "@" + us.ResourceVersion + "|" + k8s.KubeconfigSecretName + "@" + ps.ResourceVersion
 }
 
 // TestAgentInstanceReconcileProvisions verifies one Reconcile creates the
@@ -152,13 +184,17 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 // TestAgentInstanceReconcileReady verifies a Ready Pod transitions the
 // instance to status.phase = Ready (AC: creating an instance -> Ready).
 func TestAgentInstanceReconcileReady(t *testing.T) {
+	r, cl := newTestReconciler(t, testTemplate(), testInstance())
 	spec := agentSpec()
+	spec.UserKubeconfigSecret = k8s.UserKubeconfigSecretFor("zhang.wei")
 	readyPod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
 	readyPod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-	readyPVC := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
-	readySvc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
-
-	r, cl := newTestReconciler(t, testTemplate(), testInstance(), readyPod, readyPVC, readySvc)
+	// Match the kubeconfig-revision annotation Reconcile sets so the seeded
+	// "already converged" pod is not seen as drifted and recreated.
+	readyPod.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	if err := cl.Create(context.Background(), readyPod); err != nil {
+		t.Fatalf("create ready pod: %v", err)
+	}
 	provisionInstance(r, t)
 
 	var inst v1alpha1.AgentInstance
@@ -176,14 +212,19 @@ func TestAgentInstanceReconcileReady(t *testing.T) {
 // TestAgentInstanceReconcileSelfHeals verifies a Failed Pod is deleted and
 // recreated by the controller (AC: pod failure self-heals; PVC persists).
 func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
+	r, cl := newTestReconciler(t, testTemplate(), testInstance())
 	spec := agentSpec()
+	spec.UserKubeconfigSecret = k8s.UserKubeconfigSecretFor("zhang.wei")
 	failedPod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
 	failedPod.Status.Phase = corev1.PodFailed
-
-	r, cl := newTestReconciler(t, testTemplate(), testInstance(), failedPod)
+	// Match the kubeconfig-revision annotation Reconcile sets; the pod is
+	// healed because it is Failed (explicit delete+recreate), not for drift.
+	failedPod.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	if err := cl.Create(context.Background(), failedPod); err != nil {
+		t.Fatalf("create failed pod: %v", err)
+	}
 	provisionInstance(r, t)
 
-	// The failed state is recorded before the heal.
 	var inst v1alpha1.AgentInstance
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &inst); err != nil {
 		t.Fatal(err)
@@ -192,7 +233,6 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 		t.Errorf("phase = %q, want %q", inst.Status.Phase, v1alpha1.InstanceFailed)
 	}
 
-	// The failed pod is gone and a fresh pod recreated in its place.
 	var pod corev1.Pod
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &pod); err != nil {
 		t.Fatalf("fresh pod missing after heal: %v", err)
@@ -201,7 +241,6 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 		t.Error("failed pod was not replaced")
 	}
 
-	// The data PVC must survive the rebuild (self-heal keeps sessions/memory).
 	var pvc corev1.PersistentVolumeClaim
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &pvc); err != nil {
 		t.Errorf("data pvc missing after heal: %v", err)
@@ -313,5 +352,24 @@ func TestEnsurePodDoesNotRecreateOnConfigDrift(t *testing.T) {
 	}
 	if got.UID != existing.UID {
 		t.Errorf("pod was recreated on config drift (uid %s -> %s)", existing.UID, got.UID)
+	}
+}
+
+// TestSecurityFingerprintKubeconfigRevision verifies an in-place kubeconfig
+// Secret content change (same Secret name, new resourceVersion) changes the
+// security fingerprint, so ensurePod recreates the Pod despite SubPath mounts.
+func TestSecurityFingerprintKubeconfigRevision(t *testing.T) {
+	build := func(rev string) *corev1.Pod {
+		spec := agentSpec()
+		spec.UserKubeconfigSecret = k8s.UserKubeconfigSecretFor("zhang.wei")
+		pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+		pod.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: rev}
+		return pod
+	}
+	if reflect.DeepEqual(securityFingerprint(build("u@1|p@1")), securityFingerprint(build("u@2|p@1"))) {
+		t.Error("fingerprint unchanged when the user kubeconfig resourceVersion changes")
+	}
+	if !reflect.DeepEqual(securityFingerprint(build("u@2|p@1")), securityFingerprint(build("u@2|p@1"))) {
+		t.Error("fingerprint should be stable for the same kubeconfig revision")
 	}
 }

@@ -4,6 +4,7 @@ package k8s
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"regexp"
@@ -41,13 +42,27 @@ const (
 	PlatformKubeconfigEnv = "CUBEPILOT_PLATFORM_KUBECONFIG"
 	// UserKubeconfigEnv names the default (user) kubeconfig path.
 	UserKubeconfigEnv = "CUBEPILOT_USER_KUBECONFIG"
+	// KubeconfigRevisionAnnotation is set by the controller on the agent Pod to
+	// the resourceVersions of the mounted kubeconfig Secrets, so an in-place
+	// Secret content change (same name) recreates the Pod -- SubPath mounts do
+	// not refresh on Secret update.
+	KubeconfigRevisionAnnotation = "cubepilot.io/kubeconfig-rev"
 )
 
 // UserKubeconfigSecretFor returns the per-user kubeconfig Secret name (key
 // "config"). Provisioned per user (e.g. by Helm/setup) as part of the
 // dual-kubeconfig model; when it does not exist the operator falls back to the
 // shared agent-kubeconfig (see AgentInstance controller).
-func UserKubeconfigSecretFor(user string) string { return Sanitize(user) + "-kubeconfig" }
+//
+// The name is collision-resistant: sanitized identity + a stable 8-hex digest
+// of the RAW identity, so identities that normalize the same (e.g. "foo.bar"
+// and "foo_bar") still get distinct Secrets. Mirrored by the Helm chart
+// (cubepilot.sanitize + sha256sum) and scripts/setup.sh so all provisioning
+// paths agree.
+func UserKubeconfigSecretFor(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return Sanitize(user) + "-kubeconfig-" + hex.EncodeToString(sum[:])[:8]
+}
 
 // Credential key delivery (design §6): the operator renders each model's
 // apiKey in openclaw.json as a file SecretRef pointing at a JSON file the

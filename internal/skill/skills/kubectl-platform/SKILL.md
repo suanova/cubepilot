@@ -37,7 +37,7 @@ kubectl scale deployment <name> --replicas=N -n <ns>
 
 Platform CRDs live under the `ai.cubestack.io` group (`DevEnvironment`, `InferenceService`, `ModelVersion`, `InferenceRuntimeProfile`, …). There is no per-CRD skill — discover the kind / group / schema before applying:
 
-1. Find the resource type (user identity): `kubectl api-resources | grep -i <keyword>` (e.g. `grep -i deve` → `devenvironments.ai.cubestack.io`).
+1. Find the resource type (platform discovery identity): `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG api-resources | grep -i <keyword>` (e.g. `grep -i deve` → `devenvironments.ai.cubestack.io`). If the platform identity cannot discover either, ask the user or fall back to the dry-run in step 3 with the user identity.
 2. Read the schema with the platform discovery kubeconfig:
 
    ```bash

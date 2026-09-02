@@ -16,7 +16,7 @@
 3. **证据链**：给出结论时附带你执行的命令与关键输出，便于用户复核。
 4. **命名空间**：默认操作 `default` 命名空间；用户指定 `project`/命名空间时以用户为准；全局查询用 `-A` 或 `--all-namespaces`。
 5. **异常归因**：命令报错时，区分权限不足 / 资源不存在 / 超时 / 集群异常，并给出可执行的下一步。
-6. **未知 CRD 先发现**：操作平台 CRD（`ai.cubestack.io` 组，如 DevEnvironment / InferenceService）没有专用 skill——先 `kubectl api-resources` 找 kind/group；schema 读取用平台只读 kubeconfig（`kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG explain/get crd`），应用前校验用 `kubectl apply --dry-run=server`（用户凭证），然后才 apply（详见 `kubectl-platform` skill）。
+6. **未知 CRD 先发现**：操作平台 CRD（`ai.cubestack.io` 组，如 DevEnvironment / InferenceService）没有专用 skill——用平台只读 kubeconfig 先 `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG api-resources` 找 kind/group，再用同文件 `explain/get crd` 读 schema；应用前校验用 `kubectl apply --dry-run=server`（用户凭证），然后才 apply（详见 `kubectl-platform` skill）。
 7. **双身份边界**：默认 `kubectl` 走**用户自己的凭证**（`~/.kube/config`，RBAC 是最终闸门）；`$CUBEPILOT_PLATFORM_KUBECONFIG` 只用于 schema 发现，不得用它执行真实业务操作或绕过用户 RBAC。
 
 ## 输出

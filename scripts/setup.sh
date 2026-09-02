@@ -80,10 +80,11 @@ Optional:
       Kind config file used when creating the cluster.
   CUBEPILOT_SKIP_CLUSTER_CREATE / --skip-cluster-create
       Fail instead of creating the kind cluster if it is missing.
-  CUBEPILOT_USER_KUBECONFIG / --user-kubeconfig <path>
-      Optional. Path to a kubeconfig to provision for every operator identity
-      (CUBEPILOT_USERS) as the agent's default credentials (dual-kubeconfig,
-      issue #19). When unset, agents run as the shared agent-kubeconfig SA.
+  CUBEPILOT_USER_KUBECONFIG / --user-kubeconfig <map>
+      Optional. Per-user kubeconfig(s) for the agent's default credentials
+      (dual-kubeconfig, issue #19): comma/space list of "user=path" entries, or
+      a single bare path when CUBEPILOT_USERS has exactly one identity. When
+      unset, agents run as the shared agent-kubeconfig SA.
   CUBEPILOT_PUSH / --push
       Push the four built images to CUBEPILOT_IMAGE_REPO after building.
   CUBEPILOT_IMAGE_REPO / CUBEPILOT_IMAGE_TAG
@@ -154,16 +155,37 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
 # operator identity so agents run user-facing kubectl as the user. Sanitize
 # mirrors k8s.Sanitize. Optional -- absent per-user Secrets mean the operator
 # falls back to the shared agent-kubeconfig (SA) identity.
+# CUBEPILOT_USER_KUBECONFIG is a comma/space list of "<user>=<path>" mappings
+# (one kubeconfig per operator identity), or a single bare "<path>" when there
+# is exactly one operator identity. Each user's Secret is named after
+# k8s.UserKubeconfigSecretFor: sanitized identity + 8-hex sha256 of the raw
+# identity, so distinct users always get distinct Secrets.
 if [ -n "$USER_KUBECONFIG" ]; then
-  [ -f "$USER_KUBECONFIG" ] || { echo "error: --user-kubeconfig file not found: $USER_KUBECONFIG" >&2; exit 1; }
   log "creating per-user kubeconfig Secrets (dual-kubeconfig)"
-  for u in ${USERS//,/ }; do
+  user_count=$(awk -F, '{print NF}' <<< "$USERS")
+  IFS=',' read -ra ENTRIES <<< "$USER_KUBECONFIG"
+  for e in "${ENTRIES[@]}"; do
+    e="${e//[[:space:]]/}"
+    [ -n "$e" ] || continue
+    if [[ "$e" == *=* ]]; then
+      u="${e%%=*}"; path="${e#*=}"
+    else
+      [ "$user_count" -eq 1 ] || {
+        echo "error: a bare --user-kubeconfig path requires exactly one identity in CUBEPILOT_USERS; use 'user=path' entries for multiple users" >&2
+        exit 1
+      }
+      u="${USERS%% *,*}"
+      path="$e"
+    fi
+    [ -f "$path" ] || { echo "error: --user-kubeconfig file not found: $path" >&2; exit 1; }
     s="$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')"
     [ -n "$s" ] || s=user
-    kubectl -n "$NAMESPACE" create secret generic "${s}-kubeconfig" \
-      --from-file=config="$USER_KUBECONFIG" \
+    h="$(printf '%s' "$u" | sha256sum | cut -c1-8)"
+    name="${s}-kubeconfig-${h}"
+    kubectl -n "$NAMESPACE" create secret generic "$name" \
+      --from-file=config="$path" \
       --dry-run=client -o yaml | kubectl apply -f -
-    log "  ${s}-kubeconfig <- $USER_KUBECONFIG"
+    log "  $name <- $path (user: $u)"
   done
 fi
 
