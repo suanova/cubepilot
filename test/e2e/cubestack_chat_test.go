@@ -22,6 +22,8 @@ const (
 	devEnvName      = "dev-cuda-e2e"
 	devEnvNamespace = "default"
 	devEnvImage     = "pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime"
+	devEnvCPU       = "4"
+	devEnvMemory    = "16Gi"
 )
 
 // devEnvGVR is the DevEnvironment kind under the cubestack ai.cubestack.io
@@ -38,17 +40,15 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
 		}
-		By("installing the cubestack CRDs (ai.cubestack.io)")
-		Expect(fw.InstallCubestackCRDs(ctx)).To(Succeed())
-
-		// apiextensions establishes (starts serving) CRDs asynchronously; wait
-		// until devenvironments is served so the agent's first discovery/apply
-		// cannot hit "no matches for kind".
+		// The cubestack CRDs are installed at bring-up by scripts/setup.sh
+		// (vendored under deploy/cubestack/crds), not by this spec. Guard that
+		// they're present so a mis-configured cluster fails loudly here.
+		By("checking the cubestack CRDs are installed")
 		Eventually(func() error {
-			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
-				List(ctx, metav1.ListOptions{})
+			_, err := fw.ApiExtClient.ApiextensionsV1().CustomResourceDefinitions().
+				Get(ctx, "devenvironments.ai.cubestack.io", metav1.GetOptions{})
 			return err
-		}, 60*time.Second).Should(Succeed())
+		}).Should(Succeed(), "devenvironments.ai.cubestack.io should be installed (scripts/setup.sh)")
 	})
 
 	AfterEach(func() {
@@ -66,20 +66,18 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 				Get(deleteCtx, devEnvName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err)
 		}).Should(BeTrue(), "DevEnvironment should be gone after delete")
-
-		By("removing the cubestack CRDs")
-		Expect(fw.DeleteCubestackCRDs(ctx)).To(Succeed())
 	})
 
 	It("creates a DevEnvironment from natural language via generic discovery", func() {
 		chatCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
 
+		// Natural user request, exactly as a platform user would type it. No
+		// mention of the CRD kind / kubectl / discovery — the agent must work
+		// those out from the kubectl-platform skill's schema-discovery recipe.
 		prompt := fmt.Sprintf(
-			"请创建以下开发环境（DevEnvironment）：\n- 名称：%s\n- 命名空间：%s\n- 镜像：%s\n- 资源请求：cpu 4、内存 16Gi\n"+
-				"请先用 kubectl api-resources 发现该 CRD 的 kind 与 apiVersion，必要时用 kubectl explain 或 kubectl apply --dry-run=server 确认字段，"+
-				"再用 kubectl apply 创建。不要修改名称、命名空间或镜像。",
-			devEnvName, devEnvNamespace, devEnvImage)
+			"帮我创建一个开发机：名字叫 %s，放在 %s 命名空间，%s 核 CPU、%s 内存，镜像用 %s。",
+			devEnvName, devEnvNamespace, devEnvCPU, devEnvMemory, devEnvImage)
 
 		events, err := fw.ChatSSE(chatCtx, fw.Users[0], "e2e-"+rand.String(6), prompt)
 		Expect(err).NotTo(HaveOccurred())
@@ -122,7 +120,7 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		Expect(spec["image"]).To(Equal(devEnvImage))
 		res, ok := spec["resources"].(map[string]any)
 		Expect(ok).To(BeTrue(), "DevEnvironment spec.resources should be an object")
-		Expect(res["cpu"]).To(Equal("4"))
-		Expect(res["memory"]).To(Equal("16Gi"))
+		Expect(res["cpu"]).To(Equal(devEnvCPU))
+		Expect(res["memory"]).To(Equal(devEnvMemory))
 	})
 })

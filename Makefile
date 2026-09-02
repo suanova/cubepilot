@@ -10,6 +10,7 @@
 #   make web        build the React SPA (type-check + vite build)
 #   make images     build the four images (registry-addressed)
 #   make push       push the four images to $(IMAGE_REGISTRY)
+#   make update-crds refresh the vendored CubeStack CRDs from upstream
 #   make lint       helm lint + helm template sanity check
 #   make deploy     helm upgrade --install (defaults to the published
 #                   :latest images; to deploy locally-built :local images,
@@ -31,6 +32,12 @@ HELM_RELEASE ?= cubepilot
 CHART_DIR    ?= deploy/charts/cubepilot
 KUBECONFIG   ?= $(HOME)/.kube/config
 
+# CubeStack target CRDs (DevEnvironment / InferenceService / ModelVersion /
+# InferenceRuntimeProfile), vendored under deploy/cubestack/crds.
+CUBESTACK_REPO       ?= git@github.com:suanova/cubestack.git
+CUBESTACK_CRD_DIR    ?= deploy/cubestack/crds
+CUBESTACK_CRD_BASES  ?= operator/config/crd/bases
+
 GO       ?= go
 DOCKER   ?= docker
 HELM     ?= helm
@@ -40,7 +47,7 @@ NPM      ?= npm
 # cluster); go vet still covers the whole module, including the e2e suite.
 GO_TEST_PACKAGES = $(shell $(GO) list ./... | grep -v '/test/')
 
-.PHONY: build test test-e2e web images push lint deploy undeploy clean
+.PHONY: build test test-e2e web images push update-crds lint deploy undeploy clean
 
 ## Build both Go binaries (linux/amd64, matching the container runtime).
 build:
@@ -83,6 +90,18 @@ push:
 	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-operator:$(IMAGE_TAG)
 	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-api:$(IMAGE_TAG)
 	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-web:$(IMAGE_TAG)
+
+## Refresh the vendored CubeStack CRDs from the upstream operator
+## (deploy/cubestack/crds). Re-run when suanova/cubestack's
+## operator/config/crd/bases changes; verify with git diff before committing.
+update-crds:
+	@rm -rf /tmp/cubestack-crds
+	@git clone --depth 1 $(CUBESTACK_REPO) /tmp/cubestack-crds
+	@mkdir -p $(CUBESTACK_CRD_DIR)
+	@cp /tmp/cubestack-crds/$(CUBESTACK_CRD_BASES)/*.yaml $(CUBESTACK_CRD_DIR)/
+	@rm -rf /tmp/cubestack-crds
+	@echo "Updated CubeStack CRDs in $(CUBESTACK_CRD_DIR):"
+	@ls -1 $(CUBESTACK_CRD_DIR)
 
 ## Helm chart sanity: lint + render.
 lint:

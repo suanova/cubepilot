@@ -152,6 +152,18 @@ helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESP
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
   --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
 
+# CubeStack target CRDs (DevEnvironment / InferenceService / ModelVersion /
+# InferenceRuntimeProfile, group ai.cubestack.io) are vendored under
+# deploy/cubestack/crds (refresh with `make update-crds`). The agent operates
+# them via generic schema discovery (kubectl-platform skill); the platform SA
+# already holds wildcard RBAC on ai.cubestack.io. Install once at bring-up.
+log "installing cubestack CRDs (ai.cubestack.io) if absent"
+if ! kubectl get crd devenvironments.ai.cubestack.io >/dev/null 2>&1; then
+  kubectl apply -f "$REPO_DIR/deploy/cubestack/crds/"
+else
+  log "cubestack CRDs already present"
+fi
+
 log "done. expose the portal with:"
 log "  kubectl -n $NAMESPACE port-forward svc/cubepilot 8080:8080"
 log "then open http://127.0.0.1:8080"
