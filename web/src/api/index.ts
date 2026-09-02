@@ -9,6 +9,7 @@ import type {
   Report,
   SessionInfo,
   Task,
+  TaskTemplate,
 } from './types'
 
 export const api = {
@@ -26,7 +27,16 @@ export const api = {
 
   // Tasks (FR-M4)
   listTasks: () => apiFetch<{ tasks: Task[] }>('/api/tasks').then((d) => d.tasks),
-  createTask: (body: { name: string; prompt: string; schedule: string; state?: 'Enabled' | 'Paused' }) =>
+  listTaskTemplates: () =>
+    apiFetch<{ taskTemplates: TaskTemplate[] }>('/api/tasktemplates').then((d) => d.taskTemplates),
+  createTask: (body: {
+    name: string
+    prompt?: string
+    schedule: string
+    templateRef?: string
+    params?: Record<string, string>
+    state?: 'Enabled' | 'Paused'
+  }) =>
     apiFetch<{ task: Task }>('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

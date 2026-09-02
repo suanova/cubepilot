@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/schedule"
 )
 
@@ -43,6 +45,7 @@ type ReconcileScheduler struct {
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=tasks,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=taskruns,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances,verbs=get
 
 // Reconcile is invoked on Task changes; due tasks fire here (leader-gated in
 // the manager wiring).
@@ -140,6 +143,19 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 // used -- design §3.5), creates a TaskRun (Pending -> Running), runs the agent
 // turn, and writes the report (Completed / Failed) with the platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
+	// Pre-fire instance-availability check (design §3.5: the scheduler never
+	// holds user permissions; the per-user agent-for-cloud instance is the
+	// execution identity). When the owner's instance no longer exists (e.g.
+	// the user was disabled and its instance reclaimed), record a Failed
+	// TaskRun and execute nothing rather than running with a stale identity.
+	// Transient phases (Creating/Idle/Failed) fall through -- the runner warms
+	// the instance up below, mirroring instances.Manager's heal-and-wait.
+	if reason := r.ownerInstanceMissing(ctx, task.Spec.Owner); reason != nil {
+		log.Printf("scheduler: task %s fire skipped: %v", task.Name, reason)
+		r.recordSkippedRun(ctx, task, trigger, reason)
+		return reason
+	}
+
 	// Resolve the prompt + revisions before creating the run: the TaskRun
 	// records the template/skill revisions actually used for audit and
 	// rollback (design §3.5 / §7).
@@ -236,6 +252,51 @@ func (r *ReconcileScheduler) skillRevisions(ctx context.Context, names []string)
 		revs = append(revs, name+"@"+skill.Revision())
 	}
 	return strings.Join(revs, ", ")
+}
+
+// ownerInstanceMissing returns an error when the owner has no agent-for-cloud
+// instance at all -- a definitive "cannot execute" (the disabled-user case:
+// instance deleted/reclaimed). Transient read errors are logged and treated as
+// available so a cache hiccup never fabricates a failure.
+func (r *ReconcileScheduler) ownerInstanceMissing(ctx context.Context, owner string) error {
+	name := k8s.InstanceName(owner, v1alpha1.DefaultAgentName)
+	var inst v1alpha1.AgentInstance
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("owner %q has no agent-for-cloud instance (%s); run skipped", owner, name)
+		}
+		log.Printf("scheduler: lookup instance %s: %v", name, err)
+	}
+	return nil
+}
+
+// recordSkippedRun writes a Failed TaskRun for a fire that was skipped before
+// execution (owner instance missing) and advances the Task's due state so a
+// cron task does not re-fire (and re-fail) every reconcile.
+func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha1.Task, trigger string, reason error) {
+	run := NewTaskRun(task, trigger)
+	if err := r.Create(ctx, run); err != nil {
+		log.Printf("scheduler: create skipped taskrun %s: %v", task.Name, err)
+		return
+	}
+	now := metav1.Now()
+	patch := client.MergeFrom(run.DeepCopy()) // base = create response (empty status)
+	run.Status.Phase = v1alpha1.TaskRunFailed
+	run.Status.StartedAt = &now
+	run.Status.FinishedAt = &now
+	run.Status.Error = reason.Error()
+	if err := r.Status().Patch(ctx, run, patch); err != nil {
+		log.Printf("scheduler: patch skipped taskrun %s: %v", run.Name, err)
+	}
+
+	taskPatch := client.MergeFrom(task.DeepCopy())
+	lastRun := metav1.NewTime(time.Now())
+	task.Status.LastRunTime = &lastRun
+	task.Status.LastTaskRunName = run.Name
+	task.Status.LastStatus = "failed"
+	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
+		log.Printf("scheduler: patch task %s: %v", task.Name, err)
+	}
 }
 
 // NewTaskRun builds the TaskRun skeleton (design §3.3.4: creatorTaskRef links
