@@ -359,7 +359,7 @@ export default function AgentView() {
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
           <span className="card-title">Skills</span>
-          <span className="card-hint">From the skill catalog built into the instance image - toggles saved as preferences</span>
+          <span className="card-hint">Platform skills installed into your instance workspace - toggles write enabledSkills (synced on the next supervisor poll)</span>
         </div>
         <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
           <div className="skill-group">System Skills - built-in, cannot be disabled</div>
@@ -375,7 +375,7 @@ export default function AgentView() {
               System
             </span>
           </div>
-          <div className="skill-group">Platform Skills - Skill Catalog</div>
+          <div className="skill-group">Platform Skills</div>
           {skills.length ? (
             skills.map((sk) => (
               <div key={sk.name} className="toggle">

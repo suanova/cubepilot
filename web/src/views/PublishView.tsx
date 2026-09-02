@@ -1,4 +1,4 @@
-// Skills view -- publish a skill directory to the market and list what is
+// Publish view -- upload a skill directory to the market and list what is
 // published (issue #23). The directory is packed to a gzip tar client-side
 // (web/src/utils/pack.ts) and uploaded via the user-facing publish endpoint.
 import { useEffect, useRef, useState } from 'react'
@@ -14,7 +14,7 @@ function specStr(sk: PlatformObject, key: string): string {
   return typeof v === 'string' ? v : ''
 }
 
-export default function SkillsView() {
+export default function PublishView() {
   const [skills, setSkills] = useState<PlatformObject[]>([])
   const [listError, setListError] = useState('')
   const [name, setName] = useState('')
@@ -86,8 +86,8 @@ export default function SkillsView() {
     <div className="view active">
       <div className="view-head">
         <div>
-          <div className="view-title">Skills</div>
-          <div className="view-desc">Publish a skill directory to the market - installed into instances by the supervisor (issue #23)</div>
+          <div className="view-title">Publish</div>
+          <div className="view-desc">Upload a skill directory to the market - installed per instance from the Agent Config page</div>
         </div>
       </div>
 
