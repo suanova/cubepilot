@@ -35,20 +35,28 @@ var devEnvGVR = schema.GroupVersionResource{
 
 var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Label("chat"), func() {
 	ctx := context.Background()
+	var createdCRDs []string
 
 	BeforeEach(func() {
 		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
 		}
-		// The cubestack CRDs are installed at bring-up by scripts/setup.sh
-		// (vendored under deploy/cubestack/crds), not by this spec. Guard that
-		// they're present so a mis-configured cluster fails loudly here.
-		By("checking the cubestack CRDs are installed")
+		// Provision the CubeStack CRDs as a test precondition: install only
+		// the ones absent, and remember which ones WE created so cleanup never
+		// deletes CRDs that pre-existed in the cluster.
+		By("installing the cubestack CRDs (ai.cubestack.io) if absent")
+		var err error
+		createdCRDs, err = fw.InstallCubestackCRDs(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		// apiextensions establishes (starts serving) CRDs asynchronously; wait
+		// until devenvironments is served so the agent's first discovery/apply
+		// cannot hit "no matches for kind".
 		Eventually(func() error {
-			_, err := fw.ApiExtClient.ApiextensionsV1().CustomResourceDefinitions().
-				Get(ctx, "devenvironments.ai.cubestack.io", metav1.GetOptions{})
+			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+				List(ctx, metav1.ListOptions{})
 			return err
-		}).Should(Succeed(), "devenvironments.ai.cubestack.io should be installed (scripts/setup.sh)")
+		}, 60*time.Second).Should(Succeed())
 	})
 
 	AfterEach(func() {
@@ -66,6 +74,11 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 				Get(deleteCtx, devEnvName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err)
 		}).Should(BeTrue(), "DevEnvironment should be gone after delete")
+
+		// Remove only the CRDs this test created; any that pre-existed in the
+		// cluster (e.g. a real CubeStack deployment) are left alone.
+		By("removing only the cubestack CRDs created by this test")
+		Expect(fw.DeleteCubestackCRDs(ctx, createdCRDs)).To(Succeed())
 	})
 
 	It("creates a DevEnvironment from natural language via generic discovery", func() {

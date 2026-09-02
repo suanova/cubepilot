@@ -33,9 +33,9 @@ CHART_DIR    ?= deploy/charts/cubepilot
 KUBECONFIG   ?= $(HOME)/.kube/config
 
 # CubeStack target CRDs (DevEnvironment / InferenceService / ModelVersion /
-# InferenceRuntimeProfile), vendored under deploy/cubestack/crds.
+# InferenceRuntimeProfile), vendored for the e2e suite as a test precondition.
 CUBESTACK_REPO       ?= git@github.com:suanova/cubestack.git
-CUBESTACK_CRD_DIR    ?= deploy/cubestack/crds
+CUBESTACK_CRD_DIR    ?= test/e2e/framework/testdata/cubestack-crds
 CUBESTACK_CRD_BASES  ?= operator/config/crd/bases
 
 GO       ?= go
@@ -92,8 +92,9 @@ push:
 	$(DOCKER) push $(IMAGE_REGISTRY)/cubepilot-web:$(IMAGE_TAG)
 
 ## Refresh the vendored CubeStack CRDs from the upstream operator
-## (deploy/cubestack/crds). Re-run when suanova/cubestack's
-## operator/config/crd/bases changes; verify with git diff before committing.
+## (test/e2e/framework/testdata/cubestack-crds). Re-run when
+## suanova/cubestack's operator/config/crd/bases changes; verify with
+## git diff before committing.
 update-crds:
 	@rm -rf /tmp/cubestack-crds
 	@git clone --depth 1 $(CUBESTACK_REPO) /tmp/cubestack-crds

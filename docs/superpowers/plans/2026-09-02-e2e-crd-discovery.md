@@ -18,7 +18,7 @@
 - Commits: `git commit -s` (signoff) and append `Assisted-by: Claude Code`.
 - Code/comments in English.
 
-> **Revision (post-implementation feedback):** CRD install was moved out of the e2e Go code into stack bring-up. The four CubeStack CRDs are vendored under `deploy/cubestack/crds/`, applied by `scripts/setup.sh` when absent, and refreshed via the new `make update-crds` target. The chat spec (Task 4) no longer installs/deletes CRDs — it guards that `devenvironments.ai.cubestack.io` is present and chats with a natural-language user prompt (no CRD / kubectl / discovery jargon), asserting only the requested name/image/cpu/memory.
+> **Revision (post-implementation feedback):** The four CubeStack CRDs are provisioned by the TEST as a precondition, not by the platform deploy — cubepilot must not deploy/manage CubeStack CRDs (the CubeStack operator does, in production). They are vendored under `test/e2e/framework/testdata/cubestack-crds/` and refreshed via `make update-crds`. The chat spec (Task 4) installs only CRDs that are absent (create-if-absent), deletes only the ones it created (pre-existing CRDs are left alone), and chats with a natural-language user prompt (no CRD / kubectl / discovery jargon), asserting the requested name/image/cpu/memory.
 
 ---
 
