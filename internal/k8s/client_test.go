@@ -19,3 +19,19 @@ func TestEnvNameForModelNoCollision(t *testing.T) {
 		t.Errorf("same model mapped differently: %q vs %q", first, second)
 	}
 }
+
+// TestUserKubeconfigSecretFor verifies the per-user kubeconfig Secret name is
+// deterministic and DNS-1123 (issue #19 Option B).
+func TestUserKubeconfigSecretFor(t *testing.T) {
+	cases := map[string]string{
+		"zhang.wei": "zhang-wei-kubeconfig",
+		"Zhang Wei": "zhang-wei-kubeconfig",
+		"alice":     "alice-kubeconfig",
+		"":          "user-kubeconfig",
+	}
+	for in, want := range cases {
+		if got := UserKubeconfigSecretFor(in); got != want {
+			t.Errorf("UserKubeconfigSecretFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

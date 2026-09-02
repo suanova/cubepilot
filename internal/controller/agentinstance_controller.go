@@ -107,6 +107,16 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		Port:         int32(r.Cfg.AgentPort),
 		AgentUser:    inst.Spec.Owner,
 	}
+	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
+	// kubectl should run with the USER's own credentials. When the per-user
+	// kubeconfig Secret exists, mount it; otherwise fall back to the shared
+	// agent-kubeconfig so an un-provisioned deploy keeps the historical (SA)
+	// behaviour until per-user Secrets are created.
+	spec.UserKubeconfigSecret = k8s.UserKubeconfigSecretFor(inst.Spec.Owner)
+	if err := r.Get(ctx, types.NamespacedName{Name: spec.UserKubeconfigSecret, Namespace: r.Cfg.Namespace}, &corev1.Secret{}); err != nil {
+		log.Printf("controller: per-user kubeconfig secret %s unavailable (%v); agent kubectl falls back to SA identity", spec.UserKubeconfigSecret, err)
+		spec.UserKubeconfigSecret = ""
+	}
 	pvcName, size := inst.EffectiveDataVolume()
 	podName := k8s.ResourceName("agent", inst.Name)
 	svcName := podName
@@ -248,14 +258,17 @@ func (r *AgentInstanceReconciler) ensureService(ctx context.Context, svc *corev1
 
 // instanceSecurity captures the Pod spec fields that are both immutable after
 // creation and part of the design §6 minimum-privilege baseline: identity,
-// image, security contexts and resource limits. Config-derived fields (env,
-// mounts, probes) are deliberately excluded: the supervisor applies config
-// changes in place, so those must never trigger a Pod delete.
+// image, security contexts, resource limits and secret-backed volumes (the
+// kubeconfig mounts -- immutable and identity-bearing). Config-derived fields
+// (other env, non-secret mounts, probes) are deliberately excluded: the
+// supervisor applies config changes in place, so those must never trigger a
+// Pod delete.
 type instanceSecurity struct {
 	ServiceAccountName string
 	PodSecurityContext *corev1.PodSecurityContext
 	Containers         map[string]containerSecurity
 	InitContainers     map[string]containerSecurity
+	SecretVolumes      map[string]string
 }
 
 type containerSecurity struct {
@@ -272,12 +285,18 @@ func securityFingerprint(pod *corev1.Pod) instanceSecurity {
 		PodSecurityContext: pod.Spec.SecurityContext,
 		Containers:         map[string]containerSecurity{},
 		InitContainers:     map[string]containerSecurity{},
+		SecretVolumes:      map[string]string{},
 	}
 	for _, c := range pod.Spec.Containers {
 		f.Containers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
 	}
 	for _, c := range pod.Spec.InitContainers {
 		f.InitContainers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Secret != nil {
+			f.SecretVolumes[v.Name] = v.Secret.SecretName
+		}
 	}
 	return f
 }

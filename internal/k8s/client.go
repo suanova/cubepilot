@@ -23,6 +23,32 @@ const (
 	AgentLabelUser       = "cubepilot/user"
 )
 
+// Kubeconfig layout inside the agent Pod (design §5.3 / issue #19 Option B:
+// two kubeconfigs). The user's own kubeconfig is the DEFAULT so every
+// user-facing kubectl operation runs with the user's least-privilege
+// credentials; the platform (cubepilot-agent SA) kubeconfig lives on a
+// non-default path and is used explicitly only for CRD/kind schema discovery
+// via `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG ...`.
+const (
+	// UserKubeconfigPath is the per-user kubeconfig file at kubectl's default
+	// location ($HOME/.kube/config); mounted from the per-user Secret.
+	UserKubeconfigPath = "/home/node/.kube/config"
+	// PlatformKubeconfigPath is the second kubeconfig (cubepilot-agent SA /
+	// agent-kubeconfig), mounted for schema discovery.
+	PlatformKubeconfigPath = "/home/node/.kube/platform/config"
+	// PlatformKubeconfigEnv names the platform kubeconfig path for the skill
+	// recipe to reference.
+	PlatformKubeconfigEnv = "CUBEPILOT_PLATFORM_KUBECONFIG"
+	// UserKubeconfigEnv names the default (user) kubeconfig path.
+	UserKubeconfigEnv = "CUBEPILOT_USER_KUBECONFIG"
+)
+
+// UserKubeconfigSecretFor returns the per-user kubeconfig Secret name (key
+// "config"). Provisioned per user (e.g. by Helm/setup) as part of the
+// dual-kubeconfig model; when it does not exist the operator falls back to the
+// shared agent-kubeconfig (see AgentInstance controller).
+func UserKubeconfigSecretFor(user string) string { return Sanitize(user) + "-kubeconfig" }
+
 // Credential key delivery (design §6): the operator renders each model's
 // apiKey in openclaw.json as a file SecretRef pointing at a JSON file the
 // supervisor writes into an emptyDir (never onto the PVC or in the network

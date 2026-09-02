@@ -163,3 +163,72 @@ func TestPodForGatewayCache(t *testing.T) {
 		t.Errorf("volume %q is not an emptyDir", cacheMount.Name)
 	}
 }
+
+// TestPodForDualKubeconfig verifies the issue #19 dual-kubeconfig layout: the
+// default ~/.kube/config mounts the per-user kubeconfig Secret (falling back to
+// the shared agent-kubeconfig when unset), the platform (agent-kubeconfig) is
+// mounted on a secondary discovery path, and both paths are exposed as env so
+// the schema-discovery skill can pass --kubeconfig.
+func TestPodForDualKubeconfig(t *testing.T) {
+	t.Run("per-user secret present", func(t *testing.T) {
+		spec := testAgentSpec()
+		spec.UserKubeconfigSecret = "alice-kubeconfig"
+		pod := spec.PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+
+		assertKubeconfigVol(t, pod, "kubeconfig", "alice-kubeconfig", UserKubeconfigPath)
+		assertKubeconfigVol(t, pod, "platform-kubeconfig", KubeconfigSecretName, PlatformKubeconfigPath)
+		assertKubeconfigEnv(t, pod, UserKubeconfigEnv, UserKubeconfigPath)
+		assertKubeconfigEnv(t, pod, PlatformKubeconfigEnv, PlatformKubeconfigPath)
+	})
+
+	t.Run("no per-user secret -> SA fallback", func(t *testing.T) {
+		pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+		assertKubeconfigVol(t, pod, "kubeconfig", KubeconfigSecretName, UserKubeconfigPath)
+	})
+}
+
+// assertKubeconfigVol finds a Secret volume by name, checks its SecretName and
+// that the supervisor mounts it (SubPath config) at wantPath.
+func assertKubeconfigVol(t *testing.T, pod *corev1.Pod, volName, wantSecret, wantPath string) {
+	t.Helper()
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == volName {
+			vol = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if vol == nil {
+		t.Fatalf("pod has no volume %q", volName)
+	}
+	if vol.Secret == nil || vol.Secret.SecretName != wantSecret {
+		t.Errorf("volume %q secret = %+v, want %q", volName, vol.Secret, wantSecret)
+	}
+	found := false
+	for _, c := range pod.Spec.Containers {
+		for _, m := range c.VolumeMounts {
+			if m.Name == volName && m.MountPath == wantPath && m.SubPath == "config" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("volume %q not mounted at %s (subPath config)", volName, wantPath)
+	}
+}
+
+// assertKubeconfigEnv checks the supervisor carries a kubeconfig-path env var.
+func assertKubeconfigEnv(t *testing.T, pod *corev1.Pod, envName, want string) {
+	t.Helper()
+	for _, c := range pod.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == envName {
+				if e.Value != want {
+					t.Errorf("env %s = %q, want %q", envName, e.Value, want)
+				}
+				return
+			}
+		}
+	}
+	t.Errorf("container supervisor has no env %s", envName)
+}
