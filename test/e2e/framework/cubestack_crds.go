@@ -55,7 +55,7 @@ func (f *Framework) DeleteCubestackCRDs(ctx context.Context) error {
 		err := f.ApiExtClient.ApiextensionsV1().CustomResourceDefinitions().
 			Delete(ctx, name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			return err
+			return fmt.Errorf("delete %s: %w", name, err)
 		}
 	}
 	return nil

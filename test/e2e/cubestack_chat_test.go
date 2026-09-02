@@ -40,18 +40,30 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		}
 		By("installing the cubestack CRDs (ai.cubestack.io)")
 		Expect(fw.InstallCubestackCRDs(ctx)).To(Succeed())
+
+		// apiextensions establishes (starts serving) CRDs asynchronously; wait
+		// until devenvironments is served so the agent's first discovery/apply
+		// cannot hit "no matches for kind".
+		Eventually(func() error {
+			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+				List(ctx, metav1.ListOptions{})
+			return err
+		}, 60*time.Second).Should(Succeed())
 	})
 
 	AfterEach(func() {
+		deleteCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
 		By("deleting the DevEnvironment created by the chat")
 		err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
-			Delete(ctx, devEnvName, metav1.DeleteOptions{})
+			Delete(deleteCtx, devEnvName, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			Fail(fmt.Sprintf("delete DevEnvironment: %v", err))
 		}
 		Eventually(func() bool {
 			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
-				Get(ctx, devEnvName, metav1.GetOptions{})
+				Get(deleteCtx, devEnvName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err)
 		}).Should(BeTrue(), "DevEnvironment should be gone after delete")
 
@@ -84,16 +96,16 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		Expect(foundDone).To(BeTrue(), "message_done should terminate the turn")
 		Expect(done["error"]).To(SatisfyAny(BeNil(), BeEmpty()), "message_done should carry no error")
 
-		// Evidence the agent kubectl-applied the *discovered* kind (generic
+		// Evidence the agent referenced the *discovered* kind (generic
 		// discovery, not a per-CRD skill).
-		var applied bool
+		var referenced bool
 		for _, ev := range events {
 			if ev.Event == openclaw.EventToolCall &&
 				strings.Contains(strings.ToLower(string(ev.Data)), "devenvironment") {
-				applied = true
+				referenced = true
 			}
 		}
-		Expect(applied).To(BeTrue(), "the agent should have kubectl-applied a DevEnvironment (discovery evidence)")
+		Expect(referenced).To(BeTrue(), "the agent should have referenced the DevEnvironment kind (discovery evidence)")
 
 		// The CR must exist with the requested spec.
 		Eventually(func() error {
@@ -108,6 +120,9 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		spec, ok := obj.Object["spec"].(map[string]any)
 		Expect(ok).To(BeTrue(), "DevEnvironment should carry a spec")
 		Expect(spec["image"]).To(Equal(devEnvImage))
-		Expect(spec["resources"]).NotTo(BeNil())
+		res, ok := spec["resources"].(map[string]any)
+		Expect(ok).To(BeTrue(), "DevEnvironment spec.resources should be an object")
+		Expect(res["cpu"]).To(Equal("4"))
+		Expect(res["memory"]).To(Equal("16Gi"))
 	})
 })

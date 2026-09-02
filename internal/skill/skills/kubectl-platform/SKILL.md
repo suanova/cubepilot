@@ -45,9 +45,8 @@ Platform CRDs live under the `ai.cubestack.io` group (`DevEnvironment`, `Inferen
    spec:
      image: pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
      resources:
-       requests:
-         cpu: "4"
-         memory: 16Gi
+       cpu: "4"
+       memory: 16Gi
    EOF
    ```
 

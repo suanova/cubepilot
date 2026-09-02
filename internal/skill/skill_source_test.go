@@ -55,9 +55,13 @@ func TestKubectlPlatformSkillTeachesDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read kubectl-platform skill: %v", err)
 	}
+	text := string(raw)
 	for _, want := range []string{"api-resources", "--dry-run=server"} {
-		if !strings.Contains(string(raw), want) {
+		if !strings.Contains(text, want) {
 			t.Errorf("kubectl-platform SKILL.md should mention %q (schema discovery)", want)
 		}
+	}
+	if strings.Contains(text, "resources.requests") {
+		t.Errorf("kubectl-platform SKILL.md example should use the flat resources shape (cpu/memory), not requests/limits")
 	}
 }
