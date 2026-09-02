@@ -123,7 +123,7 @@ spec:
   instructions: |
     你是 CubeStack 平台管理助手。优先使用已登记能力；
     不确定资源或权限时先解释并请求用户澄清。
-  skills: [dev-environment, inference-service, cluster-inspection]   # 引用技能（技能市场发布，见 §3.4）
+  skills: [kubectl-platform, cluster-inspection]   # 引用技能（技能市场发布，见 §3.4）
   confirmPolicy: ConfirmWrites            # 确认策略：写操作需用户确认（读直放）
 ```
 
@@ -142,7 +142,7 @@ spec:
   owner: zhang.wei
   templateRef: agent-for-cloud           # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
   selectedModel: deepseek-v4-flash         # 从模板 models 里选（覆盖 defaultModel）
-  enabledSkills: [dev-environment, inference-service, cluster-inspection]   # 启用的 skill 子集
+  enabledSkills: [kubectl-platform, cluster-inspection]   # 启用的 skill 子集
   userInstructions: "回答尽量简洁，使用中文。"
   dataVolume: { pvc: pvc-zhang-wei-agent-for-cloud }
   identity: { mode: user, principalRef: { userRef: zhang.wei } }

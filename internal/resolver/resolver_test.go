@@ -178,7 +178,7 @@ func TestResolveEnabledSkills(t *testing.T) {
 	r := testResolver(t,
 		inst,
 		skillWithSource("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
-		skillWithSource("dev-environment", "skills/dev-environment/v1.tar.gz"),
+		skillWithSource("kubectl-platform", "skills/kubectl-platform/v1.tar.gz"),
 	)
 	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
 	if err != nil {

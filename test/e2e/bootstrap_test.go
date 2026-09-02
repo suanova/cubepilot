@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 var _ = Describe("Builtin bootstrap", func() {
@@ -43,6 +45,13 @@ var _ = Describe("Builtin bootstrap", func() {
 	})
 
 	It("bootstraps builtin skills and the daily-inspection task template", func() {
+		// The seeded set must match the embedded builtin set exactly (issue
+		// #86: only cluster-inspection + kubectl-platform after the drop).
+		want := map[string]bool{}
+		for _, n := range skill.BuiltinSkillNames() {
+			want[n] = true
+		}
+
 		var list v1alpha1.SkillList
 		Eventually(func() error {
 			if err := fw.CtrlClient.List(ctx, &list); err != nil {
@@ -55,6 +64,13 @@ var _ = Describe("Builtin bootstrap", func() {
 				if s.Labels["cubepilot/builtin"] != "true" {
 					return fmt.Errorf("skill %s missing builtin label", s.Name)
 				}
+			}
+			got := map[string]bool{}
+			for _, s := range list.Items {
+				got[s.Name] = true
+			}
+			if !maps.Equal(got, want) {
+				return fmt.Errorf("seeded skills %v, want %v", got, want)
 			}
 			return nil
 		}).Should(Succeed())

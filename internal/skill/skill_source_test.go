@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,8 +13,6 @@ func TestBuiltinSkillNames(t *testing.T) {
 	names := BuiltinSkillNames()
 	want := map[string]bool{
 		"cluster-inspection": true,
-		"dev-environment":    true,
-		"inference-service":  true,
 		"kubectl-platform":   true,
 	}
 	if len(names) != len(want) {
@@ -45,5 +44,24 @@ func TestPackBuiltinSkill(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "SKILL.md")); err != nil {
 			t.Errorf("PackBuiltinSkill(%q) has no SKILL.md: %v", name, err)
 		}
+	}
+}
+
+// TestKubectlPlatformSkillTeachesDiscovery verifies the built-in generic
+// skill teaches schema discovery (design §5.3), so the agent can operate any
+// CRD without a per-CRD skill (issue #86).
+func TestKubectlPlatformSkillTeachesDiscovery(t *testing.T) {
+	raw, err := skillsFS.ReadFile("skills/kubectl-platform/SKILL.md")
+	if err != nil {
+		t.Fatalf("read kubectl-platform skill: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{"api-resources", "--dry-run=server"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("kubectl-platform SKILL.md should mention %q (schema discovery)", want)
+		}
+	}
+	if strings.Contains(text, "resources.requests") {
+		t.Errorf("kubectl-platform SKILL.md example should use the flat resources shape (cpu/memory), not requests/limits")
 	}
 }

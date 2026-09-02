@@ -179,9 +179,7 @@ func DefaultAgentConfig() AgentConfig {
 		Model: "deepseek-v4-flash",
 		Skills: []SkillToggle{
 			{Name: "kubectl-platform", Enabled: true},
-			{Name: "dev-environment", Enabled: true},
-			{Name: "inference-service", Enabled: true},
-			{Name: "inspection", Enabled: true},
+			{Name: "cluster-inspection", Enabled: true},
 		},
 	}
 }
