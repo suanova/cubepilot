@@ -384,7 +384,7 @@ export default function AgentView() {
                     {SKILL_LABELS[sk.name] || sk.name}{' '}
                     <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(sk.name)}</span>
                   </div>
-                  <div className="toggle-desc">From the skill catalog built into the instance image - toggles saved as preferences</div>
+                  <div className="toggle-desc">From the platform skill catalog - toggling syncs your instance enabledSkills on the next supervisor poll</div>
                 </div>
                 <button
                   className="switch"
