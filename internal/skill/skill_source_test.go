@@ -12,8 +12,6 @@ func TestBuiltinSkillNames(t *testing.T) {
 	names := BuiltinSkillNames()
 	want := map[string]bool{
 		"cluster-inspection": true,
-		"dev-environment":    true,
-		"inference-service":  true,
 		"kubectl-platform":   true,
 	}
 	if len(names) != len(want) {

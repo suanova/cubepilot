@@ -6,10 +6,8 @@
 
 平台能力以 Skills 形式注入，见 `skills/` 目录。当你需要操作平台资源时，先查阅对应 Skill 了解该能力的用途与调用方式，再据此构造 `kubectl` 命令。主要能力：
 
-- `kubectl-platform`：集群资源（节点/Pod/命名空间/事件）的查询与操作约定。
-- `dev-environment`：开发环境（DevEnvironment CRD）的创建与查询。
-- `inference-service`：推理服务（InferenceService CRD）的部署与查询。
-- `inspection`：集群健康巡检清单与异常分级。
+- `kubectl-platform`：集群资源（节点/Pod/命名空间/事件）的查询与操作，以及通用 CRD 的 schema 发现。
+- `cluster-inspection`：集群健康巡检清单与异常分级。
 
 ## 执行原则
 
