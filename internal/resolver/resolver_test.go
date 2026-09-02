@@ -268,6 +268,7 @@ func TestResolveUserInstructionsComposition(t *testing.T) {
 // template instructions is used verbatim (no stray leading separator), and an
 // empty user instruction leaves the template prompt untouched.
 func TestResolveUserInstructionsOnly(t *testing.T) {
+	// No template instructions: user text is used verbatim (no leading "\n\n").
 	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
 	inst.Spec.UserInstructions = "only user text"
 	r := testResolver(t,
@@ -282,5 +283,19 @@ func TestResolveUserInstructionsOnly(t *testing.T) {
 	}
 	if cfg.Instructions != "only user text" {
 		t.Errorf("instructions = %q, want %q (no template prompt)", cfg.Instructions, "only user text")
+	}
+
+	// Empty user instructions: the template prompt is preserved untouched.
+	inst2 := instance("zhang.wei", v1alpha1.DefaultAgentName, "")
+	r2 := testResolver(t,
+		template(v1alpha1.DefaultAgentName, nil),
+		inst2,
+	)
+	cfg2, err := r2.ResolveForUser(context.Background(), "zhang.wei")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if cfg2.Instructions != "You are the platform assistant." {
+		t.Errorf("instructions = %q, want the untouched template prompt", cfg2.Instructions)
 	}
 }
