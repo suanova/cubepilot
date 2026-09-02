@@ -1,0 +1,113 @@
+package e2e
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/rand"
+
+	"github.com/suanova/cubepilot/internal/openclaw"
+)
+
+const (
+	devEnvName      = "dev-cuda-e2e"
+	devEnvNamespace = "default"
+	devEnvImage     = "pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime"
+)
+
+// devEnvGVR is the DevEnvironment kind under the cubestack ai.cubestack.io
+// group (not part of the platform's v1alpha1 scheme, so asserted via the
+// dynamic client).
+var devEnvGVR = schema.GroupVersionResource{
+	Group: "ai.cubestack.io", Version: "v1alpha1", Resource: "devenvironments",
+}
+
+var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Label("chat"), func() {
+	ctx := context.Background()
+
+	BeforeEach(func() {
+		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
+			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
+		}
+		By("installing the cubestack CRDs (ai.cubestack.io)")
+		Expect(fw.InstallCubestackCRDs(ctx)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		By("deleting the DevEnvironment created by the chat")
+		err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+			Delete(ctx, devEnvName, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			Fail(fmt.Sprintf("delete DevEnvironment: %v", err))
+		}
+		Eventually(func() bool {
+			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+				Get(ctx, devEnvName, metav1.GetOptions{})
+			return apierrors.IsNotFound(err)
+		}).Should(BeTrue(), "DevEnvironment should be gone after delete")
+
+		By("removing the cubestack CRDs")
+		Expect(fw.DeleteCubestackCRDs(ctx)).To(Succeed())
+	})
+
+	It("creates a DevEnvironment from natural language via generic discovery", func() {
+		chatCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+
+		prompt := fmt.Sprintf(
+			"请创建以下开发环境（DevEnvironment）：\n- 名称：%s\n- 命名空间：%s\n- 镜像：%s\n- 资源请求：cpu 4、内存 16Gi\n"+
+				"请先用 kubectl api-resources 发现该 CRD 的 kind 与 apiVersion，必要时用 kubectl explain 或 kubectl apply --dry-run=server 确认字段，"+
+				"再用 kubectl apply 创建。不要修改名称、命名空间或镜像。",
+			devEnvName, devEnvNamespace, devEnvImage)
+
+		events, err := fw.ChatSSE(chatCtx, fw.Users[0], "e2e-"+rand.String(6), prompt)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The turn must finish cleanly (message_done with no error).
+		var done map[string]any
+		foundDone := false
+		for _, ev := range events {
+			if ev.Event == openclaw.EventMessageDone {
+				foundDone = true
+				Expect(json.Unmarshal(ev.Data, &done)).To(Succeed())
+			}
+		}
+		Expect(foundDone).To(BeTrue(), "message_done should terminate the turn")
+		Expect(done["error"]).To(SatisfyAny(BeNil(), BeEmpty()), "message_done should carry no error")
+
+		// Evidence the agent kubectl-applied the *discovered* kind (generic
+		// discovery, not a per-CRD skill).
+		var applied bool
+		for _, ev := range events {
+			if ev.Event == openclaw.EventToolCall &&
+				strings.Contains(strings.ToLower(string(ev.Data)), "devenvironment") {
+				applied = true
+			}
+		}
+		Expect(applied).To(BeTrue(), "the agent should have kubectl-applied a DevEnvironment (discovery evidence)")
+
+		// The CR must exist with the requested spec.
+		Eventually(func() error {
+			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+				Get(ctx, devEnvName, metav1.GetOptions{})
+			return err
+		}).Should(Succeed(), "DevEnvironment %s/%s should exist", devEnvNamespace, devEnvName)
+
+		obj, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
+			Get(ctx, devEnvName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		spec, ok := obj.Object["spec"].(map[string]any)
+		Expect(ok).To(BeTrue(), "DevEnvironment should carry a spec")
+		Expect(spec["image"]).To(Equal(devEnvImage))
+		Expect(spec["resources"]).NotTo(BeNil())
+	})
+})
