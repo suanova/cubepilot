@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -174,4 +175,286 @@ func TestNextDueDisabled(t *testing.T) {
 		t.Error("task should be disabled")
 	}
 	_ = r
+}
+
+// errorRunner produces a partial report and then fails, simulating an agent
+// turn that produced output but did not complete (design §3.3.4: Failed).
+type errorRunner struct {
+	gotPrompt string
+	gotUser   string
+}
+
+func (f *errorRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	f.gotUser = creator
+	f.gotPrompt = prompt
+	return "### P0 -- node NotReady\nEvidence: kubectl get nodes", errors.New("agent turn failed: context deadline")
+}
+
+// TestSchedulerRunFailed verifies the Failed state-machine transition: the
+// TaskRun records the error and any partial content, the severity summary is
+// still computed, and the Task's last run status is "failed".
+func TestSchedulerRunFailed(t *testing.T) {
+	scheme := testScheme(t)
+	runner := &errorRunner{}
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-2 * time.Minute))
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only, grade findings as P0/P1/P2; scope {{scope}}",
+		},
+	}
+	if err := cl.Create(context.Background(), tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if run.Status.Phase != v1alpha1.TaskRunFailed {
+		t.Errorf("phase = %s, want Failed", run.Status.Phase)
+	}
+	if run.Status.Error == "" || !strings.Contains(run.Status.Error, "agent turn failed") {
+		t.Errorf("error = %q, want agent turn failure recorded", run.Status.Error)
+	}
+	if !strings.Contains(run.Status.Content, "P0") {
+		t.Errorf("content = %q, want partial output retained", run.Status.Content)
+	}
+	if run.Status.Summary == nil || run.Status.Summary.P0 != 1 {
+		t.Errorf("summary = %+v, want P0=1 despite failure", run.Status.Summary)
+	}
+
+	var got v1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastStatus != "failed" {
+		t.Errorf("task.lastStatus = %q, want failed", got.Status.LastStatus)
+	}
+	if got.Status.LastTaskRunName != run.Name {
+		t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
+	}
+}
+
+// TestManualRunAnnotationFiresEvenWhenPaused verifies an explicit manual run
+// (API sets cubepilot/manual-run) fires even for a paused task, records the
+// run with trigger=Manual, and clears the annotation so a reconcile retry
+// cannot fire it twice (design §3.5: the API never writes TaskRuns -- the
+// scheduler owns execution).
+func TestManualRunAnnotationFiresEvenWhenPaused(t *testing.T) {
+	scheme := testScheme(t)
+	runner := &fakeRunner{}
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-2 * time.Minute))
+	task.Spec.State = v1alpha1.TaskStatePaused
+	task.Annotations = map[string]string{
+		v1alpha1.TaskManualRunAnnotation: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only, grade findings as P0/P1/P2",
+		},
+	}
+	if err := cl.Create(context.Background(), tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1 (manual run fired despite paused)", len(runs.Items))
+	}
+	if runs.Items[0].Spec.Trigger != "Manual" {
+		t.Errorf("run trigger = %q, want Manual", runs.Items[0].Spec.Trigger)
+	}
+	if runs.Items[0].Status.Phase != v1alpha1.TaskRunCompleted {
+		t.Errorf("phase = %s, want Completed", runs.Items[0].Status.Phase)
+	}
+
+	// The manual-run annotation must be cleared so a retry does not re-fire.
+	var got v1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Annotations[v1alpha1.TaskManualRunAnnotation]; ok {
+		t.Errorf("manual-run annotation not cleared after firing")
+	}
+}
+
+// TestPausedTaskDoesNotFire verifies a paused task without a manual-run
+// annotation never fires: no TaskRun is created and the task status is marked
+// Paused (design §3.5: Paused never fires).
+func TestPausedTaskDoesNotFire(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-26 * time.Hour)) // would be long due if enabled
+	task.Spec.State = v1alpha1.TaskStatePaused
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: &fakeRunner{}, // must not be invoked
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("taskruns = %d, want 0 for a paused task", len(runs.Items))
+	}
+
+	var got v1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != v1alpha1.TaskPhasePaused {
+		t.Errorf("task phase = %s, want Paused", got.Status.Phase)
+	}
+}
+
+// TestNotDueTaskDoesNotFire verifies a task whose next fire is still in the
+// future does not create a TaskRun.
+func TestNotDueTaskDoesNotFire(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now()) // created now -> next minute boundary is in the future
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: &fakeRunner{},
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("taskruns = %d, want 0 (not due yet)", len(runs.Items))
+	}
+}
+
+// TestManualOnlyTaskDoesNotFire verifies a Manual-trigger task without a
+// manual-run annotation is a no-op for the scheduler (it fires only through
+// the API annotation path).
+func TestManualOnlyTaskDoesNotFire(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-2 * time.Minute))
+	task.Spec.Trigger = v1alpha1.TaskTriggerManual
+	task.Spec.Cron = ""
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: &fakeRunner{},
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("taskruns = %d, want 0 for manual-only without annotation", len(runs.Items))
+	}
+}
+
+// TestNewTaskRunSkeleton verifies the TaskRun record skeleton: it starts
+// Pending and denormalizes creatorTaskRef / owner / trigger plus the task
+// label for lookup (design §3.3.4).
+func TestNewTaskRunSkeleton(t *testing.T) {
+	task := dueTask(time.Now())
+	task.UID = types.UID("uid-123")
+
+	run := NewTaskRun(task, "Cron")
+
+	if run.Status.Phase != v1alpha1.TaskRunPending {
+		t.Errorf("phase = %s, want Pending", run.Status.Phase)
+	}
+	if !strings.HasPrefix(run.Name, task.Name+"-") {
+		t.Errorf("name = %q, want prefix %q", run.Name, task.Name+"-")
+	}
+	if run.Spec.CreatorTaskRef.Name != task.Name {
+		t.Errorf("creatorTaskRef.name = %q, want %q", run.Spec.CreatorTaskRef.Name, task.Name)
+	}
+	if run.Spec.CreatorTaskRef.UID != "uid-123" {
+		t.Errorf("creatorTaskRef.uid = %q, want uid-123", run.Spec.CreatorTaskRef.UID)
+	}
+	if run.Spec.Owner != "zhang.wei" {
+		t.Errorf("owner = %q, want zhang.wei", run.Spec.Owner)
+	}
+	if run.Spec.Trigger != "Cron" {
+		t.Errorf("trigger = %q, want Cron", run.Spec.Trigger)
+	}
+	if run.Labels["cubepilot/task"] != task.Name {
+		t.Errorf("label cubepilot/task = %q, want %q", run.Labels["cubepilot/task"], task.Name)
+	}
 }
