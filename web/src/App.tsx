@@ -13,7 +13,7 @@ const VIEW_TITLES: Record<string, string> = {
   tasks: 'Scheduled Tasks',
   audit: 'Audit',
   agent: 'Agent Config',
-  publish: 'Publish',
+  publish: 'Publisher',
 }
 
 function BucketIcon() {
@@ -118,7 +118,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/publish" className={navCls}>
             <SkillIcon />
-            <span>Publish</span>
+            <span>Publisher</span>
           </NavLink>
         </nav>
         <div className="sidebar-foot">

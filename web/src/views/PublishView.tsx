@@ -86,8 +86,8 @@ export default function PublishView() {
     <div className="view active">
       <div className="view-head">
         <div>
-          <div className="view-title">Publish</div>
-          <div className="view-desc">Upload a skill directory to the market - installed per instance from the Agent Config page</div>
+          <div className="view-title">Publisher</div>
+          <div className="view-desc">Publish skills to the platform catalog - installed per instance from the Agent Config page</div>
         </div>
       </div>
 
