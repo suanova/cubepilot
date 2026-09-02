@@ -79,4 +79,10 @@ export const api = {
       `/api/skills/${encodeURIComponent(name)}/publish?displayName=${encodeURIComponent(opts.displayName)}${opts.description ? `&description=${encodeURIComponent(opts.description)}` : ''}`,
       { method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: tar },
     ),
+  installSkill: (name: string) =>
+    apiFetch<{ enabledSkills: string[] }>(`/api/skills/${encodeURIComponent(name)}/install`, { method: 'POST' })
+      .then((d) => d.enabledSkills),
+  uninstallSkill: (name: string) =>
+    apiFetch<{ enabledSkills: string[] }>(`/api/skills/${encodeURIComponent(name)}/uninstall`, { method: 'POST' })
+      .then((d) => d.enabledSkills),
 }

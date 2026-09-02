@@ -4,7 +4,7 @@ import ChatView from '@/views/ChatView'
 import TasksView from '@/views/TasksView'
 import AuditView from '@/views/AuditView'
 import AgentView from '@/views/AgentView'
-import SkillsView from '@/views/SkillsView'
+import PublishView from '@/views/PublishView'
 import { useToast } from '@/stores/toast'
 import { getCurrentUser } from '@/api/client'
 
@@ -13,7 +13,7 @@ const VIEW_TITLES: Record<string, string> = {
   tasks: 'Scheduled Tasks',
   audit: 'Audit',
   agent: 'Agent Config',
-  skills: 'Skills',
+  publish: 'Publisher',
 }
 
 function BucketIcon() {
@@ -116,9 +116,9 @@ export default function App() {
             <AgentIcon />
             <span>Agent Config</span>
           </NavLink>
-          <NavLink to="/skills" className={navCls}>
+          <NavLink to="/publish" className={navCls}>
             <SkillIcon />
-            <span>Skills</span>
+            <span>Publisher</span>
           </NavLink>
         </nav>
         <div className="sidebar-foot">
@@ -153,7 +153,7 @@ export default function App() {
             <Route path="/tasks" element={<TasksView />} />
             <Route path="/audit" element={<AuditView />} />
             <Route path="/agent" element={<AgentView />} />
-            <Route path="/skills" element={<SkillsView />} />
+            <Route path="/publish" element={<PublishView />} />
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api } from '@/api'
 import type { AgentConfig, AgentStatus } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
+import { enabledSkillsFromInstances } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
 
 const SKILL_LABELS: Record<string, string> = {
@@ -11,6 +12,10 @@ const SKILL_LABELS: Record<string, string> = {
   'inference-service': 'Inference Service',
   inspection: 'Smart Inspection',
 }
+
+// kubectl-platform is shown locked in the System section; keep it out of the
+// toggleable Platform-skills list.
+const LOCKED_SYSTEM_SKILLS = ['kubectl-platform']
 
 interface TemplateModel {
   name: string
@@ -32,6 +37,7 @@ export default function AgentView() {
   const [cfg, setCfg] = useState<AgentConfig>({})
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [skills, setSkills] = useState<Array<{ name: string; enabled: boolean }>>([])
+  const [hasInstance, setHasInstance] = useState(false)
   const [provisioning, setProvisioning] = useState(false)
   const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
   const [defaultModel, setDefaultModel] = useState('')
@@ -55,13 +61,30 @@ export default function AgentView() {
     }
   }
 
+  // The toggle list comes from the real enabledSkills (AgentInstance CR); an
+  // empty set is the resolver's "all enabled" baseline. Without an instance
+  // there is no workspace to install into, so the toggles are all off instead.
+  async function loadSkills() {
+    try {
+      const [skillList, instances] = await Promise.all([api.listSkills(), api.listInstances()])
+      const has = instances.length > 0
+      setHasInstance(has)
+      const enabled = has ? enabledSkillsFromInstances(instances) : []
+      const on = !has ? new Set<string>() : enabled.length === 0 ? new Set(skillList.map((s) => s.metadata.name)) : new Set(enabled)
+      const toggleable = skillList.filter((sk) => sk.status?.phase !== 'Unreachable' && !LOCKED_SYSTEM_SKILLS.includes(sk.metadata.name))
+      setSkills(toggleable.map((sk) => ({ name: sk.metadata.name, enabled: on.has(sk.metadata.name) })))
+    } catch (e) {
+      console.error('loadSkills', e)
+    }
+  }
+
   async function loadAgentView() {
     try {
       const [c, st] = await Promise.all([api.agentConfig(), api.agentStatus()])
       setCfg(c)
       setStatus(st)
-      setSkills(c.skills || [])
       await loadTemplate()
+      await loadSkills()
     } catch (e) {
       console.error('loadAgentView', e)
     }
@@ -86,8 +109,25 @@ export default function AgentView() {
     }
   }
 
-  function toggleSkill(name: string) {
-    setSkills((prev) => prev.map((s) => (s.name === name ? { ...s, enabled: !s.enabled } : s)))
+  // Toggle writes the real enabledSkills (install/uninstall); the supervisor
+  // picks it up on its next sync. Errors surface via toast.
+  async function toggleSkill(name: string) {
+    const cur = skills.find((s) => s.name === name)
+    if (!cur) return
+    if (!hasInstance) {
+      showToast('Provision your instance on the Agent Config page first')
+      return
+    }
+    try {
+      if (cur.enabled) {
+        await api.uninstallSkill(name)
+      } else {
+        await api.installSkill(name)
+      }
+      await loadSkills()
+    } catch (e) {
+      showToast('Skill update failed: ' + (e instanceof Error ? e.message : String(e)))
+    }
   }
 
   async function saveAgentConfig() {
@@ -98,7 +138,9 @@ export default function AgentView() {
       return
     }
     try {
-      await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt, skills })
+      // Skills are persisted by the toggle above (enabledSkills); the store
+      // preference is inert, so the save is model + systemPrompt only.
+      await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt })
       showToast('Config saved - system prompt takes effect immediately')
     } catch (e) {
       showToast('Save failed: ' + e)
@@ -317,7 +359,7 @@ export default function AgentView() {
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
           <span className="card-title">Skills</span>
-          <span className="card-hint">From the skill catalog built into the instance image - toggles saved as preferences</span>
+          <span className="card-hint">Platform skills installed into your instance workspace - toggles write enabledSkills (synced on the next supervisor poll)</span>
         </div>
         <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
           <div className="skill-group">System Skills - built-in, cannot be disabled</div>
@@ -333,7 +375,7 @@ export default function AgentView() {
               System
             </span>
           </div>
-          <div className="skill-group">Platform Skills - Skill Catalog</div>
+          <div className="skill-group">Platform Skills</div>
           {skills.length ? (
             skills.map((sk) => (
               <div key={sk.name} className="toggle">
@@ -342,7 +384,7 @@ export default function AgentView() {
                     {SKILL_LABELS[sk.name] || sk.name}{' '}
                     <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(sk.name)}</span>
                   </div>
-                  <div className="toggle-desc">From the skill catalog built into the instance image - toggles saved as preferences</div>
+                  <div className="toggle-desc">From the platform skill catalog - toggling syncs your instance enabledSkills on the next supervisor poll</div>
                 </div>
                 <button
                   className="switch"
