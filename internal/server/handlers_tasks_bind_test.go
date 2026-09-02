@@ -97,6 +97,31 @@ func TestCreateTaskBindsTemplateDefaults(t *testing.T) {
 	}
 }
 
+// TestCreateTaskManualTemplateNotDefaulted verifies that an explicit empty
+// schedule (Manual) on a template-bound task stays Manual -- only an omitted
+// schedule receives the template's defaultCron fallback.
+func TestCreateTaskManualTemplateNotDefaulted(t *testing.T) {
+	s := platformTestServer(t, inspectionTemplate())
+
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/tasks", "zhang.wei", map[string]any{
+		"name":        "Manual inspection",
+		"templateRef": "daily-inspection",
+		"schedule":    "", // explicit empty == Manual
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	got := decode[struct {
+		Task taskDTO `json:"task"`
+	}](t, rec).Task
+	if got.TemplateRef != "daily-inspection" {
+		t.Errorf("templateRef = %q, want daily-inspection", got.TemplateRef)
+	}
+	if got.Schedule != "" {
+		t.Errorf("schedule = %q, want empty (Manual must not inherit defaultCron)", got.Schedule)
+	}
+}
+
 // TestCreateTaskFreeFormStillWorks verifies the no-template path is unchanged:
 // name + prompt creates an inline Manual task with no templateRef.
 func TestCreateTaskFreeFormStillWorks(t *testing.T) {
@@ -130,6 +155,8 @@ func TestCreateTaskRejectsBadBindings(t *testing.T) {
 		{name: "unknown template", body: map[string]any{"name": "x", "templateRef": "nope"}},
 		{name: "unknown param key", body: map[string]any{"name": "x", "templateRef": "daily-inspection", "params": map[string]string{"bogus": "1"}}},
 		{name: "params without template", body: map[string]any{"name": "x", "prompt": "p", "params": map[string]string{"scope": "all"}}},
+		{name: "whitespace-only templateRef", body: map[string]any{"name": "x", "templateRef": "   "}},
+		{name: "non-enum param value", body: map[string]any{"name": "x", "templateRef": "daily-inspection", "params": map[string]string{"scope": "unapproved"}}},
 	}
 	s := platformTestServer(t, inspectionTemplate())
 	for _, tc := range cases {

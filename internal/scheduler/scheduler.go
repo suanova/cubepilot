@@ -287,6 +287,10 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 	run.Status.Error = reason.Error()
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
 		log.Printf("scheduler: patch skipped taskrun %s: %v", run.Name, err)
+		// The TaskRun was not recorded as Failed, so do not treat this cron
+		// occurrence as handled (no LastRun advance): the next reconcile retries
+		// the status write instead of silently dropping the failure record.
+		return
 	}
 
 	taskPatch := client.MergeFrom(task.DeepCopy())

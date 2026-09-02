@@ -152,7 +152,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name        string            `json:"name"`
 			Prompt      string            `json:"prompt"`
-			Schedule    string            `json:"schedule"`
+			Schedule    *string           `json:"schedule"` // omitted == use template default; explicit "" == Manual
 			TemplateRef string            `json:"templateRef"`
 			Params      map[string]string `json:"params"`
 			State       string            `json:"state"`
@@ -164,7 +164,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Name = strings.TrimSpace(body.Name)
 		body.Prompt = strings.TrimSpace(body.Prompt)
-		body.Schedule = strings.TrimSpace(body.Schedule)
+		body.TemplateRef = strings.TrimSpace(body.TemplateRef)
+		cronExpr := ""
+		scheduleProvided := body.Schedule != nil
+		if body.Schedule != nil {
+			cronExpr = strings.TrimSpace(*body.Schedule)
+		}
 		if body.Name == "" || (body.Prompt == "" && body.TemplateRef == "") {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and a prompt or template are required"})
 			return
@@ -173,7 +178,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// TaskTemplate (templateRef + params; at fire time the scheduler renders
 		// the template's current instruction and records the revision used) or
 		// is a free-form inline task (instruction only, no templateRef).
-		templateRef := strings.TrimSpace(body.TemplateRef)
+		templateRef := body.TemplateRef
 		instruction := body.Prompt
 		params := body.Params
 		if templateRef != "" {
@@ -192,18 +197,19 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			// and as the fallback if the template is later deleted); the
 			// operator re-renders from the template at fire time.
 			instruction = renderTaskInstruction(tpl.Spec.Instruction, params)
-			// Default the schedule from the template when the caller passed
-			// none (an explicit schedule wins).
-			if body.Schedule == "" && tpl.Spec.DefaultCron != "" {
-				body.Schedule = tpl.Spec.DefaultCron
+			// Default the schedule from the template only when the caller
+			// omitted it entirely. An explicit empty schedule means Manual and
+			// must stay Manual; an explicit cron expression wins.
+			if !scheduleProvided && tpl.Spec.DefaultCron != "" {
+				cronExpr = tpl.Spec.DefaultCron
 			}
 		} else if len(body.Params) > 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "params require a template (templateRef)"})
 			return
 		}
 		trigger := v1alpha1.TaskTriggerManual
-		if body.Schedule != "" {
-			if _, err := schedule.Parse(body.Schedule); err != nil {
+		if cronExpr != "" {
+			if _, err := schedule.Parse(cronExpr); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid cron expression: %v", err)})
 				return
 			}
@@ -234,7 +240,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				Params:      params,
 				Owner:       s.userOf(r),
 				Trigger:     trigger,
-				Cron:        body.Schedule,
+				Cron:        cronExpr,
 				State:       state,
 			},
 		}
@@ -249,9 +255,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveTemplateParams merges the template's declared param defaults with the
-// caller's params and rejects keys the template does not declare (design
-// §3.3.2: paramsSchema is the parameter contract). An empty caller value falls
-// back to the schema default.
+// caller's params and rejects values the template does not allow: an unknown
+// key, or a non-empty value outside a declared ParamSchema.Enum (design §3.3.2:
+// paramsSchema is the parameter contract). An empty caller value falls back to
+// the schema default.
 func resolveTemplateParams(schema []v1alpha1.ParamSchema, params map[string]string) (map[string]string, error) {
 	merged := map[string]string{}
 	for _, p := range schema {
@@ -260,19 +267,33 @@ func resolveTemplateParams(schema []v1alpha1.ParamSchema, params map[string]stri
 		}
 	}
 	for k, v := range params {
-		if !schemaHasParam(schema, k) {
+		p, ok := schemaParam(schema, k)
+		if !ok {
 			return nil, fmt.Errorf("unknown template param %q", k)
 		}
-		if v != "" {
-			merged[k] = v
+		if v == "" {
+			continue // falls back to the schema default already merged in
 		}
+		if len(p.Enum) > 0 && !containsString(p.Enum, v) {
+			return nil, fmt.Errorf("invalid value %q for template param %q (allowed: %s)", v, k, strings.Join(p.Enum, ", "))
+		}
+		merged[k] = v
 	}
 	return merged, nil
 }
 
-func schemaHasParam(schema []v1alpha1.ParamSchema, name string) bool {
+func schemaParam(schema []v1alpha1.ParamSchema, name string) (v1alpha1.ParamSchema, bool) {
 	for _, p := range schema {
 		if p.Name == name {
+			return p, true
+		}
+	}
+	return v1alpha1.ParamSchema{}, false
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
 			return true
 		}
 	}

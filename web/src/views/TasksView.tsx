@@ -240,6 +240,9 @@ export default function TasksView() {
       // Template-bound: send templateRef + params (the server renders the
       // instruction and defaults the schedule from the template). Free-form:
       // send the raw prompt, exactly as before.
+      // Manual sends an explicit empty schedule so the server does NOT inherit
+      // the template's defaultCron (only a fully omitted schedule does, which
+      // the UI never sends); Cron sends the entered expression.
       const payload = activeTemplate
         ? { name, schedule, templateRef: activeTemplate.metadata.name, params: form.params }
         : { name, prompt: form.prompt.trim(), schedule }
