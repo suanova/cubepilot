@@ -11,6 +11,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/skill"
 )
 
 var _ = Describe("Builtin bootstrap", func() {
@@ -58,6 +59,18 @@ var _ = Describe("Builtin bootstrap", func() {
 			}
 			return nil
 		}).Should(Succeed())
+
+		// The seeded set must match the embedded builtin set exactly (issue
+		// #86: only cluster-inspection + kubectl-platform after the drop).
+		want := map[string]bool{}
+		for _, n := range skill.BuiltinSkillNames() {
+			want[n] = true
+		}
+		got := map[string]bool{}
+		for _, s := range list.Items {
+			got[s.Name] = true
+		}
+		Expect(got).To(Equal(want), "seeded Skill CRDs should equal the embedded builtin set")
 
 		tt := &v1alpha1.TaskTemplate{}
 		Eventually(func() error {
