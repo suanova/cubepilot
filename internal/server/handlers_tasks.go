@@ -24,17 +24,18 @@ import (
 // JSON-store shape so the Portal needs no change). id = Task CR name; name =
 // display-name annotation (the CR name is DNS-1123 sanitized).
 type taskDTO struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Prompt     string     `json:"prompt"`
-	Schedule   string     `json:"schedule"`
-	State      string     `json:"state"`   // Enabled | Paused
-	Enabled    bool       `json:"enabled"` // derived from State (wire compat)
-	Creator    string     `json:"creator"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	LastRunAt  *time.Time `json:"lastRunAt,omitempty"`
-	LastStatus string     `json:"lastStatus,omitempty"`
-	NextRunAt  *time.Time `json:"nextRunAt,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Prompt      string     `json:"prompt"`
+	Schedule    string     `json:"schedule"`
+	TemplateRef string     `json:"templateRef,omitempty"` // bound TaskTemplate name ("" = free-form)
+	State       string     `json:"state"`                 // Enabled | Paused
+	Enabled     bool       `json:"enabled"`               // derived from State (wire compat)
+	Creator     string     `json:"creator"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastRunAt   *time.Time `json:"lastRunAt,omitempty"`
+	LastStatus  string     `json:"lastStatus,omitempty"`
+	NextRunAt   *time.Time `json:"nextRunAt,omitempty"`
 }
 
 // reportDTO is the API shape of a run report (wire-compatible with the old
@@ -55,16 +56,17 @@ type reportDTO struct {
 
 func taskToDTO(t v1alpha1.Task) taskDTO {
 	dto := taskDTO{
-		ID:         t.Name,
-		Name:       t.Annotations[v1alpha1.TaskDisplayNameAnnotation],
-		Prompt:     t.Spec.Instruction,
-		Schedule:   t.Spec.Cron,
-		Enabled:    t.Enabled(),
-		State:      string(t.Spec.State),
-		Creator:    t.Spec.Owner,
-		CreatedAt:  t.CreationTimestamp.Time,
-		LastRunAt:  taskTimePtr(t.Status.LastRunTime),
-		LastStatus: t.Status.LastStatus,
+		ID:          t.Name,
+		Name:        t.Annotations[v1alpha1.TaskDisplayNameAnnotation],
+		Prompt:      t.Spec.Instruction,
+		Schedule:    t.Spec.Cron,
+		TemplateRef: t.Spec.TemplateRef,
+		Enabled:     t.Enabled(),
+		State:       string(t.Spec.State),
+		Creator:     t.Spec.Owner,
+		CreatedAt:   t.CreationTimestamp.Time,
+		LastRunAt:   taskTimePtr(t.Status.LastRunTime),
+		LastStatus:  t.Status.LastStatus,
 	}
 	if dto.Name == "" {
 		dto.Name = t.Name
@@ -148,11 +150,13 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"tasks": out})
 	case http.MethodPost:
 		var body struct {
-			Name     string `json:"name"`
-			Prompt   string `json:"prompt"`
-			Schedule string `json:"schedule"`
-			State    string `json:"state"`
-			Enabled  *bool  `json:"enabled"` // deprecated wire compat
+			Name        string            `json:"name"`
+			Prompt      string            `json:"prompt"`
+			Schedule    *string           `json:"schedule"` // omitted == use template default; explicit "" == Manual
+			TemplateRef string            `json:"templateRef"`
+			Params      map[string]string `json:"params"`
+			State       string            `json:"state"`
+			Enabled     *bool             `json:"enabled"` // deprecated wire compat
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
@@ -160,14 +164,52 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Name = strings.TrimSpace(body.Name)
 		body.Prompt = strings.TrimSpace(body.Prompt)
-		body.Schedule = strings.TrimSpace(body.Schedule)
-		if body.Name == "" || body.Prompt == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and prompt are required"})
+		body.TemplateRef = strings.TrimSpace(body.TemplateRef)
+		cronExpr := ""
+		scheduleProvided := body.Schedule != nil
+		if body.Schedule != nil {
+			cronExpr = strings.TrimSpace(*body.Schedule)
+		}
+		if body.Name == "" || (body.Prompt == "" && body.TemplateRef == "") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and a prompt or template are required"})
+			return
+		}
+		// Optional template binding (design §3.5): a Task either binds a
+		// TaskTemplate (templateRef + params; at fire time the scheduler renders
+		// the template's current instruction and records the revision used) or
+		// is a free-form inline task (instruction only, no templateRef).
+		templateRef := body.TemplateRef
+		instruction := body.Prompt
+		params := body.Params
+		if templateRef != "" {
+			var tpl v1alpha1.TaskTemplate
+			if err := s.cr.Get(r.Context(), types.NamespacedName{Name: templateRef}, &tpl); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("unknown task template %q", templateRef)})
+				return
+			}
+			merged, err := resolveTemplateParams(tpl.Spec.ParamsSchema, body.Params)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+			params = merged
+			// The stored instruction is a rendered snapshot (used for display
+			// and as the fallback if the template is later deleted); the
+			// operator re-renders from the template at fire time.
+			instruction = renderTaskInstruction(tpl.Spec.Instruction, params)
+			// Default the schedule from the template only when the caller
+			// omitted it entirely. An explicit empty schedule means Manual and
+			// must stay Manual; an explicit cron expression wins.
+			if !scheduleProvided && tpl.Spec.DefaultCron != "" {
+				cronExpr = tpl.Spec.DefaultCron
+			}
+		} else if len(body.Params) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "params require a template (templateRef)"})
 			return
 		}
 		trigger := v1alpha1.TaskTriggerManual
-		if body.Schedule != "" {
-			if _, err := schedule.Parse(body.Schedule); err != nil {
+		if cronExpr != "" {
+			if _, err := schedule.Parse(cronExpr); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid cron expression: %v", err)})
 				return
 			}
@@ -193,10 +235,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			Spec: v1alpha1.TaskSpec{
-				Instruction: body.Prompt,
+				TemplateRef: templateRef,
+				Instruction: instruction,
+				Params:      params,
 				Owner:       s.userOf(r),
 				Trigger:     trigger,
-				Cron:        body.Schedule,
+				Cron:        cronExpr,
 				State:       state,
 			},
 		}
@@ -208,6 +252,65 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or POST required"})
 	}
+}
+
+// resolveTemplateParams merges the template's declared param defaults with the
+// caller's params and rejects values the template does not allow: an unknown
+// key, or a non-empty value outside a declared ParamSchema.Enum (design §3.3.2:
+// paramsSchema is the parameter contract). An empty caller value falls back to
+// the schema default.
+func resolveTemplateParams(schema []v1alpha1.ParamSchema, params map[string]string) (map[string]string, error) {
+	merged := map[string]string{}
+	for _, p := range schema {
+		if p.Default != "" {
+			merged[p.Name] = p.Default
+		}
+	}
+	for k, v := range params {
+		p, ok := schemaParam(schema, k)
+		if !ok {
+			return nil, fmt.Errorf("unknown template param %q", k)
+		}
+		if v == "" {
+			continue // falls back to the schema default already merged in
+		}
+		if len(p.Enum) > 0 && !containsString(p.Enum, v) {
+			return nil, fmt.Errorf("invalid value %q for template param %q (allowed: %s)", v, k, strings.Join(p.Enum, ", "))
+		}
+		merged[k] = v
+	}
+	return merged, nil
+}
+
+func schemaParam(schema []v1alpha1.ParamSchema, name string) (v1alpha1.ParamSchema, bool) {
+	for _, p := range schema {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return v1alpha1.ParamSchema{}, false
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// renderTaskInstruction interpolates {{param}} placeholders, mirroring the
+// scheduler's renderTemplate (internal/scheduler/scheduler.go) so a
+// template-bound Task's stored instruction matches what the operator renders
+// at fire time. Duplicated here rather than importing the controller-runtime
+// scheduler package into the API binary.
+func renderTaskInstruction(instruction string, params map[string]string) string {
+	out := instruction
+	for k, v := range params {
+		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
+	}
+	return out
 }
 
 // handleTaskByID routes /api/tasks/{id}[/run|/toggle|/reports].

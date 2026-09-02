@@ -1,33 +1,13 @@
 // Tasks view -- task list + reports + templates + create dialog (FR-M4).
+// Tasks are either free-form (inline instruction, no template) or bound to a
+// real TaskTemplate (templateRef + params) served by GET /api/tasktemplates.
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
 import { getCurrentUser } from '@/api/client'
-import type { Report, Task } from '@/api/types'
+import type { Report, Task, TaskTemplate } from '@/api/types'
 import { downloadText, fmtDuration, fmtTime } from '@/utils/format'
 import { cronDescription, lowercaseFirst } from '@/utils/cron'
 import { showToast } from '@/stores/toast'
-
-const TASK_TEMPLATES: Record<string, { name: string; cron: string; prompt: string }> = {
-  inspect: {
-    name: 'Cluster Health Inspection',
-    cron: '0 2 * * *',
-    prompt:
-      'Run a basic health inspection of the current Kubernetes cluster:\n1. Check node status (kubectl get nodes);\n2. Find abnormal Pods in all namespaces (not Running, e.g. CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled);\n3. Check the recent cluster events (kubectl get events -A).\nClassify findings by severity: P0 critical / P1 important / P2 minor, and output a structured inspection report in Simplified Chinese (with evidence for each item).',
-  },
-  'gpu-daily': {
-    name: 'GPU Resource Utilization Daily Report',
-    cron: '0 9 * * 1',
-    prompt:
-      'Summarize the cluster GPU resources:\n1. kubectl get nodes -o json to check each node\'s nvidia.com/gpu capacity and allocatable;\n2. List Pods requesting GPU and their node distribution;\n3. Output a GPU resource daily report (Simplified Chinese), flagging nodes with high utilization or idle, classified by P0/P1/P2.',
-  },
-  custom: { name: 'Custom Task', cron: '', prompt: '' },
-}
-
-const TEMPLATES = [
-  { name: 'Cluster Health Inspection', type: 'Preset - cannot modify', output: 'Structured report', skills: 'kubectl - logs - platform components', phase: 'Phase One', tasks: 1 },
-  { name: 'Inference Service Auto-Verification', type: 'Preset - cannot modify', output: 'Structured report', skills: 'InferenceService', phase: 'Phase Two', tasks: 1 },
-  { name: 'GPU Resource Utilization Daily Report', type: 'Custom', output: 'Free text', skills: 'GPUStack metrics', phase: 'Phase Two', tasks: 1 },
-]
 
 function PlusIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -48,22 +28,48 @@ function WarnIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>
 }
 
+function templateDisplayName(t: TaskTemplate): string {
+  return t.spec?.displayName || t.metadata.name
+}
+
+// renderInstruction interpolates {{param}} placeholders for the create-dialog
+// preview (the server does the authoritative render on save).
+function renderInstruction(instruction: string, params: Record<string, string>): string {
+  let out = instruction
+  for (const [k, v] of Object.entries(params)) {
+    out = out.split('{{' + k + '}}').join(v)
+  }
+  return out
+}
+
+function defaultParams(t: TaskTemplate): Record<string, string> {
+  const params: Record<string, string> = {}
+  for (const p of t.spec?.paramsSchema || []) {
+    if (p.default !== undefined) params[p.name] = p.default
+  }
+  return params
+}
+
 export default function TasksView() {
   const user = getCurrentUser()
   const [tasks, setTasks] = useState<Task[]>([])
+  const [templates, setTemplates] = useState<TaskTemplate[]>([])
+  const [templatesError, setTemplatesError] = useState('')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [reports, setReports] = useState<Report[]>([])
   const [running, setRunning] = useState(false)
   const [tab, setTab] = useState<'list' | 'templates'>('list')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [trigger, setTrigger] = useState<'Cron' | 'Manual'>('Cron')
-  const [form, setForm] = useState({ name: '', prompt: '', cron: '0 2 * * *', template: 'inspect' })
+  const [form, setForm] = useState({ name: '', prompt: '', cron: '0 2 * * *', templateRef: '', params: {} as Record<string, string> })
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
   const [reportIndex, setReportIndex] = useState(0)
   const pollTimeouts = useRef<number[]>([])
 
-  function taskKindLabel(t: Task): string {
-    return (t.prompt || '').includes('inspection') ? 'Inspection - preset' : 'Custom'
+  function templateLabel(t: Task): string {
+    if (!t.templateRef) return 'Free-form'
+    const tpl = templates.find((x) => x.metadata.name === t.templateRef)
+    return tpl ? templateDisplayName(tpl) : t.templateRef
   }
   function statusPill(t: Task): string {
     return t.enabled ? 'Enabled' : 'Disabled'
@@ -81,6 +87,7 @@ export default function TasksView() {
 
   useEffect(() => {
     loadTasks()
+    loadTemplates()
     return () => {
       pollTimeouts.current.forEach((id) => clearTimeout(id))
     }
@@ -98,6 +105,16 @@ export default function TasksView() {
       }
     } catch (e) {
       showToast('Task load failed: ' + e)
+    }
+  }
+
+  async function loadTemplates() {
+    try {
+      setTemplates(await api.listTaskTemplates())
+      setTemplatesError('')
+    } catch (e) {
+      console.error('loadTemplates', e)
+      setTemplatesError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -160,29 +177,48 @@ export default function TasksView() {
     }
   }
 
-  function openDialog(tplName?: string) {
-    setDialogOpen(true)
-    if (tplName) {
-      const entry = Object.entries(TASK_TEMPLATES).find(([, v]) => v.name === tplName)
-      if (entry) applyTemplate(entry[0])
-    } else {
-      applyTemplate('inspect')
-    }
+  function resetForm() {
+    setForm({ name: '', prompt: '', cron: '0 2 * * *', templateRef: '', params: {} })
   }
 
-  function applyTemplate(key: string) {
-    const tpl = TASK_TEMPLATES[key] || TASK_TEMPLATES.custom
-    setForm((f) => ({ ...f, prompt: tpl.prompt, cron: tpl.cron, template: key }))
+  // openDialog defaults to free-form (no template); passing a template name
+  // (from the Templates tab) pre-binds it.
+  function openDialog(templateName?: string) {
+    resetForm()
+    setTrigger('Cron')
+    setDialogOpen(true)
+    if (templateName) onChangeTemplate(templateName)
+  }
+
+  function onChangeTemplate(templateName: string) {
+    if (!templateName) {
+      // Back to free-form: clear the binding but keep name/prompt/cron.
+      setForm((f) => ({ ...f, templateRef: '', params: {} }))
+      return
+    }
+    const tpl = templates.find((x) => x.metadata.name === templateName)
+    if (!tpl) return
+    const params = defaultParams(tpl)
+    setForm((f) => ({
+      ...f,
+      templateRef: templateName,
+      params,
+      cron: tpl.spec?.defaultCron || f.cron || '0 2 * * *',
+    }))
+  }
+
+  function setParam(name: string, value: string) {
+    setForm((f) => ({ ...f, params: { ...f.params, [name]: value } }))
   }
 
   async function createTask() {
     const name = form.name.trim()
-    const prompt = form.prompt.trim()
     if (!name) {
       showToast('Please enter a task name')
       return
     }
-    if (!prompt) {
+    const activeTemplate = templates.find((x) => x.metadata.name === form.templateRef)
+    if (!activeTemplate && !form.prompt.trim()) {
       showToast('Please enter a task prompt')
       return
     }
@@ -201,9 +237,18 @@ export default function TasksView() {
     }
     const schedule = trigger === 'Cron' ? form.cron.trim() : ''
     try {
-      const task = await api.createTask({ name, prompt, schedule })
+      // Template-bound: send templateRef + params (the server renders the
+      // instruction and defaults the schedule from the template). Free-form:
+      // send the raw prompt, exactly as before.
+      // Manual sends an explicit empty schedule so the server does NOT inherit
+      // the template's defaultCron (only a fully omitted schedule does, which
+      // the UI never sends); Cron sends the entered expression.
+      const payload = activeTemplate
+        ? { name, schedule, templateRef: activeTemplate.metadata.name, params: form.params }
+        : { name, prompt: form.prompt.trim(), schedule }
+      const task = await api.createTask(payload)
       setDialogOpen(false)
-      setForm((f) => ({ ...f, name: '' }))
+      resetForm()
       showToast(`Task "${name}" created - it will run directly as you`)
       await loadTasks()
       setSelectedTaskId(task.id)
@@ -221,6 +266,11 @@ export default function TasksView() {
     }
     downloadText('report-' + r.id + '.md', `# ${r.taskName}\n\nTime: ${fmtTime(r.startedAt)}\nStatus: ${r.status}\n\n${r.content || ''}`)
   }
+
+  const activeTemplate = templates.find((x) => x.metadata.name === form.templateRef)
+  const previewPrompt = activeTemplate
+    ? renderInstruction(activeTemplate.spec?.instruction || '', form.params)
+    : form.prompt
 
   return (
     <div className="view active">
@@ -240,7 +290,7 @@ export default function TasksView() {
           Task List
         </button>
         <button className={`seg-item ${tab === 'templates' ? 'active' : ''}`} onClick={() => setTab('templates')}>
-          Templates <span className="seg-count">{TEMPLATES.length}</span>
+          Templates <span className="seg-count">{templates.length}</span>
         </button>
       </div>
 
@@ -291,7 +341,7 @@ export default function TasksView() {
                         <span className="task-radio" />
                       </td>
                       <td style={{ fontWeight: 600 }}>{t.name}</td>
-                      <td>{taskKindLabel(t)}</td>
+                      <td>{templateLabel(t)}</td>
                       <td>{triggerLabel(t)}</td>
                       <td title={t.schedule && t.schedule.trim() ? `Cron: ${t.schedule.trim()}` : undefined}>{scheduleCell(t)}</td>
                       <td>
@@ -413,8 +463,7 @@ export default function TasksView() {
           <div className="card-head">
             <span className="card-title">Template Management</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span className="card-hint">Templates are reusable task definitions - preset templates are built-in and cannot be modified - custom templates open in phase two</span>
-              <button className="btn sm" onClick={() => showToast('Custom template creation opens in phase two')}>New Template</button>
+              <span className="card-hint">TaskTemplates are reusable "what to do" definitions - a task binds one by name (or is free-form)</span>
             </div>
           </div>
           <div style={{ overflowX: 'auto' }}>
@@ -422,43 +471,43 @@ export default function TasksView() {
               <thead>
                 <tr>
                   <th>Template</th>
-                  <th>Type</th>
-                  <th>Output Type</th>
-                  <th>Bound Skills</th>
-                  <th>Phase</th>
-                  <th>Linked Tasks</th>
+                  <th>Description</th>
+                  <th>Default Cron</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {TEMPLATES.map((tpl) => (
-                  <tr key={tpl.name}>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <span style={{ fontWeight: 600 }}>{tpl.name}</span>
-                      </div>
-                    </td>
-                    <td>
-                      {tpl.type.startsWith('Preset') ? (
-                        <span className="lock-badge">
-                          <LockIcon />
-                          {tpl.type}
-                        </span>
-                      ) : (
-                        <span className="pill neutral">{tpl.type}</span>
-                      )}
-                    </td>
-                    <td>{tpl.output}</td>
-                    <td className="mono">{tpl.skills}</td>
-                    <td>
-                      <span className={`pill ${tpl.phase === 'Phase One' ? 'accent' : 'warn'}`}>{tpl.phase}</span>
-                    </td>
-                    <td className="tnum">{tpl.tasks}</td>
-                    <td>
-                      <button className="btn sm ghost" onClick={() => openDialog(tpl.name)}>Create task from this</button>
+                {templatesError ? (
+                  <tr>
+                    <td colSpan={4} style={{ color: 'var(--danger)', padding: 16 }}>Failed to load templates: {templatesError}</td>
+                  </tr>
+                ) : !templates.length ? (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)', padding: 24 }}>
+                      No task templates yet
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  templates.map((tpl) => (
+                    <tr key={tpl.metadata.name}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <span className="lock-badge">
+                            <LockIcon />
+                            {templateDisplayName(tpl)}
+                          </span>
+                        </div>
+                      </td>
+                      <td style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                        {tpl.spec?.description || (tpl.spec?.paramsSchema || []).map((p) => p.name).join(', ')}
+                      </td>
+                      <td className="mono">{tpl.spec?.defaultCron || '-'}</td>
+                      <td>
+                        <button className="btn sm ghost" onClick={() => openDialog(tpl.metadata.name)}>Create task from this</button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -497,24 +546,76 @@ export default function TasksView() {
                 <select
                   className="input"
                   aria-label="Task template"
-                  value={form.template}
-                  onChange={(e) => applyTemplate(e.target.value)}
+                  value={form.templateRef}
+                  onChange={(e) => onChangeTemplate(e.target.value)}
                 >
-                  <option value="inspect">Cluster Health Inspection (preset)</option>
-                  <option value="gpu-daily">GPU Resource Utilization Daily Report (custom)</option>
-                  <option value="custom">Custom</option>
+                  <option value="">No template (free-form)</option>
+                  {templates.map((tpl) => (
+                    <option key={tpl.metadata.name} value={tpl.metadata.name}>
+                      {templateDisplayName(tpl)}
+                    </option>
+                  ))}
                 </select>
+                {templatesError && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>Templates unavailable: {templatesError}</div>
+                )}
               </div>
-              <div>
-                <label className="label">Task Prompt (AI execution content, editable)</label>
-                <textarea
-                  className="input"
-                  rows={5}
-                  aria-label="Task prompt"
-                  value={form.prompt}
-                  onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
-                />
-              </div>
+              {!activeTemplate && (
+                <div>
+                  <label className="label">Task Prompt (AI execution content)</label>
+                  <textarea
+                    className="input"
+                    rows={5}
+                    aria-label="Task prompt"
+                    placeholder="e.g. Check node readiness and abnormal Pods; grade findings P0/P1/P2"
+                    value={form.prompt}
+                    onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+                  />
+                </div>
+              )}
+              {activeTemplate && (
+                <>
+                  <div>
+                    <label className="label">Parameters - {templateDisplayName(activeTemplate)}</label>
+                    {(activeTemplate.spec?.paramsSchema || []).length === 0 ? (
+                      <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                        This template takes no parameters.
+                      </div>
+                    ) : (
+                      (activeTemplate.spec?.paramsSchema || []).map((p) => (
+                        <div key={p.name} style={{ marginBottom: 8 }}>
+                          <label className="label" style={{ textTransform: 'capitalize' }}>{p.name}</label>
+                          {p.enum && p.enum.length ? (
+                            <select
+                              className="input"
+                              aria-label={p.name}
+                              value={form.params[p.name] ?? p.default ?? ''}
+                              onChange={(e) => setParam(p.name, e.target.value)}
+                            >
+                              {(p.enum || []).map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="input"
+                              aria-label={p.name}
+                              value={form.params[p.name] ?? p.default ?? ''}
+                              onChange={(e) => setParam(p.name, e.target.value)}
+                            />
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div>
+                    <label className="label">Prompt (rendered from template - not editable)</label>
+                    <div className="run-log" style={{ whiteSpace: 'pre-wrap', maxHeight: 160, overflowY: 'auto' }}>
+                      {previewPrompt || '(empty template instruction)'}
+                    </div>
+                  </div>
+                </>
+              )}
               <div>
                 <label className="label">Trigger</label>
                 <div className="radio-row" role="radiogroup" aria-label="Trigger">
@@ -559,6 +660,11 @@ export default function TasksView() {
                       ) : (
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
                           No schedule set - enter one, or switch the trigger to Manual for a manual-only task
+                        </div>
+                      )}
+                      {activeTemplate?.spec?.defaultCron && cron.text && (
+                        <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
+                          Template default: {activeTemplate.spec.defaultCron}
                         </div>
                       )}
                     </div>

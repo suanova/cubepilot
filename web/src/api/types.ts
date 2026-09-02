@@ -22,6 +22,7 @@ export interface Task {
   name: string
   prompt: string
   schedule: string
+  templateRef?: string // bound TaskTemplate name; undefined/'' = free-form
   state: 'Enabled' | 'Paused'
   enabled: boolean
   creator: string
@@ -29,6 +30,32 @@ export interface Task {
   lastRunAt?: string
   lastStatus?: string
   nextRunAt?: string
+}
+
+// A TaskTemplate as served by GET /api/tasktemplates (raw CR: metadata.name +
+// spec). Mirrors the Go TaskTemplateSpec json tags.
+export interface TaskParamSchema {
+  name: string
+  type?: string
+  default?: string
+  enum?: string[]
+}
+
+export interface TaskTemplate {
+  kind?: string
+  apiVersion?: string
+  metadata: {
+    name: string
+    creationTimestamp?: string
+  }
+  spec?: {
+    displayName?: string
+    description?: string
+    instruction?: string
+    paramsSchema?: TaskParamSchema[]
+    defaultCron?: string
+    skills?: string[]
+  }
 }
 
 export interface Report {

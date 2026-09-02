@@ -16,6 +16,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -72,14 +73,25 @@ func dueTask(created time.Time) *v1alpha1.Task {
 	}
 }
 
+// readyInstance returns a Ready agent-for-cloud instance for the owner -- the
+// instance the scheduler looks up before firing a task.
+func readyInstance(owner string) *v1alpha1.AgentInstance {
+	return &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.InstanceName(owner, v1alpha1.DefaultAgentName)},
+		Spec:       v1alpha1.AgentInstanceSpec{TemplateRef: v1alpha1.DefaultAgentName, Owner: owner},
+		Status:     v1alpha1.AgentInstanceStatus{Phase: v1alpha1.InstanceReady},
+	}
+}
+
 // TestSchedulerFiresDueTask verifies the CRD scheduler: a due cron task is
 // fired through the runner and the report is written as a TaskRun with the
 // platform identity (design §3.3.4: TaskRun written with the platform
-// identity; §5.4 inspection runs with the creator's identity).
+// identity; §5.4 inspection runs with the creator's identity). The owner's
+// Ready instance is present, so the pre-fire availability check passes.
 func TestSchedulerFiresDueTask(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &fakeRunner{}
-	cl := newFakeClient(t, scheme)
+	cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
 
 	// Task due: created 2 minutes ago; every-minute cron -> the next fire is
 	// already in the past -> due on reconcile.
@@ -196,7 +208,7 @@ func (f *errorRunner) RunTask(ctx context.Context, creator, sessionKey, prompt s
 func TestSchedulerRunFailed(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &errorRunner{}
-	cl := newFakeClient(t, scheme)
+	cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
 
 	task := dueTask(time.Now().Add(-2 * time.Minute))
 	if err := cl.Create(context.Background(), task); err != nil {
@@ -265,7 +277,7 @@ func TestSchedulerRunFailed(t *testing.T) {
 func TestManualRunAnnotationFiresEvenWhenPaused(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &fakeRunner{}
-	cl := newFakeClient(t, scheme)
+	cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
 
 	task := dueTask(time.Now().Add(-2 * time.Minute))
 	task.Spec.State = v1alpha1.TaskStatePaused
@@ -456,5 +468,64 @@ func TestNewTaskRunSkeleton(t *testing.T) {
 	}
 	if run.Labels["cubepilot/task"] != task.Name {
 		t.Errorf("label cubepilot/task = %q, want %q", run.Labels["cubepilot/task"], task.Name)
+	}
+}
+
+// TestSchedulerSkipsRunWhenInstanceMissing verifies the pre-fire instance
+// check: when the owner's agent-for-cloud instance does not exist, the
+// scheduler records a Failed TaskRun and does not invoke the runner (issue #26
+// AC: failure writes a TaskRun and executes nothing).
+func TestSchedulerSkipsRunWhenInstanceMissing(t *testing.T) {
+	scheme := testScheme(t)
+	runner := &fakeRunner{}
+	cl := newFakeClient(t, scheme) // no AgentInstance for the owner
+
+	task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		// Reconcile swallows fire() errors into logs; surfacing here would mean
+		// the missing-instance path regressed.
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1 (skipped run recorded)", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if run.Status.Phase != v1alpha1.TaskRunFailed {
+		t.Errorf("phase = %s, want Failed", run.Status.Phase)
+	}
+	if !strings.Contains(run.Status.Error, "instance") {
+		t.Errorf("error = %q, want instance-missing reason", run.Status.Error)
+	}
+	if runner.gotPrompt != "" {
+		t.Errorf("runner invoked with %q despite missing instance", runner.gotPrompt)
+	}
+
+	// The due state must advance (LastRunTime/LastStatus) so a cron task does
+	// not stay due and re-fire a Failed run every reconcile.
+	var got v1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastStatus != "failed" {
+		t.Errorf("task.lastStatus = %q, want failed", got.Status.LastStatus)
+	}
+	if got.Status.LastTaskRunName != run.Name {
+		t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
 	}
 }

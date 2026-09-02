@@ -46,6 +46,27 @@ func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agentTemplates": list.Items})
 }
 
+// handleTaskTemplates serves GET /api/tasktemplates -- the preset task
+// template registry (design §3.3.2: parameterized "what to do"; phase one
+// ships the builtin daily-inspection preset). Read-only catalog for the
+// create-task wizard; Task instances bind a template by name.
+func (s *Server) handleTaskTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"taskTemplates": []any{}})
+		return
+	}
+	var list v1alpha1.TaskTemplateList
+	if err := s.cr.List(r.Context(), &list); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"taskTemplates": list.Items})
+}
+
 // handleAgentTemplateByID serves GET /api/agenttemplates/{name}.
 func (s *Server) handleAgentTemplateByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
