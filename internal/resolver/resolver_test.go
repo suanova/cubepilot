@@ -242,3 +242,45 @@ func TestResolveNoModelOverride(t *testing.T) {
 		t.Errorf("selectedModel = %q modelName = %q, want empty override with name", cfg.SelectedModel, cfg.ModelName)
 	}
 }
+
+// TestResolveUserInstructionsComposition verifies the final system prompt is
+// composed in order (design §3.2 / issue #17): the template instructions come
+// first, then the instance's user instructions are appended with a blank line
+// separator.
+func TestResolveUserInstructionsComposition(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.UserInstructions = "answer in Chinese, be concise"
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, nil),
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	want := "You are the platform assistant.\n\nanswer in Chinese, be concise"
+	if cfg.Instructions != want {
+		t.Errorf("instructions = %q, want %q (template first, user appended)", cfg.Instructions, want)
+	}
+}
+
+// TestResolveUserInstructionsOnly verifies that a user instruction without any
+// template instructions is used verbatim (no stray leading separator), and an
+// empty user instruction leaves the template prompt untouched.
+func TestResolveUserInstructionsOnly(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.UserInstructions = "only user text"
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+			a.Spec.Instructions = ""
+		}),
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if cfg.Instructions != "only user text" {
+		t.Errorf("instructions = %q, want %q (no template prompt)", cfg.Instructions, "only user text")
+	}
+}
