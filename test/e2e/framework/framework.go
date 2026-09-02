@@ -12,6 +12,7 @@ import (
 
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -23,10 +24,11 @@ import (
 // Framework holds the clients and shared state for the e2e suite. It is
 // created once in BeforeSuite from the target cluster's kubeconfig.
 type Framework struct {
-	RestConfig   *rest.Config
-	KubeClient   kubernetes.Interface
-	ApiExtClient apiextensionsclient.Interface
-	CtrlClient   crclient.Client
+	RestConfig    *rest.Config
+	KubeClient    kubernetes.Interface
+	ApiExtClient  apiextensionsclient.Interface
+	CtrlClient    crclient.Client
+	DynamicClient dynamic.Interface
 
 	// Namespace / Users / DefaultUser mirror internal/config.Load() defaults so
 	// the expectations match the deployed operator's config.
@@ -62,6 +64,10 @@ func New(kubeconfig string) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("controller-runtime client: %w", err)
 	}
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic client: %w", err)
+	}
 	// Validate the users list: a value such as "," trims to zero users, and the
 	// specs index Users[0] -- fail with a config error instead of panicking.
 	users := splitUsers(getenv("CUBEPILOT_USERS", "zhang.wei,li.ming"))
@@ -69,13 +75,14 @@ func New(kubeconfig string) (*Framework, error) {
 		return nil, fmt.Errorf("CUBEPILOT_USERS must contain at least one user")
 	}
 	return &Framework{
-		RestConfig:   cfg,
-		KubeClient:   kc,
-		ApiExtClient: ac,
-		CtrlClient:   cc,
-		Namespace:    getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		DefaultUser:  getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
-		Users:        users,
+		RestConfig:    cfg,
+		KubeClient:    kc,
+		ApiExtClient:  ac,
+		CtrlClient:    cc,
+		DynamicClient: dc,
+		Namespace:     getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
+		DefaultUser:   getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
+		Users:         users,
 	}, nil
 }
 
