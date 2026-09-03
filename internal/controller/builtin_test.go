@@ -2,15 +2,20 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
@@ -22,6 +27,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add corev1 to scheme: %v", err)
+	}
+	if err := rbacv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add rbac to scheme: %v", err)
 	}
 	return scheme
 }
@@ -84,17 +92,58 @@ func TestInstanceNameFor(t *testing.T) {
 // builtin Skill CRDs are seeded by the API (covered in internal/server).
 func TestBootstrapEnsure(t *testing.T) {
 	scheme := testScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	users := []string{"zhang.wei", "li.ming"}
+	// The token Secrets the generator reads must be pre-populated (the fake
+	// token controller does not fill data.token like a real API server).
+	var objs []client.Object
+	for _, u := range users {
+		saName := k8s.UserServiceAccountName(u)
+		objs = append(objs, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        saName + "-token",
+				Namespace:   "cubepilot",
+				Annotations: map[string]string{corev1.ServiceAccountNameKey: saName},
+			},
+			Type: corev1.SecretTypeServiceAccountToken,
+			Data: map[string][]byte{"token": []byte("tok-" + u)},
+		})
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 
 	r := &BuiltinBootstrapReconciler{
 		Client: cl,
 		Scheme: scheme,
 		Cfg: config.Config{
-			Users: []string{"zhang.wei", "li.ming"},
+			Namespace: "cubepilot",
+			Users:     users,
 		},
 	}
 	if err := r.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure: %v", err)
+	}
+
+	// Per-user identity is generated: SA + view/CRD ClusterRoleBindings + a
+	// kubeconfig Secret under the dual-kubeconfig naming scheme.
+	for _, u := range users {
+		saName := k8s.UserServiceAccountName(u)
+		var sa corev1.ServiceAccount
+		if err := cl.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "cubepilot"}, &sa); err != nil {
+			t.Errorf("per-user SA %s not created: %v", saName, err)
+		}
+		for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
+			var crb rbacv1.ClusterRoleBinding
+			if err := cl.Get(context.Background(), types.NamespacedName{Name: userCRBName(u, role)}, &crb); err != nil {
+				t.Errorf("CRB %s not created: %v", userCRBName(u, role), err)
+			} else if crb.RoleRef.Name != role {
+				t.Errorf("CRB %s roleRef = %s, want %s", userCRBName(u, role), crb.RoleRef.Name, role)
+			}
+		}
+		var kc corev1.Secret
+		if err := cl.Get(context.Background(), types.NamespacedName{Name: k8s.UserKubeconfigSecretFor(u), Namespace: "cubepilot"}, &kc); err != nil {
+			t.Errorf("per-user kubeconfig Secret not created: %v", err)
+		} else if !strings.Contains(string(kc.Data["config"]), "tok-"+u) {
+			t.Errorf("kubeconfig Secret for %s does not carry the per-user token", u)
+		}
 	}
 
 	// Agent definition exists.
