@@ -22,8 +22,9 @@ type AgentSpec struct {
 	AgentUser string
 	// UserKubeconfigSecret is the per-user kubeconfig Secret (key "config")
 	// mounted as the pod's default ~/.kube/config, so kubectl runs as the user
-	// (design §5.3). Empty falls back to the shared agent-kubeconfig (upgrade
-	// path) -- the controller sets it after checking the Secret exists.
+	// (design §5.3). Required -- the shared agent-kubeconfig is only ever the
+	// secondary discovery mount, never the default (issue #100 removed the
+	// placeholder-identity fallback).
 	UserKubeconfigSecret string
 }
 
@@ -119,13 +120,6 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 	labels := map[string]string{AgentLabelApp: "true"}
 	if instance != "" {
 		labels[AgentLabelUser] = instance
-	}
-	// Default (user operations) kubeconfig Secret: the user's own when present
-	// (dual-kubeconfig, issue #19 Option B); otherwise the shared
-	// agent-kubeconfig so an un-provisioned deploy keeps the old behaviour.
-	defaultKubeconfig := KubeconfigSecretName
-	if s.UserKubeconfigSecret != "" {
-		defaultKubeconfig = s.UserKubeconfigSecret
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -276,7 +270,7 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				{
 					Name: "kubeconfig",
 					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{SecretName: defaultKubeconfig},
+						Secret: &corev1.SecretVolumeSource{SecretName: s.UserKubeconfigSecret},
 					},
 				},
 				{

@@ -209,6 +209,90 @@ func TestAgentInstanceReconcileReady(t *testing.T) {
 	}
 }
 
+// TestAgentInstanceWaitsForUserIdentity verifies the controller does NOT
+// provision the Pod with a placeholder (shared SA) identity while the per-user
+// kubeconfig Secret is still being minted by the bootstrap (issue #19/#96). A
+// Pod born without the user Secret used to be deleted ~60s later, once the
+// Secret landed, and restarted -- cutting any in-flight chat (issue #100).
+// Instead the reconcile waits (requeue) and the first-and-only Pod mounts the
+// user kubeconfig, so the periodic reconcile sees no drift.
+func TestAgentInstanceWaitsForUserIdentity(t *testing.T) {
+	scheme := testScheme(t)
+	// The per-user kubeconfig Secret is deliberately absent: the builtin
+	// bootstrap mints it asynchronously (SA token -> kubeconfig Secret).
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
+		WithObjects(
+			testTemplate(),
+			testInstance(),
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: testNamespace},
+				Data:       map[string][]byte{"config": []byte("platform-kubeconfig")},
+			},
+		).
+		Build()
+	r := &AgentInstanceReconciler{Client: cl, Scheme: scheme, Cfg: testAgentCfg()}
+
+	// Reconcile #1 adds the finalizer; #2 finds no per-user kubeconfig Secret
+	// and must requeue (wait for the identity), not create a fallback Pod.
+	reconcileInstance(r, t)
+	res, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: testInstanceName},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Error("expected a requeue while the per-user kubeconfig Secret is absent")
+	}
+	// No instance resources are created while the identity is missing.
+	for name, kind := range map[string]client.Object{
+		testPodName: &corev1.Pod{},
+		testPVCName: &corev1.PersistentVolumeClaim{},
+	} {
+		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: name}, kind); !apierrors.IsNotFound(err) {
+			t.Errorf("%T %s created while per-user kubeconfig Secret absent (err=%v); must wait, not fall back", kind, name, err)
+		}
+	}
+
+	// The bootstrap mints the per-user kubeconfig Secret; the next reconcile
+	// provisions the Pod with the user identity.
+	if err := cl.Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor("zhang.wei"), Namespace: testNamespace},
+		Data:       map[string][]byte{"config": []byte("user-kubeconfig")},
+	}); err != nil {
+		t.Fatalf("create per-user kubeconfig secret: %v", err)
+	}
+	reconcileInstance(r, t)
+
+	var first corev1.Pod
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &first); err != nil {
+		t.Fatalf("pod not created once the identity is provisioned: %v", err)
+	}
+	defaultSecret := ""
+	for _, v := range first.Spec.Volumes {
+		if v.Name == "kubeconfig" && v.Secret != nil {
+			defaultSecret = v.Secret.SecretName
+		}
+	}
+	if defaultSecret != k8s.UserKubeconfigSecretFor("zhang.wei") {
+		t.Errorf("default kubeconfig volume secret = %q, want the per-user Secret", defaultSecret)
+	}
+
+	// The periodic reconcile (~60s cadence) must see no drift: the annotation
+	// recorded when the pod was created still matches the Secrets, so the Ready
+	// pod is left alone -- no issue #100 redundant restart.
+	reconcileInstance(r, t)
+	var second corev1.Pod
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &second); err != nil {
+		t.Fatalf("pod deleted by a no-change reconcile (issue #100 drift): %v", err)
+	}
+	if second.UID != first.UID {
+		t.Errorf("pod recreated on the periodic reconcile (uid %s -> %s); first provision must converge without a restart", first.UID, second.UID)
+	}
+}
+
 // TestAgentInstanceReconcileSelfHeals verifies a Failed Pod is deleted and
 // recreated by the controller (AC: pod failure self-heals; PVC persists).
 func TestAgentInstanceReconcileSelfHeals(t *testing.T) {

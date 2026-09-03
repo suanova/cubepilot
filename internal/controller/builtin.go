@@ -211,6 +211,17 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		seenIdentity[saName] = user
 	}
 	for _, user := range r.Cfg.Users {
+		// Platform-generated per-user identity first: SA + view/CRD ClusterRole
+		// bindings + a kubeconfig Secret the agent mounts as its default
+		// credentials (issue #19). Zero operator/admin-supplied kubeconfig. The
+		// identity must exist before the AgentInstance is created: the
+		// AgentInstance controller requires the per-user kubeconfig Secret
+		// before it creates the Pod (issue #100 -- no placeholder-identity Pod),
+		// so creating the instance first would leave it waiting on an identity
+		// this pass only mints afterwards.
+		if err := r.ensurePerUserKubeconfigAccess(ctx, user); err != nil {
+			return err
+		}
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   InstanceNameFor(user, BuiltinAgentName),
@@ -229,12 +240,6 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 			},
 		}
 		if err := r.createIfMissing(ctx, inst); err != nil {
-			return err
-		}
-		// Platform-generated per-user identity: SA + view/CRD ClusterRole
-		// bindings + a kubeconfig Secret the agent mounts as its default
-		// credentials (issue #19). Zero operator/admin-supplied kubeconfig.
-		if err := r.ensurePerUserKubeconfigAccess(ctx, user); err != nil {
 			return err
 		}
 	}
