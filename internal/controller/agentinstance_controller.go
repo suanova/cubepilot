@@ -108,23 +108,24 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		AgentUser:    inst.Spec.Owner,
 	}
 	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
-	// kubectl should run with the USER's own credentials. When the per-user
-	// kubeconfig Secret exists, mount it; only a genuinely-absent Secret falls
-	// back to the shared agent-kubeconfig (SA) so an un-provisioned deploy
-	// keeps the historical behaviour. Any other lookup error is transient or
-	// an RBAC gap and must requeue, not silently degrade.
+	// kubectl must run with the USER's own credentials, so the per-user
+	// kubeconfig Secret is a hard prerequisite. It is minted asynchronously by
+	// the builtin bootstrap (SA token -> kubeconfig Secret). While it is absent
+	// we requeue instead of provisioning the Pod with the shared agent-kubeconfig
+	// (SA) as its default: a Pod born with a placeholder identity would be
+	// recreated once the user Secret lands, restarting a freshly Ready agent and
+	// cutting in-flight chats (issue #100). A non-NotFound lookup error is
+	// transient or an RBAC gap and must requeue, not silently degrade.
 	userSecretName := k8s.UserKubeconfigSecretFor(inst.Spec.Owner)
-	userRV := ""
 	var userSecret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: userSecretName, Namespace: r.Cfg.Namespace}, &userSecret); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("lookup per-user kubeconfig secret %s: %w", userSecretName, err)
+		if apierrors.IsNotFound(err) {
+			log.Printf("controller: %s: per-user kubeconfig secret %s not provisioned yet; waiting for identity before creating the pod", inst.Name, userSecretName)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-		log.Printf("controller: per-user kubeconfig secret %s not found; agent kubectl falls back to SA identity", userSecretName)
-	} else {
-		spec.UserKubeconfigSecret = userSecretName
-		userRV = userSecret.ResourceVersion
+		return ctrl.Result{}, fmt.Errorf("lookup per-user kubeconfig secret %s: %w", userSecretName, err)
 	}
+	spec.UserKubeconfigSecret = userSecretName
 	// The platform (discovery) kubeconfig Secret is provisioned by setup.sh /
 	// chart; its resourceVersion lets an in-place content change (credential
 	// rotation, same name) recreate the Pod -- SubPath mounts do not refresh.
@@ -132,15 +133,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	if err := r.Get(ctx, types.NamespacedName{Name: k8s.KubeconfigSecretName, Namespace: r.Cfg.Namespace}, &platformSecret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("lookup platform kubeconfig secret %s: %w", k8s.KubeconfigSecretName, err)
 	}
-	defaultSecret := spec.UserKubeconfigSecret
-	if defaultSecret == "" {
-		defaultSecret = k8s.KubeconfigSecretName
-	}
-	defaultRV := userRV
-	if defaultSecret == k8s.KubeconfigSecretName {
-		defaultRV = platformSecret.ResourceVersion
-	}
-	kubeconfigRev := defaultSecret + "@" + defaultRV + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
+	kubeconfigRev := userSecretName + "@" + userSecret.ResourceVersion + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
 
 	pvcName, size := inst.EffectiveDataVolume()
 	podName := k8s.ResourceName("agent", inst.Name)

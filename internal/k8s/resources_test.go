@@ -9,11 +9,12 @@ import (
 
 func testAgentSpec() AgentSpec {
 	return AgentSpec{
-		Namespace:    "cubepilot",
-		Image:        "registry.example/cubepilot-agent:test",
-		GatewayToken: "test-token",
-		Port:         8080,
-		AgentUser:    "alice",
+		Namespace:            "cubepilot",
+		Image:                "registry.example/cubepilot-agent:test",
+		GatewayToken:         "test-token",
+		Port:                 8080,
+		AgentUser:            "alice",
+		UserKubeconfigSecret: UserKubeconfigSecretFor("alice"),
 	}
 }
 
@@ -165,26 +166,17 @@ func TestPodForGatewayCache(t *testing.T) {
 }
 
 // TestPodForDualKubeconfig verifies the issue #19 dual-kubeconfig layout: the
-// default ~/.kube/config mounts the per-user kubeconfig Secret (falling back to
-// the shared agent-kubeconfig when unset), the platform (agent-kubeconfig) is
+// default ~/.kube/config always mounts the per-user kubeconfig Secret (issue
+// #100 removed the SA placeholder fallback), the platform (agent-kubeconfig) is
 // mounted on a secondary discovery path, and both paths are exposed as env so
 // the schema-discovery skill can pass --kubeconfig.
 func TestPodForDualKubeconfig(t *testing.T) {
-	t.Run("per-user secret present", func(t *testing.T) {
-		spec := testAgentSpec()
-		spec.UserKubeconfigSecret = "alice-kubeconfig"
-		pod := spec.PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+	pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
 
-		assertKubeconfigVol(t, pod, "kubeconfig", "alice-kubeconfig", UserKubeconfigPath)
-		assertKubeconfigVol(t, pod, "platform-kubeconfig", KubeconfigSecretName, PlatformKubeconfigPath)
-		assertKubeconfigEnv(t, pod, UserKubeconfigEnv, UserKubeconfigPath)
-		assertKubeconfigEnv(t, pod, PlatformKubeconfigEnv, PlatformKubeconfigPath)
-	})
-
-	t.Run("no per-user secret -> SA fallback", func(t *testing.T) {
-		pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
-		assertKubeconfigVol(t, pod, "kubeconfig", KubeconfigSecretName, UserKubeconfigPath)
-	})
+	assertKubeconfigVol(t, pod, "kubeconfig", UserKubeconfigSecretFor("alice"), UserKubeconfigPath)
+	assertKubeconfigVol(t, pod, "platform-kubeconfig", KubeconfigSecretName, PlatformKubeconfigPath)
+	assertKubeconfigEnv(t, pod, UserKubeconfigEnv, UserKubeconfigPath)
+	assertKubeconfigEnv(t, pod, PlatformKubeconfigEnv, PlatformKubeconfigPath)
 }
 
 // assertKubeconfigVol finds a Secret volume by name, checks its SecretName and
