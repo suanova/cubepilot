@@ -75,9 +75,9 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 	// evaluated in UTC -- issue #95; the UI labels schedules "(UTC)").
 	if dto.Enabled && dto.Schedule != "" {
 		if cron, err := schedule.Parse(dto.Schedule); err == nil {
-			base := t.CreationTimestamp.Time.UTC()
+			base := t.CreationTimestamp.UTC()
 			if t.Status.LastRunTime != nil {
-				base = t.Status.LastRunTime.Time.UTC()
+				base = t.Status.LastRunTime.UTC()
 			}
 			if next := cron.NextAfter(base); !next.IsZero() {
 				dto.NextRunAt = &next

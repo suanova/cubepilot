@@ -102,9 +102,9 @@ func (r *ReconcileScheduler) nextDue(task *v1alpha1.Task) (next *time.Time, due 
 		return nil, false
 	}
 	now := time.Now().UTC()
-	base := task.CreationTimestamp.Time.UTC()
+	base := task.CreationTimestamp.UTC()
 	if task.Status.LastRunTime != nil {
-		base = task.Status.LastRunTime.Time.UTC()
+		base = task.Status.LastRunTime.UTC()
 	}
 	nextT := cron.NextAfter(base)
 	// Due when the next fire time is not in the future AND we have not
