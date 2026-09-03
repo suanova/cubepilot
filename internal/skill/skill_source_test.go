@@ -48,6 +48,26 @@ func TestPackBuiltinSkill(t *testing.T) {
 	}
 }
 
+// TestCubestackPlatformSkillPacksReference verifies the packed tar of the
+// cubestack-platform skill carries its generated crd-reference.md alongside
+// SKILL.md, so a revert of the go:embed pattern (all:skills/*) cannot silently
+// ship the skill without its schema map (issue #98).
+func TestCubestackPlatformSkillPacksReference(t *testing.T) {
+	tar, _, _, err := PackBuiltinSkill("cubestack-platform")
+	if err != nil {
+		t.Fatalf("PackBuiltinSkill: %v", err)
+	}
+	dest := t.TempDir()
+	if err := ExtractTar(bytes.NewReader(tar), dest); err != nil {
+		t.Fatalf("ExtractTar: %v", err)
+	}
+	for _, want := range []string{"SKILL.md", "crd-reference.md"} {
+		if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
+			t.Errorf("packed skill missing %s: %v", want, err)
+		}
+	}
+}
+
 // TestKubectlPlatformSkillTeachesDiscovery verifies the built-in generic
 // skill teaches schema discovery (design §5.3), so the agent can operate any
 // CRD without a per-CRD skill (issue #86), and that discovery uses the
