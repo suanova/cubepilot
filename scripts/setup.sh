@@ -154,6 +154,15 @@ helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESP
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
   --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
 
+# Provision the CubeStack operator CRDs (ai.cubestack.io) so the platform's
+# builtin skills / chat can create them. They are vendored from suanova/cubestack
+# (make update-crds) and are NOT part of the cubepilot helm chart — in
+# production the CubeStack operator owns them. The apply is idempotent and the
+# CRDs are intentionally kept afterwards, so a manually-brought-up stack (even
+# without running e2e) is immediately usable for testing from the portal.
+log "provisioning the CubeStack CRDs (ai.cubestack.io) from the vendored copies"
+kubectl apply -f "$REPO_DIR/test/e2e/framework/testdata/cubestack-crds"
+
 log "done. expose the portal with:"
 log "  kubectl -n $NAMESPACE port-forward svc/cubepilot 8080:8080"
 log "then open http://127.0.0.1:8080"
