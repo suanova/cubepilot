@@ -367,6 +367,13 @@ func (r *AgentInstanceReconciler) ensurePod(ctx context.Context, pod *corev1.Pod
 	if err != nil {
 		return false, err
 	}
+	if existing.DeletionTimestamp != nil {
+		// Already being deleted (e.g. a heal/drift delete still in progress):
+		// report recreate so the caller requeues on the short interval and
+		// creates the replacement once the old Pod is gone, rather than waiting
+		// for the next periodic 60s requeue.
+		return true, nil
+	}
 	if !equality.Semantic.DeepEqual(securityFingerprint(&existing), securityFingerprint(pod)) {
 		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
 			return false, err

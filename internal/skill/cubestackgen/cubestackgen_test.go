@@ -151,12 +151,18 @@ func scalarTypeMismatch(prop apiextensionsv1.JSONSchemaProps, val any) bool {
 	case "boolean":
 		_, ok := val.(bool)
 		return !ok
-	case "integer":
-		f, ok := val.(float64)
-		return !ok || f != float64(int64(f))
-	case "number":
-		_, ok := val.(float64)
-		return !ok
+	case "integer", "number":
+		// sigs.k8s.io/yaml decodes JSON numbers into float64, but other YAML
+		// decoders may surface integral types (int/int64/uint64) — accept any of
+		// them; for float64 on an integer schema require an integral value.
+		if f, ok := val.(float64); ok {
+			return prop.Type == "integer" && f != float64(int64(f))
+		}
+		switch val.(type) {
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return false
+		}
+		return true
 	}
 	return false
 }

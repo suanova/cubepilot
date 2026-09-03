@@ -18,15 +18,16 @@ var _ = Describe("Chat (SSE)", Label("chat"), func() {
 		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
 		// On a fresh provision the agent pod is recreated once ~60s in (per-user
 		// kubeconfig fingerprint drift, issue #98); wait until it is Ready and
-		// stable so the turn is not cut mid-stream by that swap.
+		// stable so the turn is not cut mid-stream by that swap. The chat
+		// deadline is created AFTER the wait so the gate does not eat the budget.
 		By("waiting until the agent instance is Ready and its pod is stable")
 		Eventually(func() error { return agentStabilityErr(context.Background(), fw.Users[0]) },
 			4*time.Minute, 5*time.Second).Should(Succeed())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
 
 		events, err := fw.ChatSSE(ctx, fw.Users[0], "e2e-"+rand.String(6),
 			"你是 CubePilot 平台助手。请用一句话回复:你好。")

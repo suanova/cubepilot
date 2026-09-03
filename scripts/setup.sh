@@ -162,6 +162,11 @@ helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESP
 # without running e2e) is immediately usable for testing from the portal.
 log "provisioning the CubeStack CRDs (ai.cubestack.io) from the vendored copies"
 kubectl apply -f "$REPO_DIR/test/e2e/framework/testdata/cubestack-crds"
+# apiextensions establishes (starts serving) CRDs asynchronously; wait so an
+# immediately following chat/agent can create them without "no matches for kind".
+kubectl wait --for=condition=Established --timeout=60s \
+  crd/devenvironments.ai.cubestack.io crd/inferenceservices.ai.cubestack.io \
+  crd/inferenceruntimeprofiles.ai.cubestack.io crd/modelversions.ai.cubestack.io
 
 log "done. expose the portal with:"
 log "  kubectl -n $NAMESPACE port-forward svc/cubepilot 8080:8080"
