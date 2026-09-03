@@ -21,7 +21,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ---- inputs (env or flag) ------------------------------------------------
 KIND_CLUSTER="${CUBEPILOT_KIND_CLUSTER:-cube}"
 NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
-OPENCLAW_IMAGE_TAG="${CUBEPILOT_OPENCLAW_IMAGE_TAG:-2026.8.1}"
+OPENCLAW_IMAGE_TAG="${CUBEPILOT_OPENCLAW_IMAGE_TAG:-2026.8.2}"
 LLM_APIKEY="${CUBEPILOT_LLM_APIKEY:-}"
 LLM_ENDPOINT="${CUBEPILOT_LLM_ENDPOINT:-https://api.deepseek.com}"
 LLM_MODEL="${CUBEPILOT_LLM_MODEL:-deepseek-v4-flash}"
@@ -67,7 +67,7 @@ Optional:
   CUBEPILOT_NAMESPACE   / --namespace <ns>
       Target namespace (default: cubepilot).
   CUBEPILOT_OPENCLAW_IMAGE_TAG / --openclaw-image-tag <tag>
-      Openclaw base image tag (default: 2026.8.1).
+      Openclaw base image tag (default: 2026.8.2).
   CUBEPILOT_KIND_CONFIG <path>
       Kind config file used when creating the cluster.
   CUBEPILOT_SKIP_CLUSTER_CREATE / --skip-cluster-create
