@@ -6,15 +6,20 @@ export interface SessionInfo {
   title?: string
 }
 
+// HistoryContentBlock is one content block of a history message. The gateway
+// serves user-role messages as a plain string and assistant/toolResult messages
+// as an array of these blocks (issue #104).
+export interface HistoryContentBlock {
+  type: 'text' | 'toolCall'
+  text?: string
+  name?: string
+  id?: string
+  arguments?: unknown
+}
+
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'toolResult'
-  content: Array<{
-    type: 'text' | 'toolCall'
-    text?: string
-    name?: string
-    id?: string
-    arguments?: unknown
-  }>
+  content: string | HistoryContentBlock[]
 }
 
 export interface Task {

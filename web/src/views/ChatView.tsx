@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
-import type { HistoryMessage, SessionInfo } from '@/api/types'
+import type { HistoryContentBlock, HistoryMessage, SessionInfo } from '@/api/types'
 import { shortSession } from '@/utils/format'
 
 const user = getCurrentUser()
@@ -165,12 +165,26 @@ export default function ChatView() {
     }
   }
 
+  // The gateway serves a history message's content either as a plain string
+  // (user role) or as an array of text/toolCall blocks (assistant / toolResult).
+  // Normalize to blocks so a single render path handles both shapes (issue
+  // #104: a user prompt carried as a string used to be iterated character by
+  // character and silently dropped, leaving only the agent side visible).
+  const blocks = (c: HistoryMessage['content']): HistoryContentBlock[] =>
+    typeof c === 'string' ? [{ type: 'text', text: c }] : c
+
   function renderHistory(items: HistoryMessage[]) {
     const out: BubbleMsg[] = []
     let last: BubbleMsg | null = null
+    const openAssistant = () => {
+      if (last && last.kind === 'assistant') return
+      last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
+      out.push(last)
+    }
     for (const it of items) {
+      const content = blocks(it.content)
       if (it.role === 'user') {
-        for (const c of it.content) {
+        for (const c of content) {
           if (c.type === 'text' && c.text) {
             out.push({ kind: 'user', text: c.text, tools: [], toolResults: [], thinking: false })
           }
@@ -179,14 +193,11 @@ export default function ChatView() {
         continue
       }
       if (it.role === 'assistant') {
-        const hasTool = it.content.some((c) => c.type === 'toolCall')
-        const hasText = it.content.some((c) => c.type === 'text' && c.text)
+        const hasTool = content.some((c) => c.type === 'toolCall')
+        const hasText = content.some((c) => c.type === 'text' && c.text)
         if (!hasTool && !hasText) continue
-        if (!last || last.kind !== 'assistant') {
-          last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
-          out.push(last)
-        }
-        for (const c of it.content) {
+        openAssistant()
+        for (const c of content) {
           if (c.type === 'toolCall') {
             const args = typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {})
             let cmd = ''
@@ -196,22 +207,18 @@ export default function ChatView() {
             } catch {
               cmd = args
             }
-            last.tools.push({ name: c.name || 'exec', cmd, callID: c.id || '', done: true })
+            last!.tools.push({ name: c.name || 'exec', cmd, callID: c.id || '', done: true })
           } else if (c.type === 'text' && c.text) {
-            last.text = (last.text ? last.text + '\n' : '') + c.text
+            last!.text = (last!.text ? last!.text + '\n' : '') + c.text
           }
         }
         continue
       }
-      if (it.role === 'toolResult') {
-        for (const c of it.content) {
-          if (c.type === 'text' && c.text) {
-            if (!last || last.kind !== 'assistant') {
-              last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
-              out.push(last)
-            }
-            last.toolResults.push(c.text)
-          }
+      // toolResult
+      for (const c of content) {
+        if (c.type === 'text' && c.text) {
+          openAssistant()
+          last!.toolResults.push(c.text)
         }
       }
     }
