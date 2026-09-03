@@ -63,7 +63,9 @@ export interface Report {
   taskId: string
   taskName: string
   trigger: 'Cron' | 'Manual' | 'Inspect'
-  status: 'success' | 'failed'
+  // status also carries 'running' while the TaskRun is queued/executing
+  // (issue #95); success/failed only once the scheduler finishes the run.
+  status: 'success' | 'failed' | 'running'
   startedAt: string
   finishedAt: string
   content: string

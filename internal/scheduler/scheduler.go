@@ -94,15 +94,17 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 }
 
 // nextDue computes the next fire time and whether the task is due now.
+// Cron expressions are evaluated in UTC (issue #95): firing must not depend on
+// the operator process's local zone. The UI labels schedules "(UTC)".
 func (r *ReconcileScheduler) nextDue(task *v1alpha1.Task) (next *time.Time, due bool) {
 	cron, err := schedule.Parse(task.Spec.Cron)
 	if err != nil {
 		return nil, false
 	}
-	now := time.Now()
-	base := task.CreationTimestamp.Time
+	now := time.Now().UTC()
+	base := task.CreationTimestamp.UTC()
 	if task.Status.LastRunTime != nil {
-		base = task.Status.LastRunTime.Time
+		base = task.Status.LastRunTime.UTC()
 	}
 	nextT := cron.NextAfter(base)
 	// Due when the next fire time is not in the future AND we have not
@@ -223,7 +225,7 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 
 	// Record the run on the Task (LastRunTime / LastTaskRunName / LastStatus).
 	taskPatch := client.MergeFrom(task.DeepCopy())
-	lastRun := metav1.NewTime(time.Now())
+	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
 	task.Status.LastStatus = "success"
@@ -294,7 +296,7 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 	}
 
 	taskPatch := client.MergeFrom(task.DeepCopy())
-	lastRun := metav1.NewTime(time.Now())
+	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
 	task.Status.LastStatus = "failed"
