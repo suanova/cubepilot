@@ -47,7 +47,7 @@ Platform CRDs live under the `ai.cubestack.io` group (`DevEnvironment`, `Inferen
    ```
 
    If the platform identity also lacks CRD-read permission, skip to step 3.
-3. Validate against the server before creating (use the user identity): apply with `--dry-run=server` and iterate on the error — the API server lists the required fields (e.g. `spec.image`, `spec.resources`) and rejects unknown ones. Server-side dry-run enforces normal RBAC: creating a new object needs `create`, updating an existing one needs `patch`. If the user identity is read-only you will get Forbidden — probe first with `kubectl auth can-i create <resource>` / `kubectl auth can-i patch <resource>` and report honestly instead of retrying the same rejected apply:
+3. Validate against the server before creating (use the user identity): apply with `--dry-run=server` and iterate on the error — the API server lists the required fields (e.g. `spec.image`, `spec.resources`) and rejects unknown ones. Server-side dry-run enforces normal RBAC: creating a new object needs `create`, updating an existing one needs `patch`. If the user identity is read-only you will get Forbidden — probe first (for namespaced resources) with `kubectl auth can-i create <resource> -n <ns>` / `kubectl auth can-i patch <resource> -n <ns>` (omit `-n <ns>` for cluster-scoped resources) and report honestly instead of retrying the same rejected apply:
 
    ```bash
    kubectl apply --dry-run=server -f - -n <ns> <<'EOF'
