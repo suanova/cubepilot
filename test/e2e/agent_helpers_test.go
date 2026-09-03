@@ -6,7 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -37,14 +37,13 @@ func agentStabilityErr(ctx context.Context, user string) error {
 	if inst.Status.PodName == "" {
 		return fmt.Errorf("instance %s has no pod yet", name)
 	}
-	var pod corev1.Pod
-	if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: inst.Status.PodName, Namespace: fw.Namespace}, &pod); err != nil {
-		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("agent pod %s not found (recreating)", inst.Status.PodName)
-		}
-		return err
+	// The framework's controller-runtime client only registers the cubepilot
+	// v1alpha1 scheme, so read the Pod through the typed kubernetes client.
+	pod, err := fw.KubeClient.CoreV1().Pods(fw.Namespace).Get(ctx, inst.Status.PodName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get agent pod %s: %w", inst.Status.PodName, err)
 	}
-	if !podReady(pod) {
+	if !podReady(*pod) {
 		return fmt.Errorf("agent pod %s not Ready", inst.Status.PodName)
 	}
 	if pod.Status.StartTime == nil {
