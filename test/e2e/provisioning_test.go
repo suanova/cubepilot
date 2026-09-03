@@ -27,6 +27,18 @@ var _ = Describe("Instance provisioning", func() {
 	pvcName := k8s.ResourceName("data", instName)
 
 	BeforeEach(func() {
+		// The per-user kubeconfig Secret is a hard prerequisite for provisioning
+		// (issue #100): the controller waits for the owner's identity before it
+		// creates the pod. The builtin bootstrap mints identities only for
+		// configured users, so seed one for this spec's ad-hoc owner (the content
+		// is opaque to the controller -- only the Secret's existence matters).
+		if _, err := fw.KubeClient.CoreV1().Secrets(fw.Namespace).Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor("e2e.user"), Namespace: fw.Namespace},
+			Data:       map[string][]byte{"config": []byte("e2e user kubeconfig")},
+		}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
+
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: instName},
 			Spec: v1alpha1.AgentInstanceSpec{
@@ -54,6 +66,10 @@ var _ = Describe("Instance provisioning", func() {
 		} else if !apierrors.IsNotFound(err) {
 			Expect(err).NotTo(HaveOccurred())
 		}
+		if err := fw.KubeClient.CoreV1().Secrets(fw.Namespace).Delete(ctx,
+			k8s.UserKubeconfigSecretFor("e2e.user"), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
 		// The ai.cubestack.io/agentinstance finalizer removes the PVC, Pod and
 		// Service; wait until everything is gone.
 		Eventually(func() error {
@@ -75,6 +91,11 @@ var _ = Describe("Instance provisioning", func() {
 			}
 			if _, err := core.PersistentVolumeClaims(fw.Namespace).Get(ctx, pvcName, metav1.GetOptions{}); err == nil {
 				return fmt.Errorf("pvc %s not gone yet", pvcName)
+			} else if !apierrors.IsNotFound(err) {
+				return err
+			}
+			if _, err := core.Secrets(fw.Namespace).Get(ctx, k8s.UserKubeconfigSecretFor("e2e.user"), metav1.GetOptions{}); err == nil {
+				return fmt.Errorf("per-user kubeconfig secret %s not gone yet", k8s.UserKubeconfigSecretFor("e2e.user"))
 			} else if !apierrors.IsNotFound(err) {
 				return err
 			}

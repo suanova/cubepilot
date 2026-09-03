@@ -61,10 +61,11 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		}
 		ctx := context.Background()
 
-		// On a fresh provision the agent pod is recreated once ~60s in (per-user
-		// kubeconfig fingerprint drift, issue #98); wait until it is Ready and
-		// stable so the turn is not cut mid-stream by that swap. The chat
-		// deadline is created AFTER the wait so the gate does not eat the budget.
+		// The operator waits for the per-user identity before first provisioning,
+		// so the fresh agent pod is stable from the start (issue #100 removed the
+		// ~60s fingerprint-drift recreate); wait only until it is Ready before the
+		// turn. The chat deadline is created AFTER the wait so the gate does not
+		// eat the budget.
 		By("waiting until the agent instance is Ready and its pod is stable")
 		Eventually(func() error { return agentStabilityErr(ctx, fw.Users[0]) },
 			4*time.Minute, 5*time.Second).Should(Succeed())

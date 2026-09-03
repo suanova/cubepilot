@@ -14,12 +14,12 @@ import (
 )
 
 // stableAgentPodAge is how long the agent pod must have been up before a chat
-// turn may start. On a fresh provision the operator recreates the pod once,
-// ~60s after creation, when the mounted per-user kubeconfig Secret's
-// resourceVersion settles (a security-fingerprint drift, issue #98). A chat
-// started inside that window is cut when the pod is replaced, so chat specs
-// wait until the current pod has been up past the drift window.
-const stableAgentPodAge = 90 * time.Second
+// turn may start. Fresh provisioning used to delete and recreate the pod once
+// ~60s in -- the first pod was born before the per-user kubeconfig Secret was
+// minted, so a security-fingerprint drift swapped it (issue #100). That
+// redundant restart is fixed (the controller now waits for the identity first),
+// so the wait only guards against scheduling/readiness settle before a turn.
+const stableAgentPodAge = 15 * time.Second
 
 // agentStabilityErr reports why the user's agent instance is not yet safe to
 // chat with, or nil once the instance is Ready and its pod has been up for
