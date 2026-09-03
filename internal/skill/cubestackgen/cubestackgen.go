@@ -42,6 +42,13 @@ func LoadDir(dir string) ([]*apiextensionsv1.CustomResourceDefinition, error) {
 		if err := yaml.Unmarshal(raw, crd); err != nil {
 			return nil, fmt.Errorf("decode %s: %w", filepath.Base(p), err)
 		}
+		// The renderer indexes spec.versions[0] and its OpenAPI schema; reject a
+		// CRD that would panic instead of producing a confusing index error.
+		if len(crd.Spec.Versions) == 0 ||
+			crd.Spec.Versions[0].Schema == nil ||
+			crd.Spec.Versions[0].Schema.OpenAPIV3Schema == nil {
+			return nil, fmt.Errorf("decode %s: missing spec.versions[0] OpenAPI schema", filepath.Base(p))
+		}
 		out = append(out, crd)
 	}
 	return out, nil

@@ -3,6 +3,7 @@ package cubestackgen
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,6 +60,22 @@ func TestCommittedCRDReferenceIsFresh(t *testing.T) {
 	}
 }
 
+// TestLoadDirRejectsSchemaLessCRD verifies LoadDir returns a file-specific
+// error (not a panic) for a CRD lacking versions[0]'s OpenAPI schema.
+func TestLoadDirRejectsSchemaLessCRD(t *testing.T) {
+	dir := t.TempDir()
+	bad := "apiVersion: apiextensions.k8s.io/v1\n" +
+		"kind: CustomResourceDefinition\n" +
+		"metadata:\n  name: no.schema.io\n" +
+		"spec:\n  group: no.schema.io\n  names:\n    kind: NoSchema\n    plural: noschemas\n"
+	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(bad), 0o644); err != nil {
+		t.Fatalf("write bad CRD: %v", err)
+	}
+	if _, err := LoadDir(dir); err == nil {
+		t.Fatal("expected an error for a CRD without a versions[0] OpenAPI schema")
+	}
+}
+
 func TestSKILLDevEnvironmentExampleIsValid(t *testing.T) {
 	skill, err := os.ReadFile("../../../internal/skill/skills/cubestack-platform/SKILL.md")
 	if err != nil {
@@ -77,11 +94,16 @@ func TestSKILLDevEnvironmentExampleIsValid(t *testing.T) {
 		t.Fatalf("LoadDir: %v", err)
 	}
 	var specSchema apiextensionsv1.JSONSchemaProps
+	found := false
 	for _, crd := range crds {
 		if crd.Spec.Names.Kind != "DevEnvironment" {
 			continue
 		}
 		specSchema = crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+		found = true
+	}
+	if !found {
+		t.Fatalf("no DevEnvironment CRD under %s; the example cannot be validated", testCRDDir)
 	}
 	spec, ok := obj["spec"].(map[string]any)
 	if !ok {
@@ -118,9 +140,31 @@ func extractFencedYAMLContaining(md, needle string) (string, error) {
 	return "", fmt.Errorf("no fenced block containing %q found", needle)
 }
 
+// scalarTypeMismatch reports whether a provided scalar value disagrees with the
+// schema leaf type (string / boolean / integer). JSON/YAML numbers decode into
+// float64; an integer-typed leaf must hold an integral value.
+func scalarTypeMismatch(prop apiextensionsv1.JSONSchemaProps, val any) bool {
+	switch prop.Type {
+	case "string":
+		_, ok := val.(string)
+		return !ok
+	case "boolean":
+		_, ok := val.(bool)
+		return !ok
+	case "integer":
+		f, ok := val.(float64)
+		return !ok || f != float64(int64(f))
+	case "number":
+		_, ok := val.(float64)
+		return !ok
+	}
+	return false
+}
+
 // validateRequiredAndEnums checks that every field the schema marks required is
-// present, and that any provided leaf matching an enum-valued schema field is
-// one of the enum entries. Recurses into nested object values.
+// present, that any provided scalar matches the schema leaf type, and that any
+// provided leaf matching an enum-valued schema field is one of the enum
+// entries. Recurses into nested object values.
 func validateRequiredAndEnums(schema apiextensionsv1.JSONSchemaProps, obj map[string]any, path string) []string {
 	var errs []string
 	for _, req := range schema.Required {
@@ -131,6 +175,14 @@ func validateRequiredAndEnums(schema apiextensionsv1.JSONSchemaProps, obj map[st
 	for name, val := range obj {
 		prop, ok := schema.Properties[name]
 		if !ok {
+			continue
+		}
+		if child, ok := val.(map[string]any); ok {
+			errs = append(errs, validateRequiredAndEnums(prop, child, path+"."+name)...)
+			continue
+		}
+		if prop.Type != "object" && prop.Type != "array" && prop.Type != "" && scalarTypeMismatch(prop, val) {
+			errs = append(errs, fmt.Sprintf("%s.%s: value of type %T is not schema type %q", path, name, val, prop.Type))
 			continue
 		}
 		if len(prop.Enum) > 0 {
@@ -145,9 +197,6 @@ func validateRequiredAndEnums(schema apiextensionsv1.JSONSchemaProps, obj map[st
 			if !legal {
 				errs = append(errs, fmt.Sprintf("%s.%s: value %q not in enum %v", path, name, vs, prop.Enum))
 			}
-		}
-		if child, ok := val.(map[string]any); ok {
-			errs = append(errs, validateRequiredAndEnums(prop, child, path+"."+name)...)
 		}
 	}
 	return errs
