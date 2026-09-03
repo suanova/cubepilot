@@ -470,7 +470,17 @@ export default function ChatView() {
                         )}
                       </div>
                     ))}
-                    {b.text && <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>}
+                    {/* When an assistant reply ran tools, its closing text is the
+                        takeaway: render it as a highlighted panel so it stands out
+                        from the tool log. Plain replies and user text stay simple. */}
+                    {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
+                      <div className="answer-panel">
+                        <span className="answer-label">最终结果</span>
+                        {b.text}
+                      </div>
+                    ) : b.text ? (
+                      <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>
+                    ) : null}
                     {b.error && <div style={{ fontSize: 13, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>{b.error}</div>}
                   </div>
                 </div>

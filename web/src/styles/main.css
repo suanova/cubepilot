@@ -184,6 +184,9 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .tool-status.done-mark{color:var(--success);gap:4px}
 .tool-status.done-mark .icon{width:14px;height:14px}
 .tool-card.tool-running{border-color:var(--accent-strong);box-shadow:0 0 0 1px var(--accent-soft)}
+/* final-answer panel: the assistant's closing text stands out from the tool log */
+.answer-panel{margin-top:12px;background:var(--accent-soft);border:1px solid var(--accent-soft);border-left:3px solid var(--accent-strong);border-radius:8px;padding:10px 12px;font-size:14.5px;line-height:1.75;color:var(--fg);white-space:pre-wrap;word-break:break-word}
+.answer-panel .answer-label{display:block;font-size:11px;font-weight:650;letter-spacing:.05em;color:var(--accent-ink);margin-bottom:3px}
 .spin{width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--accent-strong);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 /* confirm card */
