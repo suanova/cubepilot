@@ -6,17 +6,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
-Sanitize a user identity to a DNS-1123 name segment, mirroring k8s.Sanitize
-(internal/k8s/client.go): lowercase, collapse runs of non [a-z0-9-] to a single
-"-", trim "-", empty becomes "user".
-*/}}
-{{- define "cubepilot.sanitize" -}}
-{{- $s := regexReplaceAll "[^a-z0-9-]+" (lower .) "-" -}}
-{{- $s = trimAll "-" $s -}}
-{{- if eq $s "" -}}user{{- else -}}{{$s}}{{- end -}}
-{{- end -}}
-
-{{/*
 Shared agent-runtime env block. Both the operator and the api process consume
 config.Load() (internal/config), so they receive the same environment.
 */}}

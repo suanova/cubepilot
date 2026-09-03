@@ -1,11 +1,14 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +30,25 @@ const BuiltinAgentName = "agent-for-cloud"
 // BuiltinTaskTemplateName is the preset inspection task template
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
+
+// Per-user identity ClusterRoles the platform binds each user's ServiceAccount
+// to (issue #19): `view` is the built-in read-only ClusterRole (deliberately
+// excludes secrets); cubepilot-user-crds (declared in the chart rbac.yaml)
+// grants full ai.cubestack.io CRUD. ClusterRoleBindings reference these by
+// name, so the operator needs only get/bind on them.
+const (
+	UserViewClusterRole = "view"
+	UserCRDsClusterRole = "cubepilot-user-crds"
+)
+
+// userCRBName builds the per-user ClusterRoleBinding name.
+func userCRBName(user, role string) string {
+	short := role
+	if role == UserCRDsClusterRole {
+		short = "crds"
+	}
+	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
+}
 
 // BuiltinSkills are the preset domain skills the builtin agent references
 // (design §3.3.1 domain layer): the agent gets exactly the skills the platform
@@ -142,6 +164,9 @@ type BuiltinBootstrapReconciler struct {
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;bind,resourceNames=view;cubepilot-user-crds
 
 // Reconcile ensures the builtin objects exist (create-if-missing).
 func (r *BuiltinBootstrapReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -175,7 +200,16 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		return err
 	}
 	// 3. Per-user builtin agent instances (auto-instantiated per user;
-	// resident).
+	// resident). Reject identities that would collide on the derived per-user
+	// name before provisioning (e.g. "zhang.wei" vs "Zhang Wei").
+	seenIdentity := map[string]string{}
+	for _, user := range r.Cfg.Users {
+		saName := k8s.UserServiceAccountName(user)
+		if prev, dup := seenIdentity[saName]; dup {
+			return fmt.Errorf("users %q and %q collide on identity %s", prev, user, saName)
+		}
+		seenIdentity[saName] = user
+	}
 	for _, user := range r.Cfg.Users {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
@@ -197,8 +231,100 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		if err := r.createIfMissing(ctx, inst); err != nil {
 			return err
 		}
+		// Platform-generated per-user identity: SA + view/CRD ClusterRole
+		// bindings + a kubeconfig Secret the agent mounts as its default
+		// credentials (issue #19). Zero operator/admin-supplied kubeconfig.
+		if err := r.ensurePerUserKubeconfigAccess(ctx, user); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// ensurePerUserKubeconfigAccess mints the per-user identity (issue #19): a
+// namespaced ServiceAccount, ClusterRoleBindings to `view` and
+// `cubepilot-user-crds`, and a kubeconfig Secret (SA token inlined) under
+// k8s.UserKubeconfigSecretFor so the AgentInstance controller's existing
+// dual-kubeconfig mount picks it up unchanged. Idempotent; when the token
+// Secret's token is not yet populated (API server fills it asynchronously) it
+// returns an error so the reconcile requeues rather than writing a broken
+// kubeconfig.
+func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.Context, user string) error {
+	saName := k8s.UserServiceAccountName(user)
+	builtinLabels := map[string]string{"cubepilot/builtin": "true"}
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: r.Cfg.Namespace, Labels: builtinLabels},
+	}
+	if err := r.createIfMissing(ctx, sa); err != nil {
+		return err
+	}
+
+	for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
+		crb := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(user, role), Labels: builtinLabels},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role},
+			Subjects: []rbacv1.Subject{{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: r.Cfg.Namespace,
+			}},
+		}
+		if err := r.createIfMissing(ctx, crb); err != nil {
+			return err
+		}
+	}
+
+	// Token: a legacy service-account-token Secret (the API server writes the
+	// token back asynchronously). Read the token; if not yet present, requeue.
+	tokenSecretName := saName + "-token"
+	tok := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        tokenSecretName,
+			Namespace:   r.Cfg.Namespace,
+			Labels:      builtinLabels,
+			Annotations: map[string]string{corev1.ServiceAccountNameKey: saName},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}
+	if err := r.createIfMissing(ctx, tok); err != nil {
+		return err
+	}
+	var got corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: tokenSecretName}, &got); err != nil {
+		return err
+	}
+	token := string(got.Data[corev1.ServiceAccountTokenKey])
+	if token == "" {
+		return fmt.Errorf("per-user token for %s not ready yet (token secret %s)", user, tokenSecretName)
+	}
+
+	// Kubeconfig Secret consumed by the AgentInstance controller (PR #94).
+	kc := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
+		Data:       map[string][]byte{"config": k8s.PerUserKubeconfigYAML(token)},
+	}
+	if err := r.ensureSecretData(ctx, kc, "config"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureSecretData creates the Secret when absent and updates the given key's
+// data when it changed, so a recreated token Secret (new token) refreshes the
+// kubeconfig instead of leaving a stale one behind.
+func (r *BuiltinBootstrapReconciler) ensureSecretData(ctx context.Context, want *corev1.Secret, key string) error {
+	var existing corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: want.Namespace, Name: want.Name}, &existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.Create(ctx, want)
+		}
+		return err
+	}
+	if bytes.Equal(existing.Data[key], want.Data[key]) {
+		return nil
+	}
+	existing.Data = want.Data
+	return r.Update(ctx, &existing)
 }
 
 func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj client.Object) error {
