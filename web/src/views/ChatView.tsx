@@ -18,6 +18,9 @@ interface ToolCallVM {
   cmd: string
   callID: string
   done: boolean
+  // result is the tool's output; rendered directly under its command card so
+  // each command reads together with what it produced.
+  result?: string
 }
 
 // Turn lifecycle phases; drives the per-bubble status line so the user can
@@ -28,11 +31,23 @@ interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
   tools: ToolCallVM[]
-  toolResults: string[]
   error?: string
   thinking: boolean // true while phase !== 'done'
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
+}
+
+// attachToolResult pairs a tool's output with the tool call that produced it:
+// exact call_id when the stream carries one, otherwise the oldest call without
+// a result yet (the gateway emits tool calls and results in the same order).
+function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
+  const t =
+    (callID && tools.find((x) => x.callID === callID)) ||
+    tools.find((x) => !x.done) ||
+    tools.find((x) => !x.result)
+  if (!t) return
+  t.result = t.result ? t.result + '\n' + output : output
+  t.done = true
 }
 
 function ChatBubbleIcon() {
@@ -98,6 +113,43 @@ function setPhase(b: BubbleMsg, phase: BubblePhase) {
   b.thinking = phase !== 'done'
 }
 
+// toolArgsDisplay renders a tool call's headline for its card. Shell tools
+// (exec) carry `arguments.command` / `arguments.cmd` -- show that verbatim.
+// Other tools (read / write / search...) carry named arguments instead; surface
+// them so the card is never an empty shell: a single argument shows its value,
+// several show `key: value` pairs. Secret-looking keys are masked so argument
+// summaries never leak credentials.
+const secretKeyRe =
+  /(password|passwd|token|secret|api[_-]?key|apikey|access[_-]?key|authorization|credential|private[_-]?key)/i
+const secretMask = '••••••'
+
+function summarizeArgs(args: unknown): string {
+  if (args == null) return ''
+  if (typeof args !== 'object') return String(args)
+  const rec = args as Record<string, unknown>
+  if (typeof rec.command === 'string') return rec.command
+  if (typeof rec.cmd === 'string') return rec.cmd
+  const pairs = Object.entries(rec).map(([k, v]) => ({
+    k,
+    text: typeof v === 'string' ? v : JSON.stringify(v),
+    secret: secretKeyRe.test(k),
+  }))
+  if (pairs.length === 1) {
+    const p = pairs[0]
+    return p.secret ? `${p.k}: ${secretMask}` : p.text
+  }
+  return pairs.map((p) => `${p.k}: ${p.secret ? secretMask : p.text}`).join('  ')
+}
+
+function toolArgsDisplay(args: unknown): string {
+  if (typeof args !== 'string') return summarizeArgs(args)
+  try {
+    return summarizeArgs(JSON.parse(args))
+  } catch {
+    return args
+  }
+}
+
 export default function ChatView() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sessionSearch, setSessionSearch] = useState('')
@@ -158,7 +210,7 @@ export default function ChatView() {
       const items = await api.sessionHistory(id)
       renderHistory(items)
     } catch (e) {
-      setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], toolResults: [], thinking: false }])
+      setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
     } finally {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)
@@ -178,7 +230,7 @@ export default function ChatView() {
     let last: BubbleMsg | null = null
     const openAssistant = () => {
       if (last && last.kind === 'assistant') return
-      last = { kind: 'assistant', tools: [], toolResults: [], thinking: false, phase: 'done' }
+      last = { kind: 'assistant', tools: [], thinking: false, phase: 'done' }
       out.push(last)
     }
     for (const it of items) {
@@ -186,7 +238,7 @@ export default function ChatView() {
       if (it.role === 'user') {
         for (const c of content) {
           if (c.type === 'text' && c.text) {
-            out.push({ kind: 'user', text: c.text, tools: [], toolResults: [], thinking: false })
+            out.push({ kind: 'user', text: c.text, tools: [], thinking: false })
           }
         }
         last = null
@@ -199,26 +251,19 @@ export default function ChatView() {
         openAssistant()
         for (const c of content) {
           if (c.type === 'toolCall') {
-            const args = typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {})
-            let cmd = ''
-            try {
-              const a = JSON.parse(args)
-              cmd = a.command || a.cmd || ''
-            } catch {
-              cmd = args
-            }
-            last!.tools.push({ name: c.name || 'exec', cmd, callID: c.id || '', done: true })
+            last!.tools.push({ name: c.name || 'exec', cmd: toolArgsDisplay(c.arguments), callID: c.id || '', done: true })
           } else if (c.type === 'text' && c.text) {
             last!.text = (last!.text ? last!.text + '\n' : '') + c.text
           }
         }
         continue
       }
-      // toolResult
-      for (const c of content) {
-        if (c.type === 'text' && c.text) {
-          openAssistant()
-          last!.toolResults.push(c.text)
+      // toolResult: pair the output with the tool call that produced it, so the
+      // result renders directly under its command card.
+      if (it.role === 'toolResult') {
+        openAssistant()
+        for (const c of content) {
+          if (c.type === 'text' && c.text) attachToolResult(last!.tools, '', c.text)
         }
       }
     }
@@ -245,8 +290,8 @@ export default function ChatView() {
     if (!text) return
     const nextBubbles = [
       ...bubblesRef.current,
-      { kind: 'user' as const, text, tools: [], toolResults: [], thinking: false },
-      { kind: 'assistant' as const, tools: [], toolResults: [], thinking: true },
+      { kind: 'user' as const, text, tools: [], thinking: false },
+      { kind: 'assistant' as const, tools: [], thinking: true },
     ]
     setBubbles(nextBubbles)
     el.value = ''
@@ -276,25 +321,12 @@ export default function ChatView() {
           }
           if (ev.type === 'tool_call') {
             setPhase(bubble, 'tools')
-            let cmd = ''
-            try {
-              const a = JSON.parse(ev.arguments)
-              cmd = a.command || a.cmd || ''
-            } catch {
-              cmd = ev.arguments
-            }
-            bubble.tools.push({ name: ev.name, cmd, callID: ev.call_id || '', done: false })
+            bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.call_id || '', done: false })
             return
           }
           if (ev.type === 'tool_result') {
             setPhase(bubble, 'tools')
-            bubble.toolResults.push(ev.output || '')
-            // Mark the matching tool call completed (fall back to the oldest
-            // unfinished one when the id doesn't line up).
-            const t =
-              bubble.tools.find((x) => x.callID && x.callID === ev.call_id) ||
-              bubble.tools.find((x) => !x.done)
-            if (t) t.done = true
+            if (ev.output) attachToolResult(bubble.tools, ev.call_id || '', ev.output)
             return
           }
           if (ev.type === 'message_delta') {
@@ -411,30 +443,31 @@ export default function ChatView() {
                             <span className="pill neutral">Done</span>
                           )}
                         </div>
-                        <div className="tool-body">
-                          <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{t.cmd}</span>
-                        </div>
-                      </div>
-                    ))}
-                    {b.toolResults.map((r, ri) => (
-                      <div
-                        key={'r' + ri}
-                        className="mono"
-                        style={{
-                          marginTop: 8,
-                          background: 'rgba(0,0,0,.04)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 6,
-                          padding: '8px 10px',
-                          maxHeight: 220,
-                          overflow: 'auto',
-                          fontSize: 12,
-                          lineHeight: 1.6,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-all',
-                        }}
-                      >
-                        {r}
+                        {t.cmd && (
+                          <div className="tool-body">
+                            <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{t.cmd}</span>
+                          </div>
+                        )}
+                        {t.result && (
+                          <div
+                            className="mono"
+                            style={{
+                              marginTop: 8,
+                              background: 'rgba(0,0,0,.04)',
+                              border: '1px solid var(--border)',
+                              borderRadius: 6,
+                              padding: '8px 10px',
+                              maxHeight: 220,
+                              overflow: 'auto',
+                              fontSize: 12,
+                              lineHeight: 1.6,
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-all',
+                            }}
+                          >
+                            {t.result}
+                          </div>
+                        )}
                       </div>
                     ))}
                     {b.text && <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>}
