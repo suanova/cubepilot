@@ -62,7 +62,7 @@ jobs:
         run: |
           docker pull harbor.isuanova.com/library/golang:1.26-bookworm
           docker pull harbor.isuanova.com/library/debian:bookworm-slim
-          docker pull harbor.isuanova.com/library/openclaw:2026.8.1
+          docker pull harbor.isuanova.com/library/openclaw:2026.8.2
           docker pull harbor.isuanova.com/library/node:24-alpine
           docker pull harbor.isuanova.com/library/nginx:1.27-alpine
 

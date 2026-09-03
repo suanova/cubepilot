@@ -1,5 +1,5 @@
 // Package openclaw implements a minimal HTTP client for driving an OpenClaw
-// gateway (v2026.8.1) as the CubePilot agent runtime. The chat turn runs the
+// gateway (v2026.8.2) as the CubePilot agent runtime. The chat turn runs the
 // full agent loop via the OpenAI-compatible /v1/chat/completions endpoint; the
 // always-enabled /tools/invoke and /sessions/{key}/history endpoints provide
 // session listing and history.

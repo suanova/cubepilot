@@ -18,6 +18,6 @@ mirror docker.io/library/golang:1.26-bookworm  "$REG/golang:1.26-bookworm"
 mirror docker.io/library/debian:bookworm-slim  "$REG/debian:bookworm-slim"
 mirror docker.io/library/node:24-alpine        "$REG/node:24-alpine"
 mirror docker.io/library/nginx:1.27-alpine     "$REG/nginx:1.27-alpine"
-mirror ghcr.io/openclaw/openclaw:2026.8.1     "$REG/openclaw:2026.8.1"
+mirror ghcr.io/openclaw/openclaw:2026.8.2     "$REG/openclaw:2026.8.2"
 
 echo "mirror done: $REG"
