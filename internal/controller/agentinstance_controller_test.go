@@ -223,6 +223,10 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 	if err := cl.Create(context.Background(), failedPod); err != nil {
 		t.Fatalf("create failed pod: %v", err)
 	}
+	// Reconcile #1 adds the finalizer; #2 sees the Failed pod, deletes it and
+	// requeues WITHOUT re-creating in the same reconcile (deletion is async; a
+	// same-name create would race the terminating pod with AlreadyExists). The
+	// instance stays Failed while the pod is gone.
 	provisionInstance(r, t)
 
 	var inst v1alpha1.AgentInstance
@@ -230,9 +234,14 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 		t.Fatal(err)
 	}
 	if inst.Status.Phase != v1alpha1.InstanceFailed {
-		t.Errorf("phase = %q, want %q", inst.Status.Phase, v1alpha1.InstanceFailed)
+		t.Errorf("phase = %q, want %q while the failed pod is being replaced", inst.Status.Phase, v1alpha1.InstanceFailed)
+	}
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Errorf("failed pod should be deleted and not re-created in the same reconcile (err=%v)", err)
 	}
 
+	// A later reconcile creates the replacement.
+	reconcileInstance(r, t)
 	var pod corev1.Pod
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &pod); err != nil {
 		t.Fatalf("fresh pod missing after heal: %v", err)
@@ -305,12 +314,26 @@ func TestEnsurePodRecreatesOnSecurityDrift(t *testing.T) {
 	if err := cl.Create(context.Background(), stale); err != nil {
 		t.Fatalf("seed stale pod: %v", err)
 	}
-	if err := r.ensurePod(context.Background(), desired); err != nil {
+	ctx := context.Background()
+	recreate, err := r.ensurePod(ctx, desired)
+	if err != nil {
 		t.Fatalf("ensurePod: %v", err)
+	}
+	if !recreate {
+		t.Fatal("expected recreate=true on security drift")
+	}
+	// The drifted pod is deleted but NOT re-created in the same call (the old
+	// pod is still terminating; a same-name create would race it with
+	// AlreadyExists). A later reconcile creates the replacement.
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("drift should delete without immediate re-create; got err=%v", err)
+	}
+	if recreate, err := r.ensurePod(ctx, desired); err != nil || recreate {
+		t.Fatalf("ensurePod (recreate): err=%v recreate=%v", err, recreate)
 	}
 
 	var got corev1.Pod
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
 		t.Fatalf("get pod after drift: %v", err)
 	}
 	if got.Spec.InitContainers[0].SecurityContext == nil ||
@@ -320,6 +343,56 @@ func TestEnsurePodRecreatesOnSecurityDrift(t *testing.T) {
 	}
 	if got.Spec.Containers[0].Resources.Limits == nil {
 		t.Error("pod not rolled onto baseline: supervisor resource limits missing")
+	}
+}
+
+// TestEnsurePodKubeconfigDriftDeleteDoesNotCreateInSameCall pins the observed
+// bug (issue #98 chat e2e): on a fresh provision the mounted kubeconfig Secret's
+// resourceVersion settles right after the Pod is created, so the first periodic
+// reconcile sees a security-fingerprint drift. ensurePod must delete the pod and
+// report recreate without immediately creating a same-name pod (AlreadyExists
+// while the old one terminates), which used to strand the instance in a Failed
+// heal loop.
+func TestEnsurePodKubeconfigDriftDeleteDoesNotCreateInSameCall(t *testing.T) {
+	ctx := context.Background()
+	nsn := types.NamespacedName{Namespace: testNamespace, Name: testPodName}
+	old := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: testPodName,
+			Annotations: map[string]string{k8s.KubeconfigRevisionAnnotation: "stale-rev"}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "supervisor", Image: "img"}}},
+	}
+	desired := old.DeepCopy()
+	desired.Annotations[k8s.KubeconfigRevisionAnnotation] = "rotated-rev"
+
+	r, cl := newTestReconciler(t)
+	if err := cl.Create(ctx, old); err != nil {
+		t.Fatalf("seed pod: %v", err)
+	}
+
+	recreate, err := r.ensurePod(ctx, desired)
+	if err != nil {
+		t.Fatalf("ensurePod: %v", err)
+	}
+	if !recreate {
+		t.Fatal("expected recreate=true on kubeconfig fingerprint drift")
+	}
+	if err := cl.Get(ctx, nsn, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("drift should delete without immediate re-create; got err=%v", err)
+	}
+
+	recreate, err = r.ensurePod(ctx, desired)
+	if err != nil {
+		t.Fatalf("ensurePod (create): %v", err)
+	}
+	if recreate {
+		t.Fatal("expected recreate=false when creating a missing pod")
+	}
+	var got corev1.Pod
+	if err := cl.Get(ctx, nsn, &got); err != nil {
+		t.Fatalf("replacement pod not created: %v", err)
+	}
+	if got.Annotations[k8s.KubeconfigRevisionAnnotation] != "rotated-rev" {
+		t.Errorf("replacement annotation = %q, want rotated-rev", got.Annotations[k8s.KubeconfigRevisionAnnotation])
 	}
 }
 
@@ -342,8 +415,12 @@ func TestEnsurePodDoesNotRecreateOnConfigDrift(t *testing.T) {
 	if err := cl.Create(context.Background(), existing); err != nil {
 		t.Fatalf("seed pod: %v", err)
 	}
-	if err := r.ensurePod(context.Background(), desired); err != nil {
+	recreate, err := r.ensurePod(context.Background(), desired)
+	if err != nil {
 		t.Fatalf("ensurePod: %v", err)
+	}
+	if recreate {
+		t.Error("config drift must not recreate the pod")
 	}
 
 	var got corev1.Pod

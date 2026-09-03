@@ -34,30 +34,9 @@ var devEnvGVR = schema.GroupVersionResource{
 }
 
 var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Label("chat"), func() {
-	ctx := context.Background()
-	var createdCRDs []string
-
-	BeforeEach(func() {
-		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
-			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
-		}
-		// Provision the CubeStack CRDs as a test precondition: install only
-		// the ones absent, and remember which ones WE created so cleanup never
-		// deletes CRDs that pre-existed in the cluster.
-		By("installing the cubestack CRDs (ai.cubestack.io) if absent")
-		var err error
-		createdCRDs, err = fw.InstallCubestackCRDs(ctx)
-		Expect(err).NotTo(HaveOccurred())
-
-		// apiextensions establishes (starts serving) CRDs asynchronously; wait
-		// until devenvironments is served so the agent's first discovery/apply
-		// cannot hit "no matches for kind".
-		Eventually(func() error {
-			_, err := fw.DynamicClient.Resource(devEnvGVR).Namespace(devEnvNamespace).
-				List(ctx, metav1.ListOptions{})
-			return err
-		}, 60*time.Second).Should(Succeed())
-	})
+	// The CubeStack CRDs (ai.cubestack.io) are provisioned by scripts/setup.sh
+	// when the environment is brought up (idempotent, kept after setup), so this
+	// spec only cleans up the DevEnvironment resource the chat creates.
 
 	AfterEach(func() {
 		deleteCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -74,20 +53,29 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 				Get(deleteCtx, devEnvName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err)
 		}).Should(BeTrue(), "DevEnvironment should be gone after delete")
-
-		// Remove only the CRDs this test created; any that pre-existed in the
-		// cluster (e.g. a real CubeStack deployment) are left alone.
-		By("removing only the cubestack CRDs created by this test")
-		Expect(fw.DeleteCubestackCRDs(ctx, createdCRDs)).To(Succeed())
 	})
 
 	It("creates a DevEnvironment from natural language via generic discovery", func() {
-		chatCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
+			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping chat e2e")
+		}
+		ctx := context.Background()
+
+		// On a fresh provision the agent pod is recreated once ~60s in (per-user
+		// kubeconfig fingerprint drift, issue #98); wait until it is Ready and
+		// stable so the turn is not cut mid-stream by that swap. The chat
+		// deadline is created AFTER the wait so the gate does not eat the budget.
+		By("waiting until the agent instance is Ready and its pod is stable")
+		Eventually(func() error { return agentStabilityErr(ctx, fw.Users[0]) },
+			4*time.Minute, 5*time.Second).Should(Succeed())
+
+		chatCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 		defer cancel()
 
 		// Natural user request, exactly as a platform user would type it. No
-		// mention of the CRD kind / kubectl / discovery — the agent must work
-		// those out from the kubectl-platform skill's schema-discovery recipe.
+		// mention of the CRD kind / kubectl / discovery — the agent is expected
+		// to produce the DevEnvironment via the builtin cubestack-platform skill
+		// (or, for kinds it does not cover, kubectl-platform's discovery recipe).
 		prompt := fmt.Sprintf(
 			"帮我创建一个开发机：名字叫 %s，放在 %s 命名空间，%s 核 CPU、%s 内存，镜像用 %s。",
 			devEnvName, devEnvNamespace, devEnvCPU, devEnvMemory, devEnvImage)

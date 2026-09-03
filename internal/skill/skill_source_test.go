@@ -14,6 +14,7 @@ func TestBuiltinSkillNames(t *testing.T) {
 	want := map[string]bool{
 		"cluster-inspection": true,
 		"kubectl-platform":   true,
+		"cubestack-platform": true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("builtin names = %v, want %d", names, len(want))
@@ -43,6 +44,26 @@ func TestPackBuiltinSkill(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dest, "SKILL.md")); err != nil {
 			t.Errorf("PackBuiltinSkill(%q) has no SKILL.md: %v", name, err)
+		}
+	}
+}
+
+// TestCubestackPlatformSkillPacksReference verifies the packed tar of the
+// cubestack-platform skill carries its generated crd-reference.md alongside
+// SKILL.md, so a revert of the go:embed pattern (all:skills/*) cannot silently
+// ship the skill without its schema map (issue #98).
+func TestCubestackPlatformSkillPacksReference(t *testing.T) {
+	tar, _, _, err := PackBuiltinSkill("cubestack-platform")
+	if err != nil {
+		t.Fatalf("PackBuiltinSkill: %v", err)
+	}
+	dest := t.TempDir()
+	if err := ExtractTar(bytes.NewReader(tar), dest); err != nil {
+		t.Fatalf("ExtractTar: %v", err)
+	}
+	for _, want := range []string{"SKILL.md", "crd-reference.md"} {
+		if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
+			t.Errorf("packed skill missing %s: %v", want, err)
 		}
 	}
 }

@@ -12,9 +12,11 @@ import (
 
 // skillsFS embeds the preset skill directories. Each skills/<name>/ is the
 // single source of truth for one builtin skill (design §3.4): the API seeds it
-// into the repository at startup, and the operator references the names.
+// into the repository at startup, and the operator references the names. The
+// whole directory is embedded so a skill may carry supporting files (e.g.
+// crd-reference.md) alongside its SKILL.md.
 //
-//go:embed skills/*/SKILL.md
+//go:embed all:skills/*
 var skillsFS embed.FS
 
 // skillMeta is the YAML frontmatter of a SKILL.md.

@@ -180,6 +180,7 @@ func DefaultAgentConfig() AgentConfig {
 		Skills: []SkillToggle{
 			{Name: "kubectl-platform", Enabled: true},
 			{Name: "cluster-inspection", Enabled: true},
+			{Name: "cubestack-platform", Enabled: true},
 		},
 	}
 }
