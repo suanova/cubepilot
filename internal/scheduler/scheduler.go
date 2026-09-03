@@ -225,7 +225,7 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 
 	// Record the run on the Task (LastRunTime / LastTaskRunName / LastStatus).
 	taskPatch := client.MergeFrom(task.DeepCopy())
-	lastRun := metav1.NewTime(time.Now())
+	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
 	task.Status.LastStatus = "success"
@@ -296,7 +296,7 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 	}
 
 	taskPatch := client.MergeFrom(task.DeepCopy())
-	lastRun := metav1.NewTime(time.Now())
+	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
 	task.Status.LastStatus = "failed"

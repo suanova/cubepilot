@@ -70,30 +70,50 @@ func TestTaskRunToReportRunningNotFinished(t *testing.T) {
 
 // TestTaskToDTONextRunUTC verifies the task-list next-run computation is pinned
 // to UTC (issue #95): "0 2 * * *" always shows the next 02:00 UTC, never the
-// operator process's local 02:00.
+// operator process's local 02:00. The base timestamps carry a fixed non-UTC
+// offset so this test fails if taskToDTO stops normalizing the base to UTC --
+// a UTC-constructed base would pass even without the .UTC() conversion.
 func TestTaskToDTONextRunUTC(t *testing.T) {
-	task := &v1alpha1.Task{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "zhang-task",
-			CreationTimestamp: metav1.NewTime(time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)),
-		},
-		Spec: v1alpha1.TaskSpec{
-			Owner:   "zhang.wei",
-			Trigger: v1alpha1.TaskTriggerCron,
-			Cron:    "0 2 * * *",
-			State:   v1alpha1.TaskStateEnabled,
-		},
-	}
+	asia := time.FixedZone("UTC+8", 8*3600)
+	want := time.Date(2026, 8, 15, 2, 0, 0, 0, time.UTC) // next "0 2 * * *" in UTC
 
-	dto := taskToDTO(*task)
-	want := time.Date(2026, 8, 15, 2, 0, 0, 0, time.UTC) // created 10:00 UTC -> next 02:00 UTC
-	if dto.NextRunAt == nil {
-		t.Fatal("NextRunAt = nil, want set")
+	cases := []struct {
+		name   string
+		base   time.Time
+		asLast bool // true: store as Status.LastRunTime (takes precedence as the cron base)
+	}{
+		{"creation time normalized", time.Date(2026, 8, 14, 18, 0, 0, 0, asia), false},
+		{"last run time normalized", time.Date(2026, 8, 14, 23, 0, 0, 0, asia), true},
 	}
-	if !dto.NextRunAt.Equal(want) {
-		t.Errorf("NextRunAt = %v, want %v", *dto.NextRunAt, want)
-	}
-	if dto.NextRunAt.Location() != time.UTC {
-		t.Errorf("NextRunAt location = %v, want UTC", dto.NextRunAt.Location())
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			task := &v1alpha1.Task{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "zhang-task",
+					CreationTimestamp: metav1.NewTime(c.base),
+				},
+				Spec: v1alpha1.TaskSpec{
+					Owner:   "zhang.wei",
+					Trigger: v1alpha1.TaskTriggerCron,
+					Cron:    "0 2 * * *",
+					State:   v1alpha1.TaskStateEnabled,
+				},
+			}
+			if c.asLast {
+				lr := metav1.NewTime(c.base)
+				task.Status.LastRunTime = &lr
+			}
+
+			dto := taskToDTO(*task)
+			if dto.NextRunAt == nil {
+				t.Fatal("NextRunAt = nil, want set")
+			}
+			if !dto.NextRunAt.Equal(want) {
+				t.Errorf("NextRunAt = %v, want %v", *dto.NextRunAt, want)
+			}
+			if dto.NextRunAt.Location() != time.UTC {
+				t.Errorf("NextRunAt location = %v, want UTC", dto.NextRunAt.Location())
+			}
+		})
 	}
 }
