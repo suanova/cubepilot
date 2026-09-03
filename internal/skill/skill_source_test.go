@@ -14,6 +14,7 @@ func TestBuiltinSkillNames(t *testing.T) {
 	want := map[string]bool{
 		"cluster-inspection": true,
 		"kubectl-platform":   true,
+		"cubestack-platform": true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("builtin names = %v, want %d", names, len(want))

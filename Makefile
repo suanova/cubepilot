@@ -38,6 +38,9 @@ CUBESTACK_REPO       ?= git@github.com:suanova/cubestack.git
 CUBESTACK_CRD_DIR    ?= test/e2e/framework/testdata/cubestack-crds
 CUBESTACK_CRD_BASES  ?= operator/config/crd/bases
 
+# Generated crd-reference.md of the cubestack-platform builtin skill.
+CUBESTACK_SKILL_REF ?= internal/skill/skills/cubestack-platform/crd-reference.md
+
 GO       ?= go
 DOCKER   ?= docker
 HELM     ?= helm
@@ -47,7 +50,7 @@ NPM      ?= npm
 # cluster); go vet still covers the whole module, including the e2e suite.
 GO_TEST_PACKAGES = $(shell $(GO) list ./... | grep -v '/test/')
 
-.PHONY: build test test-e2e web images push update-crds lint deploy undeploy clean
+.PHONY: build test test-e2e web images push update-crds update-cubestack-skill lint deploy undeploy clean
 
 ## Build both Go binaries (linux/amd64, matching the container runtime).
 build:
@@ -103,6 +106,11 @@ update-crds:
 	@rm -rf /tmp/cubestack-crds
 	@echo "Updated CubeStack CRDs in $(CUBESTACK_CRD_DIR):"
 	@ls -1 $(CUBESTACK_CRD_DIR)
+
+## Regenerate the builtin cubestack-platform skill's crd-reference.md from the
+## vendored CubeStack CRDs (run `make update-crds` first when upstream changed).
+update-cubestack-skill:
+	$(GO) run ./hack/gen-cubestack-skill -crd-dir $(CUBESTACK_CRD_DIR) -out $(CUBESTACK_SKILL_REF)
 
 ## Helm chart sanity: lint + render.
 lint:

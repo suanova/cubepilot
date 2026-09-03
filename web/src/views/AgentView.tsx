@@ -9,6 +9,7 @@ import { showToast } from '@/stores/toast'
 const SKILL_LABELS: Record<string, string> = {
   'kubectl-platform': 'Platform Resource Operations',
   'cluster-inspection': 'Smart Inspection',
+  'cubestack-platform': 'CubeStack Platform',
 }
 
 // kubectl-platform is shown locked in the System section; keep it out of the

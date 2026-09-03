@@ -190,7 +190,7 @@ Content-Type: application/merge-patch+json
       { "name": "deepseek-v4-flash", "endpoint": "https://api.deepseek.com", "credentialRef": { "name": "cubepilot-llm" } }
     ],
     "instructions": "你是 CubeStack 平台管理助手。……",
-    "skills": ["kubectl-platform", "cluster-inspection"],
+    "skills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"],
     "confirmPolicy": "ConfirmWrites"
   }
 }
@@ -231,7 +231,7 @@ Content-Type: application/merge-patch+json
     "owner": "zhang.wei",
     "templateRef": "agent-for-cloud",
     "selectedModel": "deepseek-v4-flash",
-    "enabledSkills": ["kubectl-platform", "cluster-inspection"],
+    "enabledSkills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"],
     "userInstructions": "回答尽量简洁，使用中文。",
     "dataVolume": { "pvc": "pvc-zhang-wei-agent-for-cloud" },
     "identity": { "mode": "user", "principalRef": { "userRef": "zhang.wei" } }
@@ -249,7 +249,7 @@ Content-Type: application/merge-patch+json
 **更新**：`PATCH /apis/ai.cubestack.io/v1alpha1/agentinstances/{name}`
 
 ```json
-{ "spec": { "selectedModel": "qwen2.5-72b", "enabledSkills": ["kubectl-platform", "cluster-inspection"], "userInstructions": "…" } }
+{ "spec": { "selectedModel": "qwen2.5-72b", "enabledSkills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"], "userInstructions": "…" } }
 ```
 
 只允许改这三个字段（📘 设计 §3.2 可覆盖字段）：模型切换重新解析注入；技能变更热加载；提示词变更不支持热加载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。
