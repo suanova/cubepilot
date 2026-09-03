@@ -54,14 +54,14 @@ const (
 // dual-kubeconfig model; when it does not exist the operator falls back to the
 // shared agent-kubeconfig (see AgentInstance controller).
 //
-// The name is collision-resistant: sanitized identity + a stable 8-hex digest
+// The name is collision-resistant: sanitized identity + a stable 128-bit (32-hex) digest
 // of the RAW identity, so identities that normalize the same (e.g. "foo.bar"
 // and "foo_bar") still get distinct Secrets. Mirrored by the Helm chart
 // (cubepilot.sanitize + sha256sum) and scripts/setup.sh so all provisioning
 // paths agree.
 func UserKubeconfigSecretFor(user string) string {
 	sum := sha256.Sum256([]byte(user))
-	return Sanitize(user) + "-kubeconfig-" + hex.EncodeToString(sum[:])[:8]
+	return Sanitize(user) + "-kubeconfig-" + hex.EncodeToString(sum[:])[:32]
 }
 
 // Credential key delivery (design §6): the operator renders each model's

@@ -158,7 +158,7 @@ kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
 # CUBEPILOT_USER_KUBECONFIG is a comma/space list of "<user>=<path>" mappings
 # (one kubeconfig per operator identity), or a single bare "<path>" when there
 # is exactly one operator identity. Each user's Secret is named after
-# k8s.UserKubeconfigSecretFor: sanitized identity + 8-hex sha256 of the raw
+# k8s.UserKubeconfigSecretFor: sanitized identity + 128-bit (32-hex) sha256 of the raw
 # identity, so distinct users always get distinct Secrets.
 if [ -n "$USER_KUBECONFIG" ]; then
   log "creating per-user kubeconfig Secrets (dual-kubeconfig)"
@@ -180,7 +180,7 @@ if [ -n "$USER_KUBECONFIG" ]; then
     [ -f "$path" ] || { echo "error: --user-kubeconfig file not found: $path" >&2; exit 1; }
     s="$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+|-+$//g')"
     [ -n "$s" ] || s=user
-    h="$(printf '%s' "$u" | sha256sum | cut -c1-8)"
+    h="$(printf '%s' "$u" | sha256sum | cut -c1-32)"
     name="${s}-kubeconfig-${h}"
     kubectl -n "$NAMESPACE" create secret generic "$name" \
       --from-file=config="$path" \
