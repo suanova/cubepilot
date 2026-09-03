@@ -45,7 +45,7 @@ type reportDTO struct {
 	TaskID     string    `json:"taskId"`
 	TaskName   string    `json:"taskName"`
 	Trigger    string    `json:"trigger"` // Manual | Cron | Inspect
-	Status     string    `json:"status"`  // success | failed
+	Status     string    `json:"status"`  // success | failed | running
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	Content    string    `json:"content"`
@@ -71,12 +71,13 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 	if dto.Name == "" {
 		dto.Name = t.Name
 	}
-	// Next fire time, mirroring the operator scheduler's computation.
+	// Next fire time, mirroring the operator scheduler's computation (cron is
+	// evaluated in UTC -- issue #95; the UI labels schedules "(UTC)").
 	if dto.Enabled && dto.Schedule != "" {
 		if cron, err := schedule.Parse(dto.Schedule); err == nil {
-			base := t.CreationTimestamp.Time
+			base := t.CreationTimestamp.Time.UTC()
 			if t.Status.LastRunTime != nil {
-				base = t.Status.LastRunTime.Time
+				base = t.Status.LastRunTime.Time.UTC()
 			}
 			if next := cron.NextAfter(base); !next.IsZero() {
 				dto.NextRunAt = &next
@@ -94,19 +95,29 @@ func taskTimePtr(t *metav1.Time) *time.Time {
 	return &v
 }
 
-func taskRunToReport(taskName string, run v1alpha1.TaskRun) reportDTO {
-	status := "success"
-	if run.Status.Phase == v1alpha1.TaskRunFailed {
-		status = "failed"
+// reportRunStatus maps a TaskRun phase to the wire report status. A run that is
+// still queued or executing (Pending/Running) must not be presented as a
+// finished "success": it is reported as "running" until the scheduler writes
+// Completed / Failed (issue #95).
+func reportRunStatus(phase v1alpha1.TaskRunPhase) string {
+	switch phase {
+	case v1alpha1.TaskRunCompleted:
+		return "success"
+	case v1alpha1.TaskRunFailed, v1alpha1.TaskRunCancelled:
+		return "failed"
+	default: // TaskRunPending, TaskRunRunning, or an unset phase
+		return "running"
 	}
+}
+
+func taskRunToReport(taskName string, run v1alpha1.TaskRun) reportDTO {
 	dto := reportDTO{
-		ID:         run.Name,
-		TaskID:     run.Spec.CreatorTaskRef.Name,
-		TaskName:   taskName,
-		Trigger:    run.Spec.Trigger,
-		Status:     status,
-		Content:    run.Status.Content,
-		FinishedAt: run.CreationTimestamp.Time,
+		ID:       run.Name,
+		TaskID:   run.Spec.CreatorTaskRef.Name,
+		TaskName: taskName,
+		Trigger:  run.Spec.Trigger,
+		Status:   reportRunStatus(run.Status.Phase),
+		Content:  run.Status.Content,
 	}
 	if run.Status.StartedAt != nil {
 		dto.StartedAt = run.Status.StartedAt.Time

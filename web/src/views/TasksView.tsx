@@ -50,6 +50,21 @@ function defaultParams(t: TaskTemplate): Record<string, string> {
   return params
 }
 
+// Report wire status is success | failed | running -- a queued/in-flight TaskRun
+// stays "running" until the scheduler writes Completed/Failed (issue #95).
+function reportStatusText(status: Report['status']): string {
+  if (status === 'failed') return 'Failed'
+  if (status === 'running') return 'Running'
+  return 'Successful'
+}
+
+// reportStatusSuffix decorates a report dropdown option.
+function reportStatusSuffix(status: Report['status']): string {
+  if (status === 'failed') return ' - failed'
+  if (status === 'running') return ' - running'
+  return ''
+}
+
 export default function TasksView() {
   const user = getCurrentUser()
   const [tasks, setTasks] = useState<Task[]>([])
@@ -77,12 +92,16 @@ export default function TasksView() {
   function triggerLabel(t: Task): string {
     return t.schedule && t.schedule.trim() ? 'Scheduled + Manual' : 'Manual only'
   }
+  // scheduleCell renders the human description for a task's schedule. Cron
+  // expressions are evaluated in UTC (issue #95), so the description is labeled
+  // "(UTC)" -- otherwise a user cannot tell whether "0 2 * * *" means their
+  // local 02:00 or the server's.
   function scheduleCell(t: Task): string {
     if (!t.schedule || !t.schedule.trim()) return 'Manual only'
     const desc = cronDescription(t.schedule)
     // Stored schedules are server-validated; fall back to the raw value only if
     // the frontend ever fails to describe one.
-    return desc.text ?? t.schedule
+    return (desc.text ?? t.schedule) + ' (UTC)'
   }
 
   useEffect(() => {
@@ -315,10 +334,10 @@ export default function TasksView() {
                     <th>Task</th>
                     <th>Template</th>
                     <th>Trigger</th>
-                    <th>Schedule</th>
+                    <th title="Cron expressions are evaluated in UTC; scheduled cells are labeled (UTC)">Schedule</th>
                     <th>Status</th>
-                    <th>Last Run</th>
-                    <th>Next Run</th>
+                    <th title="Run times are shown in your local timezone">Last Run</th>
+                    <th title="Run times are shown in your local timezone">Next Run</th>
                     <th>Creator</th>
                     <th />
                   </tr>
@@ -343,7 +362,7 @@ export default function TasksView() {
                       <td style={{ fontWeight: 600 }}>{t.name}</td>
                       <td>{templateLabel(t)}</td>
                       <td>{triggerLabel(t)}</td>
-                      <td title={t.schedule && t.schedule.trim() ? `Cron: ${t.schedule.trim()}` : undefined}>{scheduleCell(t)}</td>
+                      <td title={t.schedule && t.schedule.trim() ? `Cron (UTC): ${t.schedule.trim()}` : undefined}>{scheduleCell(t)}</td>
                       <td>
                         <span className={`pill ${t.enabled ? 'success' : 'neutral'}`}>{statusPill(t)}</span>
                       </td>
@@ -387,7 +406,7 @@ export default function TasksView() {
                   {reports.map((r, i) => (
                     <option key={r.id} value={i}>
                       {fmtTime(r.startedAt)} - {r.trigger === 'Cron' ? 'Scheduled' : r.trigger === 'Manual' ? 'Manual' : 'Inspection'}
-                      {r.status === 'failed' ? ' - failed' : ''}
+                      {reportStatusSuffix(r.status)}
                     </option>
                   ))}
                 </select>
@@ -408,7 +427,9 @@ export default function TasksView() {
                   </div>
                   <div className="stat-value" style={{ fontSize: 18 }}>{fmtTime(selectedReport.startedAt)}</div>
                   <div className="stat-sub">
-                    Duration {fmtDuration(selectedReport.startedAt, selectedReport.finishedAt)} - {selectedReport.status === 'failed' ? 'Failed' : 'Completed'}
+                    {selectedReport.status === 'running'
+                      ? 'In progress'
+                      : `Duration ${fmtDuration(selectedReport.startedAt, selectedReport.finishedAt)} - ${selectedReport.status === 'failed' ? 'Failed' : 'Completed'}`}
                   </div>
                 </div>
                 <div className="stat">
@@ -436,9 +457,23 @@ export default function TasksView() {
                   </div>
                   <div
                     className="stat-value"
-                    style={{ fontSize: 18, color: selectedReport.status === 'failed' ? 'var(--danger)' : 'var(--success)' }}
+                    style={{
+                      fontSize: 18,
+                      color:
+                        selectedReport.status === 'failed'
+                          ? 'var(--danger)'
+                          : selectedReport.status === 'running'
+                            ? 'var(--accent)'
+                            : 'var(--success)',
+                    }}
                   >
-                    {selectedReport.status === 'failed' ? 'Failed' : 'Successful'}
+                    {selectedReport.status === 'running' && (
+                      <span
+                        className="spin"
+                        style={{ display: 'inline-block', width: 14, height: 14, borderTopColor: 'var(--accent)', marginRight: 8, verticalAlign: '-1px' }}
+                      />
+                    )}
+                    {reportStatusText(selectedReport.status)}
                   </div>
                   <div className="stat-sub">Trigger: {selectedReport.trigger === 'Cron' ? 'Scheduled' : 'Manual'}</div>
                 </div>
@@ -447,10 +482,15 @@ export default function TasksView() {
               <div className="card">
                 <div className="card-head">
                   <span className="card-title">Report Content</span>
-                  <span className="card-hint">{fmtTime(selectedReport.startedAt)} run - {selectedReport.status === 'failed' ? 'Failed' : 'Successful'}</span>
+                  <span className="card-hint">{fmtTime(selectedReport.startedAt)} run - {reportStatusText(selectedReport.status)}</span>
                 </div>
                 <div style={{ padding: '16px 18px 18px' }}>
-                  <div className="run-log" style={{ whiteSpace: 'pre-wrap' }}>{selectedReport.content || '(empty report)'}</div>
+                  <div className="run-log" style={{ whiteSpace: 'pre-wrap' }}>
+                    {selectedReport.content ||
+                      (selectedReport.status === 'running'
+                        ? 'The run is in progress - the report content appears when it finishes.'
+                        : '(empty report)')}
+                  </div>
                 </div>
               </div>
             </div>
@@ -644,7 +684,7 @@ export default function TasksView() {
                   const cron = cronDescription(form.cron)
                   return (
                     <div className="field" style={{ marginBottom: 0 }}>
-                      <label className="label">Schedule (Cron, 5 fields)</label>
+                      <label className="label">Schedule (Cron, 5 fields - UTC)</label>
                       <input
                         className="input mono"
                         aria-label="Schedule"
@@ -655,7 +695,7 @@ export default function TasksView() {
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--danger)' }}>{cron.error}</div>
                       ) : cron.text ? (
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--success)' }}>
-                          Runs {lowercaseFirst(cron.text)}
+                          Runs {lowercaseFirst(cron.text)} (UTC)
                         </div>
                       ) : (
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
@@ -664,7 +704,7 @@ export default function TasksView() {
                       )}
                       {activeTemplate?.spec?.defaultCron && cron.text && (
                         <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
-                          Template default: {activeTemplate.spec.defaultCron}
+                          Template default: {activeTemplate.spec.defaultCron} (UTC)
                         </div>
                       )}
                     </div>
