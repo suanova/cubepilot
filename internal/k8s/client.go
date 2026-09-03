@@ -4,6 +4,7 @@ package k8s
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"regexp"
@@ -22,6 +23,46 @@ const (
 	AgentLabelApp        = "cubepilot-agent"
 	AgentLabelUser       = "cubepilot/user"
 )
+
+// Kubeconfig layout inside the agent Pod (design §5.3 / issue #19 Option B:
+// two kubeconfigs). The user's own kubeconfig is the DEFAULT so every
+// user-facing kubectl operation runs with the user's least-privilege
+// credentials; the platform (cubepilot-agent SA) kubeconfig lives on a
+// non-default path and is used explicitly only for CRD/kind schema discovery
+// via `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG ...`.
+const (
+	// UserKubeconfigPath is the per-user kubeconfig file at kubectl's default
+	// location ($HOME/.kube/config); mounted from the per-user Secret.
+	UserKubeconfigPath = "/home/node/.kube/config"
+	// PlatformKubeconfigPath is the second kubeconfig (cubepilot-agent SA /
+	// agent-kubeconfig), mounted for schema discovery.
+	PlatformKubeconfigPath = "/home/node/.kube/platform/config"
+	// PlatformKubeconfigEnv names the platform kubeconfig path for the skill
+	// recipe to reference.
+	PlatformKubeconfigEnv = "CUBEPILOT_PLATFORM_KUBECONFIG"
+	// UserKubeconfigEnv names the default (user) kubeconfig path.
+	UserKubeconfigEnv = "CUBEPILOT_USER_KUBECONFIG"
+	// KubeconfigRevisionAnnotation is set by the controller on the agent Pod to
+	// the resourceVersions of the mounted kubeconfig Secrets, so an in-place
+	// Secret content change (same name) recreates the Pod -- SubPath mounts do
+	// not refresh on Secret update.
+	KubeconfigRevisionAnnotation = "cubepilot.io/kubeconfig-rev"
+)
+
+// UserKubeconfigSecretFor returns the per-user kubeconfig Secret name (key
+// "config"). Provisioned per user (e.g. by Helm/setup) as part of the
+// dual-kubeconfig model; when it does not exist the operator falls back to the
+// shared agent-kubeconfig (see AgentInstance controller).
+//
+// The name is collision-resistant: sanitized identity + a stable 128-bit (32-hex) digest
+// of the RAW identity, so identities that normalize the same (e.g. "foo.bar"
+// and "foo_bar") still get distinct Secrets. Mirrored by the Helm chart
+// (cubepilot.sanitize + sha256sum) and scripts/setup.sh so all provisioning
+// paths agree.
+func UserKubeconfigSecretFor(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return Sanitize(user) + "-kubeconfig-" + hex.EncodeToString(sum[:])[:32]
+}
 
 // Credential key delivery (design §6): the operator renders each model's
 // apiKey in openclaw.json as a file SecretRef pointing at a JSON file the

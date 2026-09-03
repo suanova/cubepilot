@@ -16,6 +16,30 @@ agents:
   image: harbor.isuanova.com/suanova/cubepilot-openclaw:latest
   # Comma-separated operator identities, one independent instance each.
   users: zhang.wei,li.ming
+  # Per-user kubeconfig (dual-kubeconfig, issue #19): each user's own
+  # credentials become the agent's DEFAULT ~/.kube/config, so kubectl runs as
+  # the user. Map user -> inline kubeconfig YAML; the chart renders
+  # "<sanitized(user)>-kubeconfig" (key: config) for each entry. Users not
+  # listed here must have that Secret created out-of-band (else the agent falls
+  # back to the shared agent-kubeconfig / SA identity). Prefer out-of-band
+  # Secrets in production; keep this block empty when kubeconfigs are managed
+  # externally.
+  kubeconfigs: {}
+  #   zhang.wei: |
+  #     apiVersion: v1
+  #     kind: Config
+  #     clusters:
+  #       - name: cube
+  #         cluster:
+  #           server: https://kubernetes.default.svc
+  #           certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  #     contexts:
+  #       - name: cube
+  #         context: { cluster: cube, user: zhang-wei }
+  #     current-context: cube
+  #     users:
+  #       - name: zhang-wei
+  #         user: { tokenFile: /path/to/user-token }
   # Default LLM endpoint (OpenAI-compatible base URL) for the builtin
   # agent-for-cloud model. setup.sh --llm-endpoint / CUBEPILOT_LLM_ENDPOINT
   # overrides it; the apiKey always comes from the cubepilot-llm Secret.

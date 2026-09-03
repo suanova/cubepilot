@@ -49,16 +49,25 @@ func TestPackBuiltinSkill(t *testing.T) {
 
 // TestKubectlPlatformSkillTeachesDiscovery verifies the built-in generic
 // skill teaches schema discovery (design §5.3), so the agent can operate any
-// CRD without a per-CRD skill (issue #86).
+// CRD without a per-CRD skill (issue #86), and that discovery uses the
+// platform kubeconfig while real operations stay on the user identity (issue
+// #19 dual kubeconfig).
 func TestKubectlPlatformSkillTeachesDiscovery(t *testing.T) {
 	raw, err := skillsFS.ReadFile("skills/kubectl-platform/SKILL.md")
 	if err != nil {
 		t.Fatalf("read kubectl-platform skill: %v", err)
 	}
 	text := string(raw)
-	for _, want := range []string{"api-resources", "--dry-run=server"} {
+	// Identity routing: the discovery steps (api-resources and schema reads)
+	// must use the platform kubeconfig explicitly; writes stay on the user
+	// identity. Assert the full command lines, not independent tokens.
+	for _, want := range []string{
+		"--kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG api-resources",
+		"--kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG explain",
+		"--dry-run=server",
+	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("kubectl-platform SKILL.md should mention %q (schema discovery)", want)
+			t.Errorf("kubectl-platform SKILL.md should mention %q (schema discovery / dual kubeconfig)", want)
 		}
 	}
 	if strings.Contains(text, "resources.requests") {

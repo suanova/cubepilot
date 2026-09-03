@@ -107,6 +107,41 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		Port:         int32(r.Cfg.AgentPort),
 		AgentUser:    inst.Spec.Owner,
 	}
+	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
+	// kubectl should run with the USER's own credentials. When the per-user
+	// kubeconfig Secret exists, mount it; only a genuinely-absent Secret falls
+	// back to the shared agent-kubeconfig (SA) so an un-provisioned deploy
+	// keeps the historical behaviour. Any other lookup error is transient or
+	// an RBAC gap and must requeue, not silently degrade.
+	userSecretName := k8s.UserKubeconfigSecretFor(inst.Spec.Owner)
+	userRV := ""
+	var userSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: userSecretName, Namespace: r.Cfg.Namespace}, &userSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("lookup per-user kubeconfig secret %s: %w", userSecretName, err)
+		}
+		log.Printf("controller: per-user kubeconfig secret %s not found; agent kubectl falls back to SA identity", userSecretName)
+	} else {
+		spec.UserKubeconfigSecret = userSecretName
+		userRV = userSecret.ResourceVersion
+	}
+	// The platform (discovery) kubeconfig Secret is provisioned by setup.sh /
+	// chart; its resourceVersion lets an in-place content change (credential
+	// rotation, same name) recreate the Pod -- SubPath mounts do not refresh.
+	var platformSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: k8s.KubeconfigSecretName, Namespace: r.Cfg.Namespace}, &platformSecret); err != nil {
+		return ctrl.Result{}, fmt.Errorf("lookup platform kubeconfig secret %s: %w", k8s.KubeconfigSecretName, err)
+	}
+	defaultSecret := spec.UserKubeconfigSecret
+	if defaultSecret == "" {
+		defaultSecret = k8s.KubeconfigSecretName
+	}
+	defaultRV := userRV
+	if defaultSecret == k8s.KubeconfigSecretName {
+		defaultRV = platformSecret.ResourceVersion
+	}
+	kubeconfigRev := defaultSecret + "@" + defaultRV + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
+
 	pvcName, size := inst.EffectiveDataVolume()
 	podName := k8s.ResourceName("agent", inst.Name)
 	svcName := podName
@@ -124,6 +159,12 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	}
 	// Pod.
 	pod := spec.PodFor(podName, inst.Name, pvcName, svcName)
+	// Record the mounted kubeconfig Secret revisions; the security fingerprint
+	// compares this so a same-name Secret update recreates the Pod.
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[k8s.KubeconfigRevisionAnnotation] = kubeconfigRev
 	if err := r.ensurePod(ctx, pod); err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "", "pod: "+err.Error())
 	}
@@ -248,14 +289,22 @@ func (r *AgentInstanceReconciler) ensureService(ctx context.Context, svc *corev1
 
 // instanceSecurity captures the Pod spec fields that are both immutable after
 // creation and part of the design §6 minimum-privilege baseline: identity,
-// image, security contexts and resource limits. Config-derived fields (env,
-// mounts, probes) are deliberately excluded: the supervisor applies config
-// changes in place, so those must never trigger a Pod delete.
+// image, security contexts, resource limits and secret-backed volumes (the
+// kubeconfig mounts -- immutable and identity-bearing). Config-derived fields
+// (other env, non-secret mounts, probes) are deliberately excluded: the
+// supervisor applies config changes in place, so those must never trigger a
+// Pod delete.
 type instanceSecurity struct {
 	ServiceAccountName string
 	PodSecurityContext *corev1.PodSecurityContext
 	Containers         map[string]containerSecurity
 	InitContainers     map[string]containerSecurity
+	SecretVolumes      map[string]string
+	// KubeconfigRevision is the agent Pod's kubeconfig Secret resourceVersion
+	// digest (annotation), so an in-place Secret content change recreates the
+	// Pod even though the Secret name is unchanged (SubPath mounts do not
+	// refresh).
+	KubeconfigRevision string
 }
 
 type containerSecurity struct {
@@ -272,12 +321,19 @@ func securityFingerprint(pod *corev1.Pod) instanceSecurity {
 		PodSecurityContext: pod.Spec.SecurityContext,
 		Containers:         map[string]containerSecurity{},
 		InitContainers:     map[string]containerSecurity{},
+		SecretVolumes:      map[string]string{},
+		KubeconfigRevision: pod.Annotations[k8s.KubeconfigRevisionAnnotation],
 	}
 	for _, c := range pod.Spec.Containers {
 		f.Containers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
 	}
 	for _, c := range pod.Spec.InitContainers {
 		f.InitContainers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Secret != nil {
+			f.SecretVolumes[v.Name] = v.Secret.SecretName
+		}
 	}
 	return f
 }

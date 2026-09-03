@@ -20,6 +20,11 @@ type AgentSpec struct {
 	// AgentUser is the instance owner (the supervisor's CUBEPILOT_AGENT_USER
 	// -- it pulls the resolved config for exactly this user).
 	AgentUser string
+	// UserKubeconfigSecret is the per-user kubeconfig Secret (key "config")
+	// mounted as the pod's default ~/.kube/config, so kubectl runs as the user
+	// (design §5.3). Empty falls back to the shared agent-kubeconfig (upgrade
+	// path) -- the controller sets it after checking the Secret exists.
+	UserKubeconfigSecret string
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -95,21 +100,32 @@ func (s AgentSpec) ServiceFor(name, instance, _ string) *corev1.Service {
 
 // Pod returns the per-user OpenClaw gateway Pod. Config is injected from the
 // shared openclaw-config Secret (subPath over the PVC); kubeconfig from the
-// shared agent-kubeconfig Secret; mutable state lives in the per-user PVC.
+// per-user Secret (default, user operations) + the platform agent-kubeconfig
+// (discovery) -- see AgentSpec.UserKubeconfigSecret; mutable state lives in the
+// per-user PVC.
 func (s AgentSpec) Pod(user string) *corev1.Pod {
 	return s.PodFor(s.podName(user), user, s.pvcName(user), s.svcName(user))
 }
 
 // PodFor builds the per-user OpenClaw gateway Pod for an agent instance.
 // Config is injected from the shared openclaw-config Secret (subPath over the
-// PVC); kubeconfig from the shared agent-kubeconfig Secret; mutable state lives
-// in the per-instance data PVC (design §3.4: the platform holds zero
-// agent-private data).
+// PVC). Kubeconfig is dual (design §5.3 / issue #19): the user's own
+// (UserKubeconfigSecret, default ~/.kube/config) for user operations, plus the
+// shared platform agent-kubeconfig on a secondary path for schema discovery.
+// Mutable state lives in the per-instance data PVC (design §3.4: the platform
+// holds zero agent-private data).
 func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 	port := s.Port
 	labels := map[string]string{AgentLabelApp: "true"}
 	if instance != "" {
 		labels[AgentLabelUser] = instance
+	}
+	// Default (user operations) kubeconfig Secret: the user's own when present
+	// (dual-kubeconfig, issue #19 Option B); otherwise the shared
+	// agent-kubeconfig so an un-provisioned deploy keeps the old behaviour.
+	defaultKubeconfig := KubeconfigSecretName
+	if s.UserKubeconfigSecret != "" {
+		defaultKubeconfig = s.UserKubeconfigSecret
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,6 +225,11 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
 					{Name: "CUBEPILOT_WORKSPACE", Value: "/home/node/.openclaw/workspace"},
+					// Dual-kubeconfig paths (issue #19): user (default, ops) and
+					// platform (discovery). The discovery skill references the
+					// platform path via --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG.
+					{Name: UserKubeconfigEnv, Value: UserKubeconfigPath},
+					{Name: PlatformKubeconfigEnv, Value: PlatformKubeconfigPath},
 					{
 						Name: "OPENCLAW_GATEWAY_TOKEN",
 						ValueFrom: &corev1.EnvVarSource{
@@ -224,7 +245,8 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// The workspace is the default ~/.openclaw/workspace (= PVC
 					// root / workspace subdir); no explicit mount or env needed.
 					{Name: "data", MountPath: "/home/node/.openclaw"},
-					{Name: "kubeconfig", MountPath: "/home/node/.kube/config", SubPath: "config"},
+					{Name: "kubeconfig", MountPath: UserKubeconfigPath, SubPath: "config"},
+					{Name: "platform-kubeconfig", MountPath: PlatformKubeconfigPath, SubPath: "config"},
 					{Name: "scratch", MountPath: "/tmp"},
 					// OpenClaw's gateway keeps its SQLite worker cache under
 					// ~/.cache (since 2026.8.1 it hard-fails when this dir is
@@ -253,6 +275,15 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				},
 				{
 					Name: "kubeconfig",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{SecretName: defaultKubeconfig},
+					},
+				},
+				{
+					// Platform read-only / discovery kubeconfig (cubepilot-agent
+					// SA). Mounted separately so only schema discovery uses it
+					// via --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG.
+					Name: "platform-kubeconfig",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{SecretName: KubeconfigSecretName},
 					},

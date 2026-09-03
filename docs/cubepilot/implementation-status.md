@@ -33,8 +33,8 @@
 2. **简单 HITL ——设计一期要求，代码执行侧未接入**。
    设计 §5：一期写操作**靠命令匹配（动词/资源白名单）命中即暂停确认的简单 HITL**（尽力而为）。代码现状：`confirmPolicy` 字段已进 AgentTemplate 对象模型（内置模板默认 `ConfirmWrites`），`confirm_pending`/`confirm_resolved` 事件已在合约定义，但**执行侧（OpenClaw exec kubectl 前）未接入命令匹配与暂停确认**。→ HITL 为设计一期交付项，实现侧缺口。
 
-3. **双 kubeconfig —— 设计 §5.3 要求，实现未做**。
-   设计 §5.1 等：schema 发现走「用户 kubeconfig(操作) + 平台只读 CRD kubeconfig(读 schema)」两把。代码现状：Pod 只挂一个用户 kubeconfig。→ 登记为待完成。
+3. **双 kubeconfig（静态，issue #19 Option B）——已实现（2026-09-02）**。
+   设计 §5.3：schema 发现走「用户 kubeconfig(操作) + 平台只读 CRD kubeconfig(读 schema)」两把。代码现状：agent Pod 现在挂两把 kubeconfig——默认 `~/.kube/config` 用**每用户 kubeconfig Secret**（`<sanitize(user)>-kubeconfig`，key `config`；Helm `agents.kubeconfigs` 或 setup.sh `--user-kubeconfig` 提供；缺失时 operator 回退共享 `agent-kubeconfig`/SA 身份），业务 kubectl 以用户凭证执行；`cubepilot-agent` SA 的 `agent-kubeconfig` 挪到非默认路径 `$CUBEPILOT_PLATFORM_KUBECONFIG`（`/home/node/.kube/platform/config`），仅 CRD/kind schema 发现使用（`kubectl-platform` skill / AGENTS.md 已改写为 `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG ...`）。→ 剩余：SA 角色（现仍通配）收窄另立；动态每用户凭证（`AgentInstance.spec.credentials[target=k8s]` + resolver/supervisor 动态投递）随 #79 动态身份。
 
 4. **agentInstanceRef / 多实例显式记录**——阶段一每用户单实例从 owner 推导，符合设计 §3.5「不写 agentInstanceRef」；阶段二多 Agent 时再加回（现状一致）。
 
@@ -68,7 +68,7 @@
 
 - 集中 Tool/MCP Gateway（统一执行边界 + 完整 HITL + 审计）。
 - Keycloak OIDC 鉴权替换 `X-CubePilot-User`。
-- 模型凭据托管、轮换与 egress 白名单；两把 kubeconfig 补齐。
+- 模型凭据托管、轮换与 egress 白名单；每用户 kubeconfig 动态投递（`AgentInstance.spec.credentials[target=k8s]`，随 #79 动态身份）。
 - 技能市场（Path 源 + Platform 可见性 + 发布/安装）是**阶段一**交付项（设计阶段一清单，issue #21/#22/#23/#24）；阶段二仅剩：对象存储 S3 技能源、用户私有技能（`visibility: User`）。
 - AgentTemplate/AgentInstance 版本化 Revision、用户自建模板、service 身份。
 - 多 Agent/多 Runtime 形态，TaskRun 显式记录 Agent；trajectory / 工具调用索引 / 确认决定。
