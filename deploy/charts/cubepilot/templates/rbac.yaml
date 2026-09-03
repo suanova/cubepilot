@@ -115,6 +115,7 @@ subjects:
 # (built-in read-only, excludes secrets) plus full ai.cubestack.io CRUD via this
 # ClusterRole. The operator creates one ClusterRoleBinding per user's SA
 # referencing `view` and this role.
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
