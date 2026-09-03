@@ -63,6 +63,13 @@ var _ = Describe("Chat creates a DevEnvironment via generic CRD discovery", Labe
 		chatCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 		defer cancel()
 
+		// On a fresh provision the agent pod is recreated once ~60s in (per-user
+		// kubeconfig fingerprint drift, issue #98); wait until it is Ready and
+		// stable so the turn is not cut mid-stream by that swap.
+		By("waiting until the agent instance is Ready and its pod is stable")
+		Eventually(func() error { return agentStabilityErr(ctx, fw.Users[0]) },
+			4*time.Minute, 5*time.Second).Should(Succeed())
+
 		// Natural user request, exactly as a platform user would type it. No
 		// mention of the CRD kind / kubectl / discovery — the agent is expected
 		// to produce the DevEnvironment via the builtin cubestack-platform skill

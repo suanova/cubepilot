@@ -21,6 +21,13 @@ var _ = Describe("Chat (SSE)", Label("chat"), func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		// On a fresh provision the agent pod is recreated once ~60s in (per-user
+		// kubeconfig fingerprint drift, issue #98); wait until it is Ready and
+		// stable so the turn is not cut mid-stream by that swap.
+		By("waiting until the agent instance is Ready and its pod is stable")
+		Eventually(func() error { return agentStabilityErr(context.Background(), fw.Users[0]) },
+			4*time.Minute, 5*time.Second).Should(Succeed())
+
 		events, err := fw.ChatSSE(ctx, fw.Users[0], "e2e-"+rand.String(6),
 			"你是 CubePilot 平台助手。请用一句话回复:你好。")
 		Expect(err).NotTo(HaveOccurred())

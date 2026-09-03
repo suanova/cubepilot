@@ -165,8 +165,15 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		pod.Annotations = map[string]string{}
 	}
 	pod.Annotations[k8s.KubeconfigRevisionAnnotation] = kubeconfigRev
-	if err := r.ensurePod(ctx, pod); err != nil {
+	recreate, err := r.ensurePod(ctx, pod)
+	if err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "", "pod: "+err.Error())
+	}
+	if recreate {
+		// Drift delete in flight; never create into a terminating pod. Requeue
+		// shortly -- the deletion-completion watch event also re-triggers -- and
+		// the next reconcile creates the replacement.
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Observe the pod state for status.
@@ -209,15 +216,14 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		}
 	}
 
-	// Failed pods are healed by re-creating them; requeue to re-observe.
+	// Failed pods are healed by re-creating them. Delete here and let the next
+	// reconcile (requeue + deletion-completion event) create the replacement --
+	// a same-name create while the old Pod terminates fails with AlreadyExists.
 	if status == v1alpha1.InstanceFailed {
 		if err := r.deletePod(ctx, podName); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.ensurePod(ctx, pod); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	// Reconcile periodically to self-heal missing pods (resident self-heal).
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
@@ -338,28 +344,36 @@ func securityFingerprint(pod *corev1.Pod) instanceSecurity {
 	return f
 }
 
-// ensurePod creates a missing Pod, and recreates an existing one whose
-// immutable security spec drifted (e.g. the operator was upgraded with a
-// stricter design §6 baseline) so it converges -- mirroring the failed-Pod
-// healing path. Only the security fingerprint is compared, so a config change
-// never deletes the Pod (the supervisor reloads in place; the Pod and its
-// sessions/PVC/IP must survive).
-func (r *AgentInstanceReconciler) ensurePod(ctx context.Context, pod *corev1.Pod) error {
+// ensurePod creates a missing Pod, and deletes an existing one whose immutable
+// security spec drifted (e.g. the operator was upgraded with a stricter design
+// §6 baseline, or a mounted kubeconfig Secret rotated) so it converges --
+// mirroring the failed-Pod healing path. Only the security fingerprint is
+// compared, so a config change never deletes the Pod (the supervisor reloads in
+// place; the Pod and its sessions/PVC/IP must survive).
+//
+// A drifted Pod is deleted but NOT re-created here: the returned recreate flag
+// tells the caller to requeue. Re-creating in the same reconcile races the
+// asynchronous deletion -- a same-name create while the old Pod is terminating
+// fails with AlreadyExists, which used to strand the instance in a Failed heal
+// loop ("pod: object is being deleted ... already exists"). The deletion
+// completion event plus the requeue bring the replacement up on a later
+// reconcile.
+func (r *AgentInstanceReconciler) ensurePod(ctx context.Context, pod *corev1.Pod) (recreate bool, err error) {
 	var existing corev1.Pod
-	err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing)
 	if apierrors.IsNotFound(err) {
-		return r.Create(ctx, pod)
+		return false, r.Create(ctx, pod)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !equality.Semantic.DeepEqual(securityFingerprint(&existing), securityFingerprint(pod)) {
 		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
-			return err
+			return false, err
 		}
-		return r.Create(ctx, pod)
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (r *AgentInstanceReconciler) getPod(ctx context.Context, name string) (*corev1.Pod, error) {
