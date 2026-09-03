@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -46,7 +47,7 @@ func userCRBName(user, role string) string {
 	if role == UserCRDsClusterRole {
 		short = "crds"
 	}
-	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user)
+	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
 }
 
 // BuiltinSkills are the preset domain skills the builtin agent references
@@ -199,7 +200,16 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		return err
 	}
 	// 3. Per-user builtin agent instances (auto-instantiated per user;
-	// resident).
+	// resident). Reject identities that would collide on the derived per-user
+	// name before provisioning (e.g. "zhang.wei" vs "Zhang Wei").
+	seenIdentity := map[string]string{}
+	for _, user := range r.Cfg.Users {
+		saName := k8s.UserServiceAccountName(user)
+		if prev, dup := seenIdentity[saName]; dup {
+			return fmt.Errorf("users %q and %q collide on identity %s", prev, user, saName)
+		}
+		seenIdentity[saName] = user
+	}
 	for _, user := range r.Cfg.Users {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
@@ -293,10 +303,28 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
 		Data:       map[string][]byte{"config": k8s.PerUserKubeconfigYAML(token)},
 	}
-	if err := r.createIfMissing(ctx, kc); err != nil {
+	if err := r.ensureSecretData(ctx, kc, "config"); err != nil {
 		return err
 	}
 	return nil
+}
+
+// ensureSecretData creates the Secret when absent and updates the given key's
+// data when it changed, so a recreated token Secret (new token) refreshes the
+// kubeconfig instead of leaving a stale one behind.
+func (r *BuiltinBootstrapReconciler) ensureSecretData(ctx context.Context, want *corev1.Secret, key string) error {
+	var existing corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: want.Namespace, Name: want.Name}, &existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.Create(ctx, want)
+		}
+		return err
+	}
+	if bytes.Equal(existing.Data[key], want.Data[key]) {
+		return nil
+	}
+	existing.Data = want.Data
+	return r.Update(ctx, &existing)
 }
 
 func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj client.Object) error {

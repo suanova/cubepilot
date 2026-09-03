@@ -200,3 +200,19 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Errorf("instances after re-ensure = %d, want 2 (idempotent)", len(insts2.Items))
 	}
 }
+
+// TestBootstrapEnsureRejectsCollidingUsers verifies that identities which would
+// derive to the same per-user SA are rejected before provisioning (issue #19:
+// zhang.wei vs Zhang Wei must not share one ServiceAccount/revocation boundary).
+func TestBootstrapEnsureRejectsCollidingUsers(t *testing.T) {
+	scheme := testScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &BuiltinBootstrapReconciler{
+		Client: cl,
+		Scheme: scheme,
+		Cfg:    config.Config{Namespace: "cubepilot", Users: []string{"zhang.wei", "Zhang Wei"}},
+	}
+	if err := r.Ensure(context.Background()); err == nil {
+		t.Fatal("Ensure should reject sanitize-colliding identities")
+	}
+}

@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -8,19 +9,22 @@ import (
 // TestUserServiceAccountName verifies per-user SA names are deterministic,
 // DNS-1123 and distinct from the shared runtime SA (cubepilot-agent).
 func TestUserServiceAccountName(t *testing.T) {
-	cases := map[string]string{
-		"zhang.wei": "user-zhang-wei",
-		"Zhang Wei": "user-zhang-wei",
-		"alice":     "user-alice",
-		"":          "user-user",
-	}
-	for in, want := range cases {
-		if got := UserServiceAccountName(in); got != want {
-			t.Errorf("UserServiceAccountName(%q) = %q, want %q", in, got, want)
+	re := regexp.MustCompile(`^user-[a-z0-9-]+-[0-9a-f]{32}$`)
+	for _, in := range []string{"zhang.wei", "Zhang Wei", "alice", ""} {
+		got := UserServiceAccountName(in)
+		if !re.MatchString(got) {
+			t.Errorf("UserServiceAccountName(%q) = %q, want user-<sanitize>-<32hex>", in, got)
+		}
+		if again := UserServiceAccountName(in); again != got {
+			t.Errorf("UserServiceAccountName(%q) not deterministic", in)
 		}
 	}
 	if UserServiceAccountName("zhang.wei") == ServiceAccountName {
 		t.Error("per-user SA must not collide with the shared runtime SA")
+	}
+	// Distinct identities that sanitize the same never share an SA.
+	if UserServiceAccountName("foo.bar") == UserServiceAccountName("foo_bar") {
+		t.Error("sanitize-colliding identities share an SA")
 	}
 }
 

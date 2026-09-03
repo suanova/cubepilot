@@ -4,7 +4,6 @@ package k8s
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"regexp"
@@ -60,8 +59,7 @@ const (
 // (cubepilot.sanitize + sha256sum) and scripts/setup.sh so all provisioning
 // paths agree.
 func UserKubeconfigSecretFor(user string) string {
-	sum := sha256.Sum256([]byte(user))
-	return Sanitize(user) + "-kubeconfig-" + hex.EncodeToString(sum[:])[:32]
+	return Sanitize(user) + "-kubeconfig-" + UserIdentityHash(user)
 }
 
 // Credential key delivery (design §6): the operator renders each model's

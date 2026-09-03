@@ -1,16 +1,29 @@
 package k8s
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+)
 
 // Per-user identity generation (issue #19): the platform mints a ServiceAccount
 // per configured user and renders a kubeconfig from its token, so user-facing
 // kubectl runs as that user (cluster `view` + ai.cubestack.io admin) without
 // any operator/admin-supplied kubeconfig.
 
+// UserIdentityHash is a stable 128-bit (32-hex) digest of the RAW identity,
+// shared by every per-user object name so identities that sanitize the same
+// (e.g. "zhang.wei" vs "Zhang Wei") never collide.
+func UserIdentityHash(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
 // UserServiceAccountName is the namespaced ServiceAccount the platform creates
-// for a user. Distinct from the shared runtime SA (cubepilot-agent).
+// for a user. Collision-free (sanitized identity + identity hash) and distinct
+// from the shared runtime SA (cubepilot-agent).
 func UserServiceAccountName(user string) string {
-	return ResourceName("user", user)
+	return "user-" + Sanitize(user) + "-" + UserIdentityHash(user)
 }
 
 // PerUserKubeconfigYAML renders an in-cluster kubeconfig authenticating as the
