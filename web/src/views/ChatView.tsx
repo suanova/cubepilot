@@ -123,6 +123,21 @@ const secretKeyRe =
   /(password|passwd|token|secret|api[_-]?key|apikey|access[_-]?key|authorization|credential|private[_-]?key)/i
 const secretMask = '••••••'
 
+// redact replaces the value of any secret-looking key at any nesting depth, so
+// serialized argument summaries never leak credentials embedded in nested
+// records or arrays (e.g. { headers: { authorization: "Bearer …" } }).
+function redact(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redact)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = secretKeyRe.test(k) ? secretMask : redact(v)
+    }
+    return out
+  }
+  return value
+}
+
 function summarizeArgs(args: unknown): string {
   if (args == null) return ''
   if (typeof args !== 'object') return String(args)
@@ -131,7 +146,7 @@ function summarizeArgs(args: unknown): string {
   if (typeof rec.cmd === 'string') return rec.cmd
   const pairs = Object.entries(rec).map(([k, v]) => ({
     k,
-    text: typeof v === 'string' ? v : JSON.stringify(v),
+    text: typeof v === 'string' ? v : JSON.stringify(redact(v)),
     secret: secretKeyRe.test(k),
   }))
   if (pairs.length === 1) {
@@ -326,7 +341,9 @@ export default function ChatView() {
           }
           if (ev.type === 'tool_result') {
             setPhase(bubble, 'tools')
-            if (ev.output) attachToolResult(bubble.tools, ev.call_id || '', ev.output)
+            // Attach unconditionally (an empty output is still a result): the
+            // call must be marked done even when the tool returned nothing.
+            attachToolResult(bubble.tools, ev.call_id || '', ev.output || '')
             return
           }
           if (ev.type === 'message_delta') {
