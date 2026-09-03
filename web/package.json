@@ -19,7 +19,9 @@
     "fflate": "^0.8.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-router-dom": "^7.18.3"
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.3",
+    "remark-breaks": "^4.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",

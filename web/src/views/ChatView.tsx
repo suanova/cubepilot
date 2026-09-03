@@ -1,5 +1,7 @@
 // Chat view -- session list + thread + composer, SSE streaming from /api/messages.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkBreaks from 'remark-breaks'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
@@ -163,6 +165,18 @@ function toolArgsDisplay(args: unknown): string {
   } catch {
     return args
   }
+}
+
+// MdText renders the agent's text as Markdown (headings / lists / emphasis /
+// inline code / code blocks). remark-breaks keeps single line breaks as breaks,
+// which chat text uses heavily. Raw HTML in the source is escaped by
+// react-markdown by default.
+function MdText({ text }: { text: string }) {
+  return (
+    <div className="md">
+      <ReactMarkdown remarkPlugins={[remarkBreaks]}>{text}</ReactMarkdown>
+    </div>
+  )
 }
 
 export default function ChatView() {
@@ -489,12 +503,15 @@ export default function ChatView() {
                     ))}
                     {/* When an assistant reply ran tools, its closing text is the
                         takeaway: render it as a highlighted panel so it stands out
-                        from the tool log. Plain replies and user text stay simple. */}
+                        from the tool log. Assistant text renders as Markdown; user
+                        messages stay plain text. */}
                     {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
                       <div className="answer-panel">
                         <span className="answer-label">最终结果</span>
-                        {b.text}
+                        <MdText text={b.text} />
                       </div>
+                    ) : b.kind === 'assistant' && b.text ? (
+                      <MdText text={b.text} />
                     ) : b.text ? (
                       <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>
                     ) : null}
