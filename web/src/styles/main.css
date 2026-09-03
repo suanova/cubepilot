@@ -184,6 +184,23 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .tool-status.done-mark{color:var(--success);gap:4px}
 .tool-status.done-mark .icon{width:14px;height:14px}
 .tool-card.tool-running{border-color:var(--accent-strong);box-shadow:0 0 0 1px var(--accent-soft)}
+/* final-answer panel: the assistant's closing text stands out from the tool log */
+.answer-panel{margin-top:12px;background:var(--accent-soft);border:1px solid var(--accent-soft);border-left:3px solid var(--accent-strong);border-radius:8px;padding:10px 12px;font-size:14.5px;line-height:1.75;color:var(--fg);word-break:break-word}
+.answer-panel .answer-label{display:block;font-size:11px;font-weight:650;letter-spacing:.05em;color:var(--accent-ink);margin-bottom:3px}
+/* markdown-rendered agent text */
+.bubble .md{font-size:13.5px;line-height:1.7}
+.answer-panel .md{font-size:14.5px;line-height:1.75}
+.md>:first-child{margin-top:0}
+.md>:last-child{margin-bottom:0}
+.md p{margin:6px 0}
+.md h1,.md h2,.md h3,.md h4{margin:10px 0 4px;font-size:1em;font-weight:650;line-height:1.4}
+.md ul,.md ol{margin:6px 0;padding-left:20px}
+.md li{margin:2px 0}
+.md code{font-family:var(--font-mono);font-size:.92em;background:rgba(0,0,0,.06);border-radius:4px;padding:0 4px;color:var(--fg)}
+.md pre{margin:8px 0;background:rgba(0,0,0,.05);border:1px solid var(--border);border-radius:6px;padding:8px 10px;overflow:auto}
+.md pre code{background:none;padding:0;font-size:12px;line-height:1.55}
+.md a{color:var(--accent-strong);text-decoration:underline}
+.md blockquote{margin:6px 0;padding:2px 12px;border-left:3px solid var(--border);color:var(--muted)}
 .spin{width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--accent-strong);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 /* confirm card */
