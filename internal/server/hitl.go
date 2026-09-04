@@ -112,6 +112,12 @@ func (m *hitlManager) deviceFor(user string) *ws.Device {
 	return mustDevice(ed25519.NewKeyFromSeed(seed))
 }
 
+// DevicePublicKeyFor returns the derived operator device public key for a user
+// (served to the supervisor so it can approve this device's gateway pairing).
+func (m *hitlManager) DevicePublicKeyFor(user string) string {
+	return m.deviceFor(user).PublicKey
+}
+
 func mustDevice(priv ed25519.PrivateKey) *ws.Device {
 	dev, err := ws.NewDevice(priv.Public().(ed25519.PublicKey), priv)
 	if err != nil {

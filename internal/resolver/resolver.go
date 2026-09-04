@@ -58,6 +58,11 @@ type ResolvedAgentConfig struct {
 	ModelName string `json:"modelName,omitempty"`
 	// ConfirmPolicy is the agent-level write confirmation policy.
 	ConfirmPolicy v1alpha1.ConfirmPolicy `json:"confirmPolicy,omitempty"`
+	// DevicePublicKey is the platform's operator device public key for this
+	// agent's gateway (HITL approvals, issue #20). Transport-only: filled by
+	// the API when serving the internal config (the supervisor uses it to
+	// approve the device pairing), never part of resolver output.
+	DevicePublicKey string `json:"devicePublicKey,omitempty"`
 	// Instructions is the agent definition's default system prompt.
 	Instructions string `json:"instructions,omitempty"`
 	// Skills are the domain skills visible to this agent
