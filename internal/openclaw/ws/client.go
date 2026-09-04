@@ -49,7 +49,10 @@ type Client struct {
 }
 
 // NewClient returns a Client for url (ws://host/gateway), the shared gateway
-// token, and the operator device identity.
+// token, and the operator device identity. dev may be nil for a device-less
+// connection -- only meaningful over the gateway's loopback, where OpenClaw
+// admits a gateway-client/backend shared-token connection with its declared
+// scopes intact (used by the supervisor to bootstrap device pairing).
 func NewClient(url, token string, dev *Device) *Client {
 	return &Client{
 		url:     url,
@@ -78,11 +81,9 @@ func (c *Client) Connected() bool {
 }
 
 // Connect dials and completes the connect.challenge handshake, then starts the
-// read pump. deviceToken (when present) is preferred over a fresh signature.
+// read pump. deviceToken (when present) is preferred over a fresh signature; a
+// nil Device connects device-less (loopback bootstrap).
 func (c *Client) Connect(ctx context.Context) error {
-	if c.dev == nil {
-		return fmt.Errorf("ws: device identity required")
-	}
 	conn, _, err := websocket.Dial(ctx, c.url, &websocket.DialOptions{
 		HTTPClient: &http.Client{Timeout: 0},
 	})
@@ -188,6 +189,13 @@ func (c *Client) buildConnectParams(nonce string) (connectParams, error) {
 	}
 	if deviceTok != "" {
 		p.Auth = &connectAuth{Token: deviceTok}
+		return p, nil
+	}
+	// Device-less connection (loopback bootstrap): shared token only, no proof.
+	// Over the network the gateway clears the scopes of a device-less token
+	// connection; over loopback it preserves them.
+	if c.dev == nil {
+		p.Auth = &connectAuth{Token: c.token}
 		return p, nil
 	}
 	now := time.Now().UnixMilli()

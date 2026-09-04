@@ -214,6 +214,56 @@ func TestClientConnectNotPairedFails(t *testing.T) {
 	}
 }
 
+// TestClientDeviceLessConnect verifies a nil-Device connection is sent without
+// a device proof (loopback bootstrap path used by the supervisor to approve
+// device pairings).
+func TestClientDeviceLessConnect(t *testing.T) {
+	var gotConnect connectParams
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		_ = conn.Write(context.Background(), websocket.MessageText, mustRaw(eventFrame{Type: "event", Event: challengeEvent, Payload: mustJSON(t, connectChallenge{Nonce: "n1"})}))
+		_, data, err := conn.Read(context.Background())
+		if err != nil {
+			return
+		}
+		var f requestFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return
+		}
+		if err := json.Unmarshal(f.Params, &gotConnect); err != nil {
+			return
+		}
+		hello, _ := json.Marshal(map[string]any{"type": "hello-ok", "protocol": 4, "auth": map[string]any{"role": "operator", "scopes": []string{"operator.admin"}}})
+		_ = conn.Write(context.Background(), websocket.MessageText, mustRaw(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: hello}))
+		for {
+			if _, _, err := conn.Read(context.Background()); err != nil {
+				return // client gone
+			}
+		}
+	}))
+	defer ts.Close()
+
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("device-less connect: %v", err)
+	}
+	defer cli.Close()
+	if gotConnect.Device != nil {
+		t.Errorf("device-less connect must not send a device proof, got %+v", gotConnect.Device)
+	}
+	if gotConnect.Auth == nil || gotConnect.Auth.Token != "token" {
+		t.Errorf("device-less connect must carry the shared token, got %+v", gotConnect.Auth)
+	}
+	if gotConnect.Scopes == nil || len(gotConnect.Scopes) == 0 {
+		t.Errorf("device-less connect must declare scopes, got %v", gotConnect.Scopes)
+	}
+}
+
 func mustRaw(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
