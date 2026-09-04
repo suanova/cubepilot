@@ -179,6 +179,37 @@ type approvalResolveParams struct {
 	Decision string `json:"decision"`
 }
 
+// --- device.pair.list / approve payloads ---
+
+// DevicePairingPending is one pending pairing request (device.pair.list).
+type DevicePairingPending struct {
+	RequestID   string   `json:"requestId"`
+	DeviceID    string   `json:"deviceId"`
+	PublicKey   string   `json:"publicKey"`
+	Role        string   `json:"role"`
+	Roles       []string `json:"roles"`
+	Scopes      []string `json:"scopes"`
+	DisplayName string   `json:"displayName"`
+	Platform    string   `json:"platform"`
+	TS          int64    `json:"ts"`
+}
+
+// PairedDevice is one paired device (device.pair.list; token fields redacted).
+type PairedDevice struct {
+	DeviceID  string `json:"deviceId"`
+	PublicKey string `json:"publicKey"`
+}
+
+// DevicePairListResult is the device.pair.list response payload.
+type DevicePairListResult struct {
+	Pending []DevicePairingPending `json:"pending"`
+	Paired  []PairedDevice         `json:"paired"`
+}
+
+type devicePairApproveParams struct {
+	RequestID string `json:"requestId"`
+}
+
 // --- sessions.patch / sessions.create params ---
 
 type sessionPatchParams struct {

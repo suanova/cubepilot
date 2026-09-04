@@ -105,6 +105,15 @@ func (mg *mockGateway) respondMethod(f requestFrame) {
 			"file":   map[string]any{"version": 1},
 		})
 		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+	case "device.pair.list":
+		payload, _ := json.Marshal(map[string]any{
+			"pending": []map[string]any{{
+				"requestId": "req-1", "deviceId": "dev-abc", "publicKey": "pk",
+				"role": "operator", "scopes": []string{"operator.admin"},
+			}},
+			"paired": []any{},
+		})
+		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
 	default:
 		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: json.RawMessage(`{"ok":true}`)})
 	}
@@ -261,6 +270,33 @@ func TestClientDeviceLessConnect(t *testing.T) {
 	}
 	if gotConnect.Scopes == nil || len(gotConnect.Scopes) == 0 {
 		t.Errorf("device-less connect must declare scopes, got %v", gotConnect.Scopes)
+	}
+}
+
+func TestClientDevicePairList(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := newMockGateway(t)
+	defer ts.Close()
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+
+	lst, err := cli.DevicePairList(ctx)
+	if err != nil {
+		t.Fatalf("DevicePairList: %v", err)
+	}
+	if len(lst.Pending) != 1 || lst.Pending[0].RequestID != "req-1" || lst.Pending[0].DeviceID != "dev-abc" {
+		t.Errorf("pending = %+v", lst.Pending)
+	}
+	if err := cli.DevicePairApprove(ctx, "req-1"); err != nil {
+		t.Fatalf("DevicePairApprove: %v", err)
 	}
 }
 

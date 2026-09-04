@@ -61,6 +61,26 @@ func (c *Client) CreateSessionGuarded(ctx context.Context, key string) error {
 	return err
 }
 
+// DevicePairList lists pending and paired device requests (device.pair.list).
+func (c *Client) DevicePairList(ctx context.Context) (*DevicePairListResult, error) {
+	raw, err := c.Call(ctx, "device.pair.list", struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	var out DevicePairListResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode device.pair.list: %w", err)
+	}
+	return &out, nil
+}
+
+// DevicePairApprove approves a pending pairing request (device.pair.approve).
+// Approving grants exactly the role/scopes the request asked for.
+func (c *Client) DevicePairApprove(ctx context.Context, requestID string) error {
+	_, err := c.Call(ctx, "device.pair.approve", devicePairApproveParams{RequestID: requestID})
+	return err
+}
+
 // EnsureSessionGuarded makes the session guarded, creating it if absent. A
 // patch failure is only retried as a create when it looks like the session is
 // missing; other errors propagate.

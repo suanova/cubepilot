@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
@@ -16,12 +18,22 @@ type fakeHitlGateway struct {
 	resolves     []string // "id|decision"
 	onRequested  func(ws.ApprovalRequested)
 	connectErr   error
+	connectSeq   []error // optional per-connect results, consumed in order
 	getErr       error
 	initialAllow []ws.AllowlistEntry
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
 func (f *fakeHitlGateway) Connect(ctx context.Context) error {
+	if len(f.connectSeq) > 0 {
+		err := f.connectSeq[0]
+		f.connectSeq = f.connectSeq[1:]
+		if err != nil {
+			return err
+		}
+		f.connected = true
+		return nil
+	}
 	if f.connectErr != nil {
 		return f.connectErr
 	}
@@ -108,6 +120,24 @@ func TestHitl_PreTurnGuardsConfirmWritesOncePerRevision(t *testing.T) {
 	m.PreTurn(context.Background(), "alice", "conv-2")
 	if len(gw.policySets) != 2 {
 		t.Errorf("policy sets = %d after revision change, want 2", len(gw.policySets))
+	}
+}
+
+// TestHitl_ConnectRetriesAfterNotPaired verifies a ConfirmWrites turn survives
+// an initial NOT_PAIRED rejection while the supervisor approves the pairing.
+func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
+	old := hitlPairRetryDelay
+	hitlPairRetryDelay = time.Millisecond
+	defer func() { hitlPairRetryDelay = old }()
+
+	gw := &fakeHitlGateway{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
+	m := newTestHitl(v1alpha1.ConfirmPolicyConfirmWrites, "rev-1", gw)
+	m.PreTurn(context.Background(), "alice", "conv-1")
+	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
+		t.Fatalf("guarded = %v after retry, want [conv-1]", gw.guarded)
+	}
+	if !gw.connected {
+		t.Fatal("expected the gateway to connect after the NOT_PAIRED retry")
 	}
 }
 

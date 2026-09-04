@@ -14,6 +14,10 @@ import (
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 )
 
+// hitlPairRetryDelay is the pause between NOT_PAIRED connect retries while the
+// in-pod supervisor approves the device pairing (overridable in tests).
+var hitlPairRetryDelay = 1500 * time.Millisecond
+
 // hitlGateway is the subset of the gateway-protocol WS client the HITL glue
 // depends on, so tests can substitute a fake.
 type hitlGateway interface {
@@ -180,12 +184,29 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	m.conns[user] = &userHitlConn{user: user, gw: gw}
 	m.mu.Unlock()
 
-	connectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if err := gw.Connect(connectCtx); err != nil {
-		return gw, fmt.Errorf("hitl connect %s: %w", user, err)
+	// First connect may be rejected NOT_PAIRED while the in-pod supervisor
+	// approves this device (device.pair.approve on its next poll); retry briefly
+	// so the first ConfirmWrites turn can connect rather than fail.
+	const maxPairAttempts = 4
+	var connectErr error
+	for attempt := 1; attempt <= maxPairAttempts; attempt++ {
+		aCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := gw.Connect(aCtx)
+		cancel()
+		if err == nil {
+			return gw, nil
+		}
+		connectErr = err
+		if !strings.Contains(err.Error(), "NOT_PAIRED") || attempt == maxPairAttempts {
+			break
+		}
+		select {
+		case <-time.After(hitlPairRetryDelay):
+		case <-ctx.Done():
+			return gw, ctx.Err()
+		}
 	}
-	return gw, nil
+	return gw, fmt.Errorf("hitl connect %s: %w", user, connectErr)
 }
 
 // PreTurn is called at the start of an interactive turn. For ConfirmWrites it
