@@ -145,19 +145,9 @@ kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
   --from-literal=apiKey="$LLM_APIKEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# HITL write confirmations (issue #20): only when the caller supplies a device
-# master key. It is stored as a Secret and referenced via api.extraEnv
-# secretKeyRef so the key never lands in the Deployment manifest.
-HITL_ENV_ARGS=""
-if [ -n "${CUBEPILOT_HITL_MASTER_KEY:-}" ]; then
-  log "HITL: creating device master Secret (write confirmations enabled)"
-  kubectl -n "$NAMESPACE" create secret generic cubepilot-hitl-master \
-    --from-literal=key="$CUBEPILOT_HITL_MASTER_KEY" \
-    --dry-run=client -o yaml | kubectl apply -f -
-  HITL_ENV_ARGS="--set api.extraEnv[0].name=CUBEPILOT_HITL_MASTER_KEY \
---set api.extraEnv[0].secretKeyRef.name=cubepilot-hitl-master \
---set api.extraEnv[0].secretKeyRef.key=key"
-fi
+# HITL write confirmations (issue #20): on by default (api.hitl.enabled). The
+# API auto-generates and persists the device master key in a Secret and the
+# per-user gateways are auto-paired; disable with --set api.hitl.enabled=false.
 
 log "deploying components via Helm (CRDs ship in the chart crds/ dir)"
 helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
@@ -166,8 +156,7 @@ helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESP
   --set agents.llmModel="$LLM_MODEL" \
   --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
-  --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG" \
-  ${HITL_ENV_ARGS}
+  --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
 
 # Provision the CubeStack operator CRDs (ai.cubestack.io) so the platform's
 # builtin skills / chat can create them. They are vendored from suanova/cubestack

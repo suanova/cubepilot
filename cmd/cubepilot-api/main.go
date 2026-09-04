@@ -84,12 +84,12 @@ func main() {
 
 	srv := server.New(cfg, mgrInstances, st, catalog, cr)
 
-	// Human-in-the-loop write confirmations (issue #20). The channel is inert
-	// unless a device master key is configured AND the operator has paired the
-	// derived per-user devices with the agent gateways.
-	if mk := os.Getenv("CUBEPILOT_HITL_MASTER_KEY"); mk != "" {
-		srv.EnableHITL([]byte(mk))
-		log.Printf("cubepilot-api: HITL write-confirmation channel enabled")
+	// Human-in-the-loop write confirmations (issue #20). Controlled by the chart
+	// api.hitl.enabled flag (CUBEPILOT_HITL_ENABLED=true): the device master key
+	// is auto-generated and persisted in a Secret, so no operator key is needed;
+	// the in-pod supervisor auto-pairs the derived per-user devices.
+	if os.Getenv("CUBEPILOT_HITL_ENABLED") == "true" {
+		srv.EnableHITL()
 	}
 
 	// Seed the builtin skills into the repository + Skill CRDs (the API owns

@@ -9,11 +9,18 @@
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/config"
@@ -36,12 +43,61 @@ type Server struct {
 	hitl      *hitlManager // nil when HITL is not configured (confirmPolicy stays declarative)
 }
 
-// EnableHITL activates the human-in-the-loop approval channel (issue #20).
-// masterKey seeds the per-user device identities; when empty or when the
-// operator has not paired those devices with the gateways the channel stays
-// inert and chat behavior is unchanged.
-func (s *Server) EnableHITL(masterKey []byte) {
-	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, masterKey, s.logf)
+// hitlMasterSecretName is the Secret holding the auto-generated device master
+// key (created by the API on first enable; per-user devices are derived from
+// it, so it must be stable across API restarts).
+const hitlMasterSecretName = "cubepilot-hitl-master"
+
+// EnableHITL activates the human-in-the-loop approval channel (issue #20). The
+// device master key is auto-generated and persisted in a Secret (load-or-create)
+// so enabling needs no operator-supplied key; the API's ServiceAccount only
+// needs access to that one Secret. When the Secret cannot be ensured the API
+// logs and keeps the channel off (chat behavior unchanged) rather than crash.
+func (s *Server) EnableHITL() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var mk []byte
+	var sec corev1.Secret
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &sec)
+	switch {
+	case err == nil:
+		mk = sec.Data["key"]
+		if len(mk) == 0 {
+			s.logf("hitl: master Secret %s has no 'key'; disabling HITL", hitlMasterSecretName)
+			return
+		}
+	case apierrors.IsNotFound(err):
+		mk = make([]byte, 32)
+		if _, rerr := rand.Read(mk); rerr != nil {
+			s.logf("hitl: generate master key: %v", rerr)
+			return
+		}
+		sec = corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: hitlMasterSecretName, Namespace: s.cfg.Namespace},
+			Data:       map[string][]byte{"key": []byte(base64.StdEncoding.EncodeToString(mk))},
+		}
+		if cerr := s.cr.Create(ctx, &sec); cerr != nil {
+			// Lost a create race to a peer replica: read the winner's key.
+			if apierrors.IsAlreadyExists(cerr) {
+				var got corev1.Secret
+				if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr == nil {
+					if k := got.Data["key"]; len(k) > 0 {
+						mk, _ = base64.StdEncoding.DecodeString(string(k))
+					}
+				}
+			}
+			if len(mk) == 0 {
+				s.logf("hitl: ensure master Secret: %v; disabling HITL", cerr)
+				return
+			}
+		}
+	default:
+		s.logf("hitl: read master Secret: %v; disabling HITL", err)
+		return
+	}
+
+	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, mk, s.logf)
 	if m == nil {
 		return
 	}
@@ -57,6 +113,7 @@ func (s *Server) EnableHITL(masterKey []byte) {
 			CreatedAt:  time.Now(),
 		})
 	}
+	s.logf("hitl: master key %s ensured; write confirmations enabled", hitlMasterSecretName)
 }
 
 // New builds the HTTP handler for the assistant service.

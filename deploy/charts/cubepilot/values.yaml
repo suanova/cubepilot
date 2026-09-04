@@ -70,12 +70,16 @@ api:
   resources: {}
   nodeSelector: {}
   tolerations: []
-  # extraEnv appends environment variables to the API container. Each entry is
-  # {name, value} for a literal, or {name, secretKeyRef:{name, key}} to source a
-  # secret (preferred for secrets). Enable HITL write confirmations by pointing
-  # CUBEPILOT_HITL_MASTER_KEY at a secret holding the device master key:
-  #   - name: CUBEPILOT_HITL_MASTER_KEY
-  #     secretKeyRef: { name: cubepilot-hitl-master, key: key }
+  # hitl enables human-in-the-loop write confirmations (issue #20). When on,
+  # the API auto-generates and persists a device master key in a Secret (no
+  # operator key to supply) and the in-pod supervisors auto-pair the derived
+  # per-user devices; interactive chat write operations pause for Portal
+  # approval. Set to false to disable (writes pass through as today).
+  hitl:
+    enabled: true
+  # extraEnv appends arbitrary environment variables to the API container.
+  # Each entry is {name, value} for a literal, or
+  # {name, secretKeyRef:{name, key}} to source a secret.
   extraEnv: []
 
 # --- web (independent React SPA, stateless, nginx) ------------------------
