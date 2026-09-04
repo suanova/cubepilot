@@ -116,33 +116,48 @@ func (s *ApprovalService) Pending(user, sessionKey string) (pendingApproval, boo
 }
 
 // Resolve applies the Portal decision. decision is "approve" or "reject". The
-// pending row is kept when the gateway call fails so the caller may retry.
+// approval is reserved under the lock before the gateway call so two
+// concurrent decisions cannot both process the same pending approval; it is
+// restored when the gateway call fails so the caller may retry.
 func (s *ApprovalService) Resolve(user, sessionKey, decision string) (pendingApproval, error) {
 	if decision != "approve" && decision != "reject" {
 		return pendingApproval{}, fmt.Errorf("decision must be approve or reject")
 	}
-	p, ok := s.Pending(user, sessionKey)
-	if !ok {
-		return pendingApproval{}, errNoPending
-	}
 
 	s.mu.Lock()
+	id, ok := s.bySession[sessionKey]
+	if !ok {
+		s.mu.Unlock()
+		return pendingApproval{}, errNoPending
+	}
+	p, ok := s.byID[id]
+	if !ok || p.User != user {
+		s.mu.Unlock()
+		return pendingApproval{}, errNoPending
+	}
+	// Reserve before the (slow) gateway round trip.
+	delete(s.byID, id)
+	delete(s.bySession, p.SessionKey)
 	resolver := s.resolver
 	s.mu.Unlock()
+
+	restore := func() {
+		s.mu.Lock()
+		s.byID[p.ApprovalID] = p
+		s.bySession[p.SessionKey] = p.ApprovalID
+		s.mu.Unlock()
+	}
 	if resolver == nil {
+		restore()
 		return pendingApproval{}, errNoResolver
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := resolver.ResolveApproval(ctx, user, p.ApprovalID, decision); err != nil {
+		restore()
 		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
 	}
-
-	s.mu.Lock()
-	delete(s.byID, p.ApprovalID)
-	delete(s.bySession, p.SessionKey)
-	s.mu.Unlock()
 
 	approved := decision == "approve"
 	s.hub.PublishTo(p.SessionKey, openclaw.Event{

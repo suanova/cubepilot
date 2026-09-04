@@ -433,7 +433,7 @@ Scheduler 以平台身份创建，前端只读（📘 设计 §3.5/§7）。
 | `message_delta` | `sessionId`, `delta` | 追加助手文本 |
 | `tool_call` | `sessionId`, `name`, `callId`, `arguments`(JSON 字符串) | 展示工具调用（可折叠） |
 | `tool_result` | `sessionId`, `name`, `callId`, `output` | 展示结果摘要 |
-| `confirm_pending` | `sessionId`, `callId`, `tool`, `command`, `level`(read/write), `message` | 写操作命中确认规则，弹确认框 |
+| `confirm_pending` | `sessionId`, `callId`, `name`(=tool), `command`, `level`(read/write), `message` | 写操作命中确认规则，弹确认框 |
 | `confirm_resolved` | `sessionId`, `callId`, `approved` | 决策已提交，继续 |
 | `message_done` | `sessionId`, `error`(空=成功) | 终态，清除「回答中」 |
 | `error` | `sessionId`, `error` | 致命错误 |

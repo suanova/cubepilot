@@ -192,3 +192,35 @@ func TestHandleConfirmAndPending(t *testing.T) {
 		t.Fatalf("invalid decision status = %d", rec.Code)
 	}
 }
+
+// TestHandleConfirm_OwnerScoped proves a forged X-CubePilot-User cannot resolve
+// another operator's pending approval (issue #20 code review).
+func TestHandleConfirm_OwnerScoped(t *testing.T) {
+	st, err := store.New(t.TempDir(), "test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{DefaultUser: "alice"}, nil, st, nil, nil)
+	res := &stubResolver{}
+	srv.approvals.SetResolver(res)
+	srv.approvals.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo"})
+
+	// bob (not the owner) cannot read or resolve it.
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/confirm/pending", "bob", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("bob pending GET status = %d, want 404", rec.Code)
+	}
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "bob", map[string]any{"decision": "reject"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("bob confirm status = %d, want 404", rec.Code)
+	}
+	if len(res.calls) != 0 {
+		t.Fatalf("resolver must not be called for a non-owner, got %v", res.calls)
+	}
+
+	// The owner still can.
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "alice", map[string]any{"decision": "approve"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alice confirm status = %d, want 200", rec.Code)
+	}
+}

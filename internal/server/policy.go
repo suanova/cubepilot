@@ -7,8 +7,19 @@ import "github.com/suanova/cubepilot/internal/openclaw/ws"
 // pauses for a human decision. The allowlist therefore covers the reads the
 // agent legitimately performs (kubectl read verbs + a few read-only shell
 // tools); anything unknown asks, which is the safe default.
+//
+// The arg patterns are anchored and only allow a safe token charset to the end
+// of the command, so an allowlisted "read" cannot smuggle shell separators or
+// substitution through (e.g. `kubectl get pods; kubectl delete ...` or
+// `ls -la; rm -rf ...` fail to match and therefore ask).
 const (
-	kubectlReadArgPattern = `^((--kubeconfig|--context|--namespace|-n|--user|--cluster)=?\S*\s+)*(get|list|watch|describe|logs|events|top|api-resources|api-versions|explain|version|diff|cluster-info)(\s|$)`
+	// kubectlReadArgPattern matches a kubectl command whose verb is a read and
+	// whose remaining tokens (after optional leading global flags) are plain
+	// words -- no separators/substitution.
+	kubectlReadArgPattern = `^((--[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|-[a-zA-Z0-9](\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|--namespace\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+|--context\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)\s+)*(get|list|watch|describe|logs|events|top|api-resources|api-versions|explain|version|diff|cluster-info)([A-Za-z0-9_./:=,%+*?@~"#'-]|\s)*$`
+
+	// safeArgPattern matches only space-separated plain words (no separators).
+	safeArgPattern = `^[A-Za-z0-9_./:=,%+*?@~"#'-]+(\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)*$`
 )
 
 // defaultReadAllowlist returns the entries merged into agents."main".
@@ -18,7 +29,7 @@ func defaultReadAllowlist() []ws.AllowlistEntry {
 	out := make([]ws.AllowlistEntry, 0, 1+len(safeBins))
 	out = append(out, kubectl)
 	for _, b := range safeBins {
-		out = append(out, ws.AllowlistEntry{Pattern: b})
+		out = append(out, ws.AllowlistEntry{Pattern: b, ArgPattern: safeArgPattern})
 	}
 	return out
 }

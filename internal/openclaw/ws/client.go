@@ -220,7 +220,7 @@ func (c *Client) buildConnectParams(nonce string) (connectParams, error) {
 func (c *Client) doConnect(ctx context.Context, conn *websocket.Conn, params connectParams) (helloOk, error) {
 	var hello helloOk
 	raw, _ := json.Marshal(params)
-	if err := c.writeReq(conn, "connect", raw); err != nil {
+	if err := c.writeReq(ctx, conn, "connect", raw); err != nil {
 		return hello, err
 	}
 	for {
@@ -256,7 +256,7 @@ func frameErrorOf(res responseFrame) error {
 }
 
 // writeReq sends one request frame over the given connection.
-func (c *Client) writeReq(conn *websocket.Conn, method string, params json.RawMessage) error {
+func (c *Client) writeReq(ctx context.Context, conn *websocket.Conn, method string, params json.RawMessage) error {
 	id := "r" + strconv.FormatInt(c.nextID.Add(1), 10)
 	frame := requestFrame{Type: "req", ID: id, Method: method}
 	if len(params) > 0 && string(params) != "null" {
@@ -270,7 +270,7 @@ func (c *Client) writeReq(conn *websocket.Conn, method string, params json.RawMe
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return conn.Write(context.Background(), websocket.MessageText, raw)
+	return conn.Write(ctx, websocket.MessageText, raw)
 }
 
 // readPump dispatches responses and events until the connection dies.

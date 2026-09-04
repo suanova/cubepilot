@@ -22,6 +22,8 @@ func TestReadAllowlistArgPattern(t *testing.T) {
 		"logs -f deploy/app",
 		"events -n default",
 		"top pods",
+		"-n default get pods",
+		"get pods -o wide -l app=foo,env=prod",
 	}
 	ask := []string{
 		"delete pod foo",
@@ -31,6 +33,13 @@ func TestReadAllowlistArgPattern(t *testing.T) {
 		"delete ns staging",
 		"exec -it pod -- sh",
 		"edit deploy/app",
+		// separator / substitution smuggling must NOT match (issue #20 review).
+		"get pods; kubectl delete pod foo",
+		"get pods && kubectl delete ns staging",
+		"get pods | grep Running",
+		"get pods $(kubectl delete)",
+		"get pods `id`",
+		"get pods > /tmp/out",
 	}
 	for _, c := range pass {
 		if !re.MatchString(c) {
@@ -40,6 +49,20 @@ func TestReadAllowlistArgPattern(t *testing.T) {
 	for _, c := range ask {
 		if re.MatchString(c) {
 			t.Errorf("expected %q to MISS the read allowlist", c)
+		}
+	}
+
+	// Read-only shell tools are allowlisted only for plain argument lists; a
+	// separator turns the same "read" into an ask.
+	binRe := regexp.MustCompile(safeArgPattern)
+	for _, c := range []string{"ls -la", "cat /etc/resolv.conf", "grep -i error /var/log/app.log"} {
+		if !binRe.MatchString(c) {
+			t.Errorf("expected %q to match the safe-bin arg pattern", c)
+		}
+	}
+	for _, c := range []string{"cat /etc/passwd; rm -rf /", "ls -la && whoami", "echo '$(id)'"} {
+		if binRe.MatchString(c) {
+			t.Errorf("expected %q to MISS the safe-bin arg pattern", c)
 		}
 	}
 }

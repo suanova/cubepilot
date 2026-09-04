@@ -48,9 +48,10 @@ type hitlManager struct {
 	// wsURLOf returns the gateway WS endpoint for a user. Overridable in tests.
 	wsURLOf func(user string) string
 
-	mu     sync.Mutex
-	conns  map[string]*userHitlConn
-	revPol map[string]string // user -> applied policy revision
+	mu          sync.Mutex
+	conns       map[string]*userHitlConn
+	connecting  map[string]*sync.Mutex // serializes first connect per user
+	revPol      map[string]string      // user -> applied policy revision
 }
 
 type userHitlConn struct {
@@ -65,12 +66,13 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 		return nil
 	}
 	m := &hitlManager{
-		mgr:       mgr,
-		token:     token,
-		masterKey: masterKey,
-		logf:      logf,
-		conns:     map[string]*userHitlConn{},
-		revPol:    map[string]string{},
+		mgr:        mgr,
+		token:      token,
+		masterKey:  masterKey,
+		logf:       logf,
+		conns:      map[string]*userHitlConn{},
+		connecting: map[string]*sync.Mutex{},
+		revPol:     map[string]string{},
 	}
 	m.newClient = func(url string, dev *ws.Device) hitlGateway {
 		return ws.NewClient(url, token, dev)
@@ -125,8 +127,30 @@ func wsURL(baseURL string) string {
 }
 
 // conn returns (connecting on first use or after a drop) the user's gateway
-// connection. A connect failure returns the client so later calls fail fast.
+// connection. First-connection per user is serialized so two concurrent turns
+// cannot leave two live approval clients (duplicate event callbacks). A connect
+// failure returns the stored client so later calls fail fast and can retry.
 func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error) {
+	m.mu.Lock()
+	if c, ok := m.conns[user]; ok && c.gw.Connected() {
+		gw := c.gw
+		m.mu.Unlock()
+		return gw, nil
+	}
+	if m.connecting == nil {
+		m.connecting = map[string]*sync.Mutex{}
+	}
+	lm, ok := m.connecting[user]
+	if !ok {
+		lm = &sync.Mutex{}
+		m.connecting[user] = lm
+	}
+	m.mu.Unlock()
+
+	lm.Lock()
+	defer lm.Unlock()
+
+	// Re-check under the per-user lock: the first caller may have connected.
 	m.mu.Lock()
 	if c, ok := m.conns[user]; ok && c.gw.Connected() {
 		gw := c.gw
@@ -172,15 +196,17 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
 		m.sayf("hitl %s: turn gating skipped (channel down): %v", user, err)
 		return
 	}
-	// Apply the read allowlist when the resolved-config revision changed.
+	// Apply the read allowlist when the resolved-config revision changed; only a
+	// successful apply advances revPol so a transient failure is retried next turn.
 	m.mu.Lock()
 	appliedRev := m.revPol[user]
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
-		m.applyAllowlist(ctx, user, gw)
-		m.mu.Lock()
-		m.revPol[user] = rev
-		m.mu.Unlock()
+		if err := m.applyAllowlist(ctx, user, gw); err == nil {
+			m.mu.Lock()
+			m.revPol[user] = rev
+			m.mu.Unlock()
+		}
 	}
 	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
 		m.sayf("hitl %s: guard session %s: %v", user, sessionKey, err)
@@ -188,12 +214,13 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
 }
 
 // applyAllowlist writes the phase-1 read allowlist into agents."main" of the
-// exec-approvals policy (get -> merge -> set, CAS). Best-effort.
-func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGateway) {
+// exec-approvals policy (get -> merge -> set, CAS). It reports failure so the
+// caller can defer advancing the applied-revision watermark.
+func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGateway) error {
 	snap, err := gw.GetApprovalsPolicy(ctx)
 	if err != nil {
 		m.sayf("hitl %s: exec.approvals.get: %v", user, err)
-		return
+		return err
 	}
 	file := snap.File
 	if file.Agents == nil {
@@ -208,7 +235,9 @@ func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGa
 	}
 	if _, err := gw.SetApprovalsPolicy(ctx, file, base); err != nil {
 		m.sayf("hitl %s: exec.approvals.set: %v", user, err)
+		return err
 	}
+	return nil
 }
 
 // ResolveApproval implements ApprovalResolver: the Portal decision is applied
