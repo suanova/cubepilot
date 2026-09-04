@@ -3,7 +3,8 @@ package openclaw
 import "encoding/json"
 
 // Event types of the CubePilot streaming contract (design doc FR-M1-003).
-// Phase one emits the six non-confirm events; confirm_* is phase two (HITL).
+// confirm_* (issue #20) are emitted by the HITL approval path; the rest stream
+// the chat turn.
 const (
 	EventMessageStart    = "message_start"
 	EventAgentThinking   = "agent_thinking"
@@ -11,7 +12,7 @@ const (
 	EventToolResult      = "tool_result"
 	EventMessageDelta    = "message_delta"
 	EventMessageDone     = "message_done"
-	EventConfirmPending  = "confirm_pending" // phase two
+	EventConfirmPending  = "confirm_pending" // a matched write paused for the human
 	EventConfirmResolved = "confirm_resolved"
 )
 

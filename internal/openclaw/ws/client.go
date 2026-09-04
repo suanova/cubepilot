@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -422,6 +421,3 @@ func (c *Client) Close() {
 		}
 	})
 }
-
-// scopesLabel is a helper used by tests/logging.
-func scopesLabel() string { return strings.Join(defaultScopes, ",") }

@@ -438,8 +438,8 @@ Scheduler 以平台身份创建，前端只读（📘 设计 §3.5/§7）。
 | `message_done` | `sessionId`, `error`(空=成功) | 终态，清除「回答中」 |
 | `error` | `sessionId`, `error` | 致命错误 |
 
-- 写操作 HITL 时序（📘 设计 §5）：`tool_call → confirm_pending →（前端 POST /api/sessions/{sid}/confirm）→ confirm_resolved → tool_result → … → message_done`。
-- 只读操作无 `confirm_pending`，直放（📘：读操作直放，写命中才确认）。
+- 写操作 HITL 时序（📘 设计 §5，issue #20 已实现）：`… → confirm_pending →（前端 POST /api/sessions/{key}/confirm，body {decision:"approve"|"reject"}）→ confirm_resolved → tool_result → … → message_done`。
+- **实现语义（2026-09-04）**：仅**交互回合**启用——ConfirmWrites 用户回合开头把会话置 `permissionMode=guarded`（OpenClaw ask:on-miss），并把**只读 argv allowlist**（kubectl 读动词 + 只读安全命令）合并进 per-agent exec-approvals policy；读命中直放，写 miss 由 gateway 原生 exec 审批暂停。批准 → `allow-once` 同回合继续；拒绝 → `deny`，写不执行。cron / 一次性回合不 guard，维持现状。恢复：刷新后 `GET /api/sessions/{key}/confirm/pending` 取回未决确认。
 - 🛠 前端应忽略未知事件类型（实现可能补充事件）。
 
 ## 4.3 技能发布（上传）🛠

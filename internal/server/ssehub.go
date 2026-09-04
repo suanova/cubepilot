@@ -44,12 +44,12 @@ func (h *Hub) Open(sessionKey string, w http.ResponseWriter, flusher http.Flushe
 		return nil, errStreamActive
 	}
 	s := &Stream{
-		key:      sessionKey,
-		hub:      h,
-		w:        w,
-		flusher:  flusher,
-		closedCh: make(chan struct{}),
-		hbStop:   make(chan struct{}),
+		key:       sessionKey,
+		hub:       h,
+		w:         w,
+		flusher:   flusher,
+		closedCh:  make(chan struct{}),
+		hbStop:    make(chan struct{}),
 		lastWrite: h.nowFunc(),
 	}
 	h.active[sessionKey] = s
