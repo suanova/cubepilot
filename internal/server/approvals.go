@@ -143,8 +143,13 @@ func (s *ApprovalService) Resolve(user, sessionKey, decision string) (pendingApp
 
 	restore := func() {
 		s.mu.Lock()
+		// Re-add the reserved approval. Do not clobber the session mapping if a
+		// newer Begin landed for the same session while the gateway call was in
+		// flight -- that newer approval must stay the active one for the session.
 		s.byID[p.ApprovalID] = p
-		s.bySession[p.SessionKey] = p.ApprovalID
+		if cur, ok := s.bySession[p.SessionKey]; !ok || cur == p.ApprovalID {
+			s.bySession[p.SessionKey] = p.ApprovalID
+		}
 		s.mu.Unlock()
 	}
 	if resolver == nil {

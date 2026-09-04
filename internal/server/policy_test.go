@@ -100,4 +100,13 @@ func TestDefaultReadAllowlistShape(t *testing.T) {
 	if al[0].Pattern != "kubectl" || al[0].ArgPattern == "" {
 		t.Errorf("first entry should be the kubectl argv rule: %+v", al[0])
 	}
+	// Command-wrapper bins that can exec a following command (e.g. `env kubectl
+	// delete ...`) must never be allowlisted (issue #20 code review).
+	for _, e := range al {
+		for _, banned := range []string{"env", "xargs", "sh", "bash", "nohup", "timeout"} {
+			if e.Pattern == banned {
+				t.Errorf("allowlist must not include wrapper bin %q", banned)
+			}
+		}
+	}
 }

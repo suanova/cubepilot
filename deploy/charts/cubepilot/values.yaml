@@ -70,8 +70,12 @@ api:
   resources: {}
   nodeSelector: {}
   tolerations: []
-  # extraEnv appends environment variables to the API container (e.g.
-  # CUBEPILOT_HITL_MASTER_KEY to enable HITL write confirmations).
+  # extraEnv appends environment variables to the API container. Each entry is
+  # {name, value} for a literal, or {name, secretKeyRef:{name, key}} to source a
+  # secret (preferred for secrets). Enable HITL write confirmations by pointing
+  # CUBEPILOT_HITL_MASTER_KEY at a secret holding the device master key:
+  #   - name: CUBEPILOT_HITL_MASTER_KEY
+  #     secretKeyRef: { name: cubepilot-hitl-master, key: key }
   extraEnv: []
 
 # --- web (independent React SPA, stateless, nginx) ------------------------

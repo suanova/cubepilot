@@ -34,7 +34,14 @@ spec:
               value: /var/lib/cubepilot/skills
             {{- range .Values.api.extraEnv }}
             - name: {{ .name }}
+              {{- if .secretKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretKeyRef.name }}
+                  key: {{ .secretKeyRef.key }}
+              {{- else }}
               value: {{ .value | quote }}
+              {{- end }}
             {{- end }}
           ports:
             - containerPort: 8080

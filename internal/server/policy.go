@@ -25,7 +25,10 @@ const (
 // defaultReadAllowlist returns the entries merged into agents."main".
 func defaultReadAllowlist() []ws.AllowlistEntry {
 	kubectl := ws.AllowlistEntry{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern}
-	safeBins := []string{"ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "date", "env", "echo", "printf", "which"}
+	// Deliberately no command-wrapper bins (env, xargs, sh, ...) that can exec a
+	// following command: `env kubectl delete ...` would otherwise inherit the
+	// allowlisted wrapper's trust.
+	safeBins := []string{"ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "date", "echo", "printf", "which"}
 	out := make([]ws.AllowlistEntry, 0, 1+len(safeBins))
 	out = append(out, kubectl)
 	for _, b := range safeBins {
