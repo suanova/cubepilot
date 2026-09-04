@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -225,16 +224,28 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	firstToken := time.Time{}
 	var streamErr error
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
+	// Open the per-session SSE stream BEFORE writing response headers so a
+	// conflicting concurrent turn for the same session can be answered 409 as
+	// JSON. All writes (turn events, WS-originated confirm_* events, heartbeats)
+	// go through the single writer inside the Stream.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
 		return
 	}
+	stream, oerr := s.hub.Open(sessionKey, w, flusher)
+	if oerr != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another turn is already streaming for this session"})
+		return
+	}
+	defer stream.Close()
+	stream.Start()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+
 	var doneEvent *openclaw.Event
-	var sseMu sync.Mutex
 	emit := func(ev openclaw.Event) error {
 		// The gateway's chat-completions stream only carries final text; hold
 		// message_done so we can first replay tool events extracted from the
@@ -253,14 +264,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			firstToken = time.Now()
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
 		}
-		sseMu.Lock()
-		if err := writeSSE(w, ev); err != nil {
-			sseMu.Unlock()
-			return err // client went away; abort the stream
-		}
-		flusher.Flush()
-		sseMu.Unlock()
-		return nil
+		return stream.Send(ev) // write error aborts the turn, like the old direct write
 	}
 
 	// Announce the session up front so the client can track the conversation.
@@ -296,14 +300,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			case <-ticker.C:
 				s.streamToolEvents(toolCtx, user, sessionKey, seen, func(ev openclaw.Event) {
 					s.ledgerEvent(user, sessionKey, ev)
-					sseMu.Lock()
-					if err := writeSSE(w, ev); err != nil {
-						sseMu.Unlock()
+					if err := stream.Send(ev); err != nil {
 						cancelTools()
 						return
 					}
-					flusher.Flush()
-					sseMu.Unlock()
 				})
 			}
 		}
@@ -331,22 +331,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	<-toolDone
 	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, seen) {
 		s.ledgerEvent(user, sessionKey, ev)
-		sseMu.Lock()
-		if err := writeSSE(w, ev); err != nil {
-			sseMu.Unlock()
+		if err := stream.Send(ev); err != nil {
 			break // client went away
 		}
-		flusher.Flush()
-		sseMu.Unlock()
 	}
 	if doneEvent != nil {
-		sseMu.Lock()
-		if err := writeSSE(w, *doneEvent); err != nil {
-			sseMu.Unlock()
-		} else {
-			flusher.Flush()
-			sseMu.Unlock()
-		}
+		_ = stream.Send(*doneEvent)
 	}
 	// Terminate the ledger turn: mark the assistant row done (incomplete when
 	// the stream failed / instance warming failed).
