@@ -152,7 +152,7 @@ func TestConfirmEventMarshal(t *testing.T) {
 		Type:      EventConfirmResolved,
 		SessionID: "conv-abc",
 		CallID:    "appr-1",
-		Approved:  true,
+		Approved:  boolPtr(true),
 	}
 	got = string(resolved.Marshal())
 	for _, want := range []string{
@@ -165,4 +165,22 @@ func TestConfirmEventMarshal(t *testing.T) {
 			t.Errorf("resolved payload missing %s: %s", want, got)
 		}
 	}
+
+	// A reject must serialize an explicit approved:false (not be omitted).
+	rejected := Event{
+		Type:      EventConfirmResolved,
+		SessionID: "conv-abc",
+		CallID:    "appr-2",
+		Approved:  boolPtr(false),
+	}
+	if got := string(rejected.Marshal()); !strings.Contains(got, `"approved":false`) {
+		t.Errorf("rejected payload must carry approved:false, got %s", got)
+	}
+	// Non-confirm events must not carry the approved key.
+	delta := Event{Type: EventMessageDelta, SessionID: "conv-abc", Delta: "hi"}
+	if got := string(delta.Marshal()); strings.Contains(got, `"approved"`) {
+		t.Errorf("message_delta must not carry approved, got %s", got)
+	}
 }
+
+func boolPtr(v bool) *bool { return &v }
