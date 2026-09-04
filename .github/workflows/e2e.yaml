@@ -83,9 +83,10 @@ jobs:
             CUBEPILOT_LLM_APIKEY="$CHAT_KEY" \
             CUBEPILOT_LLM_ENDPOINT="${CHAT_ENDPOINT:-https://api.deepseek.com}" \
             CUBEPILOT_LLM_MODEL="${CHAT_MODEL:-deepseek-v4-flash}" \
+            CUBEPILOT_HITL_MASTER_KEY="$(openssl rand -base64 24)" \
             scripts/setup.sh
             go test -c ./test/e2e -o bin/e2e.test
-            CUBEPILOT_E2E_CHAT=1 KUBECONFIG="$HOME/.kube/config" ./bin/e2e.test \
+            CUBEPILOT_E2E_CHAT=1 CUBEPILOT_E2E_HITL=1 KUBECONFIG="$HOME/.kube/config" ./bin/e2e.test \
               -test.v -ginkgo.v -ginkgo.fail-fast
             echo "::endgroup::"
           else
