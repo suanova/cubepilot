@@ -202,6 +202,10 @@ export default function ChatView() {
   const threadEl = useRef<HTMLDivElement | null>(null)
   const inputEl = useRef<HTMLTextAreaElement | null>(null)
   const bubblesRef = useRef<BubbleMsg[]>([])
+  // activeSessionRef tracks the session the user is currently looking at, so a
+  // slow history/pending request that resolves after a switch is discarded
+  // instead of painting another session's confirmations onto this one.
+  const activeSessionRef = useRef<string | null>(null)
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -262,7 +266,8 @@ export default function ChatView() {
   }
 
   // After a reload mid-approval the platform still holds the pending write; this
-  // restores its confirmation card from the pending endpoint (issue #20).
+  // restores its confirmation card from the pending endpoint (issue #20). The
+  // result is discarded if the user switched sessions while it was in flight.
   async function recoverPending(id: string) {
     let p: PendingConfirm
     try {
@@ -270,6 +275,7 @@ export default function ChatView() {
     } catch {
       return // no pending approval for this session
     }
+    if (activeSessionRef.current !== id) return // stale: a different session is now active
     setBubbles((prev) => [
       ...prev,
       {
@@ -343,12 +349,14 @@ export default function ChatView() {
   }
 
   const switchSession = useCallback(async (id: string) => {
+    activeSessionRef.current = id
     setCurrentSessionId(id)
     await loadHistory(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function newChat() {
+    activeSessionRef.current = null
     setCurrentSessionId(null)
     setBubbles([])
     setLoadingHistory(false)
