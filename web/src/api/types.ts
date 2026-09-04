@@ -156,6 +156,23 @@ export interface SSEMessageDone {
   session_id: string
   error?: string
 }
+// HITL (issue #20): a matched write paused for the human. call_id is the gateway
+// approval id; name/command/level/message describe the gated operation.
+export interface SSEConfirmPending {
+  type: 'confirm_pending'
+  session_id: string
+  call_id?: string
+  name?: string
+  command?: string
+  level?: 'read' | 'write'
+  message?: string
+}
+export interface SSEConfirmResolved {
+  type: 'confirm_resolved'
+  session_id: string
+  call_id?: string
+  approved?: boolean
+}
 
 export type SSEEvent =
   | SSEMessageStart
@@ -164,3 +181,16 @@ export type SSEEvent =
   | SSEToolResult
   | SSEMessageDelta
   | SSEMessageDone
+  | SSEConfirmPending
+  | SSEConfirmResolved
+
+// A write awaiting a decision, served by GET /api/sessions/{key}/confirm/pending
+// (used to restore a confirmation card after a reload mid-approval).
+export interface PendingConfirm {
+  session_id: string
+  approval_id: string
+  tool: string
+  command: string
+  level: 'read' | 'write'
+  message?: string
+}

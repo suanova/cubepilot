@@ -5,6 +5,7 @@ import type {
   AgentStatus,
   AuditEntry,
   HistoryMessage,
+  PendingConfirm,
   PlatformObject,
   Report,
   SessionInfo,
@@ -24,6 +25,21 @@ export const api = {
     apiFetch<{ rows: unknown[] }>(
       `/api/sessions/${encodeURIComponent(sessionKey)}/ledger`,
     ).then((d) => d.rows),
+
+  // HITL write confirmations (issue #20)
+  postConfirm: (sessionKey: string, decision: 'approve' | 'reject') =>
+    apiFetch<{ approved: boolean; decision: string; approval_id?: string }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/confirm`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      },
+    ),
+  pendingConfirm: (sessionKey: string) =>
+    apiFetch<PendingConfirm>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/confirm/pending`,
+    ),
 
   // Tasks (FR-M4)
   listTasks: () => apiFetch<{ tasks: Task[] }>('/api/tasks').then((d) => d.tasks),
