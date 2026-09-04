@@ -19,6 +19,22 @@ import (
 	"github.com/suanova/cubepilot/internal/store"
 )
 
+// agentMainKey is the agent id an OpenAI-http run resolves to (openclaw/default
+// -> "main"); used to canonicalize session keys (issue #20).
+const agentMainKey = "main"
+
+// canonicalSessionKey maps a platform session key to the form the gateway uses
+// internally (agent:<agentId>:<segment>). Approval events carry the canonical
+// key, so the SSE hub, ledger, x-openclaw-session-key, the echoed session_id
+// and /confirm must all use the same canonical form or live confirmation cards
+// never reach the initiating chat stream.
+func canonicalSessionKey(key string) string {
+	if strings.HasPrefix(key, "agent:") {
+		return key
+	}
+	return "agent:" + agentMainKey + ":" + key
+}
+
 // userOf resolves the operator identity for a request (phase one has no auth;
 // the Portal supplies it via header, falling back to the configured default).
 func (s *Server) userOf(r *http.Request) string {
@@ -203,6 +219,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if sessionKey == "" {
 		sessionKey = "conv-" + uuid.NewString()
 	}
+	// Use the gateway's canonical form (agent:main:<segment>) for everything so
+	// approval events (which carry it) route to the same stream (issue #20).
+	sessionKey = canonicalSessionKey(sessionKey)
 	user := s.userOf(r)
 
 	// Session source of truth (design §4.1): the platform ledger is the source
