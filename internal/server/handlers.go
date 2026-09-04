@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +18,22 @@ import (
 	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/store"
 )
+
+// agentMainKey is the agent id an OpenAI-http run resolves to (openclaw/default
+// -> "main"); used to canonicalize session keys (issue #20).
+const agentMainKey = "main"
+
+// canonicalSessionKey maps a platform session key to the form the gateway uses
+// internally (agent:<agentId>:<segment>). Approval events carry the canonical
+// key, so the SSE hub, ledger, x-openclaw-session-key, the echoed session_id
+// and /confirm must all use the same canonical form or live confirmation cards
+// never reach the initiating chat stream.
+func canonicalSessionKey(key string) string {
+	if strings.HasPrefix(key, "agent:") {
+		return key
+	}
+	return "agent:" + agentMainKey + ":" + key
+}
 
 // userOf resolves the operator identity for a request (phase one has no auth;
 // the Portal supplies it via header, falling back to the configured default).
@@ -204,6 +219,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if sessionKey == "" {
 		sessionKey = "conv-" + uuid.NewString()
 	}
+	// Use the gateway's canonical form (agent:main:<segment>) for everything so
+	// approval events (which carry it) route to the same stream (issue #20).
+	sessionKey = canonicalSessionKey(sessionKey)
 	user := s.userOf(r)
 
 	// Session source of truth (design §4.1): the platform ledger is the source
@@ -225,16 +243,28 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	firstToken := time.Time{}
 	var streamErr error
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
+	// Open the per-session SSE stream BEFORE writing response headers so a
+	// conflicting concurrent turn for the same session can be answered 409 as
+	// JSON. All writes (turn events, WS-originated confirm_* events, heartbeats)
+	// go through the single writer inside the Stream.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
 		return
 	}
+	stream, oerr := s.hub.Open(sessionKey, w, flusher)
+	if oerr != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another turn is already streaming for this session"})
+		return
+	}
+	defer stream.Close()
+	stream.Start()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+
 	var doneEvent *openclaw.Event
-	var sseMu sync.Mutex
 	emit := func(ev openclaw.Event) error {
 		// The gateway's chat-completions stream only carries final text; hold
 		// message_done so we can first replay tool events extracted from the
@@ -253,14 +283,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			firstToken = time.Now()
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
 		}
-		sseMu.Lock()
-		if err := writeSSE(w, ev); err != nil {
-			sseMu.Unlock()
-			return err // client went away; abort the stream
-		}
-		flusher.Flush()
-		sseMu.Unlock()
-		return nil
+		return stream.Send(ev) // write error aborts the turn, like the old direct write
 	}
 
 	// Announce the session up front so the client can track the conversation.
@@ -271,6 +294,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
 		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
 		return
+	}
+
+	// ConfirmWrites gating (issue #20): ensure the gateway approval channel and
+	// a guarded session before the turn streams, so a gated write can pause for
+	// the Portal decision. Best-effort -- when the channel is down the turn
+	// proceeds ungated (today's behavior) rather than failing reads.
+	if s.hitl != nil {
+		s.hitl.PreTurn(r.Context(), user, sessionKey)
 	}
 
 	messages := []openclaw.ChatMessage{{Role: "user", Content: body.Content}}
@@ -296,14 +327,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			case <-ticker.C:
 				s.streamToolEvents(toolCtx, user, sessionKey, seen, func(ev openclaw.Event) {
 					s.ledgerEvent(user, sessionKey, ev)
-					sseMu.Lock()
-					if err := writeSSE(w, ev); err != nil {
-						sseMu.Unlock()
+					if err := stream.Send(ev); err != nil {
 						cancelTools()
 						return
 					}
-					flusher.Flush()
-					sseMu.Unlock()
 				})
 			}
 		}
@@ -331,22 +358,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	<-toolDone
 	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, seen) {
 		s.ledgerEvent(user, sessionKey, ev)
-		sseMu.Lock()
-		if err := writeSSE(w, ev); err != nil {
-			sseMu.Unlock()
+		if err := stream.Send(ev); err != nil {
 			break // client went away
 		}
-		flusher.Flush()
-		sseMu.Unlock()
 	}
 	if doneEvent != nil {
-		sseMu.Lock()
-		if err := writeSSE(w, *doneEvent); err != nil {
-			sseMu.Unlock()
-		} else {
-			flusher.Flush()
-			sseMu.Unlock()
-		}
+		_ = stream.Send(*doneEvent)
 	}
 	// Terminate the ledger turn: mark the assistant row done (incomplete when
 	// the stream failed / instance warming failed).

@@ -5,7 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
-import type { HistoryContentBlock, HistoryMessage, SessionInfo } from '@/api/types'
+import type { HistoryContentBlock, HistoryMessage, PendingConfirm, SessionInfo } from '@/api/types'
 import { shortSession } from '@/utils/format'
 
 const user = getCurrentUser()
@@ -29,6 +29,19 @@ interface ToolCallVM {
 // always tell "still working" (think/tools/stream) from "finished" (done).
 type BubblePhase = 'thinking' | 'tools' | 'streaming' | 'done'
 
+// A write operation paused for a human decision (issue #20 HITL).
+interface BubbleConfirm {
+  sessionId: string
+  approvalId: string
+  command: string
+  level: string
+  message?: string
+  resolved?: boolean // decision sent
+  approved?: boolean
+  busy?: boolean
+  error?: string
+}
+
 interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
@@ -37,6 +50,7 @@ interface BubbleMsg {
   thinking: boolean // true while phase !== 'done'
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
+  confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
 }
 
 // attachToolResult pairs a tool's output with the tool call that produced it:
@@ -188,6 +202,10 @@ export default function ChatView() {
   const threadEl = useRef<HTMLDivElement | null>(null)
   const inputEl = useRef<HTMLTextAreaElement | null>(null)
   const bubblesRef = useRef<BubbleMsg[]>([])
+  // activeSessionRef tracks the session the user is currently looking at, so a
+  // slow history/pending request that resolves after a switch is discarded
+  // instead of painting another session's confirmations onto this one.
+  const activeSessionRef = useRef<string | null>(null)
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -238,12 +256,43 @@ export default function ChatView() {
     try {
       const items = await api.sessionHistory(id)
       renderHistory(items)
+      void recoverPending(id)
     } catch (e) {
       setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
     } finally {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)
     }
+  }
+
+  // After a reload mid-approval the platform still holds the pending write; this
+  // restores its confirmation card from the pending endpoint (issue #20). The
+  // result is discarded if the user switched sessions while it was in flight.
+  async function recoverPending(id: string) {
+    let p: PendingConfirm
+    try {
+      p = await api.pendingConfirm(id)
+    } catch {
+      return // no pending approval for this session
+    }
+    if (activeSessionRef.current !== id) return // stale: a different session is now active
+    setBubbles((prev) => [
+      ...prev,
+      {
+        kind: 'assistant' as const,
+        tools: [],
+        thinking: false,
+        phase: 'done' as const,
+        confirm: {
+          sessionId: p.session_id,
+          approvalId: p.approval_id,
+          command: p.command,
+          level: p.level,
+          message: p.message,
+        },
+      },
+    ])
+    requestAnimationFrame(scrollThread)
   }
 
   // The gateway serves a history message's content either as a plain string
@@ -300,12 +349,14 @@ export default function ChatView() {
   }
 
   const switchSession = useCallback(async (id: string) => {
+    activeSessionRef.current = id
     setCurrentSessionId(id)
     await loadHistory(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function newChat() {
+    activeSessionRef.current = null
     setCurrentSessionId(null)
     setBubbles([])
     setLoadingHistory(false)
@@ -360,6 +411,30 @@ export default function ChatView() {
             attachToolResult(bubble.tools, ev.call_id || '', ev.output || '')
             return
           }
+          if (ev.type === 'confirm_pending') {
+            // A write is parked awaiting the human (issue #20). Show the card
+            // immediately rather than waiting for the next 1s ticker render.
+            setPhase(bubble, 'tools')
+            bubble.confirm = {
+              sessionId: ev.session_id || currentSessionId || '',
+              approvalId: ev.call_id || '',
+              command: ev.command || '',
+              level: ev.level || 'write',
+              message: ev.message,
+            }
+            setBubbles([...bubblesRef.current])
+            requestAnimationFrame(scrollThread)
+            return
+          }
+          if (ev.type === 'confirm_resolved') {
+            if (bubble.confirm && (!ev.call_id || bubble.confirm.approvalId === ev.call_id)) {
+              bubble.confirm.resolved = true
+              bubble.confirm.approved = !!ev.approved
+              bubble.confirm.busy = false
+              setBubbles([...bubblesRef.current])
+            }
+            return
+          }
           if (ev.type === 'message_delta') {
             setPhase(bubble, 'streaming')
             bubble.text = (bubble.text || '') + (ev.delta || '')
@@ -382,12 +457,38 @@ export default function ChatView() {
     }
   }
 
+  // decide sends the human's answer for a pending write confirmation
+  // (issue #20). POSTing resolves the gateway approval; the SSE stream then
+  // carries the resumed turn.
+  async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject') {
+    const session = confirm.sessionId || currentSessionId
+    if (!session) {
+      confirm.error = 'no session'
+      return
+    }
+    confirm.busy = true
+    confirm.error = ''
+    setBubbles([...bubblesRef.current])
+    try {
+      await api.postConfirm(session, decision)
+      confirm.resolved = true
+      confirm.approved = decision === 'approve'
+    } catch (e) {
+      confirm.error = String(e)
+    } finally {
+      confirm.busy = false
+      setBubbles([...bubblesRef.current])
+      requestAnimationFrame(scrollThread)
+    }
+  }
+
   useEffect(() => {
     loadSessions()
   }, [])
 
   function statusLine(b: BubbleMsg): string {
     if (b.kind === 'user' || !b.phase) return ''
+    if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
     switch (b.phase) {
       case 'thinking':
@@ -501,6 +602,70 @@ export default function ChatView() {
                         )}
                       </div>
                     ))}
+                    {/* A write awaiting (or resolved by) a human decision
+                        (issue #20 HITL). */}
+                    {b.confirm && (
+                      <div className="tool-card" style={{ borderColor: 'rgba(245,158,11,.45)' }}>
+                        <div className="tool-head">
+                          <ToolIcon />
+                          <span className="tool-cmd">Write confirmation</span>
+                          {b.confirm.resolved ? (
+                            <span
+                              style={{
+                                fontSize: 12,
+                                borderRadius: 999,
+                                padding: '2px 10px',
+                                background: b.confirm.approved ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)',
+                                color: b.confirm.approved ? '#15803d' : '#b91c1c',
+                              }}
+                            >
+                              {b.confirm.approved ? 'Approved' : 'Rejected'}
+                            </span>
+                          ) : (
+                            <span
+                              style={{
+                                fontSize: 12,
+                                borderRadius: 999,
+                                padding: '2px 10px',
+                                background: 'rgba(245,158,11,.15)',
+                                color: '#b45309',
+                              }}
+                            >
+                              Awaiting your decision
+                            </span>
+                          )}
+                        </div>
+                        {b.confirm.command && (
+                          <div className="tool-body">
+                            <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{b.confirm.command}</span>
+                          </div>
+                        )}
+                        {b.confirm.message && (
+                          <div style={{ fontSize: 12.5, color: 'var(--muted, rgba(0,0,0,.55))', marginTop: 6, lineHeight: 1.5 }}>{b.confirm.message}</div>
+                        )}
+                        {!b.confirm.resolved && (
+                          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                            <button
+                              onClick={() => decide(b.confirm!, 'reject')}
+                              disabled={!!b.confirm.busy}
+                              style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+                            >
+                              Reject
+                            </button>
+                            <button
+                              onClick={() => decide(b.confirm!, 'approve')}
+                              disabled={!!b.confirm.busy}
+                              style={{ background: 'var(--accent, #3b82f6)', border: 'none', color: '#fff', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+                            >
+                              {b.confirm.busy ? 'Sending…' : 'Approve'}
+                            </button>
+                          </div>
+                        )}
+                        {b.confirm.error && (
+                          <div style={{ fontSize: 12.5, color: 'var(--danger)', marginTop: 6 }}>{b.confirm.error}</div>
+                        )}
+                      </div>
+                    )}
                     {/* When an assistant reply ran tools, its closing text is the
                         takeaway: render it as a highlighted panel so it stands out
                         from the tool log. Assistant text renders as Markdown; user
@@ -549,7 +714,7 @@ export default function ChatView() {
             </button>
           </div>
           <div className="composer-hint">
-            Operate platform resources via natural language - type <span className="mono">@</span> to reference a resource - phase-one write operations pass through directly
+            Operate platform resources via natural language - type <span className="mono">@</span> to reference a resource - write operations ask for your approval before they run
           </div>
         </div>
       </div>

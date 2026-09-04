@@ -9,31 +9,122 @@
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/metrics"
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
 // Server holds shared dependencies for HTTP handlers.
 type Server struct {
-	cfg     config.Config
-	mgr     *instances.Manager
-	store   *store.Store
-	catalog *skill.Catalog
-	cr      client.Client
+	cfg       config.Config
+	mgr       *instances.Manager
+	store     *store.Store
+	catalog   *skill.Catalog
+	cr        client.Client
+	hub       *Hub
+	approvals *ApprovalService
+	hitl      *hitlManager // nil when HITL is not configured (confirmPolicy stays declarative)
+}
+
+// hitlMasterSecretName is the Secret holding the auto-generated device master
+// key (created by the API on first enable; per-user devices are derived from
+// it, so it must be stable across API restarts).
+const hitlMasterSecretName = "cubepilot-hitl-master"
+
+// EnableHITL activates the human-in-the-loop approval channel (issue #20). The
+// device master key is auto-generated and persisted in a Secret (load-or-create)
+// so enabling needs no operator-supplied key; the API's ServiceAccount only
+// needs access to that one Secret. When the Secret cannot be ensured the API
+// logs and keeps the channel off (chat behavior unchanged) rather than crash.
+func (s *Server) EnableHITL() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var mk []byte
+	var sec corev1.Secret
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &sec)
+	switch {
+	case err == nil:
+		// The key is stored Base64-encoded; decode so a restarted API derives
+		// the same device identities as the process that created the Secret.
+		encoded := sec.Data["key"]
+		mk, derr := base64.StdEncoding.DecodeString(string(encoded))
+		if derr != nil || len(mk) == 0 {
+			s.logf("hitl: master Secret %s has an invalid 'key'; disabling HITL", hitlMasterSecretName)
+			return
+		}
+	case apierrors.IsNotFound(err):
+		mk = make([]byte, 32)
+		if _, rerr := rand.Read(mk); rerr != nil {
+			s.logf("hitl: generate master key: %v", rerr)
+			return
+		}
+		sec = corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: hitlMasterSecretName, Namespace: s.cfg.Namespace},
+			Data:       map[string][]byte{"key": []byte(base64.StdEncoding.EncodeToString(mk))},
+		}
+		if cerr := s.cr.Create(ctx, &sec); cerr != nil {
+			// Lost a create race to a peer replica: read the winner's key.
+			if apierrors.IsAlreadyExists(cerr) {
+				var got corev1.Secret
+				if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr == nil {
+					if k := got.Data["key"]; len(k) > 0 {
+						mk, _ = base64.StdEncoding.DecodeString(string(k))
+					}
+				}
+			}
+			if len(mk) == 0 {
+				s.logf("hitl: ensure master Secret: %v; disabling HITL", cerr)
+				return
+			}
+		}
+	default:
+		s.logf("hitl: read master Secret: %v; disabling HITL", err)
+		return
+	}
+
+	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, mk, s.logf)
+	if m == nil {
+		return
+	}
+	s.hitl = m
+	s.approvals.SetResolver(m)
+	m.bridge = func(user string, ev ws.ApprovalRequested) {
+		s.approvals.Begin(user, pendingApproval{
+			ApprovalID: ev.ID,
+			SessionKey: ev.Request.SessionKey,
+			Tool:       "exec",
+			Command:    ev.Request.Command,
+			Message:    ev.Request.WarningText,
+			CreatedAt:  time.Now(),
+		})
+	}
+	s.logf("hitl: master key %s ensured; write confirmations enabled", hitlMasterSecretName)
 }
 
 // New builds the HTTP handler for the assistant service.
 func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *skill.Catalog, cr client.Client) *Server {
-	return &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
+	s := &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
+	s.hub = NewHub()
+	s.approvals = NewApprovalService(s.hub, st, s.logf)
+	return s
 }
 
 // Handler returns the fully wired HTTP handler.
@@ -71,7 +162,7 @@ func (s *Server) Handler() http.Handler {
 	return logRequests(mux)
 }
 
-// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed}.
+// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed|confirm}.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
@@ -80,6 +171,10 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 		s.handleLedger(w, r)
 	case strings.HasSuffix(r.URL.Path, "/seed"):
 		s.handleSeed(w, r)
+	case strings.HasSuffix(r.URL.Path, "/confirm/pending"):
+		s.handlePendingConfirm(w, r)
+	case strings.HasSuffix(r.URL.Path, "/confirm"):
+		s.handleConfirm(w, r)
 	default:
 		http.NotFound(w, r)
 	}

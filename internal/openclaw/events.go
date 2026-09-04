@@ -3,7 +3,8 @@ package openclaw
 import "encoding/json"
 
 // Event types of the CubePilot streaming contract (design doc FR-M1-003).
-// Phase one emits the six non-confirm events; confirm_* is phase two (HITL).
+// confirm_* (issue #20) are emitted by the HITL approval path; the rest stream
+// the chat turn.
 const (
 	EventMessageStart    = "message_start"
 	EventAgentThinking   = "agent_thinking"
@@ -11,7 +12,7 @@ const (
 	EventToolResult      = "tool_result"
 	EventMessageDelta    = "message_delta"
 	EventMessageDone     = "message_done"
-	EventConfirmPending  = "confirm_pending" // phase two
+	EventConfirmPending  = "confirm_pending" // a matched write paused for the human
 	EventConfirmResolved = "confirm_resolved"
 )
 
@@ -24,6 +25,14 @@ type Event struct {
 	CallID    string `json:"call_id,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Output    string `json:"output,omitempty"`
+	// Confirm fields (confirm_pending / confirm_resolved, issue #20). call_id
+	// carries the gateway approval id; Name carries the tool ("exec").
+	Command string `json:"command,omitempty"`
+	Level   string `json:"level,omitempty"` // "read" | "write"
+	Message string `json:"message,omitempty"`
+	// Approved is *bool so confirm_resolved can carry an explicit false (reject)
+	// while every other event omits the key entirely.
+	Approved *bool `json:"approved,omitempty"`
 	// Streaming text fields.
 	Delta string `json:"delta,omitempty"`
 	// Terminal error, carried on message_done.

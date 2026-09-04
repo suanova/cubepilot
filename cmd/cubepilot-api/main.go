@@ -12,6 +12,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -82,6 +83,14 @@ func main() {
 	mgrInstances := instances.New(cr, cfg)
 
 	srv := server.New(cfg, mgrInstances, st, catalog, cr)
+
+	// Human-in-the-loop write confirmations (issue #20). Controlled by the chart
+	// api.hitl.enabled flag (CUBEPILOT_HITL_ENABLED=true): the device master key
+	// is auto-generated and persisted in a Secret, so no operator key is needed;
+	// the in-pod supervisor auto-pairs the derived per-user devices.
+	if os.Getenv("CUBEPILOT_HITL_ENABLED") == "true" {
+		srv.EnableHITL()
+	}
 
 	// Seed the builtin skills into the repository + Skill CRDs (the API owns
 	// the skill lifecycle). Retries in the background until it converges.
