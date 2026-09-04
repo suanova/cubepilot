@@ -259,7 +259,7 @@ func frameErrorOf(res responseFrame) error {
 func (c *Client) writeReq(conn *websocket.Conn, method string, params json.RawMessage) error {
 	id := "r" + strconv.FormatInt(c.nextID.Add(1), 10)
 	frame := requestFrame{Type: "req", ID: id, Method: method}
-	if params != nil && len(params) > 0 && string(params) != "null" {
+	if len(params) > 0 && string(params) != "null" {
 		frame.Params = params
 	} else {
 		frame.Params = json.RawMessage("{}")
