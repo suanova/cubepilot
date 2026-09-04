@@ -24,16 +24,21 @@ import (
 
 // Server holds shared dependencies for HTTP handlers.
 type Server struct {
-	cfg     config.Config
-	mgr     *instances.Manager
-	store   *store.Store
-	catalog *skill.Catalog
-	cr      client.Client
+	cfg       config.Config
+	mgr       *instances.Manager
+	store     *store.Store
+	catalog   *skill.Catalog
+	cr        client.Client
+	hub       *Hub
+	approvals *ApprovalService
 }
 
 // New builds the HTTP handler for the assistant service.
 func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *skill.Catalog, cr client.Client) *Server {
-	return &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
+	s := &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
+	s.hub = NewHub()
+	s.approvals = NewApprovalService(s.hub, st, s.logf)
+	return s
 }
 
 // Handler returns the fully wired HTTP handler.
@@ -71,7 +76,7 @@ func (s *Server) Handler() http.Handler {
 	return logRequests(mux)
 }
 
-// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed}.
+// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed|confirm}.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
@@ -80,6 +85,10 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 		s.handleLedger(w, r)
 	case strings.HasSuffix(r.URL.Path, "/seed"):
 		s.handleSeed(w, r)
+	case strings.HasSuffix(r.URL.Path, "/confirm/pending"):
+		s.handlePendingConfirm(w, r)
+	case strings.HasSuffix(r.URL.Path, "/confirm"):
+		s.handleConfirm(w, r)
 	default:
 		http.NotFound(w, r)
 	}
