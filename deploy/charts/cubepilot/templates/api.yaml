@@ -32,6 +32,10 @@ spec:
               value: {{ .Values.api.dataDir }}
             - name: CUBEPILOT_SKILLS_DIR
               value: /var/lib/cubepilot/skills
+            {{- range .Values.api.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
           ports:
             - containerPort: 8080
           livenessProbe:

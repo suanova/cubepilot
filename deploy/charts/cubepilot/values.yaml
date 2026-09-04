@@ -70,6 +70,9 @@ api:
   resources: {}
   nodeSelector: {}
   tolerations: []
+  # extraEnv appends environment variables to the API container (e.g.
+  # CUBEPILOT_HITL_MASTER_KEY to enable HITL write confirmations).
+  extraEnv: []
 
 # --- web (independent React SPA, stateless, nginx) ------------------------
 web:
