@@ -48,10 +48,10 @@ type hitlManager struct {
 	// wsURLOf returns the gateway WS endpoint for a user. Overridable in tests.
 	wsURLOf func(user string) string
 
-	mu          sync.Mutex
-	conns       map[string]*userHitlConn
-	connecting  map[string]*sync.Mutex // serializes first connect per user
-	revPol      map[string]string      // user -> applied policy revision
+	mu         sync.Mutex
+	conns      map[string]*userHitlConn
+	connecting map[string]*sync.Mutex // serializes first connect per user
+	revPol     map[string]string      // user -> applied policy revision
 }
 
 type userHitlConn struct {
