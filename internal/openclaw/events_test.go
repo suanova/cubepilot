@@ -118,3 +118,51 @@ func eventTypes(evs []Event) []string {
 	}
 	return out
 }
+
+// TestConfirmEventMarshal pins the confirm_pending / confirm_resolved SSE JSON
+// to the documented contract (docs/cubepilot/api.md lines 436-437): call_id is
+// the gateway approval id, tool is the exec tool, command/level/message carry
+// the write, approved the decision.
+func TestConfirmEventMarshal(t *testing.T) {
+	pending := Event{
+		Type:      EventConfirmPending,
+		SessionID: "conv-abc",
+		CallID:    "appr-1",
+		Name:      "exec",
+		Command:   "kubectl delete pod foo",
+		Level:     "write",
+		Message:   "approve or reject the delete",
+	}
+	got := string(pending.Marshal())
+	for _, want := range []string{
+		`"type":"confirm_pending"`,
+		`"session_id":"conv-abc"`,
+		`"call_id":"appr-1"`,
+		`"name":"exec"`,
+		`"command":"kubectl delete pod foo"`,
+		`"level":"write"`,
+		`"message":"approve or reject the delete"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pending payload missing %s: %s", want, got)
+		}
+	}
+
+	resolved := Event{
+		Type:      EventConfirmResolved,
+		SessionID: "conv-abc",
+		CallID:    "appr-1",
+		Approved:  true,
+	}
+	got = string(resolved.Marshal())
+	for _, want := range []string{
+		`"type":"confirm_resolved"`,
+		`"session_id":"conv-abc"`,
+		`"call_id":"appr-1"`,
+		`"approved":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resolved payload missing %s: %s", want, got)
+		}
+	}
+}

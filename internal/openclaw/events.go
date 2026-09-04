@@ -24,6 +24,12 @@ type Event struct {
 	CallID    string `json:"call_id,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Output    string `json:"output,omitempty"`
+	// Confirm fields (confirm_pending / confirm_resolved, issue #20). call_id
+	// carries the gateway approval id; Name carries the tool ("exec").
+	Command   string `json:"command,omitempty"`
+	Level     string `json:"level,omitempty"`   // "read" | "write"
+	Message   string `json:"message,omitempty"` // human explanation shown with the card
+	Approved  bool   `json:"approved,omitempty"`
 	// Streaming text fields.
 	Delta string `json:"delta,omitempty"`
 	// Terminal error, carried on message_done.
