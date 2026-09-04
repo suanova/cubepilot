@@ -12,12 +12,14 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/metrics"
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/store"
 )
@@ -31,6 +33,30 @@ type Server struct {
 	cr        client.Client
 	hub       *Hub
 	approvals *ApprovalService
+	hitl      *hitlManager // nil when HITL is not configured (confirmPolicy stays declarative)
+}
+
+// EnableHITL activates the human-in-the-loop approval channel (issue #20).
+// masterKey seeds the per-user device identities; when empty or when the
+// operator has not paired those devices with the gateways the channel stays
+// inert and chat behavior is unchanged.
+func (s *Server) EnableHITL(masterKey []byte) {
+	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, masterKey, s.logf)
+	if m == nil {
+		return
+	}
+	s.hitl = m
+	s.approvals.SetResolver(m)
+	m.bridge = func(user string, ev ws.ApprovalRequested) {
+		s.approvals.Begin(user, pendingApproval{
+			ApprovalID: ev.ID,
+			SessionKey: ev.Request.SessionKey,
+			Tool:       "exec",
+			Command:    ev.Request.Command,
+			Message:    ev.Request.WarningText,
+			CreatedAt:  time.Now(),
+		})
+	}
 }
 
 // New builds the HTTP handler for the assistant service.

@@ -277,6 +277,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ConfirmWrites gating (issue #20): ensure the gateway approval channel and
+	// a guarded session before the turn streams, so a gated write can pause for
+	// the Portal decision. Best-effort -- when the channel is down the turn
+	// proceeds ungated (today's behavior) rather than failing reads.
+	if s.hitl != nil {
+		s.hitl.PreTurn(r.Context(), user, sessionKey)
+	}
+
 	messages := []openclaw.ChatMessage{{Role: "user", Content: body.Content}}
 	if cfg, err := s.store.GetAgentConfig(); err == nil && strings.TrimSpace(cfg.SystemPrompt) != "" {
 		messages = append([]openclaw.ChatMessage{{Role: "system", Content: cfg.SystemPrompt}}, messages...)

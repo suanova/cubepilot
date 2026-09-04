@@ -153,11 +153,12 @@ type ApprovalRequested struct {
 	Kind    string `json:"approvalKind"`
 	ID      string `json:"id"`
 	Request struct {
-		Command    string `json:"command"`
-		SessionKey string `json:"sessionKey"`
-		AgentID    string `json:"agentId"`
-		Security   string `json:"security"`
-		Ask        string `json:"ask"`
+		Command     string `json:"command"`
+		SessionKey  string `json:"sessionKey"`
+		AgentID     string `json:"agentId"`
+		Security    string `json:"security"`
+		Ask         string `json:"ask"`
+		WarningText string `json:"warningText"`
 	} `json:"request"`
 	CreatedAtMs int64 `json:"createdAtMs"`
 	ExpiresAtMs int64 `json:"expiresAtMs"`
