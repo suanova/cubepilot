@@ -268,7 +268,7 @@ func TestClientDeviceLessConnect(t *testing.T) {
 	if gotConnect.Auth == nil || gotConnect.Auth.Token != "token" {
 		t.Errorf("device-less connect must carry the shared token, got %+v", gotConnect.Auth)
 	}
-	if gotConnect.Scopes == nil || len(gotConnect.Scopes) == 0 {
+	if len(gotConnect.Scopes) == 0 {
 		t.Errorf("device-less connect must declare scopes, got %v", gotConnect.Scopes)
 	}
 }
