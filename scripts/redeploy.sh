@@ -73,6 +73,12 @@ helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
 # IfNotPresent, so the deployment image refs do not change and helm will not
 # roll by itself: force fresh pods onto the freshly loaded images.
 log "rolling operator / api / web deployments"
+
+# Agent pods existing before the rollout. The operator deletes and recreates
+# them on the new image (drift), so afterwards they must all come back again:
+# a transiently empty pod list mid-migration is not success.
+agents_before=$(kubectl -n "$NAMESPACE" get pods -l "$AGENT_LABEL" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
 kubectl -n "$NAMESPACE" rollout restart \
   deploy/cubepilot-operator deploy/cubepilot-api deploy/cubepilot-web
 kubectl -n "$NAMESPACE" rollout status \
@@ -82,9 +88,11 @@ kubectl -n "$NAMESPACE" rollout status \
 # ---- wait for agent pods to converge on the new image --------------------
 # The restarted operator self-heals each AgentInstance pod onto the new
 # agents.image (drift delete + recreate). Poll until every agent pod is Running
-# on the target tag. Two consecutive clean samples are required to avoid racing
-# the delete/recreate window in which no pods exist transiently; a kubectl
-# error is treated as "not yet converged" rather than success.
+# on the target tag. When agent pods existed before the rollout, all of them
+# must be back (count >= agents_before) and Running on the target image; an
+# empty or short pod list during the delete/recreate window is not convergence.
+# A kubectl error is treated as "not yet converged" rather than success. Two
+# consecutive clean samples avoid exiting into a mid-roll state.
 TARGET_IMAGE="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG"
 log "waiting for agent pods to converge on $TARGET_IMAGE"
 clean=0
@@ -92,9 +100,15 @@ deadline=$(( $(date +%s) + 180 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   if out=$(kubectl -n "$NAMESPACE" get pods -l "$AGENT_LABEL" \
     -o go-template='{{range .items}}{{.status.phase}}{{range .spec.containers}} {{.image}}{{end}}{{"\n"}}{{end}}' 2>/dev/null); then
+    count=0
     mismatch=""
     if [ -n "$out" ]; then
+      count=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
       mismatch=$(printf '%s\n' "$out" | awk -v img="$TARGET_IMAGE" '$1 != "Running" || $2 != img { print }')
+    fi
+    if [ "$agents_before" -gt 0 ] && [ "$count" -lt "$agents_before" ]; then
+      # Some (or all) replacements are not back yet -- keep waiting.
+      mismatch="waiting for $agents_before agent pods ($count up)"
     fi
   else
     # kubectl failed (transient): do not report success.
