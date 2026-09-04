@@ -27,8 +27,9 @@ func defaultReadAllowlist() []ws.AllowlistEntry {
 	kubectl := ws.AllowlistEntry{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern}
 	// Deliberately no command-wrapper bins (env, xargs, sh, ...) that can exec a
 	// following command: `env kubectl delete ...` would otherwise inherit the
-	// allowlisted wrapper's trust.
-	safeBins := []string{"ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "date", "echo", "printf", "which"}
+	// allowlisted wrapper's trust. No `date` either: `date -s` can change the
+	// system clock when the process holds CAP_SYS_TIME.
+	safeBins := []string{"ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "echo", "printf", "which"}
 	out := make([]ws.AllowlistEntry, 0, 1+len(safeBins))
 	out = append(out, kubectl)
 	for _, b := range safeBins {

@@ -62,9 +62,12 @@ func (s *Server) EnableHITL() {
 	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &sec)
 	switch {
 	case err == nil:
-		mk = sec.Data["key"]
-		if len(mk) == 0 {
-			s.logf("hitl: master Secret %s has no 'key'; disabling HITL", hitlMasterSecretName)
+		// The key is stored Base64-encoded; decode so a restarted API derives
+		// the same device identities as the process that created the Secret.
+		encoded := sec.Data["key"]
+		mk, derr := base64.StdEncoding.DecodeString(string(encoded))
+		if derr != nil || len(mk) == 0 {
+			s.logf("hitl: master Secret %s has an invalid 'key'; disabling HITL", hitlMasterSecretName)
 			return
 		}
 	case apierrors.IsNotFound(err):
