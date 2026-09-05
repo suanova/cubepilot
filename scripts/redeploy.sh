@@ -17,12 +17,13 @@
 # current CUBEPILOT_AGENT_IMAGE within a reconcile window.
 #
 # Inputs (env, defaults shown):
-#   CUBEPILOT_IMAGE_REPO    image repository (harbor.isuanova.com/suanova)
-#   CUBEPILOT_IMAGE_TAG     image tag of the built images (local)
-#   CUBEPILOT_KIND_CLUSTER  kind cluster name (cube)
-#   CUBEPILOT_NAMESPACE     target namespace (cubepilot)
-#   CUBEPILOT_HELM_RELEASE  helm release name (cubepilot)
-#   CUBEPILOT_CHART_DIR     chart directory (deploy/charts/cubepilot)
+#   CUBEPILOT_IMAGE_REPO     image repository (harbor.isuanova.com/suanova)
+#   CUBEPILOT_IMAGE_TAG      image tag of the built images (local)
+#   CUBEPILOT_KIND_CLUSTER   kind cluster name (cube)
+#   CUBEPILOT_KUBE_CONTEXT   kubeconfig context (kind-$CUBEPILOT_KIND_CLUSTER)
+#   CUBEPILOT_NAMESPACE      target namespace (cubepilot)
+#   CUBEPILOT_HELM_RELEASE   helm release name (cubepilot)
+#   CUBEPILOT_CHART_DIR      chart directory (deploy/charts/cubepilot)
 #
 # Requires: kind, kubectl, helm (v3). Run `make images` (or scripts/setup.sh)
 # first if the :$(CUBEPILOT_IMAGE_TAG) images are not built yet.
@@ -33,6 +34,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_REPO="${CUBEPILOT_IMAGE_REPO:-harbor.isuanova.com/suanova}"
 IMAGE_TAG="${CUBEPILOT_IMAGE_TAG:-local}"
 KIND_CLUSTER="${CUBEPILOT_KIND_CLUSTER:-cube}"
+# kind names its kubeconfig context kind-<cluster>; pin helm/kubectl to it so
+# image loading and deployment target the same cluster even when another
+# context is active.
+KUBE_CONTEXT="${CUBEPILOT_KUBE_CONTEXT:-kind-$KIND_CLUSTER}"
 NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 HELM_RELEASE="${CUBEPILOT_HELM_RELEASE:-cubepilot}"
 CHART_DIR="${CUBEPILOT_CHART_DIR:-deploy/charts/cubepilot}"
@@ -62,6 +67,7 @@ kind load docker-image \
 # ---- helm upgrade (image refs only, preserve custom values) --------------
 log "helm-upgrading $HELM_RELEASE (--reuse-values, image refs only)"
 helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
+  --kube-context "$KUBE_CONTEXT" \
   --reuse-values \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
@@ -77,12 +83,19 @@ log "rolling operator / api / web deployments"
 # Agent pods existing before the rollout. The operator deletes and recreates
 # them on the new image (drift), so afterwards they must all come back again:
 # a transiently empty pod list mid-migration is not success.
-agents_before=$(kubectl -n "$NAMESPACE" get pods -l "$AGENT_LABEL" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+agents_before=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods -l "$AGENT_LABEL" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
-kubectl -n "$NAMESPACE" rollout restart \
-  deploy/cubepilot-operator deploy/cubepilot-api deploy/cubepilot-web
-kubectl -n "$NAMESPACE" rollout status \
-  deploy/cubepilot-operator deploy/cubepilot-api deploy/cubepilot-web \
+# Resolve the rendered Deployment names from the installed release manifest, so
+# a custom operator.name / api.name / web.name survives the rollout. Each
+# Deployment's metadata.name is the first top-level `name:` after `kind:
+# Deployment` (containers/volumes use `- name:`).
+deployments=$(helm --kube-context "$KUBE_CONTEXT" get manifest "$HELM_RELEASE" -n "$NAMESPACE" \
+  | awk '/^kind: Deployment$/{d=1;next} d&&/^  name: /{sub(/^  name: /,"");printf "deployment/%s ",$0;d=0}')
+deployments=${deployments% } # drop the trailing space
+[ -n "$deployments" ] || { echo "error: no Deployment found in the $HELM_RELEASE manifest" >&2; exit 1; }
+
+kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" rollout restart $deployments
+kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" rollout status $deployments \
   --timeout=120s
 
 # ---- wait for agent pods to converge on the new image --------------------
@@ -98,7 +111,7 @@ log "waiting for agent pods to converge on $TARGET_IMAGE"
 clean=0
 deadline=$(( $(date +%s) + 180 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  if out=$(kubectl -n "$NAMESPACE" get pods -l "$AGENT_LABEL" \
+  if out=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods -l "$AGENT_LABEL" \
     -o go-template='{{range .items}}{{.status.phase}}{{range .spec.containers}} {{.image}}{{end}}{{"\n"}}{{end}}' 2>/dev/null); then
     count=0
     mismatch=""
@@ -126,5 +139,5 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 5
 done
 echo "error: timed out waiting for agent pods to converge on $TARGET_IMAGE" >&2
-kubectl -n "$NAMESPACE" get pods -l "$AGENT_LABEL" -o wide
+kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods -l "$AGENT_LABEL" -o wide
 exit 1
