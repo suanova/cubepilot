@@ -5,10 +5,11 @@
 # Counterpart of scripts/setup.sh (one-shot bring-up). This script assumes the
 # stack is already deployed once (scripts/setup.sh or `make deploy`) and that
 # the four images have been built from the current tree (`make images`, the
-# `make redeploy` prerequisite). It kind-loads the images, helm-upgrades with
-# --reuse-values so only the four image refs change, rolls the operator / api /
-# web Deployments, then waits for the per-user agent pods to converge on the
-# new openclaw tag.
+# `make redeploy` prerequisite). It kind-loads the images, helm-upgrades
+# (preserving the release's stored values while the current chart defaults
+# refresh the rest; only the four image refs are overridden), rolls the
+# operator / api / web Deployments, then waits for the per-user agent pods to
+# converge on the new openclaw tag.
 #
 # The agent-image migration needs no manual step: the operator self-heals
 # existing AgentInstance pods because the container image is part of the
@@ -65,10 +66,24 @@ kind load docker-image \
   --name "$KIND_CLUSTER"
 
 # ---- helm upgrade (image refs only, preserve custom values) --------------
-log "helm-upgrading $HELM_RELEASE (--reuse-values, image refs only)"
+# The stored release values predate any chart defaults added since it was
+# installed (e.g. api.hitl), and --reuse-values would reuse those verbatim
+# without filling in the new defaults -- the new template then fails with a nil
+# pointer. Instead read the release's user values back and pass them with -f:
+# helm layers the current chart defaults underneath and the --set below
+# overrides only the four image refs.
+log "helm-upgrading $HELM_RELEASE (preserving stored values, image refs only)"
+stored_values=$(mktemp)
+trap 'rm -f "$stored_values"' EXIT
+if helm get values "$HELM_RELEASE" -n "$NAMESPACE" -o yaml > "$stored_values" 2>/dev/null; then
+  values_file=(-f "$stored_values")
+else
+  log "$HELM_RELEASE has no stored values yet; installing from chart defaults"
+  values_file=()
+fi
 helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
   --kube-context "$KUBE_CONTEXT" \
-  --reuse-values \
+  "${values_file[@]}" \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \

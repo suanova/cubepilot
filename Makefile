@@ -103,11 +103,12 @@ push:
 
 ## Rebuild + reload the current code onto the local kind cluster -- the edit ->
 ## `make redeploy` -> test dev loop. Builds the four images (via the `images`
-## prerequisite), then delegates the kind-load, the helm upgrade (--reuse-values:
-## only the image refs change, custom values such as agents.llmEndpoint or
-## api.extraEnv are preserved), the operator/api/web rollout and the agent-pod
-## convergence wait to scripts/redeploy.sh. Requires an existing release:
-## deploy once via scripts/setup.sh (or `make deploy`) first.
+## prerequisite), then delegates to scripts/redeploy.sh the kind-load, the helm
+## upgrade (the release's stored custom values such as agents.llmEndpoint or
+## api.extraEnv are preserved while current chart defaults refresh the rest;
+## only the four image refs are overridden), the operator/api/web rollout and
+## the agent-pod convergence wait. Requires an existing release: deploy once via
+## scripts/setup.sh (or `make deploy`) first.
 redeploy: images
 	CUBEPILOT_IMAGE_REPO=$(IMAGE_REGISTRY) CUBEPILOT_IMAGE_TAG=$(IMAGE_TAG) \
 	CUBEPILOT_KIND_CLUSTER=$(KIND_CLUSTER) CUBEPILOT_NAMESPACE=$(NAMESPACE) \
