@@ -74,12 +74,22 @@ kind load docker-image \
 # overrides only the four image refs.
 log "helm-upgrading $HELM_RELEASE (preserving stored values, image refs only)"
 stored_values=$(mktemp)
-trap 'rm -f "$stored_values"' EXIT
-if helm get values "$HELM_RELEASE" -n "$NAMESPACE" -o yaml > "$stored_values" 2>/dev/null; then
-  values_file=(-f "$stored_values")
+stored_err=$(mktemp)
+trap 'rm -f "$stored_values" "$stored_err"' EXIT
+if ! helm get values "$HELM_RELEASE" -n "$NAMESPACE" -o yaml > "$stored_values" 2> "$stored_err"; then
+  if grep -q "not found" "$stored_err"; then
+    # Release absent: a fresh install from chart defaults is fine.
+    log "$HELM_RELEASE is not installed yet; installing from chart defaults"
+    values_file=()
+  else
+    # Any other read failure must not silently reset custom values (e.g. the
+    # HITL master key in api.extraEnv) to chart defaults -- fail closed.
+    echo "error: failed to read stored values for release $HELM_RELEASE:" >&2
+    cat "$stored_err" >&2
+    exit 1
+  fi
 else
-  log "$HELM_RELEASE has no stored values yet; installing from chart defaults"
-  values_file=()
+  values_file=(-f "$stored_values")
 fi
 helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
   --kube-context "$KUBE_CONTEXT" \
