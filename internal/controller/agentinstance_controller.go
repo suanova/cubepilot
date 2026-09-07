@@ -18,12 +18,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -34,6 +36,17 @@ import (
 // finalizerName protects the instance's data directory PVC until the
 // AgentInstance is fully removed (design §3.2 data-directory GC / reclaim).
 const finalizerName = "ai.cubestack.io/agentinstance"
+
+// modelConfiguredCondition reports whether the instance's AgentTemplate offers
+// at least one usable model (non-empty endpoint, and a credential Secret when
+// the model is keyed). It is deliberately decoupled from the pod lifecycle
+// (issue #117): an instance can be Ready while no LLM is configured -- the
+// Portal uses this condition to nudge the user toward Agent Config.
+const (
+	modelConfiguredCondition = "ModelConfigured"
+	reasonModelConfigured    = "ModelConfigured"
+	reasonNoModelConfigured  = "NoModelConfigured"
+)
 
 // AgentInstanceReconciler reconciles AgentInstance objects: it ensures the
 // per-user agent Pod + Service + data PVC exist and are healthy, and updates
@@ -49,7 +62,7 @@ type AgentInstanceReconciler struct {
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives one AgentInstance toward its desired state.
 func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -191,11 +204,37 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		return ctrl.Result{}, err
 	}
 
+	// Model availability is surfaced as a status condition that is decoupled
+	// from the pod lifecycle (issue #117): the instance may be Ready while the
+	// template has no usable model. The Portal keys its "go configure an LLM"
+	// nudge off this condition. Re-evaluated on every reconcile; AgentTemplate /
+	// Secret watches below re-trigger it when models or credentials change.
+	prevConditions := append([]metav1.Condition(nil), inst.Status.Conditions...)
+	hasModel, err := r.modelAvailable(ctx, agent)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	cond := metav1.Condition{
+		Type:               modelConfiguredCondition,
+		ObservedGeneration: inst.Generation,
+		LastTransitionTime: metav1.Now(),
+	}
+	if hasModel {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = reasonModelConfigured
+	} else {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = reasonNoModelConfigured
+		cond.Message = "no LLM configured - add one in Portal (Agent Config -> LLM Config)"
+	}
+	meta.SetStatusCondition(&inst.Status.Conditions, cond)
+
 	// Update status only when it changed (avoid write amplification on the
 	// periodic requeue; LastActivity is refreshed on state transitions).
 	if inst.Status.Phase != status || inst.Status.PodName != podName ||
 		inst.Status.PVCName != pvcName || inst.Status.ServiceName != svcName ||
-		inst.Status.Message != message {
+		inst.Status.Message != message ||
+		!equality.Semantic.DeepEqual(prevConditions, inst.Status.Conditions) {
 		inst.Status.Phase = status
 		inst.Status.PodName = podName
 		inst.Status.PVCName = pvcName
@@ -234,6 +273,49 @@ func (r *AgentInstanceReconciler) templateFor(ctx context.Context, name string) 
 		return nil, err
 	}
 	return &tmpl, nil
+}
+
+// modelAvailable reports whether the instance's AgentTemplate offers at least
+// one usable model: a non-empty endpoint, and either no credentialRef (a
+// public/keyless model) or an existing credential Secret. A missing template
+// or an empty model list yields false (nothing to serve yet).
+func (r *AgentInstanceReconciler) modelAvailable(ctx context.Context, agent *v1alpha1.AgentTemplate) (bool, error) {
+	if agent == nil {
+		return false, nil
+	}
+	for i := range agent.Spec.Models {
+		m := &agent.Spec.Models[i]
+		if m.Endpoint == "" {
+			continue
+		}
+		if m.CredentialRef == nil || m.CredentialRef.Name == "" {
+			return true, nil
+		}
+		var sec corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: m.CredentialRef.Name}, &sec); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue // keyed model whose credential is not created yet
+			}
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// mapAllToInstances turns any watched AgentTemplate / credential Secret change
+// into a reconcile of every AgentInstance, so the ModelConfigured condition is
+// refreshed when models or their credential Secrets appear/disappear.
+func (r *AgentInstanceReconciler) mapAllToInstances(_ context.Context, _ client.Object) []reconcile.Request {
+	var list v1alpha1.AgentInstanceList
+	if err := r.List(context.Background(), &list); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
+	}
+	return reqs
 }
 
 // finalize removes the instance's data directory PVC (the data directory is
@@ -414,12 +496,16 @@ func isFailed(pod *corev1.Pod) bool {
 	return false
 }
 
-// SetupWithManager registers the reconciler with the given manager.
+// SetupWithManager registers the reconciler with the given manager. It also
+// watches AgentTemplates and Secrets so the ModelConfigured condition is
+// refreshed as soon as models or their credential Secrets change.
 func (r *AgentInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.AgentInstance{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		Watches(&v1alpha1.AgentTemplate{}, handler.EnqueueRequestsFromMapFunc(r.mapAllToInstances)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapAllToInstances)).
 		Complete(r)
 }

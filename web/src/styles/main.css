@@ -366,3 +366,9 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
   .run-meta{grid-template-columns:repeat(2,1fr)}
   .inst-grid{grid-template-columns:1fr 1fr}
 }
+
+/* Chat readiness nudge (issue #117): steers the user to Agent Config when the
+   agent has no usable LLM or is still provisioning. */
+.agent-nudge{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 18px 10px;padding:8px 12px;border-radius:8px;background:var(--warn-soft);border:1px solid var(--warn);font-size:12px;line-height:1.4;color:var(--warn)}
+.agent-nudge-link{color:inherit;font-weight:600;text-decoration:none;white-space:nowrap}
+.agent-nudge-link:hover{text-decoration:underline}

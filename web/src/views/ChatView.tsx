@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
+import { Link } from 'react-router-dom'
 import { api } from '@/api'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
@@ -217,6 +218,47 @@ export default function ChatView() {
     const ticker = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(ticker)
   }, [])
+
+  // Instance readiness nudges (issue #117): poll the caller's AgentInstance so
+  // the chat entry can steer the user to Agent Config when the agent has no
+  // usable LLM (ModelConfigured=False) or is not Ready yet.
+  const [instHint, setInstHint] = useState<{ phase?: string; modelConfigured?: boolean } | null>(null)
+  useEffect(() => {
+    let stop = false
+    const poll = async () => {
+      try {
+        const list = await api.listInstances()
+        if (stop) return
+        const own = list.find((i) => (i.spec as Record<string, unknown> | undefined)?.owner === user) ?? list[0]
+        if (!own) {
+          setInstHint(null)
+          return
+        }
+        const st = (own.status ?? {}) as { phase?: string; conditions?: Array<{ type?: string; status?: string }> }
+        const cond = st.conditions?.find((c) => c.type === 'ModelConfigured')
+        setInstHint({ phase: st.phase, modelConfigured: cond ? cond.status === 'True' : undefined })
+      } catch {
+        /* transient - keep the last hint */
+      }
+    }
+    void poll()
+    const ticker = setInterval(poll, 5000)
+    return () => {
+      stop = true
+      clearInterval(ticker)
+    }
+  }, [])
+
+  const hint = (() => {
+    if (!instHint) return null
+    if (instHint.modelConfigured === false) {
+      return { kind: 'no-model', text: 'Your agent has no LLM configured, so it cannot answer yet.', to: '/agent', cta: 'Go to Agent Config' }
+    }
+    if (instHint.phase && instHint.phase !== 'Ready') {
+      return { kind: 'starting', text: `Agent is not ready yet (${instHint.phase}); it will become ready shortly.`, to: null, cta: '' }
+    }
+    return null
+  })()
 
   const chatTitle = (() => {
     if (!currentSessionId) return 'New conversation'
@@ -544,6 +586,17 @@ export default function ChatView() {
             </div>
           </div>
         </div>
+
+        {hint && (
+          <div className={`agent-nudge ${hint.kind}`}>
+            <span>{hint.text}</span>
+            {hint.to && (
+              <Link className="agent-nudge-link" to={hint.to}>
+                {hint.cta} -&gt;
+              </Link>
+            )}
+          </div>
+        )}
 
         <div ref={threadEl} className="thread">
           <div className="thread-inner">
