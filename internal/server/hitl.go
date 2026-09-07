@@ -212,23 +212,30 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 
 // PreTurn is called at the start of an interactive turn. For Allowlist and
 // AlwaysAsk it ensures the approval connection, applies the effective exec
-// policy once per config revision, and guards the session. Failures are logged
-// and the turn proceeds ungated (today's behavior); only a successfully
-// guarded session pauses writes.
-func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
+// policy once per config revision, and guards the session.
+//
+// Allowlist keeps the issue #20 best-effort posture: on failure the turn
+// proceeds ungated and audited (only a successfully guarded session pauses
+// writes). AlwaysAsk is the strict posture and must NOT fail open -- if its
+// policy or guard cannot be applied, PreTurn returns an error and the caller
+// must not start the turn.
+func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) error {
 	pol, allow, rev, err := m.resolved(ctx, user)
 	if err != nil {
-		return
+		return nil
 	}
 	switch pol {
 	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
 	default: // None / empty -> pass-through
-		return
+		return nil
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("hitl %s: turn gating skipped (channel down): %v", user, err)
-		return
+		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+			return fmt.Errorf("hitl %s: cannot gate AlwaysAsk turn: %w", user, err)
+		}
+		return nil
 	}
 	// Apply the effective exec policy when the resolved-config revision changed;
 	// only a successful apply advances revPol so a transient failure is retried
@@ -237,7 +244,12 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
 	appliedRev := m.revPol[user]
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
-		if err := m.applyPolicy(ctx, user, gw, pol, allow); err == nil {
+		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
+			if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+				return fmt.Errorf("hitl %s: cannot apply AlwaysAsk policy: %w", user, err)
+			}
+			// Allowlist: best-effort, leave the watermark so we retry next turn.
+		} else {
 			m.mu.Lock()
 			m.revPol[user] = rev
 			m.mu.Unlock()
@@ -245,7 +257,11 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
 	}
 	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
 		m.sayf("hitl %s: guard session %s: %v", user, sessionKey, err)
+		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+			return fmt.Errorf("hitl %s: cannot guard AlwaysAsk session %s: %w", user, sessionKey, err)
+		}
 	}
+	return nil
 }
 
 // applyPolicy writes the effective exec-approvals policy into agents."main" of

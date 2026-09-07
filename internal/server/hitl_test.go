@@ -21,6 +21,7 @@ type fakeHitlGateway struct {
 	connectErr   error
 	connectSeq   []error // optional per-connect results, consumed in order
 	getErr       error
+	setErr       error
 	initialAllow []ws.AllowlistEntry
 }
 
@@ -58,6 +59,9 @@ func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.Approvals
 	}, nil
 }
 func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
+	if f.setErr != nil {
+		return nil, f.setErr
+	}
 	f.policySets = append(f.policySets, file)
 	return &ws.ApprovalsSnapshot{}, nil
 }
@@ -201,6 +205,32 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 	gw.onRequested(ev)
 	if len(fed) != 1 || fed[0] != "alice|appr-9|conv-1|kubectl delete pod x" {
 		t.Errorf("bridge fed = %v", fed)
+	}
+}
+
+// TestHitl_AlwaysAskFailsClosedOnPolicyError verifies AlwaysAsk returns an
+// error (fail closed) when the exec policy cannot be applied, so the caller
+// does not start a turn that would not ask.
+func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
+	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAlwaysAsk, "rev-1", gw)
+	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("AlwaysAsk PreTurn should fail closed when the policy cannot be applied")
+	}
+}
+
+// TestHitl_AllowlistBestEffortOnPolicyError verifies Allowlist keeps the issue
+// #20 best-effort posture: a policy-apply failure is logged but the turn still
+// proceeds (nil error), so transient channel hiccups do not block chat.
+func TestHitl_AllowlistBestEffortOnPolicyError(t *testing.T) {
+	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err != nil {
+		t.Fatalf("Allowlist PreTurn should be best-effort (nil error), got %v", err)
+	}
+	// The failed apply must not advance the revision watermark (retried next turn).
+	if m.revPol["alice"] != "" {
+		t.Errorf("revPol advanced despite a failed apply: %q", m.revPol["alice"])
 	}
 }
 

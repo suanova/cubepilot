@@ -442,8 +442,9 @@ export default function AgentView() {
                       {(confirm.allowlist || []).map((r) => (
                         <div key={ruleKey(r)} className="rule-row">
                           <WarnIcon />
-                          <span className="mono">{esc(r.pattern)}</span>
-                          {r.argPattern ? <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{esc(r.argPattern)}</span> : null}
+                          {/* JSX text is auto-escaped; esc() here would double-escape & / < / > */}
+                          <span className="mono">{r.pattern}</span>
+                          {r.argPattern ? <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{r.argPattern}</span> : null}
                           <span className={`pill ${confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'accent' : 'neutral'}`}>
                             {confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'Yours' : 'Platform'}
                           </span>

@@ -298,10 +298,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Allowlist gating (issue #20): ensure the gateway approval channel and
 	// a guarded session before the turn streams, so a gated write can pause for
-	// the Portal decision. Best-effort -- when the channel is down the turn
-	// proceeds ungated (today's behavior) rather than failing reads.
+	// the Portal decision. Best-effort for Allowlist -- when the channel is down
+	// the turn proceeds ungated (today's behavior) rather than failing reads.
+	// AlwaysAsk is strict: PreTurn errors there mean the gate could not be
+	// applied, so the turn must not start (fails closed) instead of running a
+	// write that would not ask.
 	if s.hitl != nil {
-		s.hitl.PreTurn(r.Context(), user, sessionKey)
+		if err := s.hitl.PreTurn(r.Context(), user, sessionKey); err != nil {
+			_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("confirmation gating failed: %v", err)})
+			return
+		}
 	}
 
 	messages := []openclaw.ChatMessage{{Role: "user", Content: body.Content}}

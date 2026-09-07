@@ -199,6 +199,9 @@ export default function ChatView() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [bubbles, setBubbles] = useState<BubbleMsg[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  // Only Allowlist policy honors a durable "always allow" grant; under
+  // AlwaysAsk everything asks and under None nothing does (issue #116).
+  const [allowAlwaysOk, setAllowAlwaysOk] = useState(false)
   const threadEl = useRef<HTMLDivElement | null>(null)
   const inputEl = useRef<HTMLTextAreaElement | null>(null)
   const bubblesRef = useRef<BubbleMsg[]>([])
@@ -265,6 +268,16 @@ export default function ChatView() {
     }
   }
 
+  // syncAllowAlways refreshes whether a durable "Always allow" is meaningful
+  // for the effective confirmation policy (Allowlist only). Called when a
+  // confirmation card appears.
+  function syncAllowAlways() {
+    api
+      .agentConfirm()
+      .then((v) => setAllowAlwaysOk(!!v.exists && v.confirmPolicy === 'Allowlist'))
+      .catch(() => setAllowAlwaysOk(false))
+  }
+
   // After a reload mid-approval the platform still holds the pending write; this
   // restores its confirmation card from the pending endpoint (issue #20). The
   // result is discarded if the user switched sessions while it was in flight.
@@ -292,6 +305,7 @@ export default function ChatView() {
         },
       },
     ])
+    syncAllowAlways()
     requestAnimationFrame(scrollThread)
   }
 
@@ -422,6 +436,7 @@ export default function ChatView() {
               level: ev.level || 'write',
               message: ev.message,
             }
+            syncAllowAlways()
             setBubbles([...bubblesRef.current])
             requestAnimationFrame(scrollThread)
             return
@@ -660,14 +675,16 @@ export default function ChatView() {
                             >
                               {b.confirm.busy ? 'Sending…' : 'Approve'}
                             </button>
-                            <button
-                              onClick={() => decide(b.confirm!, 'allow-always')}
-                              disabled={!!b.confirm.busy}
-                              title="Approve and add this command to your allowlist so it no longer asks"
-                              style={{ background: 'none', border: '1px solid var(--accent, #3b82f6)', color: 'var(--accent, #3b82f6)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
-                            >
-                              Always allow
-                            </button>
+                            {allowAlwaysOk && (
+                              <button
+                                onClick={() => decide(b.confirm!, 'allow-always')}
+                                disabled={!!b.confirm.busy}
+                                title="Approve and add this command to your allowlist so it no longer asks"
+                                style={{ background: 'none', border: '1px solid var(--accent, #3b82f6)', color: 'var(--accent, #3b82f6)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+                              >
+                                Always allow
+                              </button>
+                            )}
                           </div>
                         )}
                         {b.confirm.error && (

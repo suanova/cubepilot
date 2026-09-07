@@ -329,6 +329,24 @@ func TestResolveConfirmPolicyOverride(t *testing.T) {
 	}
 }
 
+// TestResolveLegacyConfirmWritesNormalized verifies a stored pre-rename
+// "ConfirmWrites" value resolves to Allowlist (issue #116), so an upgraded
+// cluster keeps gating interactive turns instead of silently treating the
+// unknown value as pass-through.
+func TestResolveLegacyConfirmWritesNormalized(t *testing.T) {
+	tmpl := template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+		a.Spec.ConfirmPolicy = "ConfirmWrites" // legacy stored value
+	})
+	r := testResolver(t, tmpl, instance("li.ming", v1alpha1.DefaultAgentName, ""))
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
+		t.Errorf("confirmPolicy = %q, want Allowlist (legacy ConfirmWrites normalized)", cfg.ConfirmPolicy)
+	}
+}
+
 // TestResolveEffectiveAllowlistInherits verifies an un-owned instance resolves
 // the effective allowlist as platform builtin ∪ template allowlist.
 func TestResolveEffectiveAllowlistInherits(t *testing.T) {

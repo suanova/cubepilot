@@ -154,7 +154,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		cfg.Agent = inst.Spec.TemplateRef
 		var def v1alpha1.AgentTemplate
 		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
-			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
+			cfg.ConfirmPolicy = normalizeConfirmPolicy(def.Spec.ConfirmPolicy)
 			tmplAllowlist = def.Spec.Allowlist
 			cfg.Instructions = def.Spec.Instructions
 			// Credential mapping for the gateway's file secret provider: the
@@ -211,7 +211,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	// builtin ∪ the template allowlist, unless the instance has taken
 	// ownership of its own list.
 	if inst.Spec.ConfirmPolicy != "" {
-		cfg.ConfirmPolicy = inst.Spec.ConfirmPolicy
+		cfg.ConfirmPolicy = normalizeConfirmPolicy(inst.Spec.ConfirmPolicy)
 	}
 	cfg.Allowlist = allowlist.Effective(inst.Spec.Allowlist, tmplAllowlist)
 
@@ -249,6 +249,18 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 
 	cfg.Revision = cfg.fingerprint()
 	return cfg, nil
+}
+
+// normalizeConfirmPolicy maps the pre-rename stored value "ConfirmWrites" to
+// its new name "Allowlist" (issue #116). A cluster upgraded from the old schema
+// can hold confirmPolicy: ConfirmWrites; without this mapping the resolver
+// would pass an unknown value through and PreTurn would not gate interactive
+// turns -- a silent, unsafe downgrade from "writes confirm" to "nothing asks".
+func normalizeConfirmPolicy(p v1alpha1.ConfirmPolicy) v1alpha1.ConfirmPolicy {
+	if p == "ConfirmWrites" {
+		return v1alpha1.ConfirmPolicyAllowlist
+	}
+	return p
 }
 
 // resolveModel validates the selection against the template's inline models
