@@ -117,6 +117,17 @@ export default function AgentView() {
 
   const ruleKey = (r: AllowlistRule) => r.pattern + '|' + (r.argPattern || '')
 
+  // Human label for an allowlist rule. The platform builtin entries are the
+  // kubectl read verbs and a handful of read-only shell tools; showing their raw
+  // argv regexes is noise, so render what they *mean* instead. Only user/template
+  // custom rules fall back to the raw pattern (argPattern shown separately).
+  const READ_ONLY_BINS = new Set(['ls', 'cat', 'pwd', 'grep', 'head', 'tail', 'wc', 'jq', 'echo', 'printf', 'which'])
+  function allowlistLabel(r: AllowlistRule): string {
+    if (r.pattern === 'kubectl') return 'kubectl — read-only operations (get/list/watch/describe/logs/events/top/…)'
+    if (READ_ONLY_BINS.has(r.pattern)) return r.pattern + ' — read-only, plain args'
+    return r.pattern || '(empty)'
+  }
+
   // Every change PUTs the full desired owned state; the server treats an empty
   // list as inheriting the template default live.
   async function persistConfirm(owned: AllowlistRule[] | null, policy?: string) {
@@ -450,28 +461,28 @@ export default function AgentView() {
                   <div className="field">
                     <label className="label">Allowlist — safe commands that auto-pass</label>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
-                      {(confirm.allowlist || []).map((r) => (
-                        <div key={ruleKey(r)} className="rule-row">
-                          <WarnIcon />
-                          {/* JSX text is auto-escaped; esc() here would double-escape & / < / > */}
-                          <span className="mono">{r.pattern}</span>
-                          {r.argPattern ? (
-                            <span
-                              className="mono"
-                              title={r.argPattern}
-                              style={{ fontSize: 11, color: 'var(--muted)', maxWidth: '42%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                            >
-                              {r.argPattern}
-                            </span>
-                          ) : null}
-                          <span className={`pill ${confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'accent' : 'neutral'}`}>
-                            {confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'Yours' : 'Platform'}
-                          </span>
-                          <button className="btn" style={{ padding: '2px 8px' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
-                            Remove
-                          </button>
-                        </div>
-                      ))}
+                      {(confirm.allowlist || []).map((r) => {
+                        const isOwned = confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r))
+                        return (
+                          <div key={ruleKey(r)} className="rule-row" style={{ display: 'block', padding: '8px 12px', marginBottom: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                              <WarnIcon />
+                              <span className="mono" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={allowlistLabel(r)}>
+                                {allowlistLabel(r)}
+                              </span>
+                              <span className={`pill ${isOwned ? 'accent' : 'neutral'}`}>{isOwned ? 'Yours' : 'Platform'}</span>
+                              <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
+                                Remove
+                              </button>
+                            </div>
+                            {isOwned && r.argPattern ? (
+                              <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                argPattern: {r.argPattern}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
                       {confirm.allowlist.length === 0 && (
                         <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist — every command asks.</div>
                       )}
