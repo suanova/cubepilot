@@ -62,7 +62,8 @@ type AgentInstanceReconciler struct {
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile drives one AgentInstance toward its desired state.
 func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {

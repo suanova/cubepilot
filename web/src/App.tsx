@@ -104,7 +104,9 @@ export default function App() {
       try {
         const list = await api.listInstances()
         if (stop) return
-        const own = list.find((i) => (i.spec as Record<string, unknown> | undefined)?.owner === user) ?? list[0]
+        // listInstances is already scoped to the caller; only the caller's own
+        // instance should drive this nudge.
+        const own = list.find((i) => (i.spec as Record<string, unknown> | undefined)?.owner === user)
         if (!own) {
           setInstHint(null)
           return
@@ -125,13 +127,14 @@ export default function App() {
   }, [user])
 
   const onAgentPage = segment === 'agent'
+  // Every non-ready state gets a single "Go to Agent Config" call to action.
   const readinessNudge = (() => {
     if (onAgentPage || !instHint) return null
     if (instHint.modelConfigured === false) {
-      return { text: 'Your agent has no LLM configured, so it cannot answer yet.', to: '/agent', cta: 'Go to Agent Config' }
+      return { text: 'Your agent has no LLM configured, so it cannot answer yet.' }
     }
     if (instHint.phase && instHint.phase !== 'Ready') {
-      return { text: `Agent is not ready yet (${instHint.phase}); it will become ready shortly.`, to: null, cta: '' }
+      return { text: `Agent is not ready yet (${instHint.phase}); it will become ready shortly.` }
     }
     return null
   })()
@@ -194,11 +197,9 @@ export default function App() {
         {readinessNudge && (
           <div className="agent-nudge">
             <span>{readinessNudge.text}</span>
-            {readinessNudge.to && (
-              <Link className="agent-nudge-link" to={readinessNudge.to}>
-                {readinessNudge.cta} -&gt;
-              </Link>
-            )}
+            <Link className="agent-nudge-link" to="/agent">
+              Go to Agent Config -&gt;
+            </Link>
           </div>
         )}
         <main className="content">

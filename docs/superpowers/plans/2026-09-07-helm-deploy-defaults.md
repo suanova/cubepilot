@@ -195,7 +195,11 @@ with:
 make lint
 git status --short
 ```
-Expected: `helm lint` clean; no `agent-kubeconfig.yaml` under `deploy/`; the only `deploy/agent-kubeconfig.yaml` reference left in the repo is the intentional pointer in `userkubeconfig.go` / the new template.
+Expected: `helm lint` clean; the deleted root file is gone
+(`test ! -e deploy/agent-kubeconfig.yaml`); the chart template
+`deploy/charts/cubepilot/templates/agent-kubeconfig.yaml` remains. The only
+remaining `deploy/agent-kubeconfig.yaml` references are the intentional pointer
+in `userkubeconfig.go` / this plan (scope checks to `scripts deploy internal`).
 
 - [ ] **Step 9: Commit**
 
@@ -449,11 +453,14 @@ cd web && npm run build && cd ..
 ```bash
 helm template cubepilot deploy/charts/cubepilot -n cubepilot | grep -c 'name: agent-kubeconfig'
 ```
-Expected: `1` (the Secret). Also confirm no workload references a now-missing file:
+Expected: `1` (the Secret). Also confirm the deleted root file is gone and no
+live reference remains:
 ```bash
-git grep -n 'deploy/agent-kubeconfig.yaml' || true
+test ! -e deploy/agent-kubeconfig.yaml
+git grep -n 'deploy/agent-kubeconfig.yaml' -- scripts deploy internal || true
 ```
-Expected: empty (only `deploy/charts/cubepilot/templates/agent-kubeconfig.yaml` exists).
+Expected: file absent; grep empty (the chart template under
+`deploy/charts/cubepilot/templates/` is the intended new home).
 
 - [ ] **Step 3: Show the final diff stat**
 
