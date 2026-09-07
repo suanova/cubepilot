@@ -25,8 +25,8 @@ type confirmView struct {
 	ConfirmPolicy  v1alpha1.ConfirmPolicy   `json:"confirmPolicy"`
 	Override       v1alpha1.ConfirmPolicy   `json:"override"`
 	TemplatePolicy v1alpha1.ConfirmPolicy   `json:"templatePolicy"`
-	Allowlist      []v1alpha1.AllowlistRule `json:"allowlist"`
-	AllowlistOwned []v1alpha1.AllowlistRule `json:"allowlistOwned"`
+	Allowlist      []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
+	AllowlistOwned []v1alpha1.AllowlistRule `json:"allowlistOwned,omitempty"`
 }
 
 // handleAgentConfirm serves GET/PUT /api/agent/confirm -- the instance owner's
