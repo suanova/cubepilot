@@ -471,7 +471,7 @@ export default function AgentView() {
                                 Remove
                               </button>
                             </div>
-                            {isOwned && !r.label && r.argPattern ? (
+                            {r.argPattern ? (
                               <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 argPattern: {r.argPattern}
                               </div>
