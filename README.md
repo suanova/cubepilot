@@ -153,7 +153,7 @@ the Portal (Agent Config -> LLM 配置): give a model name, an OpenAI-compatible
 endpoint, and an apiKey (leave empty for a public model). The operator
 re-renders the gateway and the model becomes selectable — no hand-edited Secret.
 
-The first message cold-starts the `agent-zhang.wei` Pod (the Portal shows the
+The first message cold-starts the `agent-admin` Pod (the Portal shows the
 assistant as thinking while it waits for the gateway to become ready), then
 streams tool calls and the answer back.
 
@@ -190,9 +190,9 @@ Publishing the images/chart to the registry is handled separately by the
 | Check | Action | Expected |
 |---|---|---|
 | Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start -> agent_thinking -> tool_call(exec kubectl) -> message_delta -> message_done`, ending with a natural-language summary of real kind Pod state |
-| Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-zhang.wei` |
+| Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-admin` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
-| User isolation | Request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
+| User isolation | Deploy a second user (`--set agents.users=admin,li.ming`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
 | Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (`/api/inspect`) |
 
 ## Current simplifications (phase-one boundaries)

@@ -65,7 +65,9 @@ type Config struct {
 	// warning (design doc §10: watermark >70% triggers cleanup/alert).
 	GCWatermark float64
 
-	// Users is the set of demo operator identities, one independent instance each.
+	// Users is the set of operator identities, one independent instance each.
+	// Defaults to a single 'admin' (per-user SA + kubeconfig identity is minted
+	// for each at deploy time; new users cannot be added from the Portal).
 	Users []string
 
 	// DefaultUser is used when a request carries no explicit operator identity.
@@ -106,14 +108,14 @@ func Load() Config {
 		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),
 		GCWindow:       getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
 		GCWatermark:    getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
-		DefaultUser:    getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
+		DefaultUser:    getenv("CUBEPILOT_DEFAULT_USER", "admin"),
 		AgentPort:      getInt("CUBEPILOT_AGENT_PORT", 18789),
 		DataDir:        getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
 		MetricsAddr:    getenv("CUBEPILOT_METRICS_ADDR", "0"),
 		ProbeAddr:      getenv("CUBEPILOT_PROBE_ADDR", "0"),
 		SkillsDir:      getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
 	}
-	users := getenv("CUBEPILOT_USERS", "zhang.wei,li.ming")
+	users := getenv("CUBEPILOT_USERS", "admin")
 	for _, u := range strings.Split(users, ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			cfg.Users = append(cfg.Users, u)

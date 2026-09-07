@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 KIND_CLUSTER="${CUBEPILOT_KIND_CLUSTER:-cube}"
-E2E_USER="${CUBEPILOT_E2E_USER:-zhang.wei}"
+E2E_USER="${CUBEPILOT_E2E_USER:-admin}"
 # The conversational e2e runs by default once a real apiKey is configured
 # (same as CI); an explicit CUBEPILOT_E2E_CHAT=0/1 overrides. A placeholder
 # key (deploy-only runs) skips chat.

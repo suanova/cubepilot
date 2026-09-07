@@ -33,7 +33,7 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
 }
 
 export function getCurrentUser(): string {
-  return localStorage.getItem('cubepilot.user') || 'zhang.wei'
+  return localStorage.getItem('cubepilot.user') || 'admin'
 }
 
 export function setCurrentUser(user: string): void {
