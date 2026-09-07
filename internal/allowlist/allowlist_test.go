@@ -144,3 +144,18 @@ func TestDefaultHasKubectlReadVerbsAndSafeBins(t *testing.T) {
 		t.Errorf("kubectl entry malformed: %+v", d[0])
 	}
 }
+
+func TestBuiltinLabelOnlyForBuiltinRules(t *testing.T) {
+	if got := BuiltinLabel(Default()[0]); got == "" {
+		t.Error("builtin kubectl rule should carry a read-only label")
+	}
+	// A user rule whose pattern is kubectl but which allows a WRITE must NOT be
+	// presented as read-only (issue #123 UI mislabel).
+	custom := v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^create namespace hitl-create-107$`}
+	if got := BuiltinLabel(custom); got != "" {
+		t.Errorf("custom kubectl write rule wrongly labelled %q", got)
+	}
+	if got := BuiltinLabel(v1alpha1.AllowlistRule{Pattern: "ls", ArgPattern: safeArgPattern}); got == "" {
+		t.Error("builtin ls rule should carry a read-only label")
+	}
+}
