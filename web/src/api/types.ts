@@ -199,6 +199,10 @@ export interface PendingConfirm {
 export interface AllowlistRule {
   pattern: string
   argPattern?: string
+  // Server-provided human meaning; set ONLY for platform builtin read-only
+  // rules. Absent for user/template rules (which may allow writes) so the UI
+  // never presents them as read-only.
+  label?: string
 }
 export interface AgentConfirmView {
   exists: boolean

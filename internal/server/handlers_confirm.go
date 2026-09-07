@@ -21,12 +21,34 @@ import (
 // the *effective* values (what the runtime enforces); override/allowlistOwned
 // are the instance's own state (empty = inheriting the template default live).
 type confirmView struct {
-	Exists         bool                     `json:"exists"`
-	ConfirmPolicy  v1alpha1.ConfirmPolicy   `json:"confirmPolicy"`
-	Override       v1alpha1.ConfirmPolicy   `json:"override"`
-	TemplatePolicy v1alpha1.ConfirmPolicy   `json:"templatePolicy"`
-	Allowlist      []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
-	AllowlistOwned []v1alpha1.AllowlistRule `json:"allowlistOwned,omitempty"`
+	Exists         bool                   `json:"exists"`
+	ConfirmPolicy  v1alpha1.ConfirmPolicy `json:"confirmPolicy"`
+	Override       v1alpha1.ConfirmPolicy `json:"override"`
+	TemplatePolicy v1alpha1.ConfirmPolicy `json:"templatePolicy"`
+	Allowlist      []confirmRule          `json:"allowlist,omitempty"`
+	AllowlistOwned []confirmRule          `json:"allowlistOwned,omitempty"`
+}
+
+// confirmRule is one allowlist rule served to the Portal. Label is set by the
+// server ONLY for rules that exactly match a platform builtin read-only rule,
+// so the UI never guesses that a user-added rule (which may allow a write) is
+// read-only.
+type confirmRule struct {
+	Pattern    string `json:"pattern"`
+	ArgPattern string `json:"argPattern,omitempty"`
+	Label      string `json:"label,omitempty"`
+}
+
+func toConfirmRules(rules []v1alpha1.AllowlistRule) []confirmRule {
+	out := make([]confirmRule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, confirmRule{
+			Pattern:    r.Pattern,
+			ArgPattern: r.ArgPattern,
+			Label:      allowlist.BuiltinLabel(r),
+		})
+	}
+	return out
 }
 
 // handleAgentConfirm serves GET/PUT /api/agent/confirm -- the instance owner's
@@ -94,7 +116,7 @@ func (s *Server) confirmView(ctx context.Context, user string) (confirmView, err
 	}
 	view.Exists = true
 	view.Override = inst.Spec.ConfirmPolicy
-	view.AllowlistOwned = inst.Spec.Allowlist
+	view.AllowlistOwned = toConfirmRules(inst.Spec.Allowlist)
 	if inst.Spec.TemplateRef != "" {
 		var def v1alpha1.AgentTemplate
 		if err := s.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
@@ -104,7 +126,7 @@ func (s *Server) confirmView(ctx context.Context, user string) (confirmView, err
 	if s.mgr != nil {
 		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil && !cfg.Empty() {
 			view.ConfirmPolicy = cfg.ConfirmPolicy
-			view.Allowlist = cfg.Allowlist
+			view.Allowlist = toConfirmRules(cfg.Allowlist)
 		}
 	}
 	return view, nil

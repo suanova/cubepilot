@@ -57,6 +57,25 @@ func Merge(existing, desired []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule 
 	return out
 }
 
+// BuiltinLabel returns a human meaning for a rule ONLY when it exactly matches
+// one of the platform builtin read-only rules. Anything else -- user/template
+// additions, allow-always grants -- returns "" so callers must NOT present it as
+// read-only: a user-added "kubectl" rule can allow a write (e.g. argPattern
+// matching create/delete).
+func BuiltinLabel(e v1alpha1.AllowlistRule) string {
+	switch e.Pattern {
+	case "kubectl":
+		if e.ArgPattern == kubectlReadArgPattern {
+			return "kubectl — read-only operations (get/list/watch/describe/logs/events/top/…)"
+		}
+	case "ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "echo", "printf", "which":
+		if e.ArgPattern == safeArgPattern {
+			return e.Pattern + " — read-only, plain args"
+		}
+	}
+	return ""
+}
+
 // Effective returns the effective allowlist for an instance (issue #116): the
 // instance's owned list when it has taken ownership (non-empty), else the
 // template's effective default (the platform builtin ∪ the template's own

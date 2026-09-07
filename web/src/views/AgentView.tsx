@@ -117,15 +117,12 @@ export default function AgentView() {
 
   const ruleKey = (r: AllowlistRule) => r.pattern + '|' + (r.argPattern || '')
 
-  // Human label for an allowlist rule. The platform builtin entries are the
-  // kubectl read verbs and a handful of read-only shell tools; showing their raw
-  // argv regexes is noise, so render what they *mean* instead. Only user/template
-  // custom rules fall back to the raw pattern (argPattern shown separately).
-  const READ_ONLY_BINS = new Set(['ls', 'cat', 'pwd', 'grep', 'head', 'tail', 'wc', 'jq', 'echo', 'printf', 'which'])
+  // Human label for an allowlist rule. Only the server knows whether a rule is
+  // one of the platform builtin read-only rules (it sets `label`); the UI must
+  // not guess -- a user/template rule with pattern "kubectl" can allow a write.
+  // Rules without a label render their raw pattern.
   function allowlistLabel(r: AllowlistRule): string {
-    if (r.pattern === 'kubectl') return 'kubectl — read-only operations (get/list/watch/describe/logs/events/top/…)'
-    if (READ_ONLY_BINS.has(r.pattern)) return r.pattern + ' — read-only, plain args'
-    return r.pattern || '(empty)'
+    return r.label || r.pattern || '(empty)'
   }
 
   // Every change PUTs the full desired owned state; the server treats an empty
@@ -474,7 +471,7 @@ export default function AgentView() {
                                 Remove
                               </button>
                             </div>
-                            {isOwned && r.argPattern ? (
+                            {r.argPattern ? (
                               <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 argPattern: {r.argPattern}
                               </div>
