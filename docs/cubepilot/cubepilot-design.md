@@ -128,7 +128,7 @@ spec:
   # allowlist: [...]                      # 可选：模板默认的额外安全命令（与平台内置取并集），未设则仅平台内置
 ```
 
-模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **AgentTemplate 层而非 skill 层**：不同 AgentTemplate 复用同一 skill 时可有不同确认策略；skill 只承载语义与脚本、不携带权限/确认字段（权限由 RBAC 决定，确认由 AgentTemplate 的 `confirmPolicy` + 简单 HITL 执行，阶段二收敛到 MCP Gateway）。
+模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **AgentTemplate 层而非 skill 层**：不同 AgentTemplate 复用同一 skill 时可有不同确认策略；skill 只承载语义与脚本、不携带权限/确认字段（权限由 RBAC 决定，确认由 AgentTemplate 的 `confirmPolicy` + 简单 HITL 执行，阶段二收敛到 MCP Gateway）。模板的确认策略是**默认值**，实例可覆盖（见 §3.2）。有效 allowlist = 平台内置安全命令（kubectl 读动词 + 只读 shell 工具；平台代码内置，非模板 CR 携带）∪ 模板 `spec.allowlist`；实例未自有时 live 继承该有效默认。
 
 ## 3.2 AgentInstance
 
@@ -145,6 +145,8 @@ spec:
   selectedModel: deepseek-v4-flash         # 从模板 models 里选（覆盖 defaultModel）
   enabledSkills: [kubectl-platform, cluster-inspection]   # 启用的 skill 子集
   userInstructions: "回答尽量简洁，使用中文。"
+  # confirmPolicy: None             # 可选：#120 起可覆盖模板默认（None | Allowlist | AlwaysAsk）；缺省 = 继承模板
+  # allowlist: [{ pattern: helm }]  # 可选：实例自有 allowlist；空 = 继承模板有效默认
   dataVolume: { pvc: pvc-zhang-wei-agent-for-cloud }
   identity: { mode: user, principalRef: { userRef: zhang.wei } }
 status:
@@ -152,7 +154,7 @@ status:
   podName: agent-zhang-wei-agent-for-cloud
 ```
 
-允许覆盖的字段只有模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集和 `userInstructions`。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
+可覆盖的字段：模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及确认策略覆盖（`confirmPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`/`allowlist`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
 **实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
 
@@ -339,7 +341,7 @@ OpenClaw skill ──► exec kubectl ──► 命令匹配（简单 HITL）─
 - Kubernetes 调用使用实例所有者的最小权限凭据，禁止集群管理员凭据。
 - RBAC 和资源归属校验是最终授权边界。
 - 读操作直放；写操作命中确认规则即暂停确认（简单 HITL，尽力而为，未命中直放）。
-- 确认策略由 AgentTemplate 的 `confirmPolicy`（§3.1）决定（默认写操作需确认）。
+- 读操作直放；写操作及未命中 allowlist 的命令在 interactive 会话命中确认即暂停（`Allowlist` 默认）。确认策略由 AgentTemplate 的 `confirmPolicy`（§3.1，`None | Allowlist` 默认 `| AlwaysAsk`）决定，实例可覆盖；`AlwaysAsk` 只把门槛抬到 interactive 会话内全部询问，`task-*`/`inspect-*` 等非 interactive 会话一律不 gate。
 
 ## 5.3 通用资源发现与执行
 
