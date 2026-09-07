@@ -1,7 +1,7 @@
 // Agent config view -- model / system prompt / instance status / skills (FR-M2-005).
 import { useEffect, useState } from 'react'
 import { api } from '@/api'
-import type { AgentConfig, AgentStatus } from '@/api/types'
+import type { AgentConfig, AgentConfirmView, AgentStatus, AllowlistRule } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
 import { enabledSkillsFromInstances } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
@@ -42,6 +42,12 @@ export default function AgentView() {
   const [defaultModel, setDefaultModel] = useState('')
   const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '' })
   const [adding, setAdding] = useState(false)
+
+  // Confirmation posture (issue #116): confirmPolicy override + owned allowlist.
+  const [confirm, setConfirm] = useState<AgentConfirmView | null>(null)
+  const [policySel, setPolicySel] = useState('') // '' = follow the template default
+  const [ruleForm, setRuleForm] = useState<{ pattern: string; argPattern: string }>({ pattern: '', argPattern: '' })
+  const [confirmBusy, setConfirmBusy] = useState(false)
 
   async function loadTemplate() {
     try {
@@ -84,9 +90,75 @@ export default function AgentView() {
       setStatus(st)
       await loadTemplate()
       await loadSkills()
+      await loadConfirm()
     } catch (e) {
       console.error('loadAgentView', e)
     }
+  }
+
+  // Confirmation posture (issue #116) --------------------------------
+  async function loadConfirm() {
+    try {
+      const v = await api.agentConfirm()
+      setConfirm(v)
+      setPolicySel(v.override || '')
+    } catch (e) {
+      console.error('loadConfirm', e)
+    }
+  }
+
+  const ruleKey = (r: AllowlistRule) => r.pattern + '|' + (r.argPattern || '')
+
+  // Every change PUTs the full desired owned state; the server treats an empty
+  // list as inheriting the template default live.
+  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string) {
+    if (!confirm || confirmBusy) return
+    setConfirmBusy(true)
+    try {
+      const pol = policy !== undefined ? policy : policySel
+      const v = await api.saveAgentConfirm({ confirmPolicy: pol, allowlist: owned ?? [] })
+      setConfirm(v)
+      setPolicySel(v.override || '')
+    } catch (e) {
+      showToast('Save confirmation config failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
+  function changePolicy(value: string) {
+    setPolicySel(value)
+    const owned = confirm && confirm.allowlistOwned.length ? confirm.allowlistOwned : null
+    void persistConfirm(owned, value)
+  }
+
+  function addRule() {
+    const pattern = ruleForm.pattern.trim()
+    if (!pattern) {
+      showToast('Command pattern is required')
+      return
+    }
+    const entry: AllowlistRule = { pattern, argPattern: ruleForm.argPattern.trim() || undefined }
+    const base = confirm && confirm.allowlistOwned.length ? confirm.allowlistOwned : (confirm ? confirm.allowlist : [])
+    if (base.some((r) => ruleKey(r) === ruleKey(entry))) {
+      showToast('That command is already on the allowlist')
+      return
+    }
+    void persistConfirm([...base, entry])
+    setRuleForm({ pattern: '', argPattern: '' })
+  }
+
+  function removeRule(key: string) {
+    if (!confirm) return
+    // Removing from an inheriting list materializes it first (owned = effective
+    // minus the rule), so the removal really sticks.
+    const base = confirm.allowlistOwned.length ? confirm.allowlistOwned : confirm.allowlist
+    void persistConfirm(base.filter((r) => ruleKey(r) !== key))
+  }
+
+  function resetConfirm() {
+    setPolicySel('')
+    void persistConfirm([], '')
   }
 
   useEffect(() => {
@@ -331,25 +403,76 @@ export default function AgentView() {
           </div>
           <div className="card">
             <div className="card-head">
-              <span className="card-title">Confirm Rules</span>
-              <span className="card-hint">Phase one: read/write pass through directly - all writes audited (M5)</span>
+              <span className="card-title">Confirmations</span>
+              <span className="card-hint">Operations off the allowlist pause for your approval in chat; safe commands auto-pass (issue #116)</span>
             </div>
             <div className="card-pad">
-              <div className="rule-row">
-                <WarnIcon />
-                <span className="mono">kubectl delete *</span>
-                <span className="pill accent">Pass-through - audited</span>
+              <div className="field">
+                <label className="label">Confirmation policy</label>
+                <select
+                  className="input"
+                  aria-label="Confirmation policy"
+                  value={policySel}
+                  disabled={!confirm?.exists || confirmBusy}
+                  onChange={(e) => changePolicy(e.target.value)}
+                >
+                  <option value="">Follow template default ({confirm?.templatePolicy || 'Allowlist'})</option>
+                  <option value="Allowlist">Allowlist — safe commands auto, everything else asks</option>
+                  <option value="AlwaysAsk">AlwaysAsk — every operation asks</option>
+                  <option value="None">None — pass through, audited</option>
+                </select>
+                {confirm && confirm.exists && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                    Effective: <span className="pill neutral">{confirm.confirmPolicy || 'None'}</span>
+                    {' '}{confirm.override ? 'you override' : 'inherited from template'}
+                  </div>
+                )}
+                {confirm && !confirm.exists && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                    Provision your instance first to configure confirmations.
+                  </div>
+                )}
               </div>
-              <div className="rule-row">
-                <WarnIcon />
-                <span className="mono">kubectl exec *</span>
-                <span className="pill accent">Pass-through - audited</span>
-              </div>
-              <div className="rule-row">
-                <WarnIcon />
-                <span className="mono">InferenceService delete</span>
-                <span className="pill accent">Pass-through - audited</span>
-              </div>
+
+              {confirm?.confirmPolicy === 'Allowlist' ? (
+                <>
+                  <div className="field">
+                    <label className="label">Allowlist — safe commands that auto-pass</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                      {(confirm.allowlist || []).map((r) => (
+                        <div key={ruleKey(r)} className="rule-row">
+                          <WarnIcon />
+                          <span className="mono">{esc(r.pattern)}</span>
+                          {r.argPattern ? <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{esc(r.argPattern)}</span> : null}
+                          <span className={`pill ${confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'accent' : 'neutral'}`}>
+                            {confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'Yours' : 'Platform'}
+                          </span>
+                          <button className="btn" style={{ padding: '2px 8px' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                      {confirm.allowlist.length === 0 && (
+                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist — every command asks.</div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    <input className="input" placeholder="command, e.g. helm" value={ruleForm.pattern}
+                      onChange={(e) => setRuleForm((f) => ({ ...f, pattern: e.target.value }))} />
+                    <input className="input" placeholder="argPattern (optional)" value={ruleForm.argPattern}
+                      onChange={(e) => setRuleForm((f) => ({ ...f, argPattern: e.target.value }))} />
+                    <button className="btn" disabled={confirmBusy} onClick={addRule}>Add</button>
+                  </div>
+                  <button className="btn" disabled={confirmBusy} onClick={resetConfirm}>Reset to template default</button>
+                </>
+              ) : (
+                <div style={{ marginTop: 8, fontSize: 13, color: 'var(--muted)' }}>
+                  {confirm?.confirmPolicy === 'AlwaysAsk'
+                    ? 'AlwaysAsk asks on every operation — the allowlist is not applied.'
+                    : 'None passes everything through (audited) — no allowlist is applied.'}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -458,9 +458,10 @@ export default function ChatView() {
   }
 
   // decide sends the human's answer for a pending write confirmation
-  // (issue #20). POSTing resolves the gateway approval; the SSE stream then
-  // carries the resumed turn.
-  async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject') {
+  // (issue #20 / #116). "allow-always" approves this once and records the
+  // command on the instance allowlist so it auto-passes from then on. POSTing
+  // resolves the gateway approval; the SSE stream then carries the resumed turn.
+  async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always') {
     const session = confirm.sessionId || currentSessionId
     if (!session) {
       confirm.error = 'no session'
@@ -472,7 +473,7 @@ export default function ChatView() {
     try {
       await api.postConfirm(session, decision)
       confirm.resolved = true
-      confirm.approved = decision === 'approve'
+      confirm.approved = decision !== 'reject'
     } catch (e) {
       confirm.error = String(e)
     } finally {
@@ -658,6 +659,14 @@ export default function ChatView() {
                               style={{ background: 'var(--accent, #3b82f6)', border: 'none', color: '#fff', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
                             >
                               {b.confirm.busy ? 'Sending…' : 'Approve'}
+                            </button>
+                            <button
+                              onClick={() => decide(b.confirm!, 'allow-always')}
+                              disabled={!!b.confirm.busy}
+                              title="Approve and add this command to your allowlist so it no longer asks"
+                              style={{ background: 'none', border: '1px solid var(--accent, #3b82f6)', color: 'var(--accent, #3b82f6)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+                            >
+                              Always allow
                             </button>
                           </div>
                         )}
