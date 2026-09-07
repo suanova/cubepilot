@@ -86,6 +86,11 @@ api:
 
 # --- web (independent React SPA, stateless, nginx) ------------------------
 web:
+  # enabled installs the standalone web portal (React SPA). Set to false to
+  # skip it -- e.g. when CubeStack provides a unified UI that talks to the
+  # cubepilot API directly. The api + operator remain fully installable
+  # without the portal.
+  enabled: true
   name: cubepilot-web
   replicas: 2
   image: harbor.isuanova.com/suanova/cubepilot-web:latest
