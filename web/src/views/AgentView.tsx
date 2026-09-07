@@ -312,7 +312,7 @@ export default function AgentView() {
               </div>
             </div>
           </div>
-          <div className="card">
+          <div className="card" style={{ order: 2 }}>
             <div className="card-head">
               <span className="card-title">System Prompt</span>
               <span className="card-hint">Injected into subsequent conversations immediately after saving</span>
@@ -328,7 +328,7 @@ export default function AgentView() {
               />
             </div>
           </div>
-          <div className="card">
+          <div className="card" style={{ order: 1 }}>
             <div className="card-head">
               <span className="card-title">LLM Config</span>
               <span className="card-hint">Add an OpenAI-compatible model to the platform catalog</span>
@@ -369,7 +369,7 @@ export default function AgentView() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, order: -1 }}>
           <div className="card">
             <div className="card-head">
               <span className="card-title">Instance Status</span>
