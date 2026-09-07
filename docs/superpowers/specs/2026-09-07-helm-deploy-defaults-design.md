@@ -149,6 +149,29 @@ every fallback that names the identity.
   `agent-zhang.wei` -> `agent-admin`; reword the user-isolation example to
   show adding a second user, since the default is now a single `admin`).
 
+## Part 3 (addendum) -- Surface "no usable LLM" in AgentInstance status
+
+Scope added during review (same PR). Provisioning behaviour is unchanged
+(the agent is still created/run without an LLM); what changes is that the
+platform states it clearly, and the Portal points the user at Agent Config.
+
+- Lifecycle and model availability stay decoupled (decision A): a Ready pod is
+  `phase: Ready` regardless of models.
+- The AgentInstance controller adds a `ModelConfigured` status condition:
+  - `True` when the instance's AgentTemplate offers a usable model (non-empty
+    endpoint and, for keyed models, an existing credential Secret);
+  - `False` (reason `NoModelConfigured`, message pointing at
+    `Portal Agent Config -> LLM Config`) otherwise.
+- The controller watches AgentTemplates and Secrets (mapping to every
+  AgentInstance) so the condition flips as soon as a model or its credential
+  appears/disappears.
+- Portal (ChatView): while the caller's instance is not Ready or has
+  `ModelConfigured=False`, a dismissable nudge shows a "Go to Agent Config"
+  link; it disappears automatically once the model is added / the instance
+  becomes Ready (5s poll of `GET /api/instances`).
+- No CRD schema change (status conditions already exist); controller + unit
+  tests cover the condition transitions; the web change is type-checked.
+
 ## Migration
 
 - Existing setups created by `scripts/setup.sh` already have the
