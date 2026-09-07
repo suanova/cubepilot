@@ -26,9 +26,7 @@ agents:
   # scripts/setup.sh passes are examples, not chart defaults).
   llmEndpoint: ""
   llmModel: ""
-  # Resident by default; idle reclaim is a configurable policy (FR-M2-002).
-  reclaim: "false"
-  idleTTL: 30m
+  # Resident lifecycle: started instances stay up; no idle reclaim.
   gcWindow: 72h
   gcWatermark: "0.7"
 

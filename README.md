@@ -5,9 +5,10 @@ the two core capabilities described in the module design document (extension
 points E1/E2, FR-M2/M3):
 
 1. **Per-user agent instance lifecycle (K8s Pod)** -- the Instance Manager
-   controller provisions / self-heals / optionally reclaims per-user OpenClaw
-   Pods through the Kubernetes API. Sessions and memory survive instance
-   rebuilds (each instance has its own PVC).
+   controller provisions and self-heals per-user OpenClaw Pods through the
+   Kubernetes API (instances are resident: they stay up once started, with no
+   idle reclaim). Sessions and memory survive instance rebuilds (each instance
+   has its own PVC).
 2. **Conversational loop** -- a real OpenClaw runtime (DeepSeek V4 Flash) acts
    under the guidance of the capability catalog (Skills), calls `exec` to run
    `kubectl` against the same cluster, and streams results back to the Portal

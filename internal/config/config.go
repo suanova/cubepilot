@@ -42,17 +42,6 @@ type Config struct {
 	// configured LLM endpoint's allow-list when set.
 	LLMModel string
 
-	// IdleTTL is how long an agent instance may sit idle before the manager
-	// reclaims it. Only effective when ReclaimEnabled is true (design doc §5.2:
-	// resident is the default policy, idle reclaim is a configurable policy).
-	IdleTTL time.Duration
-
-	// ReclaimEnabled gates idle reclaim (design doc §5.2 / FR-M2-002). Default
-	// false = instances stay resident once started; enabling it switches the
-	// lifecycle to on-demand start + idle reclaim. (Resident is the default
-	// policy; idle reclaim is a configurable policy.)
-	ReclaimEnabled bool
-
 	// Replicas is the desired Instance Manager / scheduler replica count used
 	// for leader election. 1 = no election (single replica).
 	Replicas int
@@ -105,19 +94,17 @@ func Load() Config {
 		// Empty by default: no platform default model is seeded unless an
 		// endpoint + model are configured (the builtin template is then created
 		// model-less and LLMs are added from the Portal).
-		LLMEndpoint:    getenv("CUBEPILOT_LLM_ENDPOINT", ""),
-		LLMModel:       getenv("CUBEPILOT_LLM_MODEL", ""),
-		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
-		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),
-		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),
-		GCWindow:       getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
-		GCWatermark:    getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
-		DefaultUser:    getenv("CUBEPILOT_DEFAULT_USER", "admin"),
-		AgentPort:      getInt("CUBEPILOT_AGENT_PORT", 18789),
-		DataDir:        getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
-		MetricsAddr:    getenv("CUBEPILOT_METRICS_ADDR", "0"),
-		ProbeAddr:      getenv("CUBEPILOT_PROBE_ADDR", "0"),
-		SkillsDir:      getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
+		LLMEndpoint: getenv("CUBEPILOT_LLM_ENDPOINT", ""),
+		LLMModel:    getenv("CUBEPILOT_LLM_MODEL", ""),
+		Replicas:    getInt("CUBEPILOT_REPLICAS", 1),
+		GCWindow:    getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
+		GCWatermark: getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
+		DefaultUser: getenv("CUBEPILOT_DEFAULT_USER", "admin"),
+		AgentPort:   getInt("CUBEPILOT_AGENT_PORT", 18789),
+		DataDir:     getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
+		MetricsAddr: getenv("CUBEPILOT_METRICS_ADDR", "0"),
+		ProbeAddr:   getenv("CUBEPILOT_PROBE_ADDR", "0"),
+		SkillsDir:   getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
 	}
 	users := getenv("CUBEPILOT_USERS", "admin")
 	for _, u := range strings.Split(users, ",") {
@@ -153,18 +140,6 @@ func getInt(key string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-func getBool(key string, def bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.ParseBool(v)
 	if err != nil {
 		return def
 	}

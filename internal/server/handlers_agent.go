@@ -138,20 +138,17 @@ func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool,
 }
 
 // handleAgentStatus reports the live state of the caller's agent instance
-// (whether the Pod exists, its phase, uptime, idle TTL) for the Agent config
-// page.
+// (whether the Pod exists, its phase, uptime) for the Agent config page.
 func (s *Server) handleAgentStatus(w http.ResponseWriter, r *http.Request) {
 	user := s.userOf(r)
 	exists, phase, startedAt := s.mgr.InstanceStatus(r.Context(), user)
 	resp := map[string]any{
-		"user":           user,
-		"id":             "agent-" + user,
-		"exists":         exists,
-		"phase":          phase,
-		"idleTTLMinutes": int(s.cfg.IdleTTL / time.Minute),
-		"idleTTLSeconds": int(s.cfg.IdleTTL / time.Second),
-		"gatewayImage":   s.cfg.AgentImage,
-		"gatewayPort":    s.cfg.AgentPort,
+		"user":         user,
+		"id":           "agent-" + user,
+		"exists":       exists,
+		"phase":        phase,
+		"gatewayImage": s.cfg.AgentImage,
+		"gatewayPort":  s.cfg.AgentPort,
 	}
 	if exists && !startedAt.IsZero() {
 		resp["startedAt"] = startedAt

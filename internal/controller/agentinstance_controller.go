@@ -5,8 +5,8 @@
 //
 // Design §4.1: the Instance Manager is controller-based -- AgentInstance CRD +
 // controller-runtime (v0.2 §13 chosen implementation); spec.runtime
-// distinguishes multiple runtimes; resident and reclaim policies are declared
-// by the CR spec.
+// distinguishes multiple runtimes and the resident lifecycle policy is
+// declared by the CR spec.
 package controller
 
 import (
