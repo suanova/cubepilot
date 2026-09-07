@@ -186,11 +186,16 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	m.mu.Unlock()
 
 	// First connect may be rejected NOT_PAIRED while the in-pod supervisor
-	// approves this device (device.pair.approve on its next poll); retry briefly
-	// so the first Allowlist turn can connect rather than fail.
-	const maxPairAttempts = 4
+	// approves this device (device.pair.approve on its next poll). The approval
+	// lands a moment after the first rejected connect creates the pending
+	// device, so keep retrying within a bounded budget instead of a fixed small
+	// number of attempts -- otherwise the first gated turn races the approval
+	// and silently runs ungated (issue #116 flake). A best-effort caller gives
+	// up once the budget is exhausted.
+	pairBudget := 30 * time.Second
+	pairStart := time.Now()
 	var connectErr error
-	for attempt := 1; attempt <= maxPairAttempts; attempt++ {
+	for {
 		aCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err := gw.Connect(aCtx)
 		cancel()
@@ -198,7 +203,10 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 			return gw, nil
 		}
 		connectErr = err
-		if !strings.Contains(err.Error(), "NOT_PAIRED") || attempt == maxPairAttempts {
+		if !strings.Contains(err.Error(), "NOT_PAIRED") {
+			break
+		}
+		if time.Since(pairStart) > pairBudget {
 			break
 		}
 		select {
