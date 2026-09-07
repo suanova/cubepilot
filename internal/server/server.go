@@ -140,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/audit", s.handleAudit)
 	mux.HandleFunc("/api/agent/config", s.handleAgentConfig)
+	mux.HandleFunc("/api/agent/confirm", s.handleAgentConfirm)
 	mux.HandleFunc("/api/agent/status", s.handleAgentStatus)
 	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
 	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)

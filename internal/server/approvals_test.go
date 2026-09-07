@@ -60,9 +60,11 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 	for _, tc := range []struct {
 		decision string
 		approved bool
+		gw       string // decision passed to the gateway resolver
 	}{
-		{"approve", true},
-		{"reject", false},
+		{"approve", true, "approve"},
+		{"reject", false, "reject"},
+		{"allow-always", true, "approve"}, // approve-once now; durable grant appended separately (issue #116)
 	} {
 		hub := NewHub()
 		rec := httptest.NewRecorder()
@@ -78,12 +80,12 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 		svc.SetResolver(res)
 		svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo"})
 
-		if _, err := svc.Resolve("alice", "conv-1", tc.decision); err != nil {
+		if _, err := svc.Resolve(context.Background(), "alice", "conv-1", tc.decision); err != nil {
 			t.Fatalf("Resolve(%s): %v", tc.decision, err)
 		}
 
-		if len(res.calls) != 1 || res.calls[0] != "alice|appr-1|"+tc.decision {
-			t.Errorf("resolver calls = %v, want alice|appr-1|%s", res.calls, tc.decision)
+		if len(res.calls) != 1 || res.calls[0] != "alice|appr-1|"+tc.gw {
+			t.Errorf("resolver calls = %v, want alice|appr-1|%s", res.calls, tc.gw)
 		}
 		if _, ok := svc.Pending("alice", "conv-1"); ok {
 			t.Error("pending must be cleared after resolve")
@@ -113,18 +115,18 @@ func TestApprovalService_ResolveErrors(t *testing.T) {
 	svc := NewApprovalService(NewHub(), nil, t.Logf)
 	svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1"})
 
-	if _, err := svc.Resolve("alice", "conv-1", "maybe"); err == nil {
+	if _, err := svc.Resolve(context.Background(), "alice", "conv-1", "maybe"); err == nil {
 		t.Fatal("expected error for an unknown decision")
 	}
-	if _, err := svc.Resolve("bob", "conv-1", "approve"); err == nil {
+	if _, err := svc.Resolve(context.Background(), "bob", "conv-1", "approve"); err == nil {
 		t.Fatal("expected errNoPending for a non-owner")
 	}
-	if _, err := svc.Resolve("alice", "conv-missing", "approve"); err == nil {
+	if _, err := svc.Resolve(context.Background(), "alice", "conv-missing", "approve"); err == nil {
 		t.Fatal("expected errNoPending for a missing session")
 	}
 
 	// nil resolver → errNoResolver, pending retained.
-	if _, err := svc.Resolve("alice", "conv-1", "approve"); err == nil {
+	if _, err := svc.Resolve(context.Background(), "alice", "conv-1", "approve"); err == nil {
 		t.Fatal("expected errNoResolver")
 	}
 	if _, ok := svc.Pending("alice", "conv-1"); !ok {
@@ -134,7 +136,7 @@ func TestApprovalService_ResolveErrors(t *testing.T) {
 	// resolver error → pending retained for retry.
 	res := &stubResolver{err: context.DeadlineExceeded}
 	svc.SetResolver(res)
-	if _, err := svc.Resolve("alice", "conv-1", "approve"); err == nil {
+	if _, err := svc.Resolve(context.Background(), "alice", "conv-1", "approve"); err == nil {
 		t.Fatal("expected resolver error to propagate")
 	}
 	if _, ok := svc.Pending("alice", "conv-1"); !ok {
