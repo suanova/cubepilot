@@ -153,7 +153,7 @@ export default function PublishView() {
           <div className="card">
             <div className="card-head">
               <span className="card-title">Published Skills</span>
-              <span className="card-hint">Platform-visible skills in the market - installed per instance (issue #24)</span>
+              <span className="card-hint">Platform-visible skills in the market - installed per instance</span>
             </div>
             <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
               {listError ? (

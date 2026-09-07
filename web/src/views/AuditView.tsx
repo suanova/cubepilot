@@ -79,7 +79,7 @@ export default function AuditView() {
       <div className="view-head">
         <div>
           <div className="view-title">Audit</div>
-          <div className="view-desc">Real-time tool invocation ledger (M5) - filter by user / tool / level - L0 read-only pass-through / L1 write operations</div>
+          <div className="view-desc">Real-time tool invocation ledger - filter by user / tool / level - L0 read-only pass-through / L1 write operations</div>
         </div>
         <button className="btn primary" onClick={exportAuditCSV}>
           <ExportIcon />
