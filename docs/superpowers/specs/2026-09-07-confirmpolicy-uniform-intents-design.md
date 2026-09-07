@@ -33,6 +33,8 @@ Facts motivating a reshape:
 
 Uniform axis (`off` / `on-miss(+allowlist)` / `always`) expressed as platform intent. Because the enum is uniform (not conditioned on `runtime`), no runtime-conditional validation is needed and the static default stays valid.
 
+**Scope: interactive sessions only.** As today (issue #20), `task-*` and `inspect-*` sessions are never gated, and `AlwaysAsk` is no stricter in reach — it raises the bar *within* interactive turns only. Non-interactive execution keeps its runtime default regardless of the policy value.
+
 ### Authority: template default; instance inherit-or-own
 
 - `AgentTemplate.spec.confirmPolicy` sets the default (`Allowlist`).
@@ -90,7 +92,7 @@ OpenClaw path is unchanged in mechanism: `Allowlist` → guard + `on-miss` + eff
 | Public value | OpenClaw | Hermes (future) | DeepSeek Harness (future) |
 |---|---|---|---|
 | `None` | `ask: off` | `approvals.mode: off` | approval `never` |
-| `Allowlist` (+ owned list → allowlist) | guard + `on-miss` + effective allowlist | `approvals.mode: manual` + `command_allowlist` (**not** `smart` — the guardian LLM self-approves, breaking the "else ask" promise) | sandbox-ask on escalation (approximation: no command allowlist; workspace writes auto-run) |
+| `Allowlist` (+ owned list → allowlist) | guard + `on-miss` + effective allowlist | `approvals.mode: manual` + `command_allowlist` = platform default ∪ template allowlist ∪ user delta (**not** `smart` — the guardian LLM self-approves, breaking the "else ask" promise) | **unsupported** — sandbox-ask on escalation is *not* an `Allowlist` implementation: it has no command allowlist and auto-runs workspace writes, so it cannot honor "operations outside the allowlist ask". Any DSH support needs its own public semantics, deferred |
 | `AlwaysAsk` | guard + `ask: always` | `approvals.mode: manual` for every op | ask on every tool |
 
 ## Work (implementation PRs, follow this design PR)
@@ -110,13 +112,15 @@ OpenClaw path is unchanged in mechanism: `Allowlist` → guard + `on-miss` + eff
 - Runtime-neutral allowlist entry grammar (revisit with the second runtime).
 - A "rebase instance to new template default" affordance for owned instances.
 - The Portal Confirm Rules card copy / effective-policy display mechanics (issue #115).
+- **Upgrade/conversion of stored `ConfirmWrites` values.** Pre-release (v1 not shipped) — no compatibility/conversion branch (repo convention, cf. issue #100); leftover dev objects carrying the old value are re-seeded on redeploy. If a stray `ConfirmWrites` is ever read it must not be silently treated as `Allowlist` — the resolver leaves it unknown and `PreTurn` does not gate, which is the safe (fail-closed) reading.
 
 ## Acceptance (issue #116)
 
-- CRDs document `confirmPolicy: None | Allowlist | AlwaysAsk` (default `Allowlist`) with per-instance override, template default allowlist, and per-instance owned allowlist semantics (inherit-or-own, live, materialize on first edit).
+- CRDs document `confirmPolicy: None | Allowlist | AlwaysAsk`; **only `AgentTemplate.spec.confirmPolicy` carries the `Allowlist` default** — `AgentInstance.spec.confirmPolicy` stays unset when omitted so it inherits the template value (template `None`/`AlwaysAsk` must not be masked by an instance default).
 - Template default allowlist update reaches inheriting instances and does not rewrite owned ones.
-- User can add, and delete, allowlist entries; deleting an owned entry sticks.
+- User can add, and delete, allowlist entries; deleting an owned entry sticks; enforcement reconciles the allowlist to the effective state (a deleted entry stops auto-passing).
 - allow-always appends to the instance allowlist; allow-once is unchanged.
 - Default behavior unchanged (guard + on-miss + platform read allowlist); existing HITL e2e stays green.
-- No `ConfirmWrites` tokens remain in code/CRDs/docs.
+- **Service API is owner-scoped:** GET/PUT `/api/agent/confirm` operate only on the caller's own default instance (resolved from the request identity, `s.userOf`) — there is no cross-owner target selector, and a request for a user with no instance is not-provisioned/409. Audit records do not substitute for this authorization boundary.
+- No `ConfirmWrites` tokens remain in active code / CRDs / API docs (this design doc intentionally references it to describe the rename).
 - Design doc merged (this document) and the §3.2 inheritance conventions section landed.
