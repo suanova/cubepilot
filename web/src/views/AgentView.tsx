@@ -452,7 +452,15 @@ export default function AgentView() {
                           <WarnIcon />
                           {/* JSX text is auto-escaped; esc() here would double-escape & / < / > */}
                           <span className="mono">{r.pattern}</span>
-                          {r.argPattern ? <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{r.argPattern}</span> : null}
+                          {r.argPattern ? (
+                            <span
+                              className="mono"
+                              title={r.argPattern}
+                              style={{ fontSize: 11, color: 'var(--muted)', maxWidth: '42%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            >
+                              {r.argPattern}
+                            </span>
+                          ) : null}
                           <span className={`pill ${confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'accent' : 'neutral'}`}>
                             {confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r)) ? 'Yours' : 'Platform'}
                           </span>
@@ -467,9 +475,9 @@ export default function AgentView() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                    <input className="input" placeholder="command, e.g. helm" value={ruleForm.pattern}
+                    <input className="input" style={{ flex: 1, minWidth: 0 }} placeholder="command, e.g. helm" value={ruleForm.pattern}
                       onChange={(e) => setRuleForm((f) => ({ ...f, pattern: e.target.value }))} />
-                    <input className="input" placeholder="argPattern (optional)" value={ruleForm.argPattern}
+                    <input className="input" style={{ flex: 1, minWidth: 0 }} placeholder="argPattern (optional)" value={ruleForm.argPattern}
                       onChange={(e) => setRuleForm((f) => ({ ...f, argPattern: e.target.value }))} />
                     <button className="btn" disabled={confirmBusy} onClick={addRule}>Add</button>
                   </div>

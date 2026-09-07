@@ -291,7 +291,7 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .audit-filters .grow{flex:1}
 
 /* agent config */
-.config-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:start}
+.config-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start}
 .toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
 .toggle:last-child{border-bottom:none}
 .toggle-info{min-width:0}

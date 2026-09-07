@@ -124,7 +124,8 @@ spec:
     你是 CubeStack 平台管理助手。优先使用已登记能力；
     不确定资源或权限时先解释并请求用户澄清。
   skills: [kubectl-platform, cluster-inspection]   # 引用技能（技能市场发布，见 §3.4）
-  confirmPolicy: ConfirmWrites            # 确认策略：写操作需用户确认（读直放）
+  confirmPolicy: Allowlist                # 确认策略（None | Allowlist 默认 | AlwaysAsk）：命中安全 allowlist 自动放行，其余 interactive 操作需用户确认
+  # allowlist: [...]                      # 可选：模板默认的额外安全命令（与平台内置取并集），未设则仅平台内置
 ```
 
 模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。确认策略（`confirmPolicy`）定义在 **AgentTemplate 层而非 skill 层**：不同 AgentTemplate 复用同一 skill 时可有不同确认策略；skill 只承载语义与脚本、不携带权限/确认字段（权限由 RBAC 决定，确认由 AgentTemplate 的 `confirmPolicy` + 简单 HITL 执行，阶段二收敛到 MCP Gateway）。
