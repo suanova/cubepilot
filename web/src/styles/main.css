@@ -73,7 +73,6 @@ svg{display:block}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--fg);color:var(--bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:none}
 .user-meta{display:flex;flex-direction:column;line-height:1.3;min-width:0}
 .user-meta .name{font-size:12.5px;font-weight:600}
-.user-meta .scope{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* topbar */
 .topbar-title{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);min-width:0}

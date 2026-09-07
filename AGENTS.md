@@ -19,6 +19,10 @@ This file is the operating guidance for AI agents and contributors working on Cu
 
 Keeping the entire codebase in English with ASCII punctuation keeps the project consistent, avoids encoding issues across toolchains, and matches the maintainer's convention.
 
+## User-Facing Copy
+
+- User-visible strings (especially the web UI) must not expose internal bookkeeping: no GitHub issue/PR numbers, feature-requirement IDs (e.g. `FR-M2-005`), milestone tags (e.g. `M5`/`M4`), or roadmap-phase labels (e.g. "phase one", "Phase One/Three"). Keep such internal references to source comments only.
+
 ## Working With This Repo
 
 - The core tools run through `exec` -> `kubectl` against the current cluster; consult the capability `SKILL.md` files in `internal/controller/capabilities/` before operating resources.

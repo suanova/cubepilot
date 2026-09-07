@@ -261,7 +261,7 @@ export default function AgentView() {
       <div className="view-head">
         <div>
           <div className="view-title">Agent Config</div>
-          <div className="view-desc">Model selection - Skills - System prompt - Confirm rules - Instance status (FR-M2-005)</div>
+          <div className="view-desc">Model selection - Skills - System prompt - Confirm rules - Instance status</div>
         </div>
         <button className="btn primary" onClick={saveAgentConfig}>
           <CheckIcon />
@@ -306,8 +306,7 @@ export default function AgentView() {
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="label">Agent Runtime</label>
                 <select className="input" aria-label="Select runtime">
-                  <option>OpenClaw (Phase One)</option>
-                  <option disabled>Hermes (reserved - Phase Three)</option>
+                  <option>OpenClaw</option>
                 </select>
               </div>
             </div>
@@ -426,7 +425,7 @@ export default function AgentView() {
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
           <span className="card-title">Confirmations</span>
-              <span className="card-hint">Operations off the allowlist pause for your approval in chat; safe commands auto-pass (issue #116)</span>
+              <span className="card-hint">Operations off the allowlist pause for your approval in chat; safe commands auto-pass</span>
             </div>
             <div className="card-pad">
               <div className="field">

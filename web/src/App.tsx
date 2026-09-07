@@ -173,7 +173,6 @@ export default function App() {
             <div className="avatar">{initials}</div>
             <div className="user-meta">
               <span className="name">{user}</span>
-              <span className="scope">suanova-dev / cubepilot</span>
             </div>
           </div>
         </div>

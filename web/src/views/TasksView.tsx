@@ -296,7 +296,7 @@ export default function TasksView() {
       <div className="view-head">
         <div>
           <div className="view-title">Scheduled Tasks</div>
-          <div className="view-desc">Scheduled AI tasks - preset + custom templates - run as the creator - reports queryable (FR-M4)</div>
+          <div className="view-desc">Scheduled AI tasks - preset + custom templates - run as the creator - reports queryable</div>
         </div>
         <button className="btn primary" onClick={() => openDialog()}>
           <PlusIcon />
@@ -713,7 +713,7 @@ export default function TasksView() {
               <div className="notice">
                 <WarnIcon />
                 <span>
-                  This task will run directly as <b>you ({user})</b>; phase one allows read/write pass-through with <b>no second confirmation</b>; items without permission are rejected and flagged during execution.
+                  This task will run directly as <b>you ({user})</b>; it allows read/write pass-through with <b>no second confirmation</b>; items without permission are rejected and flagged during execution.
                 </span>
               </div>
             </div>
