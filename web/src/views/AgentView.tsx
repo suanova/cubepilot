@@ -97,10 +97,18 @@ export default function AgentView() {
   }
 
   // Confirmation posture (issue #116) --------------------------------
+  // The API may omit allowlist/allowlistOwned (null); normalize to [] so no
+  // render/handler path calls .some/.length on null (issue #123).
+  const withConfirmDefaults = (v: AgentConfirmView): AgentConfirmView => ({
+    ...v,
+    allowlist: v.allowlist ?? [],
+    allowlistOwned: v.allowlistOwned ?? [],
+  })
+
   async function loadConfirm() {
     try {
       const v = await api.agentConfirm()
-      setConfirm(v)
+      setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
     } catch (e) {
       console.error('loadConfirm', e)
@@ -117,7 +125,7 @@ export default function AgentView() {
     try {
       const pol = policy !== undefined ? policy : policySel
       const v = await api.saveAgentConfirm({ confirmPolicy: pol, allowlist: owned ?? [] })
-      setConfirm(v)
+      setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
     } catch (e) {
       showToast('Save confirmation config failed: ' + (e instanceof Error ? e.message : String(e)))
