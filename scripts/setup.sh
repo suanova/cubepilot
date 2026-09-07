@@ -133,14 +133,11 @@ kind load docker-image "$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" "$IMAGE_REPO/
 log "creating namespace + RBAC"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
-log "creating shared secrets"
-kubectl -n "$NAMESPACE" create secret generic agent-kubeconfig \
-  --from-file=config="$REPO_DIR/deploy/agent-kubeconfig.yaml" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
 # Platform default LLM credential (the builtin AgentTemplate references it; the
-# operator renders it into the gateway config). The openclaw-config Secret
-# (gateway token + rendered openclaw.json) is created by the operator.
+# operator renders it into the gateway config). The agent-kubeconfig Secret is
+# rendered by the chart (deploy/charts/cubepilot/templates/agent-kubeconfig.yaml);
+# the openclaw-config Secret (gateway token + rendered openclaw.json) is created
+# by the operator.
 kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
   --from-literal=apiKey="$LLM_APIKEY" \
   --dry-run=client -o yaml | kubectl apply -f -
