@@ -183,16 +183,18 @@ func (r *BuiltinBootstrapReconciler) Ensure(ctx context.Context) error {
 }
 
 func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
-	// 1. AgentTemplate definition (with inline models, design §3.1/§3.3).
-	endpoint := r.Cfg.LLMEndpoint
-	if endpoint == "" {
-		endpoint = config.DefaultLLMEndpoint
+	// 1. AgentTemplate definition (with inline models, design §3.1/§3.3). The
+	// platform default model is included only when an endpoint AND model name
+	// are configured (CUBEPILOT_LLM_ENDPOINT / CUBEPILOT_LLM_MODEL); an empty
+	// pair ships the template model-less and LLMs are added from the Portal
+	// (Agent Config -> LLM Config). "有就是有，没有就是没有": the model list is
+	// fixed at template creation and never re-synced afterwards.
+	agent := BuiltinAgentTemplate(r.Cfg.LLMEndpoint, r.Cfg.LLMModel)
+	if r.Cfg.LLMEndpoint == "" || r.Cfg.LLMModel == "" {
+		agent.Spec.Models = nil
+		agent.Spec.DefaultModel = ""
 	}
-	modelName := r.Cfg.LLMModel
-	if modelName == "" {
-		modelName = config.DefaultLLMModel
-	}
-	if err := r.createIfMissing(ctx, BuiltinAgentTemplate(endpoint, modelName)); err != nil {
+	if err := r.createIfMissing(ctx, agent); err != nil {
 		return err
 	}
 	// 2. Task template.

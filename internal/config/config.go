@@ -32,13 +32,14 @@ type Config struct {
 	GatewayToken string
 
 	// LLMEndpoint is the OpenAI-compatible base URL of the platform default LLM
-	// (the builtin AgentTemplate's model endpoint). Defaults to DeepSeek; the
-	// apiKey lives in the cubepilot-llm Secret, never here.
+	// (the builtin AgentTemplate's model endpoint). Empty by default: no default
+	// model is seeded until an endpoint AND model are configured. The apiKey
+	// lives in the cubepilot-llm Secret, never here.
 	LLMEndpoint string
 
 	// LLMModel is the model name (backend model id) of the platform default LLM
-	// (the builtin AgentTemplate's model name). Defaults to deepseek-v4-flash;
-	// must match the configured LLM endpoint's allow-list.
+	// (the builtin AgentTemplate's model name). Empty by default; must match the
+	// configured LLM endpoint's allow-list when set.
 	LLMModel string
 
 	// IdleTTL is how long an agent instance may sit idle before the manager
@@ -97,12 +98,15 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	cfg := Config{
-		Listen:         getenv("CUBEPILOT_LISTEN", ":8080"),
-		Namespace:      getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		AgentImage:     getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
-		GatewayToken:   os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
-		LLMEndpoint:    getenv("CUBEPILOT_LLM_ENDPOINT", DefaultLLMEndpoint),
-		LLMModel:       getenv("CUBEPILOT_LLM_MODEL", DefaultLLMModel),
+		Listen:       getenv("CUBEPILOT_LISTEN", ":8080"),
+		Namespace:    getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
+		AgentImage:   getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
+		GatewayToken: os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
+		// Empty by default: no platform default model is seeded unless an
+		// endpoint + model are configured (the builtin template is then created
+		// model-less and LLMs are added from the Portal).
+		LLMEndpoint:    getenv("CUBEPILOT_LLM_ENDPOINT", ""),
+		LLMModel:       getenv("CUBEPILOT_LLM_MODEL", ""),
 		IdleTTL:        getDuration("CUBEPILOT_IDLE_TTL", 30*time.Minute),
 		ReclaimEnabled: getBool("CUBEPILOT_RECLAIM", false),
 		Replicas:       getInt("CUBEPILOT_REPLICAS", 1),

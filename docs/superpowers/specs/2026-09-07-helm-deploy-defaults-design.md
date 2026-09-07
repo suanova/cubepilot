@@ -172,6 +172,27 @@ platform states it clearly, and the Portal points the user at Agent Config.
 - No CRD schema change (status conditions already exist); controller + unit
   tests cover the condition transitions; the web change is type-checked.
 
+## Part 4 (addendum) -- values-driven default model (model-less install)
+
+Scope added during review (same PR): a plain `helm install` should be able to
+deploy with **no default model**, matching "有就是有，没有就是没有" (fixed at
+template creation, never re-synced).
+
+- `values.yaml` `agents.llmEndpoint` / `agents.llmModel` default to `""`.
+- `config.Load()` defaults for `CUBEPILOT_LLM_ENDPOINT` / `CUBEPILOT_LLM_MODEL`
+  become `""` (the DeepSeek fallback is no longer applied; the constants remain
+  for `scripts/setup.sh` and tests).
+- The builtin bootstrap creates `agent-for-cloud` **with** the default model only
+  when both endpoint and model are non-empty; otherwise the template is created
+  model-less (`Models` empty, `DefaultModel` empty). The model list is fixed at
+  creation; LLMs are then added from the Portal like any other.
+- `scripts/setup.sh` still passes explicit DeepSeek endpoint/model (its
+  convenience path seeds a working default alongside the `cubepilot-llm`
+  Secret); a plain `helm install` gets a model-less install.
+- No CI/e2e behaviour change (setup-driven paths keep seeding the default).
+- Docs updated: values comments, README (deploy secrets + LLM providers),
+  config comments.
+
 ## Migration
 
 - Existing setups created by `scripts/setup.sh` already have the
