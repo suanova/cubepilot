@@ -106,7 +106,7 @@ func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
 	gw := &fakeHitlGateway{}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
 		t.Fatalf("guarded = %v, want [conv-1]", gw.guarded)
 	}
@@ -120,7 +120,7 @@ func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
 	}
 
 	// ...and again guards (idempotent) without re-applying the allowlist.
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.policySets) != 1 {
 		t.Errorf("policy sets = %d after second turn, want 1", len(gw.policySets))
 	}
@@ -130,7 +130,7 @@ func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
 
 	// A policy change applies the allowlist again.
 	m.revPol["alice"] = "rev-1-old"
-	m.PreTurn(context.Background(), "alice", "conv-2")
+	_ = m.PreTurn(context.Background(), "alice", "conv-2")
 	if len(gw.policySets) != 2 {
 		t.Errorf("policy sets = %d after revision change, want 2", len(gw.policySets))
 	}
@@ -145,7 +145,7 @@ func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 
 	gw := &fakeHitlGateway{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
 		t.Fatalf("guarded = %v after retry, want [conv-1]", gw.guarded)
 	}
@@ -158,7 +158,7 @@ func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 	for _, pol := range []v1alpha1.ConfirmPolicy{"", v1alpha1.ConfirmPolicyNone} {
 		gw := &fakeHitlGateway{}
 		m := newTestHitl(pol, "rev-1", gw)
-		m.PreTurn(context.Background(), "alice", "conv-1")
+		_ = m.PreTurn(context.Background(), "alice", "conv-1")
 		if len(gw.guarded) != 0 || len(gw.policySets) != 0 || gw.connected {
 			t.Errorf("pol=%q: expected no-op, guarded=%v policySets=%d connected=%v", pol, gw.guarded, len(gw.policySets), gw.connected)
 		}
@@ -168,7 +168,7 @@ func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
 	gw := &fakeHitlGateway{}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	m.PreTurn(context.Background(), "alice", "conv-1") // establishes the conn
+	_ = m.PreTurn(context.Background(), "alice", "conv-1") // establishes the conn
 
 	if err := m.ResolveApproval(context.Background(), "alice", "appr-1", "approve"); err != nil {
 		t.Fatalf("resolve approve: %v", err)
@@ -194,7 +194,7 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		fed = append(fed, user+"|"+ev.ID+"|"+ev.Request.SessionKey+"|"+ev.Request.Command)
 	}
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if gw.onRequested == nil {
 		t.Fatal("expected the gateway to have an approval callback")
 	}
@@ -240,7 +240,7 @@ func TestHitl_AlwaysAskGuardsAndClearsAllowlist(t *testing.T) {
 	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "kubectl", ArgPattern: "^get "}}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAlwaysAsk, "rev-1", gw)
 
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
 		t.Fatalf("guarded = %v, want [conv-1]", gw.guarded)
 	}
@@ -264,7 +264,7 @@ func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
 	effective := []v1alpha1.AllowlistRule{{Pattern: "helm", ArgPattern: `^list`}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw, effective)
 
-	m.PreTurn(context.Background(), "alice", "conv-1")
+	_ = m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.policySets) != 1 {
 		t.Fatalf("policy sets = %d, want 1", len(gw.policySets))
 	}
