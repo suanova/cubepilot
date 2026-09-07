@@ -165,10 +165,11 @@ platform states it clearly, and the Portal points the user at Agent Config.
 - The controller watches AgentTemplates and Secrets (mapping to every
   AgentInstance) so the condition flips as soon as a model or its credential
   appears/disappears.
-- Portal (ChatView): while the caller's instance is not Ready or has
-  `ModelConfigured=False`, a dismissable nudge shows a "Go to Agent Config"
-  link; it disappears automatically once the model is added / the instance
-  becomes Ready (5s poll of `GET /api/instances`).
+- Portal (global): the App shell polls the caller's instance and, while it is
+  not Ready or has `ModelConfigured=False`, shows a "Go to Agent Config" nudge
+  under the topbar on every view (hidden on `/agent` itself); it disappears
+  automatically once the model is added / the instance becomes Ready (5s poll
+  of `GET /api/instances`).
 - No CRD schema change (status conditions already exist); controller + unit
   tests cover the condition transitions; the web change is type-checked.
 
