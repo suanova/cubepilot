@@ -21,10 +21,10 @@ import (
 // the *effective* values (what the runtime enforces); override/allowlistOwned
 // are the instance's own state (empty = inheriting the template default live).
 type confirmView struct {
-	Exists         bool                     `json:"exists"`
-	ConfirmPolicy  v1alpha1.ConfirmPolicy   `json:"confirmPolicy"`
-	Override       v1alpha1.ConfirmPolicy   `json:"override"`
-	TemplatePolicy v1alpha1.ConfirmPolicy   `json:"templatePolicy"`
+	Exists         bool                   `json:"exists"`
+	ConfirmPolicy  v1alpha1.ConfirmPolicy `json:"confirmPolicy"`
+	Override       v1alpha1.ConfirmPolicy `json:"override"`
+	TemplatePolicy v1alpha1.ConfirmPolicy `json:"templatePolicy"`
 	Allowlist      []confirmRule          `json:"allowlist,omitempty"`
 	AllowlistOwned []confirmRule          `json:"allowlistOwned,omitempty"`
 }
