@@ -1,11 +1,13 @@
 // App shell -- sidebar navigation + topbar + routed view.
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import ChatView from '@/views/ChatView'
 import TasksView from '@/views/TasksView'
 import AuditView from '@/views/AuditView'
 import AgentView from '@/views/AgentView'
 import PublishView from '@/views/PublishView'
 import { useToast } from '@/stores/toast'
+import { api } from '@/api'
 import { getCurrentUser } from '@/api/client'
 
 const VIEW_TITLES: Record<string, string> = {
@@ -92,6 +94,51 @@ export default function App() {
 
   const navCls = ({ isActive }: { isActive: boolean }) => (isActive ? 'nav-item active' : 'nav-item')
 
+  // Global agent-readiness nudge (issue #117): while the caller's agent is not
+  // Ready or has no usable LLM (ModelConfigured=False), steer every view to
+  // Agent Config. Hidden on /agent itself -- that is where the user fixes it.
+  const [instHint, setInstHint] = useState<{ phase?: string; modelConfigured?: boolean } | null>(null)
+  useEffect(() => {
+    let stop = false
+    const poll = async () => {
+      try {
+        const list = await api.listInstances()
+        if (stop) return
+        // listInstances is already scoped to the caller; only the caller's own
+        // instance should drive this nudge.
+        const own = list.find((i) => (i.spec as Record<string, unknown> | undefined)?.owner === user)
+        if (!own) {
+          setInstHint(null)
+          return
+        }
+        const st = (own.status ?? {}) as { phase?: string; conditions?: Array<{ type?: string; status?: string }> }
+        const cond = st.conditions?.find((c) => c.type === 'ModelConfigured')
+        setInstHint({ phase: st.phase, modelConfigured: cond ? cond.status === 'True' : undefined })
+      } catch {
+        /* transient - keep the last hint */
+      }
+    }
+    void poll()
+    const ticker = setInterval(poll, 5000)
+    return () => {
+      stop = true
+      clearInterval(ticker)
+    }
+  }, [user])
+
+  const onAgentPage = segment === 'agent'
+  // Every non-ready state gets a single "Go to Agent Config" call to action.
+  const readinessNudge = (() => {
+    if (onAgentPage || !instHint) return null
+    if (instHint.modelConfigured === false) {
+      return { text: 'Your agent has no LLM configured, so it cannot answer yet.' }
+    }
+    if (instHint.phase && instHint.phase !== 'Ready') {
+      return { text: `Agent is not ready yet (${instHint.phase}); it will become ready shortly.` }
+    }
+    return null
+  })()
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -147,6 +194,14 @@ export default function App() {
             </button>
           </div>
         </header>
+        {readinessNudge && (
+          <div className="agent-nudge">
+            <span>{readinessNudge.text}</span>
+            <Link className="agent-nudge-link" to="/agent">
+              Go to Agent Config -&gt;
+            </Link>
+          </div>
+        )}
         <main className="content">
           <Routes>
             <Route path="/chat" element={<ChatView />} />

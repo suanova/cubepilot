@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -55,6 +57,18 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
+		body.Config.Model = strings.TrimSpace(body.Config.Model)
+		// Fail at save time, not at chat time: the resolver is fail-closed on an
+		// explicit selectedModel, so a model that is not in the builtin template
+		// would brick the instance (issue #117 model-less default). Empty =
+		// "Runtime Default" (clear the override).
+		if ok, err := s.agentTemplateHasModel(r.Context(), body.Config.Model); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		} else if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not in the agent-for-cloud template (add it under Agent Config -> LLM Config first)", body.Config.Model)})
+			return
+		}
 		if err := s.store.SaveAgentConfig(body.Config); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -98,6 +112,29 @@ func (s *Server) applyModelOverride(r *http.Request, model string) error {
 	}
 	inst.Spec.SelectedModel = model
 	return s.cr.Update(r.Context(), &inst)
+}
+
+// agentTemplateHasModel reports whether model is an inline model of the builtin
+// agent-for-cloud template (the template every AgentConfig applies to). Empty
+// is always allowed ("Runtime Default"). With the CRD path disabled there is no
+// template to validate against, so anything is accepted.
+func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool, error) {
+	if model == "" || s.cr == nil {
+		return true, nil
+	}
+	var tmpl v1alpha1.AgentTemplate
+	if err := s.cr.Get(ctx, types.NamespacedName{Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, m := range tmpl.Spec.Models {
+		if m.Name == model {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // handleAgentStatus reports the live state of the caller's agent instance

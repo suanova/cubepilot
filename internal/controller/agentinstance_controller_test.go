@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -207,6 +208,121 @@ func TestAgentInstanceReconcileReady(t *testing.T) {
 	if inst.Status.Message != "instance ready" {
 		t.Errorf("message = %q, want %q", inst.Status.Message, "instance ready")
 	}
+}
+
+// makeReadyPod seeds an already-converged Ready Pod for the test instance (mirrors
+// TestAgentInstanceReconcileReady) so Reconcile reports phase Ready.
+func makeReadyPod(t *testing.T, r *AgentInstanceReconciler, cl client.Client) {
+	t.Helper()
+	spec := agentSpec()
+	spec.UserKubeconfigSecret = k8s.UserKubeconfigSecretFor("zhang.wei")
+	p := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+	p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	p.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	if err := cl.Create(context.Background(), p); err != nil {
+		t.Fatalf("create ready pod: %v", err)
+	}
+	provisionInstance(r, t)
+}
+
+// TestModelConfiguredCondition verifies the ModelConfigured status condition
+// (issue #117): it is decoupled from the pod lifecycle -- a Ready instance
+// reports False while its template has no usable model, and True once a keyed
+// model's credential Secret exists. A keyed model without its Secret (or an
+// empty model list) reports False with a user-facing message.
+func TestModelConfiguredCondition(t *testing.T) {
+	keyedModel := func() *v1alpha1.AgentTemplate {
+		tpl := testTemplate()
+		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{
+			Name:          "deepseek-v4-flash",
+			Endpoint:      "https://api.deepseek.com",
+			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
+		}}
+		return tpl
+	}
+	getCond := func(t *testing.T, cl client.Client) *metav1.Condition {
+		t.Helper()
+		var inst v1alpha1.AgentInstance
+		if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &inst); err != nil {
+			t.Fatal(err)
+		}
+		return meta.FindStatusCondition(inst.Status.Conditions, modelConfiguredCondition)
+	}
+
+	t.Run("ready without any model reports not-configured", func(t *testing.T) {
+		r, cl := newTestReconciler(t, testTemplate(), testInstance())
+		makeReadyPod(t, r, cl)
+		cond := getCond(t, cl)
+		if cond == nil {
+			t.Fatal("ModelConfigured condition missing")
+		}
+		if cond.Status != metav1.ConditionFalse || cond.Reason != reasonNoModelConfigured {
+			t.Errorf("condition = %s (%s), want False (%s)", cond.Status, cond.Reason, reasonNoModelConfigured)
+		}
+		if cond.Message == "" {
+			t.Error("no-model condition should carry a user-facing message")
+		}
+	})
+
+	t.Run("keyed model with credential secret reports configured", func(t *testing.T) {
+		cred := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: testNamespace},
+			Data:       map[string][]byte{"apiKey": []byte("sk-test")},
+		}
+		r, cl := newTestReconciler(t, keyedModel(), testInstance(), cred)
+		makeReadyPod(t, r, cl)
+		cond := getCond(t, cl)
+		if cond == nil {
+			t.Fatal("ModelConfigured condition missing")
+		}
+		if cond.Status != metav1.ConditionTrue || cond.Reason != reasonModelConfigured {
+			t.Errorf("condition = %s (%s), want True (%s)", cond.Status, cond.Reason, reasonModelConfigured)
+		}
+	})
+
+	t.Run("keyed model without its secret reports not-configured", func(t *testing.T) {
+		r, cl := newTestReconciler(t, keyedModel(), testInstance())
+		makeReadyPod(t, r, cl)
+		cond := getCond(t, cl)
+		if cond == nil {
+			t.Fatal("ModelConfigured condition missing")
+		}
+		if cond.Status != metav1.ConditionFalse || cond.Reason != reasonNoModelConfigured {
+			t.Errorf("condition = %s (%s), want False (%s)", cond.Status, cond.Reason, reasonNoModelConfigured)
+		}
+	})
+
+	t.Run("condition flips when a model is added after Ready", func(t *testing.T) {
+		r, cl := newTestReconciler(t, testTemplate(), testInstance())
+		makeReadyPod(t, r, cl)
+		if cond := getCond(t, cl); cond == nil || cond.Status != metav1.ConditionFalse {
+			t.Fatalf("expected False before any model, got %v", cond)
+		}
+		// Add a keyed model + its credential Secret, then reconcile again.
+		var tpl v1alpha1.AgentTemplate
+		if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tpl); err != nil {
+			t.Fatal(err)
+		}
+		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{
+			Name:          "deepseek-v4-flash",
+			Endpoint:      "https://api.deepseek.com",
+			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
+		}}
+		if err := cl.Update(context.Background(), &tpl); err != nil {
+			t.Fatalf("update template with model: %v", err)
+		}
+		cred := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: testNamespace},
+			Data:       map[string][]byte{"apiKey": []byte("sk-test")},
+		}
+		if err := cl.Create(context.Background(), cred); err != nil {
+			t.Fatalf("create credential secret: %v", err)
+		}
+		reconcileInstance(r, t)
+		if cond := getCond(t, cl); cond == nil || cond.Status != metav1.ConditionTrue {
+			t.Errorf("condition after adding model = %v, want True", cond)
+		}
+	})
 }
 
 // TestAgentInstanceWaitsForUserIdentity verifies the controller does NOT

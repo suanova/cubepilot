@@ -172,11 +172,13 @@ type AgentConfig struct {
 	Skills       []SkillToggle `json:"skills"`
 }
 
-// DefaultAgentConfig mirrors the baked-in skill catalog + gateway model. The
-// model is the fallback when no operator-configured default is supplied to New.
+// DefaultAgentConfig mirrors the baked-in skill catalog. The model is empty:
+// no platform default LLM is assumed (issue #117) -- a model-less install must
+// not present a DeepSeek default that is absent from the agent-for-cloud
+// template. An operator-configured default supplied to New still overrides it.
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
-		Model: "deepseek-v4-flash",
+		Model: "",
 		Skills: []SkillToggle{
 			{Name: "kubectl-platform", Enabled: true},
 			{Name: "cluster-inspection", Enabled: true},

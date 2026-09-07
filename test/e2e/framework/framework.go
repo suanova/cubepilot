@@ -70,7 +70,7 @@ func New(kubeconfig string) (*Framework, error) {
 	}
 	// Validate the users list: a value such as "," trims to zero users, and the
 	// specs index Users[0] -- fail with a config error instead of panicking.
-	users := splitUsers(getenv("CUBEPILOT_USERS", "zhang.wei,li.ming"))
+	users := splitUsers(getenv("CUBEPILOT_USERS", "admin"))
 	if len(users) == 0 {
 		return nil, fmt.Errorf("CUBEPILOT_USERS must contain at least one user")
 	}
@@ -81,7 +81,7 @@ func New(kubeconfig string) (*Framework, error) {
 		CtrlClient:    cc,
 		DynamicClient: dc,
 		Namespace:     getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		DefaultUser:   getenv("CUBEPILOT_DEFAULT_USER", "zhang.wei"),
+		DefaultUser:   getenv("CUBEPILOT_DEFAULT_USER", "admin"),
 		Users:         users,
 	}, nil
 }

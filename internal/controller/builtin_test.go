@@ -114,8 +114,10 @@ func TestBootstrapEnsure(t *testing.T) {
 		Client: cl,
 		Scheme: scheme,
 		Cfg: config.Config{
-			Namespace: "cubepilot",
-			Users:     users,
+			Namespace:   "cubepilot",
+			Users:       users,
+			LLMEndpoint: config.DefaultLLMEndpoint,
+			LLMModel:    config.DefaultLLMModel,
 		},
 	}
 	if err := r.Ensure(context.Background()); err != nil {
@@ -198,6 +200,33 @@ func TestBootstrapEnsure(t *testing.T) {
 	}
 	if len(insts2.Items) != 2 {
 		t.Errorf("instances after re-ensure = %d, want 2 (idempotent)", len(insts2.Items))
+	}
+}
+
+// TestBootstrapEnsureNoDefaultModel verifies that with no LLM endpoint/model
+// configured the builtin agent-for-cloud template is created model-less (issue
+// #117: "no default LLM" is a first-class install state; LLMs are added later
+// from the Portal).
+func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
+	scheme := testScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &BuiltinBootstrapReconciler{
+		Client: cl,
+		Scheme: scheme,
+		Cfg:    config.Config{Namespace: "cubepilot"},
+	}
+	if err := r.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	var agent v1alpha1.AgentTemplate
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &agent); err != nil {
+		t.Fatalf("agent-for-cloud not created: %v", err)
+	}
+	if len(agent.Spec.Models) != 0 {
+		t.Errorf("models = %v, want none when no LLM configured", agent.Spec.Models)
+	}
+	if agent.Spec.DefaultModel != "" {
+		t.Errorf("defaultModel = %q, want empty when no LLM configured", agent.Spec.DefaultModel)
 	}
 }
 
