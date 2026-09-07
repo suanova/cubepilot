@@ -149,7 +149,7 @@ The builtin `agent-for-cloud` template carries the platform default model
 (`https://api.deepseek.com`, overridable with `--llm-endpoint` /
 `CUBEPILOT_LLM_ENDPOINT`) and model name (`deepseek-v4-flash`, overridable with
 `--llm-model` / `CUBEPILOT_LLM_MODEL`). To add another LLM after install, use
-the Portal (Agent Config -> LLM 配置): give a model name, an OpenAI-compatible
+the Portal (Agent Config -> LLM Config): give a model name, an OpenAI-compatible
 endpoint, and an apiKey (leave empty for a public model). The operator
 re-renders the gateway and the model becomes selectable — no hand-edited Secret.
 

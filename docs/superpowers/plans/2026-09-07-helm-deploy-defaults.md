@@ -108,7 +108,7 @@ with:
 #   agent-kubeconfig  rendered by this chart (see templates/agent-kubeconfig.yaml)
 #   cubepilot-llm     created by scripts/setup.sh (platform default LLM apiKey);
 #                     additional LLM apiKeys land in llm-<name> Secrets created
-#                     from the Portal (Agent Config -> LLM 配置)
+#                     from the Portal (Agent Config -> LLM Config)
 ```
 
 - [ ] **Step 4: Update the NOTES.txt secret bullet**
