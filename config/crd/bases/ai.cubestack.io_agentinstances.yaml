@@ -62,6 +62,42 @@ spec:
               one tenant (design §3.2). The instance key is `user + template` -- one
               instance per user per template, single-writer.
             properties:
+              allowlist:
+                description: |-
+                  Allowlist is the instance's owned safe-command allowlist (issue #116).
+                  Empty = inherit the template's effective default (live); the first
+                  explicit edit materializes the effective list here, after which it is
+                  authoritative (design §3.2 inherit-or-own).
+                items:
+                  description: |-
+                    AllowlistRule is one entry of a safe-command allowlist (issue #116). The
+                    grammar is runtime-shaped today ({pattern, argPattern?} -- the OpenClaw argv
+                    allowlist shape the builtin default uses); a runtime-neutral grammar is
+                    deferred until a second runtime lands. Pattern is the command/executable;
+                    ArgPattern optionally constrains the remaining argv (empty = any argv).
+                  properties:
+                    argPattern:
+                      description: ArgPattern optionally constrains the remaining
+                        argv (empty = any argv).
+                      type: string
+                    pattern:
+                      description: Pattern is the command executable or glob to allow
+                        (e.g. "kubectl").
+                      type: string
+                  required:
+                  - pattern
+                  type: object
+                type: array
+              confirmPolicy:
+                description: |-
+                  ConfirmPolicy optionally overrides the template's confirmPolicy (issue
+                  #116, design §3.2 inherit-or-own): empty = follow the template default
+                  (live); set = the instance's own posture.
+                enum:
+                - None
+                - Allowlist
+                - AlwaysAsk
+                type: string
               credentials:
                 description: Credentials are the typed downstream credentials.
                 items:

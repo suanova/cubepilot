@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 )
@@ -71,8 +72,10 @@ func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision stri
 func (f *fakeHitlGateway) Close() {}
 
 // newTestHitl returns a manager whose gateway is a fresh fake per connect and
-// whose policy resolution is fixed.
-func newTestHitl(pol v1alpha1.ConfirmPolicy, rev string, gw *fakeHitlGateway) *hitlManager {
+// whose policy resolution is fixed. With no explicit allowlist, Allowlist
+// policy resolves to the platform builtin default (so its entries are
+// non-empty in tests).
+func newTestHitl(pol v1alpha1.ConfirmPolicy, rev string, gw *fakeHitlGateway, allow ...[]v1alpha1.AllowlistRule) *hitlManager {
 	m := &hitlManager{
 		masterKey: []byte("test-master"),
 		logf:      tLogf,
@@ -80,8 +83,14 @@ func newTestHitl(pol v1alpha1.ConfirmPolicy, rev string, gw *fakeHitlGateway) *h
 		revPol:    map[string]string{},
 	}
 	m.newClient = func(url string, dev *ws.Device) hitlGateway { return gw }
-	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, string, error) {
-		return pol, rev, nil
+	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error) {
+		var al []v1alpha1.AllowlistRule
+		if len(allow) > 0 {
+			al = allow[0]
+		} else if pol == v1alpha1.ConfirmPolicyAllowlist {
+			al = allowlist.Default()
+		}
+		return pol, al, rev, nil
 	}
 	m.wsURLOf = func(user string) string { return "ws://fake/gateway" }
 	return m
@@ -89,9 +98,9 @@ func newTestHitl(pol v1alpha1.ConfirmPolicy, rev string, gw *fakeHitlGateway) *h
 
 var tLogf = func(format string, args ...any) {}
 
-func TestHitl_PreTurnGuardsConfirmWritesOncePerRevision(t *testing.T) {
+func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
 	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ConfirmPolicyConfirmWrites, "rev-1", gw)
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 
 	m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
@@ -123,7 +132,7 @@ func TestHitl_PreTurnGuardsConfirmWritesOncePerRevision(t *testing.T) {
 	}
 }
 
-// TestHitl_ConnectRetriesAfterNotPaired verifies a ConfirmWrites turn survives
+// TestHitl_ConnectRetriesAfterNotPaired verifies a Allowlist turn survives
 // an initial NOT_PAIRED rejection while the supervisor approves the pairing.
 func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 	old := hitlPairRetryDelay
@@ -131,7 +140,7 @@ func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 	defer func() { hitlPairRetryDelay = old }()
 
 	gw := &fakeHitlGateway{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
-	m := newTestHitl(v1alpha1.ConfirmPolicyConfirmWrites, "rev-1", gw)
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 	m.PreTurn(context.Background(), "alice", "conv-1")
 	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
 		t.Fatalf("guarded = %v after retry, want [conv-1]", gw.guarded)
@@ -141,7 +150,7 @@ func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 	}
 }
 
-func TestHitl_PreTurnNoopWithoutConfirmWrites(t *testing.T) {
+func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 	for _, pol := range []v1alpha1.ConfirmPolicy{"", v1alpha1.ConfirmPolicyNone} {
 		gw := &fakeHitlGateway{}
 		m := newTestHitl(pol, "rev-1", gw)
@@ -154,7 +163,7 @@ func TestHitl_PreTurnNoopWithoutConfirmWrites(t *testing.T) {
 
 func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
 	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ConfirmPolicyConfirmWrites, "rev-1", gw)
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 	m.PreTurn(context.Background(), "alice", "conv-1") // establishes the conn
 
 	if err := m.ResolveApproval(context.Background(), "alice", "appr-1", "approve"); err != nil {
@@ -176,7 +185,7 @@ func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
 
 func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ConfirmPolicyConfirmWrites, "rev-1", gw)
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 	var fed []string
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		fed = append(fed, user+"|"+ev.ID+"|"+ev.Request.SessionKey+"|"+ev.Request.Command)
@@ -192,5 +201,48 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 	gw.onRequested(ev)
 	if len(fed) != 1 || fed[0] != "alice|appr-9|conv-1|kubectl delete pod x" {
 		t.Errorf("bridge fed = %v", fed)
+	}
+}
+
+// TestHitl_AlwaysAskGuardsAndClearsAllowlist verifies AlwaysAsk writes an empty
+// allowlist (so every command misses and asks) and still guards the session.
+func TestHitl_AlwaysAskGuardsAndClearsAllowlist(t *testing.T) {
+	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "kubectl", ArgPattern: "^get "}}}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAlwaysAsk, "rev-1", gw)
+
+	m.PreTurn(context.Background(), "alice", "conv-1")
+	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
+		t.Fatalf("guarded = %v, want [conv-1]", gw.guarded)
+	}
+	if len(gw.policySets) != 1 {
+		t.Fatalf("policy sets = %d, want 1", len(gw.policySets))
+	}
+	agent, ok := gw.policySets[0].Agents["main"]
+	if !ok {
+		t.Fatalf("agents.main missing: %+v", gw.policySets[0])
+	}
+	if len(agent.Allowlist) != 0 {
+		t.Errorf("AlwaysAsk allowlist = %+v, want empty (everything asks)", agent.Allowlist)
+	}
+}
+
+// TestHitl_AllowlistRewritesEffectiveEntries verifies the gateway allowlist is
+// rewritten from the resolved (effective) entries -- not merged with whatever
+// the gateway already held -- so a removed entry really disappears.
+func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
+	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "stale"}}}
+	effective := []v1alpha1.AllowlistRule{{Pattern: "helm", ArgPattern: `^list`}}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw, effective)
+
+	m.PreTurn(context.Background(), "alice", "conv-1")
+	if len(gw.policySets) != 1 {
+		t.Fatalf("policy sets = %d, want 1", len(gw.policySets))
+	}
+	agent, ok := gw.policySets[0].Agents["main"]
+	if !ok {
+		t.Fatalf("agents.main missing: %+v", gw.policySets[0])
+	}
+	if len(agent.Allowlist) != 1 || agent.Allowlist[0].Pattern != "helm" {
+		t.Errorf("allowlist = %+v, want exactly the effective helm entry", agent.Allowlist)
 	}
 }

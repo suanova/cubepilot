@@ -111,21 +111,42 @@ type QuotaSpec struct {
 	MaxInstancesPerUser int32 `json:"maxInstancesPerUser,omitempty"`
 }
 
-// ConfirmPolicy is the template-level confirmation policy for write/high-risk
-// operations (design §3.1: the policy lives on the AgentTemplate, not on the
-// skill, so different templates reusing the same skill can have different
-// confirmation rules).
-// +kubebuilder:validation:Enum=None;ConfirmWrites
+// ConfirmPolicy is the platform confirmation intent (design §3.1 / issue
+// #116). Uniform across runtimes: each value describes which operations
+// require a human on an interactive turn; each runtime adapter enforces the
+// intent with its own mechanism. It lives on the AgentTemplate (with an
+// optional AgentInstance override) -- not on the skill -- so different
+// templates reusing the same skill can have different confirmation rules.
+// +kubebuilder:validation:Enum=None;Allowlist;AlwaysAsk
 type ConfirmPolicy string
 
 const (
 	// ConfirmPolicyNone means no confirmation is required (reads and writes
-	// both pass through).
+	// both pass through, audited).
 	ConfirmPolicyNone ConfirmPolicy = "None"
-	// ConfirmPolicyConfirmWrites requires user confirmation for write
-	// operations (reads pass through). This is the default.
-	ConfirmPolicyConfirmWrites ConfirmPolicy = "ConfirmWrites"
+	// ConfirmPolicyAllowlist requires confirmation for operations outside the
+	// effective allowlist: entries on the safe allowlist auto-pass, everything
+	// else on an interactive turn asks a human. This is the default (formerly
+	// ConfirmWrites -- its real behavior always was "allowlist-miss asks", not
+	// "writes only").
+	ConfirmPolicyAllowlist ConfirmPolicy = "Allowlist"
+	// ConfirmPolicyAlwaysAsk requires confirmation for every operation on an
+	// interactive turn (strictest posture; the allowlist does not apply).
+	ConfirmPolicyAlwaysAsk ConfirmPolicy = "AlwaysAsk"
 )
+
+// AllowlistRule is one entry of a safe-command allowlist (issue #116). The
+// grammar is runtime-shaped today ({pattern, argPattern?} -- the OpenClaw argv
+// allowlist shape the builtin default uses); a runtime-neutral grammar is
+// deferred until a second runtime lands. Pattern is the command/executable;
+// ArgPattern optionally constrains the remaining argv (empty = any argv).
+type AllowlistRule struct {
+	// Pattern is the command executable or glob to allow (e.g. "kubectl").
+	Pattern string `json:"pattern"`
+	// ArgPattern optionally constrains the remaining argv (empty = any argv).
+	// +optional
+	ArgPattern string `json:"argPattern,omitempty"`
+}
 
 // AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
 // tools (skill refs), memory, identity, policy and registry metadata
@@ -152,11 +173,18 @@ type AgentTemplateSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))",message="credentialRef must reference a Secret name"
 	// +optional
 	Models []TemplateModelSpec `json:"models,omitempty"`
-	// ConfirmPolicy is the template-level confirmation policy for write
-	// operations (default ConfirmWrites).
-	// +kubebuilder:default=ConfirmWrites
+	// ConfirmPolicy is the template's default confirmation intent (default
+	// Allowlist). Instances inherit it until they override
+	// (AgentInstance.spec.confirmPolicy).
+	// +kubebuilder:default=Allowlist
 	// +optional
 	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
+	// Allowlist optionally extends the template's default safe-command
+	// allowlist (issue #116): the effective default is the platform builtin
+	// allowlist ∪ these entries. Instances inherit it until they take ownership
+	// (AgentInstance.spec.allowlist). Only meaningful under Allowlist policy.
+	// +optional
+	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// Instructions is the default system prompt (definition-level default;
 	// instances may append within capability bounds).
 	// +optional

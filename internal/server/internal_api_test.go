@@ -31,7 +31,7 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 			Models: []v1alpha1.TemplateModelSpec{
 				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			},
-			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
+			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
 			Instructions:  "You are the platform assistant.",
 		},
 	}
@@ -83,7 +83,7 @@ func TestInternalAgentConfig(t *testing.T) {
 	if cfg.SelectedModel != "" {
 		t.Errorf("selectedModel = %q, want empty (no override for default)", cfg.SelectedModel)
 	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
+	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
 		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
 	}
 	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "cluster-inspection" {

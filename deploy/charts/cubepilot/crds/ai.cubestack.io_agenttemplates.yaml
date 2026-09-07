@@ -59,14 +59,42 @@ spec:
               (design §3.1). It is the "class": shared by all instances, versioned,
               user-independent.
             properties:
-              confirmPolicy:
-                default: ConfirmWrites
+              allowlist:
                 description: |-
-                  ConfirmPolicy is the template-level confirmation policy for write
-                  operations (default ConfirmWrites).
+                  Allowlist optionally extends the template's default safe-command
+                  allowlist (issue #116): the effective default is the platform builtin
+                  allowlist ∪ these entries. Instances inherit it until they take ownership
+                  (AgentInstance.spec.allowlist). Only meaningful under Allowlist policy.
+                items:
+                  description: |-
+                    AllowlistRule is one entry of a safe-command allowlist (issue #116). The
+                    grammar is runtime-shaped today ({pattern, argPattern?} -- the OpenClaw argv
+                    allowlist shape the builtin default uses); a runtime-neutral grammar is
+                    deferred until a second runtime lands. Pattern is the command/executable;
+                    ArgPattern optionally constrains the remaining argv (empty = any argv).
+                  properties:
+                    argPattern:
+                      description: ArgPattern optionally constrains the remaining
+                        argv (empty = any argv).
+                      type: string
+                    pattern:
+                      description: Pattern is the command executable or glob to allow
+                        (e.g. "kubectl").
+                      type: string
+                  required:
+                  - pattern
+                  type: object
+                type: array
+              confirmPolicy:
+                default: Allowlist
+                description: |-
+                  ConfirmPolicy is the template's default confirmation intent (default
+                  Allowlist). Instances inherit it until they override
+                  (AgentInstance.spec.confirmPolicy).
                 enum:
                 - None
-                - ConfirmWrites
+                - Allowlist
+                - AlwaysAsk
                 type: string
               defaultModel:
                 description: |-

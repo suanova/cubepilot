@@ -19,7 +19,7 @@ import (
 
 var namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
 
-// HITL (issue #20): with the device master key configured, a ConfirmWrites
+// HITL (issue #20): with the device master key configured, a Allowlist
 // chat turn that reaches a write operation must pause with a confirm_pending
 // and a rejected write must not execute.
 var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func() {

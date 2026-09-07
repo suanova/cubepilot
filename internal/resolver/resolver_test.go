@@ -31,7 +31,7 @@ func template(name string, mod func(*v1alpha1.AgentTemplate)) *v1alpha1.AgentTem
 	t := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.AgentTemplateSpec{
-			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
+			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
 			Instructions:  "You are the platform assistant.",
 		},
 	}
@@ -109,7 +109,7 @@ func TestResolveMergesFields(t *testing.T) {
 	if cfg.ModelName != "deepseek-v4-flash" {
 		t.Errorf("modelName = %q", cfg.ModelName)
 	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyConfirmWrites {
+	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
 		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
 	}
 	if len(cfg.Skills) != 1 {
@@ -297,5 +297,81 @@ func TestResolveUserInstructionsOnly(t *testing.T) {
 	}
 	if cfg2.Instructions != "You are the platform assistant." {
 		t.Errorf("instructions = %q, want the untouched template prompt", cfg2.Instructions)
+	}
+}
+
+// TestResolveConfirmPolicyOverride verifies an instance confirmPolicy override
+// wins over the template default (issue #116 inherit-or-own).
+func TestResolveConfirmPolicyOverride(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.ConfirmPolicy = v1alpha1.ConfirmPolicyAlwaysAsk
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, nil), // template default Allowlist
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAlwaysAsk {
+		t.Errorf("confirmPolicy = %q, want the instance override AlwaysAsk", cfg.ConfirmPolicy)
+	}
+
+	// No override -> the template default flows through.
+	inst2 := instance("zhang.wei", v1alpha1.DefaultAgentName, "")
+	r2 := testResolver(t, template(v1alpha1.DefaultAgentName, nil), inst2)
+	cfg2, err := r2.ResolveForUser(context.Background(), "zhang.wei")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if cfg2.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
+		t.Errorf("confirmPolicy = %q, want the template default Allowlist", cfg2.ConfirmPolicy)
+	}
+}
+
+// TestResolveEffectiveAllowlistInherits verifies an un-owned instance resolves
+// the effective allowlist as platform builtin ∪ template allowlist.
+func TestResolveEffectiveAllowlistInherits(t *testing.T) {
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+			a.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm", ArgPattern: `^list`}}
+		}),
+		instance("li.ming", v1alpha1.DefaultAgentName, ""),
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	foundKubectl, foundHelm := false, false
+	for _, e := range cfg.Allowlist {
+		switch e.Pattern {
+		case "kubectl":
+			foundKubectl = true
+		case "helm":
+			foundHelm = true
+		}
+	}
+	if !foundKubectl || !foundHelm {
+		t.Errorf("effective allowlist = %+v, want builtin kubectl ∪ template helm", cfg.Allowlist)
+	}
+}
+
+// TestResolveEffectiveAllowlistOwned verifies an owned instance list replaces
+// the inherited default entirely.
+func TestResolveEffectiveAllowlistOwned(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show)(\s|$)`}}
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+			a.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+		}),
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	if len(cfg.Allowlist) != 1 || cfg.Allowlist[0].Pattern != "git" {
+		t.Errorf("effective allowlist = %+v, want exactly the owned git entry", cfg.Allowlist)
 	}
 }
