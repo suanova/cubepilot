@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
@@ -56,8 +57,13 @@ type ResolvedAgentConfig struct {
 	// template default model name when nothing was explicitly selected
 	// (display only).
 	ModelName string `json:"modelName,omitempty"`
-	// ConfirmPolicy is the agent-level write confirmation policy.
+	// ConfirmPolicy is the agent's effective confirmation intent (template
+	// default unless the instance overrides it; issue #116).
 	ConfirmPolicy v1alpha1.ConfirmPolicy `json:"confirmPolicy,omitempty"`
+	// Allowlist is the agent's effective safe-command allowlist (issue #116):
+	// the platform builtin ∪ the template allowlist, or the instance's owned
+	// list when it has taken ownership. Only enforced under Allowlist policy.
+	Allowlist []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
 	// DevicePublicKey is the platform's operator device public key for this
 	// agent's gateway (HITL approvals, issue #20). Transport-only: filled by
 	// the API when serving the internal config (the supervisor uses it to
@@ -143,11 +149,13 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	// Template constraints (defaultModel / models / confirmPolicy /
 	// instructions). A missing template contributes no constraints
 	// (phase-one compatibility).
+	var tmplAllowlist []v1alpha1.AllowlistRule
 	if inst.Spec.TemplateRef != "" {
 		cfg.Agent = inst.Spec.TemplateRef
 		var def v1alpha1.AgentTemplate
 		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
-			cfg.ConfirmPolicy = def.Spec.ConfirmPolicy
+			cfg.ConfirmPolicy = normalizeConfirmPolicy(def.Spec.ConfirmPolicy)
+			tmplAllowlist = def.Spec.Allowlist
 			cfg.Instructions = def.Spec.Instructions
 			// Credential mapping for the gateway's file secret provider: the
 			// supervisor reads these Secrets and writes keys.json into the
@@ -198,6 +206,15 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		}
 	}
 
+	// Confirmation intent & allowlist (issue #116): an instance override wins
+	// over the template default; the effective allowlist is the platform
+	// builtin ∪ the template allowlist, unless the instance has taken
+	// ownership of its own list.
+	if inst.Spec.ConfirmPolicy != "" {
+		cfg.ConfirmPolicy = normalizeConfirmPolicy(inst.Spec.ConfirmPolicy)
+	}
+	cfg.Allowlist = allowlist.Effective(inst.Spec.Allowlist, tmplAllowlist)
+
 	// Domain skills visible to this agent (empty Agents = visible to
 	// all; atomic skills are overlays, not skills). The instance may
 	// further restrict to an explicit enabledSkills subset (design §3.2);
@@ -232,6 +249,18 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 
 	cfg.Revision = cfg.fingerprint()
 	return cfg, nil
+}
+
+// normalizeConfirmPolicy maps the pre-rename stored value "ConfirmWrites" to
+// its new name "Allowlist" (issue #116). A cluster upgraded from the old schema
+// can hold confirmPolicy: ConfirmWrites; without this mapping the resolver
+// would pass an unknown value through and PreTurn would not gate interactive
+// turns -- a silent, unsafe downgrade from "writes confirm" to "nothing asks".
+func normalizeConfirmPolicy(p v1alpha1.ConfirmPolicy) v1alpha1.ConfirmPolicy {
+	if p == "ConfirmWrites" {
+		return v1alpha1.ConfirmPolicyAllowlist
+	}
+	return p
 }
 
 // resolveModel validates the selection against the template's inline models

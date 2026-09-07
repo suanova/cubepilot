@@ -45,9 +45,10 @@ type hitlManager struct {
 	// ApprovalService (which resolves Portal decisions and injects SSE).
 	bridge func(user string, ev ws.ApprovalRequested)
 
-	// resolved returns the user's confirm policy + config revision. Overridable
-	// in tests; the default reads the resolved config via the instance manager.
-	resolved func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, string, error)
+	// resolved returns the user's confirm policy, effective allowlist and
+	// config revision. Overridable in tests; the default reads the resolved
+	// config via the instance manager.
+	resolved func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error)
 
 	// wsURLOf returns the gateway WS endpoint for a user. Overridable in tests.
 	wsURLOf func(user string) string
@@ -81,15 +82,15 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 	m.newClient = func(url string, dev *ws.Device) hitlGateway {
 		return ws.NewClient(url, token, dev)
 	}
-	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, string, error) {
+	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error) {
 		cfg, err := m.mgr.ResolvedConfigForUser(ctx, user)
 		if err != nil {
-			return "", "", err
+			return "", nil, "", err
 		}
 		if cfg == nil || cfg.Empty() {
-			return "", cfg.Revision, nil
+			return "", nil, cfg.Revision, nil
 		}
-		return cfg.ConfirmPolicy, cfg.Revision, nil
+		return cfg.ConfirmPolicy, cfg.Allowlist, cfg.Revision, nil
 	}
 	m.wsURLOf = func(user string) string {
 		return wsURL(m.mgr.BaseURL(user))
@@ -185,11 +186,16 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	m.mu.Unlock()
 
 	// First connect may be rejected NOT_PAIRED while the in-pod supervisor
-	// approves this device (device.pair.approve on its next poll); retry briefly
-	// so the first ConfirmWrites turn can connect rather than fail.
-	const maxPairAttempts = 4
+	// approves this device (device.pair.approve on its next poll). The approval
+	// lands a moment after the first rejected connect creates the pending
+	// device, so keep retrying within a bounded budget instead of a fixed small
+	// number of attempts -- otherwise the first gated turn races the approval
+	// and silently runs ungated (issue #116 flake). A best-effort caller gives
+	// up once the budget is exhausted.
+	pairBudget := 30 * time.Second
+	pairStart := time.Now()
 	var connectErr error
-	for attempt := 1; attempt <= maxPairAttempts; attempt++ {
+	for {
 		aCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err := gw.Connect(aCtx)
 		cancel()
@@ -197,7 +203,10 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 			return gw, nil
 		}
 		connectErr = err
-		if !strings.Contains(err.Error(), "NOT_PAIRED") || attempt == maxPairAttempts {
+		if !strings.Contains(err.Error(), "NOT_PAIRED") {
+			break
+		}
+		if time.Since(pairStart) > pairBudget {
 			break
 		}
 		select {
@@ -209,27 +218,46 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	return gw, fmt.Errorf("hitl connect %s: %w", user, connectErr)
 }
 
-// PreTurn is called at the start of an interactive turn. For ConfirmWrites it
-// ensures the approval connection and a guarded session. Failures are logged
-// and the turn proceeds ungated (today's behavior); only a successfully
-// guarded session pauses writes.
-func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
-	pol, rev, err := m.resolved(ctx, user)
-	if err != nil || pol != v1alpha1.ConfirmPolicyConfirmWrites {
-		return
+// PreTurn is called at the start of an interactive turn. For Allowlist and
+// AlwaysAsk it ensures the approval connection, applies the effective exec
+// policy once per config revision, and guards the session.
+//
+// Allowlist keeps the issue #20 best-effort posture: on failure the turn
+// proceeds ungated and audited (only a successfully guarded session pauses
+// writes). AlwaysAsk is the strict posture and must NOT fail open -- if its
+// policy or guard cannot be applied, PreTurn returns an error and the caller
+// must not start the turn.
+func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) error {
+	pol, allow, rev, err := m.resolved(ctx, user)
+	if err != nil {
+		return nil
+	}
+	switch pol {
+	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
+	default: // None / empty -> pass-through
+		return nil
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("hitl %s: turn gating skipped (channel down): %v", user, err)
-		return
+		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+			return fmt.Errorf("hitl %s: cannot gate AlwaysAsk turn: %w", user, err)
+		}
+		return nil
 	}
-	// Apply the read allowlist when the resolved-config revision changed; only a
-	// successful apply advances revPol so a transient failure is retried next turn.
+	// Apply the effective exec policy when the resolved-config revision changed;
+	// only a successful apply advances revPol so a transient failure is retried
+	// next turn.
 	m.mu.Lock()
 	appliedRev := m.revPol[user]
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
-		if err := m.applyAllowlist(ctx, user, gw); err == nil {
+		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
+			if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+				return fmt.Errorf("hitl %s: cannot apply AlwaysAsk policy: %w", user, err)
+			}
+			// Allowlist: best-effort, leave the watermark so we retry next turn.
+		} else {
 			m.mu.Lock()
 			m.revPol[user] = rev
 			m.mu.Unlock()
@@ -237,13 +265,22 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) {
 	}
 	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
 		m.sayf("hitl %s: guard session %s: %v", user, sessionKey, err)
+		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
+			return fmt.Errorf("hitl %s: cannot guard AlwaysAsk session %s: %w", user, sessionKey, err)
+		}
 	}
+	return nil
 }
 
-// applyAllowlist writes the phase-1 read allowlist into agents."main" of the
-// exec-approvals policy (get -> merge -> set, CAS). It reports failure so the
-// caller can defer advancing the applied-revision watermark.
-func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGateway) error {
+// applyPolicy writes the effective exec-approvals policy into agents."main" of
+// the gateway (get -> set, CAS). The allowlist is rewritten wholesale from the
+// resolved config (issue #116): the platform bookkeeping is the instance
+// allowlist, so a removed entry really disappears. AlwaysAsk runs a guarded,
+// on-miss session with an empty allowlist -- every command misses and therefore
+// asks -- which is the strictest posture and needs no unverified ask:always
+// semantics. It reports failure so the caller can defer advancing the
+// applied-revision watermark.
+func (m *hitlManager) applyPolicy(ctx context.Context, user string, gw hitlGateway, pol v1alpha1.ConfirmPolicy, allow []v1alpha1.AllowlistRule) error {
 	snap, err := gw.GetApprovalsPolicy(ctx)
 	if err != nil {
 		m.sayf("hitl %s: exec.approvals.get: %v", user, err)
@@ -254,7 +291,14 @@ func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGa
 		file.Agents = map[string]ws.ApprovalAgentPolicy{}
 	}
 	agent := file.Agents["main"]
-	agent.Allowlist = mergeAllowlists(agent.Allowlist, defaultReadAllowlist())
+	switch pol {
+	case v1alpha1.ConfirmPolicyAlwaysAsk:
+		// Clear any allowlist a prior Allowlist mode wrote: on-miss with an
+		// empty allowlist asks on everything.
+		agent.Allowlist = nil
+	default: // ConfirmPolicyAllowlist
+		agent.Allowlist = toWSEntries(allow)
+	}
 	file.Agents["main"] = agent
 	base := ""
 	if snap.Exists {
@@ -265,6 +309,19 @@ func (m *hitlManager) applyAllowlist(ctx context.Context, user string, gw hitlGa
 		return err
 	}
 	return nil
+}
+
+// toWSEntries converts the resolved (public-API) allowlist rules into the
+// gateway's exec-approvals entry shape.
+func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
+	out := make([]ws.AllowlistEntry, 0, len(rules))
+	for _, r := range rules {
+		if r.Pattern == "" {
+			continue
+		}
+		out = append(out, ws.AllowlistEntry{Pattern: r.Pattern, ArgPattern: r.ArgPattern})
+	}
+	return out
 }
 
 // ResolveApproval implements ApprovalResolver: the Portal decision is applied

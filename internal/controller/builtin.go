@@ -91,7 +91,7 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 			Runtime:       v1alpha1.RuntimeOpenClaw,
 			DefaultModel:  modelName,
 			Models:        BuiltinModels(endpoint, modelName),
-			ConfirmPolicy: v1alpha1.ConfirmPolicyConfirmWrites,
+			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",

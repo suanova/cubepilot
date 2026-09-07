@@ -2,7 +2,9 @@
 import { apiFetch } from './client'
 import type {
   AgentConfig,
+  AgentConfirmView,
   AgentStatus,
+  AllowlistRule,
   AuditEntry,
   HistoryMessage,
   PendingConfirm,
@@ -26,9 +28,9 @@ export const api = {
       `/api/sessions/${encodeURIComponent(sessionKey)}/ledger`,
     ).then((d) => d.rows),
 
-  // HITL write confirmations (issue #20)
-  postConfirm: (sessionKey: string, decision: 'approve' | 'reject') =>
-    apiFetch<{ approved: boolean; decision: string; approval_id?: string }>(
+  // HITL write confirmations (issue #20 / #116)
+  postConfirm: (sessionKey: string, decision: 'approve' | 'reject' | 'allow-always') =>
+    apiFetch<{ approved: boolean; decision: string; approval_id?: string; allowlisted?: boolean }>(
       `/api/sessions/${encodeURIComponent(sessionKey)}/confirm`,
       {
         method: 'POST',
@@ -79,6 +81,15 @@ export const api = {
       body: JSON.stringify({ config }),
     }).then((d) => d.config),
   agentStatus: () => apiFetch<AgentStatus>('/api/agent/status'),
+
+  // Confirmations (issue #116): effective + owned confirm policy / allowlist.
+  agentConfirm: () => apiFetch<AgentConfirmView>('/api/agent/confirm'),
+  saveAgentConfirm: (body: { confirmPolicy?: string; allowlist?: AllowlistRule[] }) =>
+    apiFetch<AgentConfirmView>('/api/agent/confirm', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 
   // Platform objects (read-only CRD views)
   listAgentTemplates: () => apiFetch<{ agentTemplates: PlatformObject[] }>('/api/agenttemplates').then((d) => d.agentTemplates),

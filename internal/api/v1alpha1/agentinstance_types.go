@@ -117,6 +117,17 @@ type AgentInstanceSpec struct {
 	// instructions; cannot remove or weaken security/identity bounds).
 	// +optional
 	UserInstructions string `json:"userInstructions,omitempty"`
+	// ConfirmPolicy optionally overrides the template's confirmPolicy (issue
+	// #116, design §3.2 inherit-or-own): empty = follow the template default
+	// (live); set = the instance's own posture.
+	// +optional
+	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
+	// Allowlist is the instance's owned safe-command allowlist (issue #116).
+	// Empty = inherit the template's effective default (live); the first
+	// explicit edit materializes the effective list here, after which it is
+	// authoritative (design §3.2 inherit-or-own).
+	// +optional
+	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// EnabledSkills optionally restricts the skills the AgentTemplate declares
 	// (design §3.2: the instance may enable a subset; empty = all declared).
 	// +optional

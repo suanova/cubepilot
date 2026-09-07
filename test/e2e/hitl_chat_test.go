@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,11 +16,32 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 
 	"github.com/suanova/cubepilot/internal/openclaw"
+	"github.com/suanova/cubepilot/test/e2e/framework"
 )
 
 var namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
 
-// HITL (issue #20): with the device master key configured, a ConfirmWrites
+// e2eEventSummary renders the SSE event stream compactly so a HITL failure
+// shows what the turn actually did (tool calls? an error on message_done? a
+// confirm at all?) instead of a bare boolean.
+func e2eEventSummary(events []framework.SSEEvent) string {
+	var b strings.Builder
+	for _, ev := range events {
+		b.WriteString(ev.Event)
+		if ev.Data != nil {
+			preview := strings.TrimSpace(string(ev.Data))
+			if len(preview) > 200 {
+				preview = preview[:200] + "…"
+			}
+			b.WriteString(" | ")
+			b.WriteString(preview)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// HITL (issue #20): with the device master key configured, a Allowlist
 // chat turn that reaches a write operation must pause with a confirm_pending
 // and a rejected write must not execute.
 var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func() {
@@ -64,9 +86,9 @@ var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func()
 				sawDone = true
 			}
 		}
-		Expect(sawPending).To(BeTrue(), "a write must produce confirm_pending under HITL")
-		Expect(sawResolvedRejected).To(BeTrue(), "confirm_resolved should carry approved:false for a rejected write")
-		Expect(sawDone).To(BeTrue(), "message_done should terminate the turn after the rejection")
+		Expect(sawPending).To(BeTrue(), "a write must produce confirm_pending under HITL; event stream:\n%s", e2eEventSummary(events))
+		Expect(sawResolvedRejected).To(BeTrue(), "confirm_resolved should carry approved:false for a rejected write; event stream:\n%s", e2eEventSummary(events))
+		Expect(sawDone).To(BeTrue(), "message_done should terminate the turn after the rejection; event stream:\n%s", e2eEventSummary(events))
 
 		By("asserting the rejected namespace was never created")
 		Consistently(func() bool {

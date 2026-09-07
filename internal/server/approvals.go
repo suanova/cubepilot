@@ -115,13 +115,14 @@ func (s *ApprovalService) Pending(user, sessionKey string) (pendingApproval, boo
 	return p, true
 }
 
-// Resolve applies the Portal decision. decision is "approve" or "reject". The
-// approval is reserved under the lock before the gateway call so two
-// concurrent decisions cannot both process the same pending approval; it is
-// restored when the gateway call fails so the caller may retry.
-func (s *ApprovalService) Resolve(user, sessionKey, decision string) (pendingApproval, error) {
-	if decision != "approve" && decision != "reject" {
-		return pendingApproval{}, fmt.Errorf("decision must be approve or reject")
+// Resolve applies the Portal decision. decision is "approve", "reject" or
+// "allow-always" (approve this once; issue #116 appends the durable grant
+// separately). The approval is reserved under the lock before the gateway call
+// so two concurrent decisions cannot both process the same pending approval; it
+// is restored when the gateway call fails so the caller may retry.
+func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decision string) (pendingApproval, error) {
+	if decision != "approve" && decision != "reject" && decision != "allow-always" {
+		return pendingApproval{}, fmt.Errorf("decision must be approve, reject or allow-always")
 	}
 
 	s.mu.Lock()
@@ -157,14 +158,17 @@ func (s *ApprovalService) Resolve(user, sessionKey, decision string) (pendingApp
 		return pendingApproval{}, errNoResolver
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if err := resolver.ResolveApproval(ctx, user, p.ApprovalID, decision); err != nil {
+	approved := decision == "approve" || decision == "allow-always"
+	gatewayDecision := "reject"
+	if approved {
+		gatewayDecision = "approve"
+	}
+	if err := resolver.ResolveApproval(ctx, user, p.ApprovalID, gatewayDecision); err != nil {
 		restore()
 		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
 	}
-
-	approved := decision == "approve"
 	s.hub.PublishTo(p.SessionKey, openclaw.Event{
 		Type:      openclaw.EventConfirmResolved,
 		SessionID: p.SessionKey,
@@ -231,11 +235,11 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
 		return
 	}
-	if body.Decision != "approve" && body.Decision != "reject" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve or reject"})
+	if body.Decision != "approve" && body.Decision != "reject" && body.Decision != "allow-always" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve, reject or allow-always"})
 		return
 	}
-	p, err := s.approvals.Resolve(user, sessionKey, body.Decision)
+	p, err := s.approvals.Resolve(r.Context(), user, sessionKey, body.Decision)
 	switch {
 	case errors.Is(err, errNoPending):
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending approval for this session"})
@@ -245,8 +249,23 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		s.logf("confirm %s/%s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 	default:
-		approved := body.Decision == "approve"
-		writeJSON(w, http.StatusOK, map[string]any{"approved": approved, "decision": body.Decision, "approval_id": p.ApprovalID})
+		approved := body.Decision != "reject"
+		resp := map[string]any{"approved": approved, "decision": body.Decision, "approval_id": p.ApprovalID}
+		if body.Decision == "allow-always" {
+			// Durable grant (issue #116): approve-once happened above; now record
+			// the command as an instance-owned allowlist entry so it auto-passes
+			// from the next turn on (only under Allowlist policy).
+			allowlisted := false
+			if rule, ok := deriveAllowAlwaysRule(p.Command); ok {
+				if ok, err := s.allowlistAlways(r.Context(), user, rule); err != nil {
+					s.logf("confirm %s/%s: allow-always append: %v", user, sessionKey, err)
+				} else {
+					allowlisted = ok
+				}
+			}
+			resp["allowlisted"] = allowlisted
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 

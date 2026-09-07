@@ -194,3 +194,19 @@ export interface PendingConfirm {
   level: 'read' | 'write'
   message?: string
 }
+
+// Confirmations (issue #116)
+export interface AllowlistRule {
+  pattern: string
+  argPattern?: string
+}
+export interface AgentConfirmView {
+  exists: boolean
+  // Effective values (what the runtime enforces).
+  confirmPolicy: string
+  allowlist: AllowlistRule[]
+  // Instance's own state ('' / [] = inheriting the template default live).
+  override: string
+  allowlistOwned: AllowlistRule[]
+  templatePolicy: string
+}
