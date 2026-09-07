@@ -409,9 +409,12 @@ export default function AgentView() {
               )}
             </div>
           </div>
-          <div className="card">
-            <div className="card-head">
-              <span className="card-title">Confirmations</span>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="card-head">
+          <span className="card-title">Confirmations</span>
               <span className="card-hint">Operations off the allowlist pause for your approval in chat; safe commands auto-pass (issue #116)</span>
             </div>
             <div className="card-pad">
@@ -492,8 +495,6 @@ export default function AgentView() {
               )}
             </div>
           </div>
-        </div>
-      </div>
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-head">
