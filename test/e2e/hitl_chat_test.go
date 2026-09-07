@@ -49,11 +49,9 @@ var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func()
 		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping HITL chat e2e")
 		}
-		// HITL is on by default in the e2e deployment (chart api.hitl.enabled:
-		// the API auto-generates the device master key and supervisors auto-pair),
-		// so this spec exercises the real write gate. If a deployment disables
-		// hitl, this spec would fail -- gate it back on with a deployment check
-		// if such a profile ever needs to run the chat specs.
+		// HITL is always on (no platform deployment switch, issue #127): the
+		// API auto-generates the device master key and supervisors auto-pair,
+		// so this spec exercises the real write gate under Allowlist policy.
 		By("waiting until the agent instance is Ready and its pod is stable")
 		Eventually(func() error { return agentStabilityErr(context.Background(), fw.Users[0]) },
 			4*time.Minute, 5*time.Second).Should(Succeed())

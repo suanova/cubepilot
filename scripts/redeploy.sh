@@ -67,7 +67,7 @@ kind load docker-image \
 
 # ---- helm upgrade (image refs only, preserve custom values) --------------
 # The stored release values predate any chart defaults added since it was
-# installed (e.g. api.hitl), and --reuse-values would reuse those verbatim
+# installed (e.g. agents.llmEndpoint), and --reuse-values would reuse those verbatim
 # without filling in the new defaults -- the new template then fails with a nil
 # pointer. Instead read the release's user values back and pass them with -f:
 # helm layers the current chart defaults underneath and the --set below
