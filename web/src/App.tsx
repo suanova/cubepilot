@@ -11,9 +11,9 @@ import { getCurrentUser } from '@/api/client'
 const VIEW_TITLES: Record<string, string> = {
   chat: 'Chat',
   tasks: 'Scheduled Tasks',
-  audit: 'Audit',
-  agent: 'Agent Config',
   publish: 'Publisher',
+  agent: 'Agent Config',
+  audit: 'Audit',
 }
 
 function BucketIcon() {
@@ -112,13 +112,13 @@ export default function App() {
             <span>Scheduled Tasks</span>
           </NavLink>
           {/* Audit entry temporarily hidden (M5, restore once real data exists) */}
-          <NavLink to="/agent" className={navCls}>
-            <AgentIcon />
-            <span>Agent Config</span>
-          </NavLink>
           <NavLink to="/publish" className={navCls}>
             <SkillIcon />
             <span>Publisher</span>
+          </NavLink>
+          <NavLink to="/agent" className={navCls}>
+            <AgentIcon />
+            <span>Agent Config</span>
           </NavLink>
         </nav>
         <div className="sidebar-foot">
