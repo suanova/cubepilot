@@ -65,7 +65,11 @@ func (s *Server) EnableHITL() {
 		// The key is stored Base64-encoded; decode so a restarted API derives
 		// the same device identities as the process that created the Secret.
 		encoded := sec.Data["key"]
-		mk, derr := base64.StdEncoding.DecodeString(string(encoded))
+		// Assign to the function-level mk (not `mk, derr :=`, which would shadow
+		// it inside this case and leave the outer mk empty) so a restarted API
+		// actually re-uses the persisted key and keeps HITL on (issue #128).
+		var derr error
+		mk, derr = base64.StdEncoding.DecodeString(string(encoded))
 		if derr != nil || len(mk) == 0 {
 			s.logf("hitl: master Secret %s has an invalid 'key'; disabling HITL", hitlMasterSecretName)
 			return

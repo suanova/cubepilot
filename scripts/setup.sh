@@ -142,9 +142,10 @@ kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
   --from-literal=apiKey="$LLM_APIKEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# HITL write confirmations (issue #20): on by default (api.hitl.enabled). The
-# API auto-generates and persists the device master key in a Secret and the
-# per-user gateways are auto-paired; disable with --set api.hitl.enabled=false.
+# HITL write confirmations (issue #20 / #127): always on, no deployment
+# switch. The API auto-generates and persists the device master key in a Secret
+# and the per-user gateways are auto-paired; whether writes are gated is decided
+# by each agent's confirmPolicy.
 
 log "deploying components via Helm (CRDs ship in the chart crds/ dir)"
 helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
