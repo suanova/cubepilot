@@ -22,12 +22,6 @@ import (
 // -> "main"); used to canonicalize session keys (issue #20).
 const agentMainKey = "main"
 
-// liveAttachTimeout bounds how long a chat turn waits for the gateway WS
-// device channel to become ready before falling back to transcript polling
-// (issue #130). The channel is usually already connected; the timeout only
-// guards a first-turn pairing handshake.
-const liveAttachTimeout = 4 * time.Second
-
 // canonicalSessionKey maps a platform session key to the form the gateway uses
 // internally (agent:<agentId>:<segment>). Approval events carry the canonical
 // key, so the SSE hub, ledger, x-openclaw-session-key, the echoed session_id
