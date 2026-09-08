@@ -303,33 +303,24 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// WS-only chat needs the gateway device channel (sessions.send runs over
-	// it); without it there is no run path and the turn fails closed instead of
-	// silently degrading.
+	// it) and a resolvable selected model; a failure in either is surfaced as a
+	// fail-closed error that flows through the shared tail below (ledger turn
+	// and metrics are finalized) instead of an early return.
+	var runErr error
 	if s.hitl == nil {
-		errMsg := "live chat unavailable: gateway device channel is not configured"
-		s.logf("%s: %s", user, errMsg)
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: errMsg})
-		return
-	}
-
-	// Fail-closed model preflight (issue #130 review): the WS path has no
-	// per-request model override header, so the user's selected model reaches
-	// the gateway through the instance config. Re-resolve it before the turn and
-	// surface a resolution error instead of silently running the runtime
-	// default, matching the HTTP path's fail-closed contract. The failure flows
-	// through the shared tail below so the ledger turn and metrics are finalized.
-	var modelErr error
-	if _, cerr := s.clientFor(user); cerr != nil {
-		modelErr = cerr
+		runErr = fmt.Errorf("live chat unavailable: gateway device channel is not configured")
+		s.logf("%s: %s", user, runErr)
+	} else if _, cerr := s.clientFor(user); cerr != nil {
+		runErr = cerr
+		s.logf("model resolution for %s: %v", user, cerr)
 	}
 
 	// Drive the whole turn over the WebSocket: RunLiveTurn subscribes the
 	// session, sends the message, and returns when the run is terminal (all
 	// text/tool events were already streamed via emitLive as they arrived).
-	if modelErr != nil {
-		s.logf("model resolution for %s: %v", user, modelErr)
-		streamErr = modelErr
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: modelErr.Error()})
+	if runErr != nil {
+		streamErr = runErr
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
 	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, emitLive); err != nil {
 		streamErr = err
 		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: err.Error()})

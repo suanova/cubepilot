@@ -294,19 +294,38 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 		// partialResult progress -- no SSE equivalent yet; ignore.
 		return nil
 	case "result":
-		// Defer: the terminal command_output (for exec) or item end (for
-		// non-exec) decides the final tool_result, so we never emit the raw
-		// result object prematurely or preempt the richer command output.
 		if call.resultOut {
 			return nil
 		}
-		call.pendingResult = toolResultText(t.Result)
-		if t.IsError && call.pendingResult == "" {
-			call.pendingResult = t.ErrorString
+		// Only exec/bash-style tools defer to their later command_output (the
+		// richer, complete output). Every other tool's stream result IS the
+		// complete result, so emit it now -- deferring until run terminal would
+		// leave read/search cards Running for the rest of the model turn.
+		if isCommandTool(call.name) {
+			call.pendingResult = toolResultText(t.Result)
+			if t.IsError && call.pendingResult == "" {
+				call.pendingResult = t.ErrorString
+			}
+			return nil
 		}
-		return nil
+		call.resultOut = true
+		out := toolResultText(t.Result)
+		if t.IsError && out == "" {
+			out = t.ErrorString
+		}
+		return []openclaw.Event{liveResult(sessionKey, t.ToolCallID, call.name, out)}
 	}
 	return nil
+}
+
+// isCommandTool reports whether a tool streams its output through a separate
+// command_output event (exec/bash family), whose terminal frame is the complete
+// output. read/search/... carry their full result in stream="tool" phase=result.
+func isCommandTool(name string) bool {
+	if name == "" {
+		return false
+	}
+	return name == "exec" || name == "bash" || strings.HasSuffix(name, "-exec")
 }
 
 // toolResultText renders a stream="tool" result payload as display text.

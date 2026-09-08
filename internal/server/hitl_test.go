@@ -357,6 +357,8 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	// A foreign run must not leak through.
 	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"foreign","stream":"item","data":{"kind":"tool","phase":"start","toolCallId":"x"}}`))
 	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"lifecycle","data":{"phase":"end"}}`))
+	// The projector's terminal frame (chat final) closes the turn.
+	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"final","deltaText":"ok"}`))
 
 	// Release the send; the run is terminal, so RunLiveTurn should return.
 	close(gw.sendBlock)
