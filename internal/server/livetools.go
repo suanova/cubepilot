@@ -33,7 +33,8 @@ const (
 // liveCall is the folding state of one in-flight tool call.
 type liveCall struct {
 	started   bool
-	sawOutput bool // output-carrying events seen for this call
+	name      string // real tool name, preserved into the tool_result (audit/ledger)
+	sawOutput bool   // output-carrying events seen for this call
 	output    strings.Builder
 	resultOut bool // a tool_result has already been emitted for this call
 }
@@ -123,7 +124,13 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 			}
 			call := p.call(it.ToolCallID)
 			if it.Kind == "tool" && it.Phase == "start" {
+				// The canonical stream="tool" start for the same call is emitted
+				// first; never emit a duplicate card from the item stream.
+				if call.started {
+					return nil, false
+				}
 				call.started = true
+				call.name = it.Name
 				args := it.Meta
 				if args == "" {
 					args = it.Title
@@ -141,7 +148,11 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 			// richer source, so only emit a bare Done when no result arrived.
 			if it.Kind == "tool" && it.Phase == "end" && call.started && !call.sawOutput && !call.resultOut {
 				call.resultOut = true
-				return []openclaw.Event{liveResult(sessionKey, it.ToolCallID, call.output.String())}, false
+				name := call.name
+				if name == "" {
+					name = it.Name
+				}
+				return []openclaw.Event{liveResult(sessionKey, it.ToolCallID, name, call.output.String())}, false
 			}
 		case "command_output":
 			var o agentOutput
@@ -165,7 +176,7 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				if out == "" {
 					out = o.Summary
 				}
-				return []openclaw.Event{liveResult(sessionKey, o.ToolCallID, out)}, false
+				return []openclaw.Event{liveResult(sessionKey, o.ToolCallID, call.name, out)}, false
 			}
 		}
 	case "chat":
@@ -179,6 +190,16 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				return nil, false
 			}
 			p.texts[d.RunID] = true
+			if d.Replace {
+				// A snapshot that supersedes previously streamed text (e.g. a
+				// commentary rewritten after the tool ran): the frontend must
+				// replace the bubble text, not append.
+				return []openclaw.Event{{
+					Type:      openclaw.EventTextReplace,
+					SessionID: sessionKey,
+					Delta:     d.DeltaText,
+				}}, false
+			}
 			return []openclaw.Event{{
 				Type:      openclaw.EventMessageDelta,
 				SessionID: sessionKey,
@@ -228,8 +249,13 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 	call := p.call(t.ToolCallID)
 	switch t.Phase {
 	case "start":
+		// The item stream echoes a start for the same call later; emit once.
+		if call.started {
+			return nil
+		}
 		call.started = true
 		call.sawOutput = false
+		call.name = t.Name
 		args := ""
 		if len(t.Args) > 0 && string(t.Args) != "null" {
 			args = string(t.Args) // keep JSON so the frontend renders arguments
@@ -255,7 +281,7 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 		if t.IsError && out == "" {
 			out = t.ErrorString
 		}
-		return []openclaw.Event{liveResult(sessionKey, t.ToolCallID, out)}
+		return []openclaw.Event{liveResult(sessionKey, t.ToolCallID, call.name, out)}
 	}
 	return nil
 }
@@ -314,11 +340,11 @@ func (c *liveCall) append(s string) {
 	c.output.WriteString(s)
 }
 
-func liveResult(sessionKey, callID, output string) openclaw.Event {
+func liveResult(sessionKey, callID, name, output string) openclaw.Event {
 	return openclaw.Event{
 		Type:      openclaw.EventToolResult,
 		SessionID: sessionKey,
-		Name:      "exec",
+		Name:      name,
 		CallID:    callID,
 		Output:    output,
 	}

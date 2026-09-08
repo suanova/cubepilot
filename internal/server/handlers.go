@@ -369,7 +369,10 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 			ToolName:       ev.Name,
 			Content:        ev.Output,
 		})
-	case openclaw.EventMessageDelta:
+	case openclaw.EventMessageDelta, openclaw.EventTextReplace:
+		// text_replace carries a full snapshot that supersedes earlier deltas;
+		// record it as the latest assistant row so the ledger's terminal text is
+		// consistent with what the user saw (issue #130).
 		_, _ = s.store.AppendMessage(store.Message{
 			ConversationID: sessionKey,
 			User:           user,

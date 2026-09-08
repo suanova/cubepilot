@@ -80,9 +80,30 @@ type liveTurn struct {
 	sink func(openclaw.Event) error
 	proj *liveProjector
 
+	runMu sync.Mutex
+	runID string // runId of the turn's run; set from the send ACK, filters events
+
 	done    chan struct{}
 	once    sync.Once
 	doneErr error
+}
+
+// setRunID records the run this turn is projecting (from sessions.send's ACK).
+func (t *liveTurn) setRunID(id string) {
+	t.runMu.Lock()
+	t.runID = id
+	t.runMu.Unlock()
+}
+
+// acceptRun reports whether an event whose payload runId belongs to this turn.
+// Until the ACK arrives runID is unknown, so everything is accepted (the window
+// is before the gateway starts producing content); afterwards only that run's
+// events project, so a parallel/older run on the same session cannot leak into
+// this SSE or terminate this turn.
+func (t *liveTurn) acceptRun(id string) bool {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	return t.runID == "" || id == "" || t.runID == id
 }
 
 // finish marks the turn terminal (idempotent).
@@ -456,6 +477,9 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 		return err
 	}
 	if runID != "" {
+		t.setRunID(runID)
+	}
+	if runID != "" {
 		// Authoritative completion: blocks until the run the gateway started for
 		// us is done. All its content frames (TCP-ordered before this response)
 		// have already streamed into sink by the time it returns.
@@ -483,6 +507,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 func (m *hitlManager) routeLive(user, evName string, payload []byte) {
 	var hdr struct {
 		SessionKey string `json:"sessionKey"`
+		RunID      string `json:"runId"`
 	}
 	if err := json.Unmarshal(payload, &hdr); err != nil || hdr.SessionKey == "" {
 		return
@@ -490,7 +515,7 @@ func (m *hitlManager) routeLive(user, evName string, payload []byte) {
 	m.liveMu.Lock()
 	t := m.live[hdr.SessionKey]
 	m.liveMu.Unlock()
-	if t == nil || t.user != user {
+	if t == nil || t.user != user || !t.acceptRun(hdr.RunID) {
 		return
 	}
 	evs, terminal := t.proj.feed(hdr.SessionKey, evName, payload)

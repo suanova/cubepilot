@@ -154,16 +154,55 @@ func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message str
 	return ack.RunID, nil
 }
 
+// agentWaitTimeoutMs bounds each agent.wait RPC. The gateway's wait has its own
+// 30s default that returns a "timeout" status while the run is still going;
+// we loop until a terminal status instead of trusting a single RPC.
+const agentWaitTimeoutMs = 10000
+
 // AgentWait blocks on the same connection until the run identified by runID is
 // terminal, then returns (agent.wait is the authoritative run completion RPC;
-// chat.send only ACKs start).
+// chat.send only ACKs start). agent.wait may return an RPC-ok payload whose
+// status is still "timeout" while the run continues (its own wait default is
+// 30s); this decodes the payload and keeps waiting until "ok" / "error" or the
+// context is done, so a slow first token or a long tool chain does not make the
+// caller conclude the turn is over and unsubscribe early.
 func (c *Client) AgentWait(ctx context.Context, runID string) error {
 	if runID == "" {
 		return fmt.Errorf("agent.wait: empty run id")
 	}
-	_, err := c.Call(ctx, "agent.wait", map[string]any{"runId": runID})
-	if err != nil {
-		return fmt.Errorf("agent.wait %q: %w", runID, err)
+	for {
+		raw, err := c.Call(ctx, "agent.wait", map[string]any{"runId": runID, "timeoutMs": agentWaitTimeoutMs})
+		if err != nil {
+			return fmt.Errorf("agent.wait %q: %w", runID, err)
+		}
+		var res struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		}
+		// A successful RPC always carries a status; tolerate decode/older
+		// gateways by treating an absent one as terminal-ok.
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return nil
+		}
+		switch res.Status {
+		case "ok":
+			return nil
+		case "error":
+			msg := res.Error
+			if msg == "" {
+				msg = "agent run failed"
+			}
+			return fmt.Errorf("%s", msg)
+		case "timeout", "pending", "":
+			// run still in flight -- keep waiting on this runId
+		default:
+			// Unknown terminal-looking status; treat as done.
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 	}
-	return nil
 }

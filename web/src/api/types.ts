@@ -151,6 +151,13 @@ export interface SSEMessageDelta {
   session_id: string
   delta: string
 }
+// The gateway rewrote the assistant text (replace:true) -- replace the bubble
+// text with delta instead of appending.
+export interface SSETextReplace {
+  type: 'text_replace'
+  session_id: string
+  delta: string
+}
 export interface SSEMessageDone {
   type: 'message_done'
   session_id: string
@@ -180,6 +187,7 @@ export type SSEEvent =
   | SSEToolCall
   | SSEToolResult
   | SSEMessageDelta
+  | SSETextReplace
   | SSEMessageDone
   | SSEConfirmPending
   | SSEConfirmResolved

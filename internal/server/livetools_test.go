@@ -129,3 +129,39 @@ func TestLiveProjector_IgnoresUnrelatedAndMalformed(t *testing.T) {
 		t.Fatalf("malformed payload must be ignored, got %+v", got)
 	}
 }
+
+func TestLiveProjector_ToolStartDedupAndName(t *testing.T) {
+	p := newLiveProjector()
+	var evs []openclaw.Event
+	feed := func(payload string) {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		evs = append(evs, got...)
+	}
+	// canonical stream="tool" start, then the tracked item start echo.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"start","name":"read","title":"read /tmp/x","toolCallId":"c9"}}`)
+	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"start","name":"read","title":"read /tmp/x","toolCallId":"c9"}}`)
+	if len(evs) != 1 {
+		t.Fatalf("duplicate tool start emitted: %d events", len(evs))
+	}
+	if evs[0].Name != "read" {
+		t.Fatalf("name = %q, want read", evs[0].Name)
+	}
+	// result preserves the tool name, not exec.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"text":"file contents"},"toolCallId":"c9"}}`)
+	if len(evs) != 2 || evs[1].Name != "read" {
+		t.Fatalf("result = %+v, want name=read", evs)
+	}
+}
+
+func TestLiveProjector_TextReplace(t *testing.T) {
+	p := newLiveProjector()
+	// A delta, then a replace snapshot that supersedes it.
+	got, _ := p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","runId":"r1","state":"delta","deltaText":"Hello world"}`))
+	if len(got) != 1 || got[0].Type != openclaw.EventMessageDelta {
+		t.Fatalf("delta = %+v", got)
+	}
+	got, _ = p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","runId":"r1","state":"delta","deltaText":"Hi","replace":true}`))
+	if len(got) != 1 || got[0].Type != openclaw.EventTextReplace || got[0].Delta != "Hi" {
+		t.Fatalf("replace = %+v, want a text_replace event", got)
+	}
+}
