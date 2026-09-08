@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +29,14 @@ const (
 	reachableTimeout = 30 * time.Second
 )
 
+// Poll cadences for warming waiters. Kept as vars (not consts) so tests can
+// shorten them; production cadence is fixed at the values below.
+var (
+	crWarmTick    = 2 * time.Second
+	reachableTick = time.Second
+	reachableDial = 2 * time.Second
+)
+
 // Manager resolves and warms per-(user, agent) instances. Instances are
 // AgentInstance CRs reconciled by the platform controllers; the manager
 // observes the CR status and waits for the gateway to become reachable.
@@ -40,6 +47,10 @@ type Manager struct {
 	port int32
 
 	resolve *resolver.Resolver
+
+	// probe reports whether the gateway at addr accepts TCP connections. It is
+	// a field so tests can stub reachability without a real Service to dial.
+	probe func(addr string, timeout time.Duration) error
 
 	mu     sync.Mutex
 	active map[string]time.Time // agentKey -> last activity
@@ -54,7 +65,19 @@ func New(cr client.Client, cfg config.Config) *Manager {
 		port:    int32(cfg.AgentPort),
 		resolve: resolver.New(cr),
 		active:  map[string]time.Time{},
+		probe:   probeTCP,
 	}
+}
+
+// probeTCP dials addr and closes the connection on success; non-nil error
+// means the gateway is not reachable yet.
+func probeTCP(addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
 }
 
 // AgentKey is the instance key = user + agent (design §3.2).
@@ -119,10 +142,16 @@ func (m *Manager) EnsureFor(ctx context.Context, k AgentKey) error {
 	return m.waitReachableFor(ctx, k8s.ResourceName("agent", k.InstanceName()))
 }
 
-// waitCRWarm polls the AgentInstance CR until phase == Warm (or the deadline).
+// waitCRWarm waits until the AgentInstance CR reaches the Ready phase (or the
+// deadline). The warm case is the common one -- every runtime-touching request
+// warms on the way in -- so it probes once before starting the ticker instead
+// of paying a full tick for an instance that is already Ready.
 func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
+	if m.crReady(ctx, instanceName) {
+		return nil
+	}
 	deadline := time.After(readyTimeout)
-	tick := time.NewTicker(2 * time.Second)
+	tick := time.NewTicker(crWarmTick)
 	defer tick.Stop()
 	for {
 		select {
@@ -131,23 +160,28 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 		case <-deadline:
 			return fmt.Errorf("agent instance %s not warm within timeout", instanceName)
 		case <-tick.C:
-			var inst v1alpha1.AgentInstance
-			err := m.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
-			if err != nil {
-				if apierrors.IsNotFound(err) {
-					continue // controller still creating
-				}
-				continue
-			}
-			switch inst.Status.Phase {
-			case v1alpha1.InstanceReady:
+			if m.crReady(ctx, instanceName) {
 				return nil
-			case v1alpha1.InstanceFailed:
-				// Let the controller heal; keep waiting (transient).
-				log.Printf("instances: %s failed (%s), waiting for heal", instanceName, inst.Status.Message)
 			}
 		}
 	}
+}
+
+// crReady reports whether the AgentInstance CR is in the Ready phase.
+func (m *Manager) crReady(ctx context.Context, instanceName string) bool {
+	var inst v1alpha1.AgentInstance
+	err := m.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
+	if err != nil {
+		return false // controller still creating / transient read error
+	}
+	switch inst.Status.Phase {
+	case v1alpha1.InstanceReady:
+		return true
+	case v1alpha1.InstanceFailed:
+		// Let the controller heal; keep waiting (transient).
+		log.Printf("instances: %s failed (%s), waiting for heal", instanceName, inst.Status.Message)
+	}
+	return false
 }
 
 // SelectedModelFor resolves the per-turn model override for a user's agent
@@ -194,12 +228,16 @@ func (m *Manager) InstanceStatusFor(ctx context.Context, k AgentKey) (exists boo
 	return true, p, time.Time{}
 }
 
-// waitReachableFor polls the instance gateway until the TCP port accepts
-// connections (the gateway is up and the Service routes to it).
+// waitReachableFor waits until the instance gateway accepts TCP connections
+// (the gateway is up and the Service routes to it). Like waitCRWarm it probes
+// once up front so an already-reachable gateway does not cost a full tick.
 func (m *Manager) waitReachableFor(ctx context.Context, podName string) error {
 	addr := fmt.Sprintf("%s.%s.svc:%d", podName, m.ns, m.port)
+	if m.reachable(addr) {
+		return nil
+	}
 	deadline := time.After(reachableTimeout)
-	tick := time.NewTicker(time.Second)
+	tick := time.NewTicker(reachableTick)
 	defer tick.Stop()
 	for {
 		select {
@@ -208,13 +246,16 @@ func (m *Manager) waitReachableFor(ctx context.Context, podName string) error {
 		case <-deadline:
 			return fmt.Errorf("agent service %s not reachable within timeout", addr)
 		case <-tick.C:
-			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-			if err == nil {
-				_ = conn.Close()
+			if m.reachable(addr) {
 				return nil
 			}
 		}
 	}
+}
+
+// reachable reports whether the gateway at addr accepts a TCP connection.
+func (m *Manager) reachable(addr string) bool {
+	return m.probe(addr, reachableDial) == nil
 }
 
 var _ = metav1.Now
