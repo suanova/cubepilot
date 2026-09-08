@@ -12,6 +12,7 @@
 - **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel → template.defaultModel → template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效。
 - **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。
+- **System Prompt 运行时送达（issue #137）**：WS-only chat 移除旧 `role=system` 注入后，Agent Config 的 System Prompt 已随 #143 改存 `AgentInstance.spec.userInstructions`（**每用户**，全局 `store.AgentConfig` 整体随 #143 移除），但 runtime 送达之前缺失——supervisor 每 poll 把 `ResolvedAgentConfig.Instructions`（模板指令 + 用户指令合成）渲染进实例 `workspace/AGENTS.md` 的 `<!-- cubepilot:system-prompt:start/end -->` 管理段（marker 外内容原样保留，原子写 + 内容哈希去重，超 32KB 跳过），OpenClaw 每回合重读该文件即下一回合生效；Pod 重建后 seed initContainer 会冲掉 AGENTS.md，supervisor 首轮 poll 自动重写收敛。
 - **实例状态阶段**：`status.phase` 为 Creating/Ready/Failed（Ready 为稳态，设计 §3.2）；原设计的 Idle/Reclaiming 相位与 idle-reclaim 配置面未实现，已随 issue #134 移除（实例常驻 resident，见「已确认的有意取舍」）。
 - **模板与执行分离**：TaskTemplate / Task / TaskRun 三态分离；TaskRun 记录 `templateRevision` / `skillRevision`（内容 sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
 - **Task 状态字符串枚举**：`spec.state: Enabled | Paused`（自定义 bool），CRD default=Enabled。

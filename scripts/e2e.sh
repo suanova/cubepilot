@@ -124,4 +124,32 @@ kubectl -n "$NAMESPACE" get pods | grep -E "agent-${E2E_USER}" | grep -q "Runnin
   || fail "no Running agent-${E2E_USER} pod"
 ok "agent pod running"
 
+# System Prompt under WS-only chat (issue #137): a per-user system prompt is
+# stored on the AgentInstance and rendered by the supervisor into the workspace
+# AGENTS.md on its next poll (~10s). Assert the marker block appears on disk
+# (deterministic) -- not that a model happens to follow it.
+step "system prompt renders into the agent workspace AGENTS.md"
+SP_MARKER="e2e-system-prompt-$(date +%s)"
+curl -sf --max-time 10 -X PUT "http://127.0.0.1:18080/api/agent/config" \
+  -H 'Content-Type: application/json' \
+  -H "X-CubePilot-User: $E2E_USER" \
+  -d "$(jq -n --arg m "$SP_MARKER" '{config:{model:"",systemPrompt:$m}}')" >/dev/null \
+  || fail "system prompt PUT failed"
+AGENT_POD="$(kubectl -n "$NAMESPACE" get pods -o name | grep -E "pod/agent-${E2E_USER}-" | head -1 | sed 's#pod/##')"
+[ -n "$AGENT_POD" ] || fail "could not resolve agent pod for $E2E_USER"
+found=""
+for _ in $(seq 1 15); do
+  if kubectl -n "$NAMESPACE" exec "$AGENT_POD" -c supervisor -- \
+      grep -q "cubepilot:system-prompt" /home/node/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+    found=1
+    break
+  fi
+  sleep 2
+done
+[ -n "$found" ] || fail "managed system-prompt block not found in AGENTS.md within ~30s"
+kubectl -n "$NAMESPACE" exec "$AGENT_POD" -c supervisor -- \
+  grep -q "$SP_MARKER" /home/node/.openclaw/workspace/AGENTS.md \
+  || fail "AGENTS.md does not carry the saved system prompt text"
+ok "system prompt block present in the agent workspace AGENTS.md"
+
 echo "E2E PASS (deploy + chat)"
