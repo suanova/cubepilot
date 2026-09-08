@@ -23,6 +23,7 @@ type fakeHitlGateway struct {
 	connectSeq   []error // optional per-connect results, consumed in order
 	getErr       error
 	setErr       error
+	guardErr     error
 	initialAllow []ws.AllowlistEntry
 
 	// live-tool channel (issue #130)
@@ -111,7 +112,7 @@ func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.Approv
 }
 func (f *fakeHitlGateway) EnsureSessionGuarded(ctx context.Context, key string) error {
 	f.guarded = append(f.guarded, key)
-	return nil
+	return f.guardErr
 }
 func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision string) error {
 	f.resolves = append(f.resolves, id+"|"+decision)
@@ -263,19 +264,84 @@ func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
 	}
 }
 
-// TestHitl_AllowlistBestEffortOnPolicyError verifies Allowlist keeps the issue
-// #20 best-effort posture: a policy-apply failure is logged but the turn still
-// proceeds (nil error), so transient channel hiccups do not block chat.
-func TestHitl_AllowlistBestEffortOnPolicyError(t *testing.T) {
+// TestHitl_AllowlistFailsClosedOnPolicyError verifies Allowlist, like
+// AlwaysAsk, fails closed when the exec policy cannot be applied (issue #127):
+// the turn must not run on a session that cannot ask, instead of proceeding
+// ungated.
+func TestHitl_AllowlistFailsClosedOnPolicyError(t *testing.T) {
 	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err != nil {
-		t.Fatalf("Allowlist PreTurn should be best-effort (nil error), got %v", err)
+	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("Allowlist PreTurn should fail closed when the policy cannot be applied")
 	}
 	// The failed apply must not advance the revision watermark (retried next turn).
 	if m.revPol["alice"] != "" {
 		t.Errorf("revPol advanced despite a failed apply: %q", m.revPol["alice"])
 	}
+}
+
+// TestHitl_GatedPoliciesFailClosedOnChannelDown verifies both Allowlist and
+// AlwaysAsk refuse to start a turn when the approval connection cannot be
+// established (issue #127).
+func TestHitl_GatedPoliciesFailClosedOnChannelDown(t *testing.T) {
+	for _, pol := range []v1alpha1.ConfirmPolicy{v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk} {
+		gw := &fakeHitlGateway{connectErr: fmt.Errorf("ws dial: connection refused")}
+		m := newTestHitl(pol, "rev-1", gw)
+		if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+			t.Errorf("%s: PreTurn should fail closed when the channel is down", pol)
+		}
+		if len(gw.guarded) != 0 {
+			t.Errorf("%s: session guarded despite the failed connect: %v", pol, gw.guarded)
+		}
+	}
+}
+
+// TestHitl_GatedPoliciesFailClosedOnGuardError verifies a session that cannot
+// be guarded fails the turn closed for both gated policies (issue #127).
+func TestHitl_GatedPoliciesFailClosedOnGuardError(t *testing.T) {
+	for _, pol := range []v1alpha1.ConfirmPolicy{v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk} {
+		gw := &fakeHitlGateway{guardErr: fmt.Errorf("exec.approvals.guard: boom")}
+		m := newTestHitl(pol, "rev-1", gw)
+		if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+			t.Errorf("%s: PreTurn should fail closed when the session cannot be guarded", pol)
+		}
+	}
+}
+
+// TestHitl_ChannelState verifies the approval-channel status the confirm view
+// surfaces: up for an established/reachable connection, pairing while the
+// supervisor has not yet approved the derived device, and down when the gateway
+// cannot be reached (issue #127).
+func TestHitl_ChannelState(t *testing.T) {
+	t.Run("up when cached connection is live", func(t *testing.T) {
+		gw := &fakeHitlGateway{connected: true}
+		m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+		m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+		if got := m.channelState(context.Background(), "alice"); got != confirmChannelUp {
+			t.Fatalf("channelState = %q, want %q", got, confirmChannelUp)
+		}
+	})
+	t.Run("up when a fresh connect succeeds", func(t *testing.T) {
+		gw := &fakeHitlGateway{}
+		m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+		if got := m.channelState(context.Background(), "alice"); got != confirmChannelUp {
+			t.Fatalf("channelState = %q, want %q", got, confirmChannelUp)
+		}
+	})
+	t.Run("pairing while the supervisor approves the device", func(t *testing.T) {
+		gw := &fakeHitlGateway{connectErr: fmt.Errorf("NOT_PAIRED: device is not approved yet")}
+		m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+		if got := m.channelState(context.Background(), "alice"); got != confirmChannelPairing {
+			t.Fatalf("channelState = %q, want %q", got, confirmChannelPairing)
+		}
+	})
+	t.Run("down when the gateway is unreachable", func(t *testing.T) {
+		gw := &fakeHitlGateway{connectErr: fmt.Errorf("ws dial: connection refused")}
+		m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+		if got := m.channelState(context.Background(), "alice"); got != confirmChannelDown {
+			t.Fatalf("channelState = %q, want %q", got, confirmChannelDown)
+		}
+	})
 }
 
 // TestHitl_AlwaysAskGuardsAndClearsAllowlist verifies AlwaysAsk writes an empty

@@ -16,6 +16,19 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
+// Approval-channel state surfaced on the confirm view (issue #127): a gated
+// confirmPolicy only "does something" while the channel that pauses writes can
+// carry the turn. "up" = established/establishable now; "pairing" = first-time
+// device pairing in flight (auto-approves shortly); "down" = the channel cannot
+// be reached, so a gated turn fails closed; "unconfigured" = no HITL machinery
+// (the API could not bring the channel up).
+const (
+	confirmChannelUp           = "up"
+	confirmChannelPairing      = "pairing"
+	confirmChannelDown         = "down"
+	confirmChannelUnconfigured = "unconfigured"
+)
+
 // confirmView is the Portal's read of the confirmation configuration for the
 // caller's default agent instance (issue #116). confirmPolicy/allowlist are
 // the *effective* values (what the runtime enforces); override/allowlistOwned
@@ -27,6 +40,7 @@ type confirmView struct {
 	TemplatePolicy v1alpha1.ConfirmPolicy `json:"templatePolicy"`
 	Allowlist      []confirmRule          `json:"allowlist,omitempty"`
 	AllowlistOwned []confirmRule          `json:"allowlistOwned,omitempty"`
+	Channel        string                 `json:"channel"`
 }
 
 // confirmRule is one allowlist rule served to the Portal. Label is set by the
@@ -63,6 +77,7 @@ func (s *Server) handleAgentConfirm(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
+		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ConfirmPolicy)
 		writeJSON(w, http.StatusOK, view)
 	case http.MethodPut:
 		var body struct {
@@ -92,10 +107,31 @@ func (s *Server) handleAgentConfirm(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
+		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ConfirmPolicy)
 		writeJSON(w, http.StatusOK, view)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or PUT required"})
 	}
+}
+
+// gatedChannel reports the approval-channel state for the confirm view, but only
+// when the effective policy is actually gated: a None (or not-yet-provisioned)
+// instance has no gating to enforce, so probing would only add a needless
+// gateway dial (and seed a device pairing) for users who will never be gated.
+// It is empty otherwise.
+func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.ConfirmPolicy) string {
+	switch pol {
+	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
+	default:
+		return ""
+	}
+	// With no HITL manager the channel is unconfigured (after EnableHITL this
+	// only happens when the API could not bring the channel up -- a fatal
+	// misconfig).
+	if s.hitl == nil {
+		return confirmChannelUnconfigured
+	}
+	return s.hitl.channelState(ctx, user)
 }
 
 // confirmView resolves the effective + owned confirmation state for a user's

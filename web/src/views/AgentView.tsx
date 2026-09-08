@@ -441,6 +441,15 @@ export default function AgentView() {
                     {' '}{confirm.override ? 'you override' : 'inherited from template'}
                   </div>
                 )}
+                {confirm && confirm.exists && (confirm.confirmPolicy === 'Allowlist' || confirm.confirmPolicy === 'AlwaysAsk') && confirm.channel && confirm.channel !== 'up' && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: confirm.channel === 'pairing' ? 'var(--warn)' : 'var(--danger)' }}>
+                    {confirm.channel === 'unconfigured'
+                      ? 'Approval channel is not configured — gated policies cannot be enforced.'
+                      : confirm.channel === 'pairing'
+                        ? 'Approval channel is pairing (first-time device setup) — it enables automatically in a moment.'
+                        : 'Approval channel is unreachable — Allowlist / AlwaysAsk turns are refused until it recovers.'}
+                  </div>
+                )}
                 {confirm && !confirm.exists && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
                     Provision your instance first to configure confirmations.

@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -53,9 +54,12 @@ const hitlMasterSecretName = "cubepilot-hitl-master"
 // EnableHITL activates the human-in-the-loop approval channel (issue #20). The
 // device master key is auto-generated and persisted in a Secret (load-or-create)
 // so enabling needs no operator-supplied key; the API's ServiceAccount only
-// needs access to that one Secret. When the Secret cannot be ensured the API
-// logs and keeps the channel off (chat behavior unchanged) rather than crash.
-func (s *Server) EnableHITL() {
+// needs access to that one Secret. It returns an error when the channel cannot
+// be brought up: since live chat itself runs over the gateway device channel
+// (issue #130), a missing master key leaves the API unable to serve turns at
+// all, so the caller must treat a failure as fatal rather than start
+// half-configured (issue #127).
+func (s *Server) EnableHITL() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -73,14 +77,12 @@ func (s *Server) EnableHITL() {
 		var derr error
 		mk, derr = base64.StdEncoding.DecodeString(string(encoded))
 		if derr != nil || len(mk) == 0 {
-			s.logf("hitl: master Secret %s has an invalid 'key'; disabling HITL", hitlMasterSecretName)
-			return
+			return fmt.Errorf("hitl: master Secret %s has an invalid 'key'", hitlMasterSecretName)
 		}
 	case apierrors.IsNotFound(err):
 		mk = make([]byte, 32)
 		if _, rerr := rand.Read(mk); rerr != nil {
-			s.logf("hitl: generate master key: %v", rerr)
-			return
+			return fmt.Errorf("hitl: generate master key: %w", rerr)
 		}
 		sec = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: hitlMasterSecretName, Namespace: s.cfg.Namespace},
@@ -97,18 +99,16 @@ func (s *Server) EnableHITL() {
 				}
 			}
 			if len(mk) == 0 {
-				s.logf("hitl: ensure master Secret: %v; disabling HITL", cerr)
-				return
+				return fmt.Errorf("hitl: ensure master Secret: %w", cerr)
 			}
 		}
 	default:
-		s.logf("hitl: read master Secret: %v; disabling HITL", err)
-		return
+		return fmt.Errorf("hitl: read master Secret: %w", err)
 	}
 
 	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, mk, s.logf)
 	if m == nil {
-		return
+		return fmt.Errorf("hitl: cannot configure the approval channel (missing manager or gateway token)")
 	}
 	s.hitl = m
 	s.approvals.SetResolver(m)
@@ -123,6 +123,7 @@ func (s *Server) EnableHITL() {
 		})
 	}
 	s.logf("hitl: master key %s ensured; write confirmations enabled", hitlMasterSecretName)
+	return nil
 }
 
 // New builds the HTTP handler for the assistant service.

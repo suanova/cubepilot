@@ -219,4 +219,9 @@ export interface AgentConfirmView {
   override: string
   allowlistOwned: AllowlistRule[]
   templatePolicy: string
+  // Approval-channel state (issue #127): "up" | "pairing" | "down" |
+  // "unconfigured". A gated policy (Allowlist / AlwaysAsk) is only enforced
+  // while the channel is up; "down"/"unconfigured" means gated turns fail
+  // closed until the channel recovers.
+  channel: string
 }
