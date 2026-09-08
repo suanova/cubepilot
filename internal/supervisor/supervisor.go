@@ -480,20 +480,16 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 		log.Printf("supervisor: instructions contain a reserved system-prompt marker; skipping AGENTS.md sync")
 		return nil
 	}
-	current, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", path, err)
+	current, err := readNoFollow(path)
+	if err != nil {
+		return err
 	}
 	target := reconcileInstructions(current, desired)
 	if bytes.Equal(target, current) {
 		return nil // no change (or file absent + no block to write)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, target, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename %s: %w", path, err)
+	if err := writeTempAndRename(path, target); err != nil {
+		return err
 	}
 	if len(target) == 0 {
 		log.Printf("supervisor: removed AGENTS.md instructions block")
@@ -503,52 +499,117 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 	return nil
 }
 
+// readNoFollow returns the file content, or nil when the file does not exist.
+// AGENTS.md is agent-editable workspace content (the gateway and the supervisor
+// share the pod uid), so it must not be followed through a symlink: a symlinked
+// AGENTS.md could point the read (and a later rename) at an arbitrary path
+// outside the workspace. A symlink is treated as absent so the next write
+// replaces it with a regular file.
+func readNoFollow(path string) ([]byte, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		log.Printf("supervisor: %s is a symlink; treating as absent", path)
+		return nil, nil
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return b, nil
+}
+
+// writeTempAndRename atomically replaces path with data using an exclusively
+// created temporary file in the same directory (so the rename stays on one
+// filesystem). os.CreateTemp uses a random suffix with O_EXCL, so a
+// pre-created symlink at a predictable temp name cannot redirect the write
+// outside the workspace.
+func writeTempAndRename(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+agentsFileName+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
+	return nil
+}
+
 // reconcileInstructions returns the AGENTS.md content with the managed
-// instructions block matching `desired` (the merged template+user text).
-// The existing block between the markers (when present) is replaced in place;
-// if `desired` is empty the block is removed. Content outside the markers is
-// preserved byte-for-byte. A missing/empty input file (nil current) with no
-// desired block yields nil (nothing to write).
+// instructions block matching `desired` (the merged template+user text). The
+// file is split into prefix (before the block) and suffix (after it); the block
+// is spliced back between them so agent-authored content that follows the block
+// stays after it. When no block is present the whole file is the prefix. When
+// `desired` is empty the block is removed (prefix + suffix rejoined). Content
+// outside the markers is preserved byte-for-byte; a missing/empty input file
+// (nil current) with no desired block yields nil (nothing to write).
 func reconcileInstructions(current []byte, desired string) []byte {
 	startIdx := bytes.Index(current, []byte(systemPromptStart))
-	endIdx := -1
+	var prefix, suffix []byte
 	if startIdx >= 0 {
 		// The end marker is searched from the start marker so a stray end
 		// marker earlier in the file cannot truncate user content. A missing
 		// end marker means the block is unterminated (agent edit); drop
 		// everything from the start marker to EOF rather than duplicate it.
+		prefix = current[:startIdx]
 		if rel := bytes.Index(current[startIdx:], []byte(systemPromptEnd)); rel >= 0 {
-			endIdx = startIdx + rel + len(systemPromptEnd)
-		} else {
-			endIdx = len(current)
+			suffix = current[startIdx+rel+len(systemPromptEnd):]
 		}
+	} else {
+		prefix = current
 	}
 
-	// Rebuild without the managed block: everything before the start marker,
-	// then everything after the end marker. Collapse the blank gap the block
-	// occupied down to a single trailing newline.
-	out := current
-	if startIdx >= 0 {
-		out = append([]byte{}, current[:startIdx]...)
-		out = append(out, current[endIdx:]...)
-		out = bytes.TrimRight(out, "\n")
-		out = append(out, '\n')
+	block := ""
+	if strings.TrimSpace(desired) != "" {
+		block = systemPromptStart + "\n" + systemPromptHeader + "\n\n" +
+			strings.TrimSpace(desired) + "\n" + systemPromptEnd
 	}
+	return spliceSections(prefix, block, suffix)
+}
 
-	if strings.TrimSpace(desired) == "" {
-		if len(bytes.TrimSpace(out)) == 0 {
-			return nil
+// spliceSections joins up to three text sections with a blank line between each
+// pair, so the managed block is a self-contained section regardless of what the
+// agent wrote before or after it. Leading/trailing blank lines of each section
+// are trimmed; the result is nil when every section is blank.
+func spliceSections(prefix []byte, block string, suffix []byte) []byte {
+	var out []byte
+	flush := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
 		}
-		return out
+		if len(out) > 0 {
+			out = append(out, '\n', '\n')
+		}
+		out = append(out, s...)
 	}
-
-	// An absent file has no trailing content to keep; start the block directly.
-	if len(bytes.TrimSpace(out)) == 0 {
-		out = nil
+	flush(string(prefix))
+	flush(block)
+	flush(string(suffix))
+	if len(out) == 0 {
+		return nil
 	}
-	block := "\n\n" + systemPromptStart + "\n" + systemPromptHeader + "\n\n" +
-		strings.TrimSpace(desired) + "\n" + systemPromptEnd
-	return append(out, []byte(block)...)
+	return append(out, '\n')
 }
 
 // fetchConfig pulls the resolved agent config from the internal API.

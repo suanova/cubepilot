@@ -446,6 +446,13 @@ func TestReconcileInstructions(t *testing.T) {
 		if !strings.Contains(string(got), "new instructions") {
 			t.Error("updated instructions missing")
 		}
+		// The managed block is spliced back between the persona prefix and the
+		// agent-authored suffix, so the suffix stays after the instructions
+		// (regression: it used to be moved before the replacement block).
+		ib, kb := bytes.Index(got, []byte("new instructions")), bytes.Index(got, []byte("# Agent note"))
+		if ib < 0 || kb < 0 || ib > kb {
+			t.Errorf("agent content not kept after the managed block (instructions at %d, note at %d):\n%s", ib, kb, got)
+		}
 	})
 
 	t.Run("tolerates unterminated block", func(t *testing.T) {
@@ -547,8 +554,50 @@ func TestSyncInstructions(t *testing.T) {
 		t.Fatalf("nil cfg: %v", err)
 	}
 
-	// No leftover temp file.
-	if _, err := os.Stat(agentsPath + ".tmp"); !os.IsNotExist(err) {
-		t.Error("temp file left behind")
+	// No leftover temp files (the atomic write uses an exclusive random-named
+	// temp in the workspace dir and renames it away on success).
+	entries, err := os.ReadDir(ws)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "."+agentsFileName+".tmp-") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+// TestSyncInstructionsSymlinkAGENTS verifies a symlinked AGENTS.md is treated as
+// absent and replaced by a regular file on the next sync -- the supervisor and
+// the gateway share the pod uid, so a workspace AGENTS.md symlink must not be
+// followed to an arbitrary path (regression for the no-follow read + exclusive
+// temp write).
+func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
+	ws := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("do not read"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentsPath := filepath.Join(ws, "AGENTS.md")
+	if err := os.Symlink(outside, agentsPath); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Workspace: ws})
+	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+		t.Fatalf("sync over symlink: %v", err)
+	}
+	fi, err := os.Lstat(agentsPath)
+	if err != nil {
+		t.Fatalf("lstat AGENTS.md: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("AGENTS.md still a symlink after sync")
+	}
+	raw, _ := os.ReadFile(agentsPath)
+	if !strings.Contains(string(raw), "Answer in Chinese.") {
+		t.Errorf("instructions not written over the symlink:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "do not read") {
+		t.Errorf("symlink target content was read and copied:\n%s", raw)
 	}
 }
