@@ -102,8 +102,8 @@ func main() {
 		Handler: srv.Handler(),
 	}
 	go func() {
-		log.Printf("cubepilot-api listening on %s (namespace=%s, reclaim=%v)",
-			cfg.Listen, cfg.Namespace, cfg.ReclaimEnabled)
+		log.Printf("cubepilot-api listening on %s (namespace=%s)",
+			cfg.Listen, cfg.Namespace)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http server: %v", err)
 		}

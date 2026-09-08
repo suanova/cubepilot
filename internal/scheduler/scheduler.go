@@ -150,8 +150,8 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	// execution identity). When the owner's instance no longer exists (e.g.
 	// the user was disabled and its instance reclaimed), record a Failed
 	// TaskRun and execute nothing rather than running with a stale identity.
-	// Transient phases (Creating/Idle/Failed) fall through -- the runner warms
-	// the instance up below, mirroring instances.Manager's heal-and-wait.
+	// Transient phases (Creating/Failed) fall through -- the runner warms the
+	// instance up below, mirroring instances.Manager's heal-and-wait.
 	if reason := r.ownerInstanceMissing(ctx, task.Spec.Owner); reason != nil {
 		log.Printf("scheduler: task %s fire skipped: %v", task.Name, reason)
 		r.recordSkippedRun(ctx, task, trigger, reason)

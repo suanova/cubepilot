@@ -394,10 +394,6 @@ export default function AgentView() {
                   </div>
                 </div>
                 <div className="inst">
-                  <div className="k">Idle Reclaim</div>
-                  <div className="v">{status?.idleTTLMinutes ? status.idleTTLMinutes + ' min' : '-'}</div>
-                </div>
-                <div className="inst">
                   <div className="k">Data Volume</div>
                   <div className="v" style={{ fontSize: 12 }}>
                     <span className="mono">data-{status?.user}</span>

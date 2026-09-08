@@ -6,7 +6,7 @@ import (
 )
 
 // InstancePhase is the lifecycle phase of an agent instance (design §3.2:
-// Ready when running, Idle when suspended, etc).
+// Creating while provisioning, Ready when running, Failed on error).
 type InstancePhase string
 
 const (
@@ -14,10 +14,6 @@ const (
 	InstanceCreating InstancePhase = "Creating"
 	// InstanceReady means the instance is running and ready (resident).
 	InstanceReady InstancePhase = "Ready"
-	// InstanceIdle means the instance is idle (on-demand mode, phase 2).
-	InstanceIdle InstancePhase = "Idle"
-	// InstanceReclaiming means the instance is being torn down.
-	InstanceReclaiming InstancePhase = "Reclaiming"
 	// InstanceFailed means the instance is in a failed state.
 	InstanceFailed InstancePhase = "Failed"
 )
@@ -74,17 +70,13 @@ type DataVolumeSpec struct {
 	Size string `json:"size,omitempty"`
 }
 
-// LifecycleSpec is the instance lifecycle policy (design §3.2: resident for the
-// phase-one builtin agent; on-demand for phase-two user-created agents).
+// LifecycleSpec is the instance lifecycle policy (design §3.2). Instances are
+// resident by default: they stay up once started and are never idle-reclaimed.
 type LifecycleSpec struct {
 	// Strategy is resident | on-demand (default resident).
 	// +kubebuilder:default=resident
 	// +optional
 	Strategy string `json:"strategy,omitempty"`
-	// IdleTTL is the idle retention for on-demand instances (0 = never
-	// reclaimed; default 0).
-	// +optional
-	IdleTTLSeconds int64 `json:"idleTTLSeconds,omitempty"`
 }
 
 // AgentInstanceSpec is the runtime instance of an AgentTemplate definition for
@@ -137,7 +129,7 @@ type AgentInstanceSpec struct {
 // AgentInstanceStatus is the observed state of an instance (design §3.2,
 // written by the Instance Manager controller -- users do not edit it).
 type AgentInstanceStatus struct {
-	// Phase is Creating / Ready / Idle / Reclaiming / Failed.
+	// Phase is Creating / Ready / Failed.
 	// +optional
 	Phase InstancePhase `json:"phase,omitempty"`
 	// PodName is the running agent Pod (empty when not running).
@@ -174,8 +166,8 @@ type AgentInstanceStatus struct {
 
 // AgentInstance is the runtime instance of an AgentTemplate for one user
 // (design §3.2). It is reconciled by the Instance Manager controller:
-// provision / self-heal / idle reclaim / data-directory GC. The instance key
-// is user + template (one instance per user per template, single-writer).
+// provision / self-heal / data-directory GC. The instance key is user +
+// template (one instance per user per template, single-writer).
 type AgentInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

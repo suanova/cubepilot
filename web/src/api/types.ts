@@ -105,8 +105,6 @@ export interface AgentStatus {
   uptimeSeconds?: number
   gatewayImage?: string
   gatewayPort?: number
-  idleTTLMinutes?: number
-  idleTTLSeconds?: number
   user: string
 }
 

@@ -36,8 +36,8 @@ spec:
         description: |-
           AgentInstance is the runtime instance of an AgentTemplate for one user
           (design §3.2). It is reconciled by the Instance Manager controller:
-          provision / self-heal / idle reclaim / data-directory GC. The instance key
-          is user + template (one instance per user per template, single-writer).
+          provision / self-heal / data-directory GC. The instance key is user +
+          template (one instance per user per template, single-writer).
         properties:
           apiVersion:
             description: |-
@@ -181,12 +181,6 @@ spec:
                 description: Lifecycle overrides the definition defaults (within quota
                   bounds).
                 properties:
-                  idleTTLSeconds:
-                    description: |-
-                      IdleTTL is the idle retention for on-demand instances (0 = never
-                      reclaimed; default 0).
-                    format: int64
-                    type: integer
                   strategy:
                     default: resident
                     description: Strategy is resident | on-demand (default resident).
@@ -293,7 +287,7 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: Phase is Creating / Ready / Idle / Reclaiming / Failed.
+                description: Phase is Creating / Ready / Failed.
                 type: string
               podName:
                 description: PodName is the running agent Pod (empty when not running).

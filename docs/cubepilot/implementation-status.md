@@ -12,7 +12,7 @@
 - **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel → template.defaultModel → template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；`x-openclaw-model` 头每请求热生效。
 - **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。
-- **实例状态阶段**：`status.phase` 六态（Creating/Ready/Idle/Reclaiming/Failed），Ready 为稳态（设计 §3.2）。
+- **实例状态阶段**：`status.phase` 为 Creating/Ready/Failed（Ready 为稳态，设计 §3.2）；原设计的 Idle/Reclaiming 相位与 idle-reclaim 配置面未实现，已随 issue #134 移除（实例常驻 resident，见「已确认的有意取舍」）。
 - **模板与执行分离**：TaskTemplate / Task / TaskRun 三态分离；TaskRun 记录 `templateRevision` / `skillRevision`（内容 sha256 前 12 hex）；手动 run 走 annotation 触发，幂等。
 - **Task 状态字符串枚举**：`spec.state: Enabled | Paused`（自定义 bool），CRD default=Enabled。
 - **枚举值 CRD 校验**：六种枚举（runtime / provider / skill type / confirmPolicy / trigger / task state）均带 `kubebuilder:validation:Enum`。
@@ -43,6 +43,7 @@
 - **MCP Gateway**：阶段一不建（设计 §1.2/§5 阶段二统一执行边界），kubectl 由 OpenClaw 直接 exec。审计由 API 从 SSE 流捕获 tool_call 事后记录。
 - **存储**：不用 PostgreSQL/Redis，CRD/对象存储 + 每实例 RWO PVC（设计 §3.6 一致）。
 - **身份**：一期用 `X-CubePilot-User` 请求头模拟身份（OIDC 归阶段二 Keycloak）。
+- **实例闲置回收（idle reclaim / on-demand）**：不实现。实例一经启动即常驻（resident），不做闲置回收；相关配置面（`CUBEPILOT_RECLAIM` / `CUBEPILOT_IDLE_TTL`、`spec.lifecycle.idleTTLSeconds`、Idle/Reclaiming 相位）已移除（issue #134）。
 - **可观测性**：验收不强制（设计 §8.1 预留即可）。
 
 ## 本次对齐变更清单（2026-08-25）

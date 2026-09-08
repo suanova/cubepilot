@@ -151,8 +151,8 @@ func main() {
 		log.Printf("bootstrap ensure: %v (controller will retry)", err)
 	}
 
-	log.Printf("cubepilot-operator started (namespace=%s, replicas=%d, reclaim=%v)",
-		cfg.Namespace, cfg.Replicas, cfg.ReclaimEnabled)
+	log.Printf("cubepilot-operator started (namespace=%s, replicas=%d)",
+		cfg.Namespace, cfg.Replicas)
 	<-ctx.Done()
 	log.Println("shutting down")
 }

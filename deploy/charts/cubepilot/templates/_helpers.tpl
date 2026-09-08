@@ -14,10 +14,6 @@ config.Load() (internal/config), so they receive the same environment.
   value: {{ .Release.Namespace | quote }}
 - name: CUBEPILOT_AGENT_IMAGE
   value: {{ .Values.agents.image | quote }}
-- name: CUBEPILOT_RECLAIM
-  value: {{ .Values.agents.reclaim | quote }}
-- name: CUBEPILOT_IDLE_TTL
-  value: {{ .Values.agents.idleTTL | quote }}
 - name: CUBEPILOT_GC_WINDOW
   value: {{ .Values.agents.gcWindow | quote }}
 - name: CUBEPILOT_GC_WATERMARK
