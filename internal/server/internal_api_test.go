@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
@@ -137,6 +138,18 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 
 type configResponse struct {
 	Config agentConfigView `json:"config"`
+}
+
+// TestAgentConfigWithoutCRClient verifies PUT /api/agent/config answers a
+// controlled 503 (not a panic) when no Kubernetes client is configured,
+// mirroring the nil-cr guard the GET path and model validator already have.
+func TestAgentConfigWithoutCRClient(t *testing.T) {
+	s := New(config.Config{DefaultUser: "zhang.wei"}, nil, nil, nil, nil)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
+		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
 }
 
 // TestAgentConfigModelOverride verifies a model switch on the Agent config page

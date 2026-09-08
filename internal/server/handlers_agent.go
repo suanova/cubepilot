@@ -23,6 +23,10 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store is not configured"})
+		return
+	}
 	limit := 400
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -58,6 +62,12 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"config": s.agentConfig(r.Context(), user)})
 	case http.MethodPut:
+		// Config lives on the AgentInstance CR; without the CR client there is
+		// nowhere to write it, so answer a controlled 503 instead of panicking.
+		if s.cr == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "agent config is stored on the AgentInstance CR, which is unavailable (no Kubernetes client)"})
+			return
+		}
 		var body struct {
 			Config agentConfigView `json:"config"`
 		}
