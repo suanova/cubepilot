@@ -189,13 +189,11 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 			Error        string `json:"error"`
 			TimeoutPhase string `json:"timeoutPhase"`
 		}
-		var meta map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &res); err != nil || res.Status == "" {
 			// Fail closed on a malformed/unknown payload: never treat an
 			// ambiguous wait result as a finished run.
 			return fmt.Errorf("agent.wait %q: malformed response (status empty)", runID)
 		}
-		_ = json.Unmarshal(raw, &meta)
 		switch res.Status {
 		case "ok":
 			return nil
@@ -207,11 +205,12 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 			return fmt.Errorf("%s", msg)
 		case "timeout":
 			// OpenClaw uses status "timeout" both for a bounded wait deadline
-			// (run still in flight, no terminal metadata) and for a genuinely
-			// terminal provider timeout (carries endedAt/timeoutPhase and is
-			// cached, so every retry would return it immediately). Only the
-			// former should be retried.
-			if isTerminalTimeout(res, meta) {
+			// (run still in flight -- no terminal marker) and for a genuinely
+			// terminal provider timeout (carries timeoutPhase, and is cached, so
+			// every retry would return it immediately). Only the former should be
+			// retried; endedAt is not a reliable discriminator (a bounded wait
+			// deadline also stamps it), so terminal is keyed on timeoutPhase.
+			if res.TimeoutPhase != "" {
 				msg := res.Error
 				if msg == "" {
 					msg = "agent run timed out"

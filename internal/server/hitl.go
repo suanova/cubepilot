@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/google/uuid"
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
