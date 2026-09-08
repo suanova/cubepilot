@@ -43,6 +43,11 @@ type Client struct {
 
 	onRequested func(ApprovalRequested)
 	onResolved  func(ApprovalResolved)
+	// onEvent receives every non-approval event frame pushed by the gateway
+	// (agent / chat / session.message live-stream events, heartbeats, ...).
+	// Registered once per connection so callers can subscribe to session
+	// message streams (issue #130) without losing earlier event kinds.
+	onEvent func(evName string, payload []byte)
 
 	closeOnce sync.Once
 	done      chan struct{} // closed when the read pump exits
@@ -71,6 +76,13 @@ func (c *Client) OnApprovalRequested(f func(ApprovalRequested)) {
 // OnApprovalResolved registers the handler for exec.approval.resolved.
 func (c *Client) OnApprovalResolved(f func(ApprovalResolved)) {
 	c.onResolved = f
+}
+
+// OnEvent registers a callback for every non-approval event frame received on
+// this connection (agent / chat / session.message live-stream events and
+// informational pushes). payload is the raw event payload JSON.
+func (c *Client) OnEvent(f func(evName string, payload []byte)) {
+	c.onEvent = f
 }
 
 // Connected reports whether the connection is established.
@@ -352,7 +364,12 @@ func (c *Client) dispatchEvent(ev eventFrame) {
 			c.onResolved(res)
 		}
 	default:
-		// heartbeat / tick / other pushes are informational -- ignore.
+		// Live-stream pushes (agent / chat / session.message), heartbeats and
+		// other informational events are surfaced to the registered observer so
+		// the server can map live tool activity into the chat SSE (issue #130).
+		if c.onEvent != nil {
+			c.onEvent(ev.Event, ev.Payload)
+		}
 	}
 }
 

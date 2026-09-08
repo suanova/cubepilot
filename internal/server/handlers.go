@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -264,20 +263,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	var doneEvent *openclaw.Event
-	emit := func(ev openclaw.Event) error {
-		// The gateway's chat-completions stream only carries final text; hold
-		// message_done so we can first replay tool events extracted from the
-		// session history (see extractToolEvents) before the turn ends.
-		if ev.Type == openclaw.EventMessageDone {
-			evCopy := ev
-			doneEvent = &evCopy
-			if ev.Error != "" {
-				streamErr = errors.New(ev.Error)
-			}
-			s.ledgerEvent(user, sessionKey, ev)
-			return nil
-		}
+	// Gateway WS-only chat (issue #130): the turn is driven and observed over
+	// the per-user gateway device connection. sessions.send starts the run and
+	// the subscribed session-message stream projects text / tools / done into
+	// the SSE as one ordered feed -- no OpenAI-compat HTTP run, no transcript
+	// polling, no end-of-run drain. emitLive is the single write path for both
+	// the handler and the WS read goroutine (Stream.Send is concurrency-safe).
+	emitLive := func(ev openclaw.Event) error {
 		s.ledgerEvent(user, sessionKey, ev)
 		if ev.Type == openclaw.EventMessageDelta && firstToken.IsZero() {
 			firstToken = time.Now()
@@ -287,12 +279,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Announce the session up front so the client can track the conversation.
-	_ = emit(openclaw.Event{Type: openclaw.EventMessageStart, SessionID: sessionKey})
-	_ = emit(openclaw.Event{Type: openclaw.EventAgentThinking, SessionID: sessionKey})
+	_ = emitLive(openclaw.Event{Type: openclaw.EventMessageStart, SessionID: sessionKey})
+	_ = emitLive(openclaw.Event{Type: openclaw.EventAgentThinking, SessionID: sessionKey})
 
 	// Ensure the instance is running; this may cold-start the Pod.
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
-		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
 
@@ -305,71 +297,35 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// write that would not ask.
 	if s.hitl != nil {
 		if err := s.hitl.PreTurn(r.Context(), user, sessionKey); err != nil {
-			_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("confirmation gating failed: %v", err)})
+			_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("confirmation gating failed: %v", err)})
 			return
 		}
 	}
 
-	messages := []openclaw.ChatMessage{{Role: "user", Content: body.Content}}
-	if cfg, err := s.store.GetAgentConfig(); err == nil && strings.TrimSpace(cfg.SystemPrompt) != "" {
-		messages = append([]openclaw.ChatMessage{{Role: "system", Content: cfg.SystemPrompt}}, messages...)
-	}
-	// While the gateway stream runs, poll the transcript so tool activity
-	// (tool_call / tool_result) reaches the client live instead of only after
-	// the turn ends. Seen-set is shared with the final drain below, so every
-	// event is emitted exactly once even if the poll and the drain overlap.
-	seen := map[string]bool{}
-	toolCtx, cancelTools := context.WithCancel(r.Context())
-	defer cancelTools()
-	toolDone := make(chan struct{})
-	go func() {
-		defer close(toolDone)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-toolCtx.Done():
-				return
-			case <-ticker.C:
-				s.streamToolEvents(toolCtx, user, sessionKey, seen, func(ev openclaw.Event) {
-					s.ledgerEvent(user, sessionKey, ev)
-					if err := stream.Send(ev); err != nil {
-						cancelTools()
-						return
-					}
-				})
-			}
-		}
-	}()
-
-	client, cerr := s.clientFor(user)
-	if cerr != nil {
-		// Fail-closed: never silently run with a different model than the user
-		// selected -- surface the misconfiguration on the stream instead.
+	// WS-only chat needs the gateway device channel (sessions.send runs over
+	// it) and a resolvable selected model; a failure in either is surfaced as a
+	// fail-closed error that flows through the shared tail below (ledger turn
+	// and metrics are finalized) instead of an early return.
+	var runErr error
+	if s.hitl == nil {
+		runErr = fmt.Errorf("live chat unavailable: gateway device channel is not configured")
+		s.logf("%s: %s", user, runErr)
+	} else if _, cerr := s.clientFor(user); cerr != nil {
+		runErr = cerr
 		s.logf("model resolution for %s: %v", user, cerr)
-		_ = emit(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: cerr.Error()})
-		cancelTools()
-		<-toolDone
-		return
 	}
-	if err := client.StreamChat(r.Context(), openclaw.ChatParams{
-		SessionKey: sessionKey,
-		Messages:   messages,
-	}, emit); err != nil {
+
+	// Drive the whole turn over the WebSocket: RunLiveTurn subscribes the
+	// session, sends the message, and returns when the run is terminal (all
+	// text/tool events were already streamed via emitLive as they arrived).
+	if runErr != nil {
+		streamErr = runErr
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
+	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, emitLive); err != nil {
 		streamErr = err
-	}
-	// Stop the poller, then drain whatever tool events appeared after the last
-	// poll (or that the poller never saw because the stream ended quickly).
-	cancelTools()
-	<-toolDone
-	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, seen) {
-		s.ledgerEvent(user, sessionKey, ev)
-		if err := stream.Send(ev); err != nil {
-			break // client went away
-		}
-	}
-	if doneEvent != nil {
-		_ = stream.Send(*doneEvent)
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
+	} else {
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey})
 	}
 	// Terminate the ledger turn: mark the assistant row done (incomplete when
 	// the stream failed / instance warming failed).
@@ -419,7 +375,10 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 			ToolName:       ev.Name,
 			Content:        ev.Output,
 		})
-	case openclaw.EventMessageDelta:
+	case openclaw.EventMessageDelta, openclaw.EventTextReplace:
+		// text_replace carries a full snapshot that supersedes earlier deltas;
+		// record it as the latest assistant row so the ledger's terminal text is
+		// consistent with what the user saw (issue #130).
 		_, _ = s.store.AppendMessage(store.Message{
 			ConversationID: sessionKey,
 			User:           user,
@@ -429,33 +388,6 @@ func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
 		})
 	case openclaw.EventMessageDone:
 		// TurnEnd marks the assistant row terminal; nothing else to append.
-	}
-}
-
-// streamToolEvents polls the gateway session transcript once and pushes any
-// tool_call / tool_result events not yet seen. The gateway's chat-completions
-// stream only carries text deltas (tool execution happens inside its agent
-// loop), so the transcript is the only live source of tool activity. Dedup by
-// type+callID keeps repeated polls idempotent on the SSE stream and in the
-// audit log.
-func (s *Server) streamToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool, push func(openclaw.Event)) {
-	client, cerr := s.clientFor(user)
-	if cerr != nil {
-		// Read-only poller: the model override does not affect history reads.
-		s.logf("model resolution for %s: %v", user, cerr)
-		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-	}
-	raw, err := client.GetHistory(ctx, sessionKey, 50)
-	if err != nil {
-		return
-	}
-	for _, ev := range parseHistoryTools(sessionKey, raw) {
-		key := ev.Type + ":" + ev.CallID
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		push(ev)
 	}
 }
 

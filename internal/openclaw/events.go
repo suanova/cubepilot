@@ -6,11 +6,16 @@ import "encoding/json"
 // confirm_* (issue #20) are emitted by the HITL approval path; the rest stream
 // the chat turn.
 const (
-	EventMessageStart    = "message_start"
-	EventAgentThinking   = "agent_thinking"
-	EventToolCall        = "tool_call"
-	EventToolResult      = "tool_result"
-	EventMessageDelta    = "message_delta"
+	EventMessageStart  = "message_start"
+	EventAgentThinking = "agent_thinking"
+	EventToolCall      = "tool_call"
+	EventToolResult    = "tool_result"
+	EventMessageDelta  = "message_delta"
+	// EventTextReplace replaces the accumulated assistant text with a full
+	// snapshot (the gateway emits replace:true when the latest assistant text is
+	// no longer a prefix of what was streamed -- e.g. commentary rewritten after
+	// a tool ran). The frontend resets the bubble text to Delta.
+	EventTextReplace     = "text_replace"
 	EventMessageDone     = "message_done"
 	EventConfirmPending  = "confirm_pending" // a matched write paused for the human
 	EventConfirmResolved = "confirm_resolved"

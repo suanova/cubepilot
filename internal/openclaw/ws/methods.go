@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // GetApprovalsPolicy reads the per-agent exec-approvals policy
@@ -81,6 +82,18 @@ func (c *Client) DevicePairApprove(ctx context.Context, requestID string) error 
 	return err
 }
 
+// CreateSession creates a session with the default (unguarded) permissions
+// (sessions.create). Used to ensure a fresh conversation session exists before
+// sending to it; guarded sessions are only applied by the HITL policy path
+// (EnsureSessionGuarded), never for ordinary chat.
+func (c *Client) CreateSession(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.create", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.create %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
 // EnsureSessionGuarded makes the session guarded, creating it if absent. A
 // patch failure is only retried as a create when it looks like the session is
 // missing; other errors propagate.
@@ -97,4 +110,119 @@ func (c *Client) EnsureSessionGuarded(ctx context.Context, key string) error {
 		return fmt.Errorf("patch guarded %q: %v; create guarded: %w", key, err, cerr)
 	}
 	return nil
+}
+
+// SubscribeSessionMessages opts this connection into the live message stream
+// of one session (sessions.messages.subscribe). While subscribed, the gateway
+// pushes agent / chat / session.message events for that session onto this
+// connection (issue #130: live tool activity for the chat SSE).
+func (c *Client) SubscribeSessionMessages(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.messages.subscribe", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.messages.subscribe %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// UnsubscribeSessionMessages stops the live message stream for one session
+// (sessions.messages.unsubscribe).
+func (c *Client) UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.messages.unsubscribe", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.messages.unsubscribe %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// SendSessionMessage sends a user message into a session (sessions.send) and
+// returns once the gateway ACKs the run start. The ACK carries the run id
+// (chat.send responds {status:"started", runId} before the run finishes); the
+// run's live events arrive on the subscribed session-message stream while it
+// runs, and AgentWait blocks until the run is terminal. runID is empty when the
+// gateway did not echo one (older/failure path).
+func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message, idempotencyKey string) (runID string, err error) {
+	params := map[string]any{"key": sessionKey, "message": message}
+	if idempotencyKey != "" {
+		params["idempotencyKey"] = idempotencyKey
+	}
+	raw, err := c.Call(ctx, "sessions.send", params)
+	if err != nil {
+		return "", fmt.Errorf("sessions.send %q: %w", sessionKey, err)
+	}
+	var ack struct {
+		Status string `json:"status"`
+		RunID  string `json:"runId"`
+	}
+	// The ACK payload may be absent on some error shapes; ignore decode failure
+	// and keep going (the caller can still complete via terminal events).
+	_ = json.Unmarshal(raw, &ack)
+	return ack.RunID, nil
+}
+
+// agentWaitTimeoutMs bounds each agent.wait RPC. The gateway's wait has its own
+// 30s default that returns a "timeout" status while the run is still going;
+// we loop until a terminal status instead of trusting a single RPC.
+const agentWaitTimeoutMs = 25000
+
+// agentWaitPollInterval is the backoff between non-terminal agent.wait retries
+// (a run still in flight, or a turn queued behind another).
+const agentWaitPollInterval = 400 * time.Millisecond
+
+// AgentWait blocks on the same connection until the run identified by runID is
+// terminal, then returns (agent.wait is the authoritative run completion RPC;
+// chat.send only ACKs start). agent.wait may return an RPC-ok payload whose
+// status is still "timeout" while the run continues (its own wait default is
+// 30s); this decodes the payload and keeps waiting until "ok" / "error" or the
+// context is done, so a slow first token or a long tool chain does not make the
+// caller conclude the turn is over and unsubscribe early.
+func (c *Client) AgentWait(ctx context.Context, runID string) error {
+	if runID == "" {
+		return fmt.Errorf("agent.wait: empty run id")
+	}
+	for {
+		raw, err := c.Call(ctx, "agent.wait", map[string]any{"runId": runID, "timeoutMs": agentWaitTimeoutMs})
+		if err != nil {
+			return fmt.Errorf("agent.wait %q: %w", runID, err)
+		}
+		var res struct {
+			Status       string `json:"status"`
+			Error        string `json:"error"`
+			TimeoutPhase string `json:"timeoutPhase"`
+		}
+		if err := json.Unmarshal(raw, &res); err != nil || res.Status == "" {
+			// Fail closed on a malformed/unknown payload: never treat an
+			// ambiguous wait result as a finished run.
+			return fmt.Errorf("agent.wait %q: malformed response (status empty)", runID)
+		}
+		switch res.Status {
+		case "ok":
+			return nil
+		case "error":
+			msg := res.Error
+			if msg == "" {
+				msg = "agent run failed"
+			}
+			return fmt.Errorf("%s", msg)
+		case "timeout":
+			// OpenClaw uses status "timeout" for a bounded wait deadline (run
+			// still in flight) and for a genuinely terminal timeout. The two
+			// cannot be told apart by payload metadata on the real gateway (a
+			// wait deadline also stamps endedAt/timeoutPhase), so a timeout only
+			// fails the turn when it carries an explicit error; otherwise it is a
+			// deadline and we keep waiting with backoff.
+			if res.Error != "" {
+				return fmt.Errorf("%s", res.Error)
+			}
+		case "pending":
+			// queued, not yet started -- wait briefly
+		default:
+			return fmt.Errorf("agent.wait %q: unexpected status %q", runID, res.Status)
+		}
+		// Non-terminal: bounded backoff, still cancellable.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(agentWaitPollInterval):
+		}
+	}
 }

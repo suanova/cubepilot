@@ -455,6 +455,13 @@ export default function ChatView() {
             bubble.text = (bubble.text || '') + (ev.delta || '')
             return
           }
+          if (ev.type === 'text_replace') {
+            // Snapshot superseding earlier text (e.g. commentary rewritten after
+            // a tool ran): replace, never append (issue #130).
+            setPhase(bubble, 'streaming')
+            bubble.text = ev.delta || ''
+            return
+          }
           if (ev.type === 'message_done') {
             setPhase(bubble, 'done')
             if (ev.error) bubble.error = ev.error
