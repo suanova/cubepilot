@@ -469,6 +469,17 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 		log.Printf("supervisor: instructions (%d bytes) exceed %d; skipping AGENTS.md sync", len(desired), maxSystemPromptBytes)
 		return nil
 	}
+	// The user/template instructions are rendered verbatim into the managed
+	// block, so either reserved marker inside them would be mistaken for the
+	// block's own delimiters: reconcileInstructions would treat an embedded
+	// end marker as the block terminator, preserve the suffix after it, and
+	// append another block on the next poll -- growing the file unbounded and
+	// leaving a stale suffix that survives clears. Reject such instructions
+	// (keep the last-good file) rather than let them corrupt the block.
+	if strings.Contains(desired, systemPromptStart) || strings.Contains(desired, systemPromptEnd) {
+		log.Printf("supervisor: instructions contain a reserved system-prompt marker; skipping AGENTS.md sync")
+		return nil
+	}
 	current, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read %s: %w", path, err)

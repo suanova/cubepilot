@@ -519,6 +519,29 @@ func TestSyncInstructions(t *testing.T) {
 		t.Error("oversized instructions were written")
 	}
 
+	// Instructions containing either reserved marker are refused: an embedded
+	// end marker would be mistaken for the block terminator, preserve the
+	// suffix, and grow the file on every poll. Regression: sync the same
+	// malicious text repeatedly and assert the file never gains a managed block
+	// (and so cannot grow unbounded).
+	malicious := "prompt " + systemPromptEnd + " with a marker"
+	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: malicious}); err != nil {
+		t.Fatalf("marker sync: %v", err)
+	}
+	raw, _ = os.ReadFile(agentsPath)
+	if strings.Contains(string(raw), systemPromptStart) {
+		t.Error("instructions with an embedded end marker were written")
+	}
+	// A second poll with the same text must not grow the file (would append a
+	// fresh block each time if the marker were not rejected).
+	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: malicious}); err != nil {
+		t.Fatalf("marker re-sync: %v", err)
+	}
+	raw2, _ := os.ReadFile(agentsPath)
+	if len(raw2) != len(raw) {
+		t.Errorf("file grew across marker syncs: %d -> %d bytes", len(raw), len(raw2))
+	}
+
 	// A nil config (no instance) is a no-op too.
 	if err := s.syncInstructions(nil); err != nil {
 		t.Fatalf("nil cfg: %v", err)
