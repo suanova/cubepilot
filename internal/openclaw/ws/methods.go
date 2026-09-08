@@ -81,6 +81,18 @@ func (c *Client) DevicePairApprove(ctx context.Context, requestID string) error 
 	return err
 }
 
+// CreateSession creates a session with the default (unguarded) permissions
+// (sessions.create). Used to ensure a fresh conversation session exists before
+// sending to it; guarded sessions are only applied by the HITL policy path
+// (EnsureSessionGuarded), never for ordinary chat.
+func (c *Client) CreateSession(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.create", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.create %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
 // EnsureSessionGuarded makes the session guarded, creating it if absent. A
 // patch failure is only retried as a create when it looks like the session is
 // missing; other errors propagate.

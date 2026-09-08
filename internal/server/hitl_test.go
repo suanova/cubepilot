@@ -30,11 +30,13 @@ type fakeHitlGateway struct {
 	subscribes   []string
 	unsubscribes []string
 	sends        []string // "sessionKey|message"
+	creates      []string // sessionKeys passed to sessions.create
 	sendBlock    chan struct{}
 	waits        []string // runIds passed to agent.wait
 	subscribeErr error
 	sendErr      error
 	waitErr      error
+	createErr    error
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
@@ -78,6 +80,10 @@ func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message s
 func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
 	f.waits = append(f.waits, runID)
 	return f.waitErr
+}
+func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) error {
+	f.creates = append(f.creates, key)
+	return f.createErr
 }
 func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	if f.getErr != nil {

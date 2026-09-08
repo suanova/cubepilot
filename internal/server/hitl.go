@@ -31,6 +31,7 @@ type hitlGateway interface {
 	UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error
 	SendSessionMessage(ctx context.Context, sessionKey, message string) (runID string, err error)
 	AgentWait(ctx context.Context, runID string) error
+	CreateSession(ctx context.Context, sessionKey string) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
 	EnsureSessionGuarded(ctx context.Context, key string) error
@@ -435,13 +436,14 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}
 	// sessions.send only auto-creates the agent's main session, not arbitrary
 	// conversation keys (the OpenAI-compat HTTP surface created those on the
-	// fly; the WS surface does not). Ensure the session row exists first so a
-	// fresh conversation can be sent to. PreTurn already guards gated sessions;
-	// this is the idempotent path for the rest.
-	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
-		m.sayf("chat %s: %s: ensure session: %v", user, sessionKey, err)
-		return err
-	}
+	// fly; the WS surface does not). Create the conversation session first,
+	// UNGUARDED: guarded permission mode is applied only by PreTurn when a
+	// confirm policy needs it -- forcing it here for every turn would park
+	// write tools behind approvals in non-gated installs (the e2e DevEnvironment
+	// create timed out for exactly this reason). Create is best-effort: an
+	// already-existing session errors and is ignored; subscribe/send below
+	// surface any real failure.
+	_ = gw.CreateSession(ctx, sessionKey)
 	t := m.registerLive(user, sessionKey, sink)
 	defer m.releaseLive(user, sessionKey, gw)
 
