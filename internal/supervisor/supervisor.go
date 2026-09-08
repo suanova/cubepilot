@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -86,6 +87,30 @@ func getenv(key, def string) string {
 	}
 	return def
 }
+
+// SystemPrompt markers: the supervisor owns only the section of AGENTS.md
+// between these two markers (the per-user instructions rendered from the
+// resolved config). Everything else in the file — the baked persona, skills,
+// agent-authored content — is preserved verbatim. OpenClaw re-reads the
+// workspace-root bootstrap files (AGENTS.md first) at the start of every run,
+// so a write here is observed on the next turn without a gateway restart.
+const (
+	// agentsFileName is the OpenClaw workspace bootstrap file that carries the
+	// managed instructions section (the first file in OpenClaw's canonical
+	// workspace bootstrap set, re-read from disk at the start of each run).
+	agentsFileName = "AGENTS.md"
+
+	systemPromptStart = "<!-- cubepilot:system-prompt:start -->"
+	systemPromptEnd   = "<!-- cubepilot:system-prompt:end -->"
+	// systemPromptHeader prefixes the managed instructions inside the markers.
+	systemPromptHeader = "## User-configured instructions"
+
+	// maxSystemPromptBytes caps the rendered instructions: a user/template
+	// prompt larger than this is refused (keeps the last-good file) rather than
+	// bloating every turn's project context. OpenClaw truncates bootstrap files
+	// at bootstrapMaxChars anyway; the cap keeps the workspace file sane.
+	maxSystemPromptBytes = 32 << 10
+)
 
 // Supervisor manages the OpenClaw gateway process and keeps the workspace
 // skills in sync with the resolved agent config.
@@ -384,17 +409,25 @@ func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
 	return s.applyGatewayConfig(data)
 }
 
-// poll fetches the resolved config and applies it (renders skills, records
-// the revision). It reports whether the resolved config changed so the caller
-// can log it; the gateway reloads skills itself, so no restart is needed.
+// poll fetches the resolved config and applies it (renders skills + the
+// AGENTS.md instructions block, records the revision). It reports whether the
+// resolved config changed so the caller can log it; the gateway reloads skills
+// itself, so no restart is needed.
 func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	cfg, err := s.fetchConfig(ctx)
 	if err != nil {
 		return false, err
 	}
+	// Instructions are reconciled every poll (not just on a revision change):
+	// the seed initContainer re-copies the pristine AGENTS.md on every pod
+	// start and the agent may edit the file, so the managed block must be
+	// re-asserted whenever the on-disk content drifts from the desired state.
+	if err := s.syncInstructions(cfg); err != nil {
+		log.Printf("supervisor: sync instructions: %v", err)
+	}
 	if cfg.Empty() {
 		// No instance config yet -- the gateway runs with its runtime
-		// defaults; nothing to render.
+		// defaults; nothing else to render.
 		s.lastCfg = nil
 		return false, nil
 	}
@@ -416,6 +449,95 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 	}
 	s.current = cfg.Revision
 	return true, nil
+}
+
+// syncInstructions reconciles the marker-guarded instructions section of the
+// workspace AGENTS.md with the resolved config's Instructions (template
+// instructions + per-user UserInstructions, merged by the resolver). The block
+// is (re)written whenever the on-disk content differs from the desired state
+// and removed when the effective instructions are empty; everything outside the
+// markers is preserved verbatim. Idempotent and content-hash guarded: an
+// unchanged file is left untouched. A nil/empty cfg or an oversized instruction
+// block is skipped (keep the last-good file) rather than corrupting the persona.
+func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
+	path := filepath.Join(s.cfg.Workspace, agentsFileName)
+	desired := ""
+	if cfg != nil {
+		desired = strings.TrimSpace(cfg.Instructions)
+	}
+	if len(desired) > maxSystemPromptBytes {
+		log.Printf("supervisor: instructions (%d bytes) exceed %d; skipping AGENTS.md sync", len(desired), maxSystemPromptBytes)
+		return nil
+	}
+	current, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	target := reconcileInstructions(current, desired)
+	if bytes.Equal(target, current) {
+		return nil // no change (or file absent + no block to write)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, target, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
+	if len(target) == 0 {
+		log.Printf("supervisor: removed AGENTS.md instructions block")
+	} else {
+		log.Printf("supervisor: AGENTS.md instructions synced (%d bytes)", len(target))
+	}
+	return nil
+}
+
+// reconcileInstructions returns the AGENTS.md content with the managed
+// instructions block matching `desired` (the merged template+user text).
+// The existing block between the markers (when present) is replaced in place;
+// if `desired` is empty the block is removed. Content outside the markers is
+// preserved byte-for-byte. A missing/empty input file (nil current) with no
+// desired block yields nil (nothing to write).
+func reconcileInstructions(current []byte, desired string) []byte {
+	startIdx := bytes.Index(current, []byte(systemPromptStart))
+	endIdx := -1
+	if startIdx >= 0 {
+		// The end marker is searched from the start marker so a stray end
+		// marker earlier in the file cannot truncate user content. A missing
+		// end marker means the block is unterminated (agent edit); drop
+		// everything from the start marker to EOF rather than duplicate it.
+		if rel := bytes.Index(current[startIdx:], []byte(systemPromptEnd)); rel >= 0 {
+			endIdx = startIdx + rel + len(systemPromptEnd)
+		} else {
+			endIdx = len(current)
+		}
+	}
+
+	// Rebuild without the managed block: everything before the start marker,
+	// then everything after the end marker. Collapse the blank gap the block
+	// occupied down to a single trailing newline.
+	out := current
+	if startIdx >= 0 {
+		out = append([]byte{}, current[:startIdx]...)
+		out = append(out, current[endIdx:]...)
+		out = bytes.TrimRight(out, "\n")
+		out = append(out, '\n')
+	}
+
+	if strings.TrimSpace(desired) == "" {
+		if len(bytes.TrimSpace(out)) == 0 {
+			return nil
+		}
+		return out
+	}
+
+	// An absent file has no trailing content to keep; start the block directly.
+	if len(bytes.TrimSpace(out)) == 0 {
+		out = nil
+	}
+	block := "\n\n" + systemPromptStart + "\n" + systemPromptHeader + "\n\n" +
+		strings.TrimSpace(desired) + "\n" + systemPromptEnd
+	return append(out, []byte(block)...)
 }
 
 // fetchConfig pulls the resolved agent config from the internal API.
