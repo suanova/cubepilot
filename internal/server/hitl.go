@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/google/uuid"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
@@ -29,7 +30,7 @@ type hitlGateway interface {
 	OnEvent(f func(evName string, payload []byte))
 	SubscribeSessionMessages(ctx context.Context, sessionKey string) error
 	UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error
-	SendSessionMessage(ctx context.Context, sessionKey, message string) (runID string, err error)
+	SendSessionMessage(ctx context.Context, sessionKey, message, idempotencyKey string) (runID string, err error)
 	AgentWait(ctx context.Context, runID string) error
 	CreateSession(ctx context.Context, sessionKey string) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
@@ -103,7 +104,10 @@ func (t *liveTurn) setRunID(id string) {
 func (t *liveTurn) acceptRun(id string) bool {
 	t.runMu.Lock()
 	defer t.runMu.Unlock()
-	return t.runID == "" || id == "" || t.runID == id
+	// Until an expected run is installed everything is accepted (nothing has been
+	// produced yet); afterwards only that run's frames project -- a missing or
+	// foreign runId on run-scoped content is dropped.
+	return t.runID == "" || (id != "" && t.runID == id)
 }
 
 // finish marks the turn terminal (idempotent).
@@ -472,12 +476,20 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 		m.sayf("chat %s: %s: subscribe: %v", user, sessionKey, err)
 		return err
 	}
-	runID, err := gw.SendSessionMessage(ctx, sessionKey, message)
+	// Pre-generate the idempotency key and install it as the expected run BEFORE
+	// sending: sessions.send returns it as the run id, so content/terminal frames
+	// can be correlated (and unrelated or pre-ACK runs rejected) from the start.
+	idem := uuid.NewString()
+	t.setRunID(idem)
+	runID, err := gw.SendSessionMessage(ctx, sessionKey, message, idem)
 	if err != nil {
 		return err
 	}
-	if runID != "" {
+	if runID != "" && runID != idem {
 		t.setRunID(runID)
+	}
+	if runID == "" {
+		runID = idem
 	}
 	if runID != "" {
 		// Authoritative completion: blocks until the run the gateway started for

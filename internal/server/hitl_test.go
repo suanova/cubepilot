@@ -30,6 +30,7 @@ type fakeHitlGateway struct {
 	subscribes   []string
 	unsubscribes []string
 	sends        []string // "sessionKey|message"
+	lastIdem     string
 	creates      []string // sessionKeys passed to sessions.create
 	sendBlock    chan struct{}
 	waits        []string // runIds passed to agent.wait
@@ -66,8 +67,9 @@ func (f *fakeHitlGateway) UnsubscribeSessionMessages(ctx context.Context, key st
 	f.unsubscribes = append(f.unsubscribes, key)
 	return nil
 }
-func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message string) (string, error) {
+func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message, idempotencyKey string) (string, error) {
 	f.sends = append(f.sends, key+"|"+message)
+	f.lastIdem = idempotencyKey
 	if f.sendBlock != nil {
 		select {
 		case <-f.sendBlock:
@@ -75,7 +77,7 @@ func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message s
 			return "", ctx.Err()
 		}
 	}
-	return "r-1", f.sendErr
+	return idempotencyKey, f.sendErr
 }
 func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
 	f.waits = append(f.waits, runID)
@@ -344,11 +346,17 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	if gw.onEvent == nil {
 		t.Fatal("conn did not register an OnEvent router")
 	}
+	if gw.lastIdem == "" {
+		t.Fatal("sessions.send did not carry an idempotencyKey")
+	}
+	run := gw.lastIdem
 
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","title":"exec kubectl get pods","meta":"kubectl get pods","toolCallId":"c1"}}`))
-	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"r1","state":"delta","deltaText":"正在查询…"}`))
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"command_output","data":{"phase":"end","toolCallId":"c1","output":"ok","exitCode":0}}`))
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"lifecycle","data":{"phase":"end"}}`))
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","title":"exec kubectl get pods","meta":"kubectl get pods","toolCallId":"c1"}}`))
+	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"delta","deltaText":"正在查询…"}`))
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"command_output","data":{"phase":"end","toolCallId":"c1","output":"ok","exitCode":0}}`))
+	// A foreign run must not leak through.
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"foreign","stream":"item","data":{"kind":"tool","phase":"start","toolCallId":"x"}}`))
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"lifecycle","data":{"phase":"end"}}`))
 
 	// Release the send; the run is terminal, so RunLiveTurn should return.
 	close(gw.sendBlock)

@@ -31,20 +31,29 @@ func TestLiveProjector_ToolStream(t *testing.T) {
 		t.Fatalf("update must not emit, got %d", len(evs))
 	}
 
-	// result emits the tool_result once.
+	// A production-order run with no command_output: the stream="tool" result is
+	// deferred and emitted when the run goes terminal (chat final), never
+	// pre-emptively.
 	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"No resources found"},"toolCallId":"call_1"}}`)
-	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].Output != "No resources found" {
-		t.Fatalf("tool result = %+v", evs)
+	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"end","name":"exec","title":"exec kubectl get pods","toolCallId":"call_1"}}`)
+	if len(evs) != 1 {
+		t.Fatalf("result must be deferred until terminal, got %d events", len(evs))
 	}
-
-	// A duplicate result for the same call must not double-emit.
-	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"x"},"toolCallId":"call_1"}}`)
-	if len(evs) != 2 {
-		t.Fatalf("duplicate result emitted: %d events", len(evs))
+	chatFinal := func(payload string) {
+		got, _ := p.feed(conv, "chat", []byte(payload))
+		evs = append(evs, got...)
+	}
+	chatFinal(`{"sessionKey":"` + conv + `","runId":"r1","state":"final"}`)
+	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].Output != "No resources found" {
+		t.Fatalf("after terminal = %+v, want one deferred tool_result", evs)
+	}
+	// A duplicate result event after finalize must not double-emit.
+	if got, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"tool","data":{"phase":"result","result":{"output":"x"},"toolCallId":"call_1"}}`)); len(got) != 0 {
+		t.Fatalf("duplicate result emitted: %+v", got)
 	}
 }
 
-func TestLiveProjector_CommandOutputOverridesToolResult(t *testing.T) {
+func TestLiveProjector_CommandOutputWinsInProductionOrder(t *testing.T) {
 	p := newLiveProjector()
 	var evs []openclaw.Event
 	feed := func(payload string) {
@@ -52,16 +61,17 @@ func TestLiveProjector_CommandOutputOverridesToolResult(t *testing.T) {
 		evs = append(evs, got...)
 	}
 	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"start","name":"exec","title":"exec kubectl","toolCallId":"c2"}}`)
-	// command_output streams the real output and marks the result; the later
-	// stream tool result for the same call is dropped as a duplicate.
-	feed(`{"sessionKey":"` + conv + `","stream":"command_output","data":{"phase":"end","toolCallId":"c2","output":"real output","exitCode":0}}`)
+	// Production order: stream tool result, then item end, then the terminal
+	// command_output -- the last must win as the real output.
 	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"stale"},"toolCallId":"c2"}}`)
+	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"end","name":"exec","title":"exec kubectl","toolCallId":"c2"}}`)
+	feed(`{"sessionKey":"` + conv + `","stream":"command_output","data":{"phase":"end","toolCallId":"c2","output":"real output","exitCode":0}}`)
 	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].Output != "real output" {
-		t.Fatalf("events = %+v, want command_output result to win", evs)
+		t.Fatalf("events = %+v, want command_output to win", evs)
 	}
 }
 
-func TestLiveProjector_ItemToolMarksDoneWithoutOutput(t *testing.T) {
+func TestLiveProjector_ItemOnlyToolFinalizesAtTerminal(t *testing.T) {
 	p := newLiveProjector()
 	var evs []openclaw.Event
 	feed := func(payload string) {
@@ -70,8 +80,16 @@ func TestLiveProjector_ItemToolMarksDoneWithoutOutput(t *testing.T) {
 	}
 	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"start","name":"read","title":"read file","meta":"read /tmp/x","toolCallId":"c3"}}`)
 	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"end","name":"read","title":"read file","toolCallId":"c3"}}`)
-	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].CallID != "c3" {
-		t.Fatalf("events = %+v, want item-end to mark the card done", evs)
+	if len(evs) != 1 {
+		t.Fatalf("item-only tool must not emit before terminal, got %d", len(evs))
+	}
+	chatFinal := func(payload string) {
+		got, _ := p.feed(conv, "chat", []byte(payload))
+		evs = append(evs, got...)
+	}
+	chatFinal(`{"sessionKey":"` + conv + `","runId":"r1","state":"final"}`)
+	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].CallID != "c3" || evs[1].Name != "read" {
+		t.Fatalf("events = %+v, want tool_result at terminal", evs)
 	}
 }
 
@@ -146,10 +164,15 @@ func TestLiveProjector_ToolStartDedupAndName(t *testing.T) {
 	if evs[0].Name != "read" {
 		t.Fatalf("name = %q, want read", evs[0].Name)
 	}
-	// result preserves the tool name, not exec.
-	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"text":"file contents"},"toolCallId":"c9"}}`)
-	if len(evs) != 2 || evs[1].Name != "read" {
-		t.Fatalf("result = %+v, want name=read", evs)
+	// result is deferred to terminal and preserves the tool name, not exec.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"content":[{"type":"text","text":"file contents"}]},"toolCallId":"c9"}}`)
+	chatFinal := func(payload string) {
+		got, _ := p.feed(conv, "chat", []byte(payload))
+		evs = append(evs, got...)
+	}
+	chatFinal(`{"sessionKey":"` + conv + `","runId":"r1","state":"final"}`)
+	if len(evs) != 2 || evs[1].Name != "read" || evs[1].Output != "file contents" {
+		t.Fatalf("result = %+v, want name=read output='file contents'", evs)
 	}
 }
 

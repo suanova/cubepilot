@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // GetApprovalsPolicy reads the per-agent exec-approvals policy
@@ -139,8 +140,12 @@ func (c *Client) UnsubscribeSessionMessages(ctx context.Context, sessionKey stri
 // run's live events arrive on the subscribed session-message stream while it
 // runs, and AgentWait blocks until the run is terminal. runID is empty when the
 // gateway did not echo one (older/failure path).
-func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message string) (runID string, err error) {
-	raw, err := c.Call(ctx, "sessions.send", map[string]any{"key": sessionKey, "message": message})
+func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message, idempotencyKey string) (runID string, err error) {
+	params := map[string]any{"key": sessionKey, "message": message}
+	if idempotencyKey != "" {
+		params["idempotencyKey"] = idempotencyKey
+	}
+	raw, err := c.Call(ctx, "sessions.send", params)
 	if err != nil {
 		return "", fmt.Errorf("sessions.send %q: %w", sessionKey, err)
 	}
@@ -159,6 +164,10 @@ func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message str
 // we loop until a terminal status instead of trusting a single RPC.
 const agentWaitTimeoutMs = 10000
 
+// agentWaitPollInterval is the backoff between non-terminal agent.wait retries
+// (a run still in flight, or a turn queued behind another).
+const agentWaitPollInterval = 400 * time.Millisecond
+
 // AgentWait blocks on the same connection until the run identified by runID is
 // terminal, then returns (agent.wait is the authoritative run completion RPC;
 // chat.send only ACKs start). agent.wait may return an RPC-ok payload whose
@@ -176,14 +185,17 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 			return fmt.Errorf("agent.wait %q: %w", runID, err)
 		}
 		var res struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
+			Status       string `json:"status"`
+			Error        string `json:"error"`
+			TimeoutPhase string `json:"timeoutPhase"`
 		}
-		// A successful RPC always carries a status; tolerate decode/older
-		// gateways by treating an absent one as terminal-ok.
-		if err := json.Unmarshal(raw, &res); err != nil {
-			return nil
+		var meta map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &res); err != nil || res.Status == "" {
+			// Fail closed on a malformed/unknown payload: never treat an
+			// ambiguous wait result as a finished run.
+			return fmt.Errorf("agent.wait %q: malformed response (status empty)", runID)
 		}
+		_ = json.Unmarshal(raw, &meta)
 		switch res.Status {
 		case "ok":
 			return nil
@@ -193,16 +205,46 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 				msg = "agent run failed"
 			}
 			return fmt.Errorf("%s", msg)
-		case "timeout", "pending", "":
-			// run still in flight -- keep waiting on this runId
+		case "timeout":
+			// OpenClaw uses status "timeout" both for a bounded wait deadline
+			// (run still in flight, no terminal metadata) and for a genuinely
+			// terminal provider timeout (carries endedAt/timeoutPhase and is
+			// cached, so every retry would return it immediately). Only the
+			// former should be retried.
+			if isTerminalTimeout(res, meta) {
+				msg := res.Error
+				if msg == "" {
+					msg = "agent run timed out"
+				}
+				return fmt.Errorf("%s", msg)
+			}
+		case "pending":
+			// queued, not yet started -- wait briefly
 		default:
-			// Unknown terminal-looking status; treat as done.
-			return nil
+			return fmt.Errorf("agent.wait %q: unexpected status %q", runID, res.Status)
 		}
+		// Non-terminal: bounded backoff, still cancellable.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
+		case <-time.After(agentWaitPollInterval):
 		}
 	}
+}
+
+// isTerminalTimeout reports whether a "timeout" wait status is a genuinely
+// terminal provider timeout (carries endedAt / timeoutPhase) rather than a
+// bounded-wait deadline that expired while the run is still going.
+func isTerminalTimeout(res struct {
+	Status       string `json:"status"`
+	Error        string `json:"error"`
+	TimeoutPhase string `json:"timeoutPhase"`
+}, meta map[string]json.RawMessage) bool {
+	if res.TimeoutPhase != "" {
+		return true
+	}
+	if raw, ok := meta["endedAt"]; ok && len(raw) > 0 && string(raw) != "null" && string(raw) != "0" {
+		return true
+	}
+	return false
 }

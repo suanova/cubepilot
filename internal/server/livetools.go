@@ -36,7 +36,11 @@ type liveCall struct {
 	name      string // real tool name, preserved into the tool_result (audit/ledger)
 	sawOutput bool   // output-carrying events seen for this call
 	output    strings.Builder
-	resultOut bool // a tool_result has already been emitted for this call
+	// pendingResult is the stream="tool" result candidate. It is deferred, not
+	// emitted, because for exec-style tools the richer command_output arrives
+	// afterwards and should win; non-exec tools finalize it at their item end.
+	pendingResult string
+	resultOut     bool // a tool_result has already been emitted for this call
 }
 
 // liveProjector folds the live session-message events of one chat turn into
@@ -143,17 +147,11 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 					Arguments: args,
 				}}, false
 			}
-			// A tool with no output events of its own (read / search / ask)
-			// finishes at its own end; the canonical stream="tool" result is the
-			// richer source, so only emit a bare Done when no result arrived.
-			if it.Kind == "tool" && it.Phase == "end" && call.started && !call.sawOutput && !call.resultOut {
-				call.resultOut = true
-				name := call.name
-				if name == "" {
-					name = it.Name
-				}
-				return []openclaw.Event{liveResult(sessionKey, it.ToolCallID, name, call.output.String())}, false
-			}
+			// Tool end is NOT final here: for exec-style tools the terminal
+			// command_output arrives after this item end and must win, and for
+			// non-exec tools the deferred stream="tool" result is emitted when
+			// the run goes terminal (see finalizeAll). Emitting at item end would
+			// either preempt the richer command output or double cards.
 		case "command_output":
 			var o agentOutput
 			if err := json.Unmarshal(fr.Data, &o); err != nil || o.ToolCallID == "" {
@@ -229,14 +227,37 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 					})
 				}
 			}
-			// final ends the run's content projection.
-			return evs, true
+			// final ends the run's content projection: settle any tool cards that
+			// were never finalized by a command_output (non-exec tools whose
+			// stream="tool" result was deferred).
+			flush := p.finalizeAll(sessionKey)
+			return append(flush, evs...), true
 		case "aborted", "error":
-			// Terminal failure; the caller maps the error text into message_done.
-			return nil, true
+			// Terminal failure; settle tool cards and let the caller map the
+			// error text into message_done.
+			return p.finalizeAll(sessionKey), true
 		}
 	}
 	return nil, false
+}
+
+// finalizeAll emits a tool_result for every started call that never reached a
+// command_output terminal (non-exec tools whose stream="tool" result was
+// deferred). Called when the run goes terminal so no card stays "Running".
+func (p *liveProjector) finalizeAll(sessionKey string) []openclaw.Event {
+	var out []openclaw.Event
+	for id, call := range p.calls {
+		if !call.started || call.resultOut {
+			continue
+		}
+		call.resultOut = true
+		outText := call.pendingResult
+		if outText == "" {
+			outText = call.output.String()
+		}
+		out = append(out, liveResult(sessionKey, id, call.name, outText))
+	}
+	return out
 }
 
 // toolEvent maps one agent stream="tool" frame. start begins the card,
@@ -273,15 +294,17 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 		// partialResult progress -- no SSE equivalent yet; ignore.
 		return nil
 	case "result":
+		// Defer: the terminal command_output (for exec) or item end (for
+		// non-exec) decides the final tool_result, so we never emit the raw
+		// result object prematurely or preempt the richer command output.
 		if call.resultOut {
-			return nil // command_output / item already delivered the result
+			return nil
 		}
-		call.resultOut = true
-		out := toolResultText(t.Result)
-		if t.IsError && out == "" {
-			out = t.ErrorString
+		call.pendingResult = toolResultText(t.Result)
+		if t.IsError && call.pendingResult == "" {
+			call.pendingResult = t.ErrorString
 		}
-		return []openclaw.Event{liveResult(sessionKey, t.ToolCallID, call.name, out)}
+		return nil
 	}
 	return nil
 }
@@ -311,6 +334,31 @@ func toolResultText(raw json.RawMessage) string {
 				} else {
 					return string(v)
 				}
+			}
+		}
+		// OpenAI-style content blocks: content: [{type:"text", text: ...}]
+		if content, ok := rec["content"]; ok {
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(content, &blocks) == nil {
+				var b strings.Builder
+				for _, blk := range blocks {
+					if blk.Type == "text" {
+						b.WriteString(blk.Text)
+					}
+				}
+				if b.Len() > 0 {
+					return b.String()
+				}
+			}
+		}
+		// exec aggregates its full output under details.aggregated.
+		if v, ok := rec["aggregated"]; ok && len(v) > 0 && string(v) != "null" {
+			var s string
+			if v[0] == '"' && json.Unmarshal(v, &s) == nil && s != "" {
+				return s
 			}
 		}
 	}
