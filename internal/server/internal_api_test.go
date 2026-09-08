@@ -136,7 +136,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 }
 
 type configResponse struct {
-	Config store.AgentConfig `json:"config"`
+	Config agentConfigView `json:"config"`
 }
 
 // TestAgentConfigModelOverride verifies a model switch on the Agent config page
@@ -145,7 +145,7 @@ type configResponse struct {
 // the chat model), and that "Runtime Default" clears it back to the gateway
 // primary.
 func TestAgentConfigModelOverride(t *testing.T) {
-	st, err := store.New(t.TempDir(), "deepseek-v4-flash")
+	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -177,32 +177,43 @@ func TestAgentConfigModelOverride(t *testing.T) {
 	}
 }
 
-// TestAgentConfigDefaultModelAligned verifies a fresh store seeds the portal's
-// model selector with the operator-configured default LLM (a valid template
-// model, not a stale hardcoded value), and that a saved "Runtime Default" is
-// preserved instead of being masked back to a concrete model.
-func TestAgentConfigDefaultModelAligned(t *testing.T) {
-	st, err := store.New(t.TempDir(), "deepseek-v4-flash")
+// TestAgentConfigReadsAndWritesInstance verifies GET/PUT /api/agent/config now
+// serve the caller's AgentInstance CR (design §3.2): a system-prompt edit lands
+// on UserInstructions (the field the resolver actually reads) and the model
+// stays on selectedModel, instead of a global store file.
+func TestAgentConfigReadsAndWritesInstance(t *testing.T) {
+	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	s := platformTestServerStore(t, st)
+	s := platformTestServerStore(t, st,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+	)
 
-	// Fresh store -> configured default, not a stale value.
+	// Fresh instance -> present with empty selections (Runtime Default / template
+	// instructions only).
 	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "", nil))
-	if resp.Config.Model != "deepseek-v4-flash" {
-		t.Errorf("fresh model = %q, want deepseek-v4-flash", resp.Config.Model)
+	if !resp.Config.Exists || resp.Config.Model != "" || resp.Config.SystemPrompt != "" {
+		t.Fatalf("fresh config = %+v, want exists with empty selections", resp.Config)
 	}
 
-	// Save "Runtime Default" -> stays empty so the portal shows Runtime Default.
+	// Save model + system prompt -> both land on the instance CR.
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
-		map[string]any{"config": map[string]any{"model": ""}})
+		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash", "systemPrompt": "You are helpful."}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "", nil))
-	if resp.Config.Model != "" {
-		t.Errorf("model = %q, want empty after Runtime Default save", resp.Config.Model)
+	if resp.Config.Model != "deepseek-v4-flash" || resp.Config.SystemPrompt != "You are helpful." {
+		t.Fatalf("config after save = %+v", resp.Config)
+	}
+
+	// A user with no instance cannot save (there is no global config to write).
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "nobody",
+		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("save without instance status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -70,7 +70,7 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 		if _, err := hub.Open("conv-1", rec, rec); err != nil {
 			t.Fatal(err)
 		}
-		st, err := store.New(t.TempDir(), "test-model")
+		st, err := store.New(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +93,7 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 		if !strings.Contains(body, "event: confirm_resolved") || !strings.Contains(body, `"approved":`+map[bool]string{true: "true", false: "false"}[tc.approved]) {
 			t.Errorf("expected confirm_resolved approved=%v in stream, got %q", tc.approved, body)
 		}
-		audit, _ := st.ListAudit(0)
+		audit, _ := st.ListAudit("alice", 0)
 		if len(audit) == 0 || audit[0].Status != map[bool]string{true: "approved", false: "rejected"}[tc.approved] {
 			t.Errorf("expected audit decision row, got %+v", audit)
 		}
@@ -134,7 +134,7 @@ func TestApprovalService_ResolveErrors(t *testing.T) {
 }
 
 func TestHandleConfirmAndPending(t *testing.T) {
-	st, err := store.New(t.TempDir(), "test-model")
+	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestHandleConfirmAndPending(t *testing.T) {
 // TestHandleConfirm_OwnerScoped proves a forged X-CubePilot-User cannot resolve
 // another operator's pending approval (issue #20 code review).
 func TestHandleConfirm_OwnerScoped(t *testing.T) {
-	st, err := store.New(t.TempDir(), "test-model")
+	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

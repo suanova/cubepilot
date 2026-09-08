@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/suanova/cubepilot/internal/inspect"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/openclaw"
-	"github.com/suanova/cubepilot/internal/store"
 )
 
 // agentMainKey is the agent id an OpenAI-http run resolves to (openclaw/default
@@ -351,45 +349,13 @@ func (s *Server) recordToolCall(user string, ev openclaw.Event) {
 	metrics.Inc("cubepilot_tool_calls_total", "level="+entry.Level, 1)
 }
 
-// storeReport builds a severity-counted report from one run's output (used by
-// the one-shot /api/inspect path; scheduled-task reports are TaskRun CRs).
-func storeReport(taskID, taskName, trigger string, started time.Time, content string, runErr error) store.Report {
-	status := "success"
-	if runErr != nil {
-		status = "failed"
-		content = content + "\n\n[run error] " + runErr.Error()
-	}
-	return store.Report{
-		TaskID:     taskID,
-		TaskName:   taskName,
-		Trigger:    trigger,
-		Status:     status,
-		StartedAt:  started,
-		FinishedAt: time.Now(),
-		Content:    content,
-		P0:         countSeverity(content, "P0"),
-		P1:         countSeverity(content, "P1"),
-		P2:         countSeverity(content, "P2"),
-	}
-}
-
-// countSeverity counts distinct severity findings in a report. Structured
-// reports list each finding under a header like "### P1 Important -- ...", so
-// count those first; fall back to counting bare mentions for free-text reports.
-func countSeverity(content, sev string) int {
-	header := regexp.MustCompile(`(?m)^#{1,4}\s*` + sev + `\b`)
-	if n := len(header.FindAllString(content, -1)); n > 0 {
-		return n
-	}
-	return strings.Count(content, sev)
-}
-
 // handleInspect runs a basic cluster inspection and returns the report as JSON.
-// The run is also persisted as a report (taskID "inspect") with audit entries.
-// Run the inspection with the creator's identity and the creator's
-// permissions (design §5.4 / FR-M4 authorization contract): read-only is
-// enforced by the inspection template's behavior plus RBAC as the backstop;
-// a dedicated read-only instance is no longer used.
+// The run's tool calls are still recorded to the caller's audit ledger; the
+// report body itself is only returned inline (scheduled-task reports are TaskRun
+// CRs). Run the inspection with the creator's identity and the creator's
+// permissions (design §5.4 authorization contract): read-only is enforced by the
+// inspection template's behavior plus RBAC as the backstop; a dedicated
+// read-only instance is no longer used.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -401,7 +367,6 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionKey := "inspect-" + uuid.NewString()[:8]
-	started := time.Now()
 	client, cerr := s.clientFor(user)
 	if cerr != nil {
 		// Fail-closed: an inspection must run with the user's selected model,
@@ -418,12 +383,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 			s.recordToolCall(user, ev)
 		}
 	}
-	report, _ := s.store.AddReport(storeReport("inspect", "manual inspection", "Inspect", started, content, err))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "report": report})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"report": content, "reportId": report.ID})
+	writeJSON(w, http.StatusOK, map[string]any{"report": content})
 }
 
 func writeSSE(w http.ResponseWriter, ev openclaw.Event) error {
