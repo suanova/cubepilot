@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/suanova/cubepilot/internal/config"
-	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -93,16 +92,6 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 		body := rec.Body.String()
 		if !strings.Contains(body, "event: confirm_resolved") || !strings.Contains(body, `"approved":`+map[bool]string{true: "true", false: "false"}[tc.approved]) {
 			t.Errorf("expected confirm_resolved approved=%v in stream, got %q", tc.approved, body)
-		}
-		msgs, _ := st.ListMessages("conv-1", 0)
-		found := false
-		for _, m := range msgs {
-			if m.EventType == openclaw.EventConfirmResolved && m.CallID == "appr-1" {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("expected confirm_resolved ledger row, got %+v", msgs)
 		}
 		audit, _ := st.ListAudit(0)
 		if len(audit) == 0 || audit[0].Status != map[bool]string{true: "approved", false: "rejected"}[tc.approved] {

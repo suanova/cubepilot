@@ -111,94 +111,6 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(history)
 }
 
-// handleLedger serves GET /api/sessions/{key}/ledger -- the platform-side
-// message ledger rows for a conversation (design §4.1: the platform is the
-// source of truth for the session). This is the
-// authoritative history for rendering and cross-runtime recovery; it does not
-// require the agent instance to be alive.
-func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
-		return
-	}
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/ledger")
-	sessionKey = strings.Trim(sessionKey, "/")
-	if sessionKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
-		return
-	}
-	msgs, err := s.store.ListMessages(sessionKey, 0)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"conversationId": sessionKey, "messages": msgs})
-}
-
-// handleSeed serves POST /api/sessions/{key}/seed -- re-seeds a new runtime
-// session from the platform ledger (design §4.1 runtime swap re-attach: the
-// platform ledger replays recent messages as the new runtime's session
-// context). The assistant service replays ledger
-// rows as chat messages to the agent gateway, so a fresh runtime (or a rebuilt
-// instance) can continue the conversation from the platform's source of truth.
-func (s *Server) handleSeed(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
-		return
-	}
-	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/seed")
-	sessionKey = strings.Trim(sessionKey, "/")
-	if sessionKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
-		return
-	}
-	msgs, err := s.store.ListMessages(sessionKey, 50)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if len(msgs) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"seeded": 0})
-		return
-	}
-	if err := s.mgr.Ensure(r.Context(), user); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
-		return
-	}
-	// Replay the ledger as an ordered chat history to the runtime session.
-	var chat []openclaw.ChatMessage
-	for _, m := range msgs {
-		switch m.Role {
-		case "user":
-			chat = append(chat, openclaw.ChatMessage{Role: "user", Content: m.Content})
-		case "assistant":
-			chat = append(chat, openclaw.ChatMessage{Role: "assistant", Content: m.Content})
-		}
-	}
-	if len(chat) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"seeded": 0})
-		return
-	}
-	client, cerr := s.clientFor(user)
-	if cerr != nil {
-		// Fail-closed: re-seeding a runtime must not silently switch models
-		// (the seeded session continues the conversation; a different model
-		// would change behavior mid-conversation).
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
-		return
-	}
-	err = client.StreamChat(r.Context(), openclaw.ChatParams{
-		SessionKey: sessionKey,
-		Messages:   chat,
-	}, func(openclaw.Event) error { return nil })
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"seeded": len(chat)})
-}
-
 // handleMessages streams one chat turn to the client as CubePilot SSE events.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -222,19 +134,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// approval events (which carry it) route to the same stream (issue #20).
 	sessionKey = canonicalSessionKey(sessionKey)
 	user := s.userOf(r)
-
-	// Session source of truth (design §4.1): the platform ledger is the source
-	// of truth for
-	// message history. Record the user message up front so the turn is durable
-	// even if the runtime stream fails mid-way (marked incomplete on done).
-	if s.store != nil {
-		_, _ = s.store.AppendMessage(store.Message{
-			ConversationID: sessionKey,
-			User:           user,
-			Role:           "user",
-			Content:        body.Content,
-		})
-	}
 
 	metrics.Inc("cubepilot_messages_total", "role=user", 1)
 	metrics.Inc("cubepilot_sessions_total", "", 1)
@@ -270,7 +169,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// polling, no end-of-run drain. emitLive is the single write path for both
 	// the handler and the WS read goroutine (Stream.Send is concurrency-safe).
 	emitLive := func(ev openclaw.Event) error {
-		s.ledgerEvent(user, sessionKey, ev)
+		s.recordToolCall(user, ev)
 		if ev.Type == openclaw.EventMessageDelta && firstToken.IsZero() {
 			firstToken = time.Now()
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
@@ -304,8 +203,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// WS-only chat needs the gateway device channel (sessions.send runs over
 	// it) and a resolvable selected model; a failure in either is surfaced as a
-	// fail-closed error that flows through the shared tail below (ledger turn
-	// and metrics are finalized) instead of an early return.
+	// fail-closed error that flows through the shared tail below (metrics are
+	// finalized) instead of an early return.
 	var runErr error
 	if s.hitl == nil {
 		runErr = fmt.Errorf("live chat unavailable: gateway device channel is not configured")
@@ -327,67 +226,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey})
 	}
-	// Terminate the ledger turn: mark the assistant row done (incomplete when
-	// the stream failed / instance warming failed).
-	if s.store != nil {
-		errMsg := ""
-		if streamErr != nil {
-			errMsg = streamErr.Error()
-		}
-		_ = s.store.TurnEnd(sessionKey, errMsg)
-	}
 	metrics.ObserveTurn(time.Since(started).Milliseconds())
 	if streamErr != nil {
 		metrics.Inc("cubepilot_turns_total", "status=failed", 1)
 	} else {
 		metrics.Inc("cubepilot_turns_total", "status=ok", 1)
-	}
-}
-
-// ledgerEvent writes one message-ledger row per SSE event flowing through the
-// forwarding path (design §4.1 event capture on the stream, event-sourcing).
-// Tool events are
-// recorded for audit as well; user-facing deltas are coalesced into the
-// assistant row (latest delta row is the terminal text).
-func (s *Server) ledgerEvent(user, sessionKey string, ev openclaw.Event) {
-	if s.store == nil {
-		return
-	}
-	switch ev.Type {
-	case openclaw.EventToolCall:
-		s.recordToolCall(user, ev)
-		args, _ := json.Marshal(ev.Arguments)
-		_, _ = s.store.AppendMessage(store.Message{
-			ConversationID: sessionKey,
-			User:           user,
-			Role:           "tool",
-			EventType:      ev.Type,
-			ToolName:       ev.Name,
-			CallID:         ev.CallID,
-			ToolCalls:      args,
-		})
-	case openclaw.EventToolResult:
-		_, _ = s.store.AppendMessage(store.Message{
-			ConversationID: sessionKey,
-			User:           user,
-			Role:           "tool",
-			EventType:      ev.Type,
-			ToolName:       ev.Name,
-			Content:        ev.Output,
-		})
-	case openclaw.EventMessageDelta, openclaw.EventTextReplace:
-		// text_replace carries a full snapshot that supersedes earlier deltas;
-		// record it as the latest assistant row so the ledger's terminal text is
-		// consistent with what the user saw (issue #130).
-		_, _ = s.store.AppendMessage(store.Message{
-			ConversationID: sessionKey,
-			User:           user,
-			Role:           "assistant",
-			EventType:      ev.Type,
-			Content:        ev.Delta,
-		})
-	case openclaw.EventMessageDone:
-		// TurnEnd marks the assistant row terminal; nothing else to append.
 	}
 }
 

@@ -3,9 +3,11 @@
 // state comes from AgentInstance CRs; the server also serves the platform
 // objects (Agent / Skill / Model / Task / TaskRun) over the API (design
 // CubePilot-Cloud-for-Agents-Simplified-Design.md §2.1). The API process is
-// stateless except for the JSON metadata store (message ledger / audit /
-// inspect reports / agent config) on a single RWO PVC. Task scheduling is
-// owned by the operator's CRD scheduler -- the API never runs cron loops.
+// stateless except for the JSON metadata store (audit / inspect reports /
+// agent config) on a single RWO PVC. Conversation content lives only in the
+// per-instance runtime (design §3.6) and is served from it; the API never
+// keeps a message copy. Task scheduling is owned by the operator's CRD
+// scheduler -- the API never runs cron loops.
 package server
 
 import (
@@ -167,15 +169,14 @@ func (s *Server) Handler() http.Handler {
 	return logRequests(mux)
 }
 
-// handleSessionSubresource routes /api/sessions/{key}/{messages|ledger|seed|confirm}.
+// handleSessionSubresource routes /api/sessions/{key}/{messages|confirm}. History
+// (messages) is served from the live runtime session -- the runtime is the only
+// source of truth for conversation content (design §3.6), so reading it
+// requires the instance to be warm.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
 		s.handleHistory(w, r)
-	case strings.HasSuffix(r.URL.Path, "/ledger"):
-		s.handleLedger(w, r)
-	case strings.HasSuffix(r.URL.Path, "/seed"):
-		s.handleSeed(w, r)
 	case strings.HasSuffix(r.URL.Path, "/confirm/pending"):
 		s.handlePendingConfirm(w, r)
 	case strings.HasSuffix(r.URL.Path, "/confirm"):

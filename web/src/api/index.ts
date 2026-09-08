@@ -23,10 +23,6 @@ export const api = {
     apiFetch<{ items: HistoryMessage[] }>(
       `/api/sessions/${encodeURIComponent(sessionKey)}/messages`,
     ).then((d) => d.items),
-  ledger: (sessionKey: string) =>
-    apiFetch<{ rows: unknown[] }>(
-      `/api/sessions/${encodeURIComponent(sessionKey)}/ledger`,
-    ).then((d) => d.rows),
 
   // HITL write confirmations (issue #20 / #116)
   postConfirm: (sessionKey: string, decision: 'approve' | 'reject' | 'allow-always') =>

@@ -196,16 +196,6 @@ func (s *ApprovalService) recordDecision(user string, p pendingApproval, approve
 		Status:    status,
 		TS:        time.Now(),
 	})
-	_, _ = s.store.AppendMessage(store.Message{
-		ConversationID: p.SessionKey,
-		User:           user,
-		Role:           "tool",
-		EventType:      openclaw.EventConfirmResolved,
-		ToolName:       p.Tool,
-		CallID:         p.ApprovalID,
-		Content:        p.Command,
-		CreatedAt:      time.Now(),
-	})
 }
 
 var (
