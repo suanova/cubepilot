@@ -557,18 +557,31 @@ func (m *hitlManager) routeLive(user, evName string, payload []byte) {
 		// so the caller emits message_done with an error instead of a plain done.
 		var err error
 		if evName == "chat" {
-			var st struct {
-				State string `json:"state"`
-				Error string `json:"error"`
-			}
-			if json.Unmarshal(payload, &st) == nil && (st.State == "error" || st.State == "aborted") {
-				msg := st.Error
-				if msg == "" {
-					msg = "agent run " + st.State
-				}
-				err = fmt.Errorf("%s", msg)
-			}
+			err = chatTerminalErr(payload)
 		}
 		t.finish(err)
 	}
+}
+
+// chatTerminalErr extracts the diagnostic message from a terminal chat frame
+// (state "error"/"aborted"). OpenClaw carries the message under errorMessage
+// (and sometimes error / errorKind / stopReason); returning nil for any other
+// state means the caller treats the frame as a plain terminal.
+func chatTerminalErr(payload []byte) error {
+	var st struct {
+		State        string `json:"state"`
+		Error        string `json:"error"`
+		ErrorMessage string `json:"errorMessage"`
+	}
+	if json.Unmarshal(payload, &st) != nil || (st.State != "error" && st.State != "aborted") {
+		return nil
+	}
+	msg := st.ErrorMessage
+	if msg == "" {
+		msg = st.Error
+	}
+	if msg == "" {
+		msg = "agent run " + st.State
+	}
+	return fmt.Errorf("%s", msg)
 }

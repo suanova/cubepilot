@@ -412,3 +412,23 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 		t.Fatal("live turn leaked after send error")
 	}
 }
+
+func TestChatTerminalErr(t *testing.T) {
+	cases := []struct{ name, payload, want string }{
+		{"errorMessage preserved", `{"state":"error","errorMessage":"provider boom","stopReason":"error"}`, "provider boom"},
+		{"errorMessage aborted", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user"},
+		{"error fallback", `{"state":"error","error":"legacy msg"}`, "legacy msg"},
+		{"no message default", `{"state":"aborted"}`, "agent run aborted"},
+		{"non-terminal state ignored", `{"state":"final"}`, ""},
+	}
+	for _, c := range cases {
+		err := chatTerminalErr([]byte(c.payload))
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
