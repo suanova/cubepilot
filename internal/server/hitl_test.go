@@ -308,6 +308,19 @@ func TestHitl_GatedPoliciesFailClosedOnGuardError(t *testing.T) {
 	}
 }
 
+// TestHitl_FailsClosedOnPolicyResolutionError verifies PreTurn fails closed when
+// the effective policy cannot be resolved: it must not guess None and start a
+// turn that might need asking (issue #127).
+func TestHitl_FailsClosedOnPolicyResolutionError(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error) {
+		return "", nil, "", fmt.Errorf("resolver: boom")
+	}
+	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("PreTurn should fail closed when the policy cannot be resolved")
+	}
+}
+
 // TestHitl_ChannelState verifies the approval-channel status the confirm view
 // surfaces: up for an established/reachable connection, pairing while the
 // supervisor has not yet approved the derived device, and down when the gateway

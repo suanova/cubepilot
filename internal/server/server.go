@@ -89,17 +89,22 @@ func (s *Server) EnableHITL() error {
 			Data:       map[string][]byte{"key": []byte(base64.StdEncoding.EncodeToString(mk))},
 		}
 		if cerr := s.cr.Create(ctx, &sec); cerr != nil {
-			// Lost a create race to a peer replica: read the winner's key.
-			if apierrors.IsAlreadyExists(cerr) {
-				var got corev1.Secret
-				if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr == nil {
-					if k := got.Data["key"]; len(k) > 0 {
-						mk, _ = base64.StdEncoding.DecodeString(string(k))
-					}
-				}
-			}
-			if len(mk) == 0 {
+			if !apierrors.IsAlreadyExists(cerr) {
 				return fmt.Errorf("hitl: ensure master Secret: %w", cerr)
+			}
+			// Lost the create race to a peer replica: adopt the winner's persisted
+			// key so every replica derives the same device identities. Only a
+			// successful read + decode replaces mk -- never fall through to
+			// ConfiguredHITL with the random bytes we just generated, which would
+			// leave the API with unstable (unpersisted) device identities.
+			var got corev1.Secret
+			if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr != nil {
+				return fmt.Errorf("hitl: read master Secret after create race: %w", rerr)
+			}
+			var derr error
+			mk, derr = base64.StdEncoding.DecodeString(string(got.Data["key"]))
+			if derr != nil || len(mk) == 0 {
+				return fmt.Errorf("hitl: winner master Secret has an invalid 'key'")
 			}
 		}
 	default:

@@ -295,15 +295,17 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 // policy once per config revision, and guards the session.
 //
 // Both gated policies fail closed (issue #127): confirmPolicy is the single
-// authority for whether a turn is guarded, so if the approval channel cannot
-// be established or the policy/guard cannot be applied, PreTurn returns an
+// authority for whether a turn is guarded, so if the policy cannot be resolved
+// or the approval channel/policy/guard cannot be applied, PreTurn returns an
 // error and the caller must not start the turn. A policy that says "ask" must
 // never silently run a turn that cannot ask -- that is the silent downgrade
-// issue #127 exists to remove. Only None/empty resolve to pass-through.
+// issue #127 exists to remove. Only a resolved None/empty policy passes through
+// (an unresolvable config is treated as gated-unknown and fails closed, not as
+// None).
 func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) error {
 	pol, allow, rev, err := m.resolved(ctx, user)
 	if err != nil {
-		return nil
+		return fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
 	}
 	switch pol {
 	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
