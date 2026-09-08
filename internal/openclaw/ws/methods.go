@@ -162,7 +162,7 @@ func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message, id
 // agentWaitTimeoutMs bounds each agent.wait RPC. The gateway's wait has its own
 // 30s default that returns a "timeout" status while the run is still going;
 // we loop until a terminal status instead of trusting a single RPC.
-const agentWaitTimeoutMs = 10000
+const agentWaitTimeoutMs = 25000
 
 // agentWaitPollInterval is the backoff between non-terminal agent.wait retries
 // (a run still in flight, or a turn queued behind another).
@@ -204,18 +204,14 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 			}
 			return fmt.Errorf("%s", msg)
 		case "timeout":
-			// OpenClaw uses status "timeout" both for a bounded wait deadline
-			// (run still in flight -- no terminal marker) and for a genuinely
-			// terminal provider timeout (carries timeoutPhase, and is cached, so
-			// every retry would return it immediately). Only the former should be
-			// retried; endedAt is not a reliable discriminator (a bounded wait
-			// deadline also stamps it), so terminal is keyed on timeoutPhase.
-			if res.TimeoutPhase != "" {
-				msg := res.Error
-				if msg == "" {
-					msg = "agent run timed out"
-				}
-				return fmt.Errorf("%s", msg)
+			// OpenClaw uses status "timeout" for a bounded wait deadline (run
+			// still in flight) and for a genuinely terminal timeout. The two
+			// cannot be told apart by payload metadata on the real gateway (a
+			// wait deadline also stamps endedAt/timeoutPhase), so a timeout only
+			// fails the turn when it carries an explicit error; otherwise it is a
+			// deadline and we keep waiting with backoff.
+			if res.Error != "" {
+				return fmt.Errorf("%s", res.Error)
 			}
 		case "pending":
 			// queued, not yet started -- wait briefly
@@ -229,21 +225,4 @@ func (c *Client) AgentWait(ctx context.Context, runID string) error {
 		case <-time.After(agentWaitPollInterval):
 		}
 	}
-}
-
-// isTerminalTimeout reports whether a "timeout" wait status is a genuinely
-// terminal provider timeout (carries endedAt / timeoutPhase) rather than a
-// bounded-wait deadline that expired while the run is still going.
-func isTerminalTimeout(res struct {
-	Status       string `json:"status"`
-	Error        string `json:"error"`
-	TimeoutPhase string `json:"timeoutPhase"`
-}, meta map[string]json.RawMessage) bool {
-	if res.TimeoutPhase != "" {
-		return true
-	}
-	if raw, ok := meta["endedAt"]; ok && len(raw) > 0 && string(raw) != "null" && string(raw) != "0" {
-		return true
-	}
-	return false
 }
