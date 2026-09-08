@@ -472,15 +472,17 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	t := m.registerLive(user, sessionKey, sink)
 	defer m.releaseLive(user, sessionKey, gw)
 
+	// Pre-generate the idempotency key and install it as the expected run BEFORE
+	// subscribing/sending: sessions.send returns it as the run id, so content and
+	// terminal frames are correlated (and unrelated or pre-ACK runs rejected)
+	// from the first event, before any run of the session can leak in.
+	idem := uuid.NewString()
+	t.setRunID(idem)
+
 	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
 		m.sayf("chat %s: %s: subscribe: %v", user, sessionKey, err)
 		return err
 	}
-	// Pre-generate the idempotency key and install it as the expected run BEFORE
-	// sending: sessions.send returns it as the run id, so content/terminal frames
-	// can be correlated (and unrelated or pre-ACK runs rejected) from the start.
-	idem := uuid.NewString()
-	t.setRunID(idem)
 	runID, err := gw.SendSessionMessage(ctx, sessionKey, message, idem)
 	if err != nil {
 		return err
@@ -491,24 +493,37 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	if runID == "" {
 		runID = idem
 	}
-	if runID != "" {
-		// Authoritative completion: blocks until the run the gateway started for
-		// us is done. All its content frames (TCP-ordered before this response)
-		// have already streamed into sink by the time it returns.
-		if err := gw.AgentWait(ctx, runID); err != nil {
+	// Terminal is driven by the subscribed event stream (chat final/aborted/
+	// error closes t.done) -- agent.wait metadata cannot reliably distinguish a
+	// bounded-wait timeout from a terminal one (v2026.8.2 stamps timeoutPhase on
+	// both paths). agent.wait runs as a backstop notifier on the same WS and is
+	// cancelled when the events say the turn is over.
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- gw.AgentWait(waitCtx, runID)
+	}()
+	select {
+	case <-t.done:
+		return t.doneErr
+	case err := <-waitDone:
+		if err != nil {
 			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
 			return err
 		}
-	}
-	// Settle a moment so any terminal chat frame (final/aborted/error) that the
-	// projector mapped can be reflected in doneErr before we return.
-	select {
-	case <-t.done:
-	case <-time.After(wsRunTail):
+		// agent.wait returned ok; settle a moment for any trailing terminal frame
+		// already queued before returning.
+		select {
+		case <-t.done:
+		case <-time.After(wsRunTail):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return t.doneErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return t.doneErr
 }
 
 // routeLive fans a gateway session-message event to the active live turn for

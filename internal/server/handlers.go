@@ -316,17 +316,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// per-request model override header, so the user's selected model reaches
 	// the gateway through the instance config. Re-resolve it before the turn and
 	// surface a resolution error instead of silently running the runtime
-	// default, matching the HTTP path's fail-closed contract.
+	// default, matching the HTTP path's fail-closed contract. The failure flows
+	// through the shared tail below so the ledger turn and metrics are finalized.
+	var modelErr error
 	if _, cerr := s.clientFor(user); cerr != nil {
-		s.logf("model resolution for %s: %v", user, cerr)
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: cerr.Error()})
-		return
+		modelErr = cerr
 	}
 
 	// Drive the whole turn over the WebSocket: RunLiveTurn subscribes the
 	// session, sends the message, and returns when the run is terminal (all
 	// text/tool events were already streamed via emitLive as they arrived).
-	if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, emitLive); err != nil {
+	if modelErr != nil {
+		s.logf("model resolution for %s: %v", user, modelErr)
+		streamErr = modelErr
+		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: modelErr.Error()})
+	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, emitLive); err != nil {
 		streamErr = err
 		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
 	} else {

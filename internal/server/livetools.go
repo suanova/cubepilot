@@ -355,10 +355,13 @@ func toolResultText(raw json.RawMessage) string {
 			}
 		}
 		// exec aggregates its full output under details.aggregated.
-		if v, ok := rec["aggregated"]; ok && len(v) > 0 && string(v) != "null" {
-			var s string
-			if v[0] == '"' && json.Unmarshal(v, &s) == nil && s != "" {
-				return s
+		var details map[string]json.RawMessage
+		if rawDetails, ok := rec["details"]; ok && json.Unmarshal(rawDetails, &details) == nil {
+			if v, ok := details["aggregated"]; ok && len(v) > 0 && string(v) != "null" {
+				var s string
+				if v[0] == '"' && json.Unmarshal(v, &s) == nil && s != "" {
+					return s
+				}
 			}
 		}
 	}
