@@ -21,6 +21,11 @@ import (
 // in-pod supervisor approves the device pairing (overridable in tests).
 var hitlPairRetryDelay = 1500 * time.Millisecond
 
+// channelProbeTimeout bounds a single channelState connect attempt: it only
+// needs to learn whether the gateway is reachable and the derived device is
+// paired, so it skips conn()'s 30s pairing retry budget.
+const channelProbeTimeout = 3 * time.Second
+
 // hitlGateway is the subset of the gateway-protocol WS client the HITL glue
 // depends on, so tests can substitute a fake.
 type hitlGateway interface {
@@ -289,15 +294,18 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 // AlwaysAsk it ensures the approval connection, applies the effective exec
 // policy once per config revision, and guards the session.
 //
-// Allowlist keeps the issue #20 best-effort posture: on failure the turn
-// proceeds ungated and audited (only a successfully guarded session pauses
-// writes). AlwaysAsk is the strict posture and must NOT fail open -- if its
-// policy or guard cannot be applied, PreTurn returns an error and the caller
-// must not start the turn.
+// Both gated policies fail closed (issue #127): confirmPolicy is the single
+// authority for whether a turn is guarded, so if the policy cannot be resolved
+// or the approval channel/policy/guard cannot be applied, PreTurn returns an
+// error and the caller must not start the turn. A policy that says "ask" must
+// never silently run a turn that cannot ask -- that is the silent downgrade
+// issue #127 exists to remove. Only a resolved None/empty policy passes through
+// (an unresolvable config is treated as gated-unknown and fails closed, not as
+// None).
 func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) error {
 	pol, allow, rev, err := m.resolved(ctx, user)
 	if err != nil {
-		return nil
+		return fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
 	}
 	switch pol {
 	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
@@ -306,11 +314,7 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) erro
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
-		m.sayf("hitl %s: turn gating skipped (channel down): %v", user, err)
-		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
-			return fmt.Errorf("hitl %s: cannot gate AlwaysAsk turn: %w", user, err)
-		}
-		return nil
+		return fmt.Errorf("hitl %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
 	}
 	// Apply the effective exec policy when the resolved-config revision changed;
 	// only a successful apply advances revPol so a transient failure is retried
@@ -320,23 +324,48 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) erro
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
 		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
-			if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
-				return fmt.Errorf("hitl %s: cannot apply AlwaysAsk policy: %w", user, err)
-			}
-			// Allowlist: best-effort, leave the watermark so we retry next turn.
-		} else {
-			m.mu.Lock()
-			m.revPol[user] = rev
-			m.mu.Unlock()
+			return fmt.Errorf("hitl %s: cannot apply %s exec policy: %w", user, pol, err)
 		}
+		m.mu.Lock()
+		m.revPol[user] = rev
+		m.mu.Unlock()
 	}
 	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
-		m.sayf("hitl %s: guard session %s: %v", user, sessionKey, err)
-		if pol == v1alpha1.ConfirmPolicyAlwaysAsk {
-			return fmt.Errorf("hitl %s: cannot guard AlwaysAsk session %s: %w", user, sessionKey, err)
-		}
+		return fmt.Errorf("hitl %s: cannot guard %s session %s: %w", user, pol, sessionKey, err)
 	}
 	return nil
+}
+
+// channelState reports whether the per-user approval channel can currently
+// carry a gated turn (issue #127). An established connection answers "up" from
+// cache; otherwise one bounded connect attempt is made and immediately dropped.
+// A NOT_PAIRED rejection means the supervisor has not yet approved this user's
+// derived device (first use) and reports "pairing" -- the rejected connect
+// seeds the pending device the supervisor auto-approves on its next poll, so
+// the state self-heals. Surfaced on the confirm view so a policy edit is never
+// a silent no-op: with a "down"/"unconfigured" channel a gated turn fails
+// closed rather than running ungated.
+func (m *hitlManager) channelState(ctx context.Context, user string) string {
+	m.mu.Lock()
+	if c, ok := m.conns[user]; ok && c.gw != nil && c.gw.Connected() {
+		m.mu.Unlock()
+		return confirmChannelUp
+	}
+	m.mu.Unlock()
+
+	dev := m.deviceFor(user)
+	gw := m.newClient(m.wsURLOf(user), dev)
+	defer gw.Close()
+	aCtx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
+	defer cancel()
+	if err := gw.Connect(aCtx); err != nil {
+		if strings.Contains(err.Error(), "NOT_PAIRED") {
+			return confirmChannelPairing
+		}
+		m.sayf("hitl %s: channel probe: %v", user, err)
+		return confirmChannelDown
+	}
+	return confirmChannelUp
 }
 
 // applyPolicy writes the effective exec-approvals policy into agents."main" of

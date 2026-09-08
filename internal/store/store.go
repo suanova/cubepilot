@@ -1,7 +1,8 @@
-// Package store persists CubePilot platform metadata (scheduled tasks, run
-// reports,
-// audit entries, agent config) as JSON files on the backend PVC -- the "tables"
-// approach chosen over CRDs for phase one.
+// Package store persists the API's audit ledger as JSON files on the backend
+// PVC. Reports, the platform message ledger and the global agent config have
+// all moved out: run/task state lives in CRDs and the runtime, and agent config
+// is per-user on the AgentInstance CR -- the only metadata the API itself must
+// own is the audit trail, which must survive instance restarts.
 package store
 
 import (
@@ -11,31 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-const (
-	maxReports = 200
-	maxAudit   = 1000
-)
-
-// Report is one execution record of a task (or of /api/inspect).
-type Report struct {
-	ID         string    `json:"id"`
-	TaskID     string    `json:"taskId"`
-	TaskName   string    `json:"taskName"`
-	Trigger    string    `json:"trigger"` // cron | manual | inspect
-	Status     string    `json:"status"`  // success | failed
-	StartedAt  time.Time `json:"startedAt"`
-	FinishedAt time.Time `json:"finishedAt"`
-	Content    string    `json:"content"`
-	P0         int       `json:"p0"`
-	P1         int       `json:"p1"`
-	P2         int       `json:"p2"`
-}
+const maxAudit = 1000
 
 // AuditEntry records one tool invocation observed on the SSE stream (M5).
 type AuditEntry struct {
@@ -46,78 +30,35 @@ type AuditEntry struct {
 	Tool      string    `json:"tool"`
 	Command   string    `json:"command"`
 	Level     string    `json:"level"`  // L0 readonly | L1 write
-	Status    string    `json:"status"` // executed | failed
+	Status    string    `json:"status"` // executed | approved | rejected | failed
 	Detail    string    `json:"detail,omitempty"`
 }
 
-// SkillToggle is one skill switch on the Agent config page.
-type SkillToggle struct {
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
-}
-
-// AgentConfig is the persisted Agent config desired state (FR-M2-005 subset).
-type AgentConfig struct {
-	Model        string        `json:"model"`
-	SystemPrompt string        `json:"systemPrompt"`
-	Skills       []SkillToggle `json:"skills"`
-}
-
-// DefaultAgentConfig mirrors the baked-in skill catalog. The model is empty:
-// no platform default LLM is assumed (issue #117) -- a model-less install must
-// not present a DeepSeek default that is absent from the agent-for-cloud
-// template. An operator-configured default supplied to New still overrides it.
-func DefaultAgentConfig() AgentConfig {
-	return AgentConfig{
-		Model: "",
-		Skills: []SkillToggle{
-			{Name: "kubectl-platform", Enabled: true},
-			{Name: "cluster-inspection", Enabled: true},
-			{Name: "cubestack-platform", Enabled: true},
-		},
-	}
-}
-
-// defaultConfig returns the baked-in defaults with the operator-configured
-// default model (seeds the portal model selector until the user picks a model).
-func (s *Store) defaultConfig() AgentConfig {
-	cfg := DefaultAgentConfig()
-	if s.defaultModel != "" {
-		cfg.Model = s.defaultModel
-	}
-	return cfg
-}
-
-// Store keeps each collection in one JSON file under dir.
+// Store keeps one audit JSON file per user under dir.
 type Store struct {
-	dir          string
-	defaultModel string // operator-configured default LLM (the builtin template default)
-	mu           sync.Mutex
+	dir string
+	mu  sync.Mutex
 }
 
-// New opens (creating if needed) a store rooted at dir. defaultModel is the
-// operator-configured default LLM (the builtin AgentTemplate default): it seeds
-// the Agent config so the portal's model selector always shows a valid template
-// model instead of a stale hardcoded value.
-func New(dir, defaultModel string) (*Store, error) {
+// New opens (creating if needed) a store rooted at dir.
+func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("store dir: %w", err)
 	}
-	return &Store{dir: dir, defaultModel: defaultModel}, nil
+	return &Store{dir: dir}, nil
 }
 
-func shortID(prefix string) string {
-	return fmt.Sprintf("%s-%s", prefix, uuid.NewString()[:8])
+func shortID() string {
+	return fmt.Sprintf("a-%s", uuid.NewString()[:8])
 }
 
-func (s *Store) file(name string, v any, create bool) error {
+// file loads (or lazily creates) one JSON file into v.
+func (s *Store) file(name string, v any) error {
 	path := filepath.Join(s.dir, name)
 	raw, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		if !create {
-			return nil
-		}
+		return nil
 	case err != nil:
 		return fmt.Errorf("read %s: %w", name, err)
 	default:
@@ -140,78 +81,65 @@ func (s *Store) save(name string, v any) error {
 	return os.Rename(tmp, filepath.Join(s.dir, name))
 }
 
-// ---- reports ----
-
-// AddReport appends a report, capping the collection at maxReports.
-func (s *Store) AddReport(r Report) (Report, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var reports []Report
-	if err := s.file("reports.json", &reports, false); err != nil {
-		return Report{}, err
+// auditFile maps a user to their audit file name. Users come from the portal
+// identity header (arbitrary strings), so only filesystem-safe characters are
+// kept; collisions after sanitizing are tolerated because the entry's User
+// field is authoritative on read.
+func auditFile(user string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, user)
+	if safe == "" {
+		safe = "default"
 	}
-	r.ID = shortID("r")
-	reports = append(reports, r)
-	if len(reports) > maxReports {
-		reports = reports[len(reports)-maxReports:]
-	}
-	if err := s.save("reports.json", reports); err != nil {
-		return Report{}, err
-	}
-	return r, nil
+	return "audit-" + safe + ".json"
 }
 
 // ---- audit ----
 
-// AddAudit appends an audit entry, capping at maxAudit.
+// AddAudit appends an audit entry to its user's ledger, capping the collection
+// at maxAudit. The user is read from the entry (never trusted from the file
+// name), so each user's ledger is isolated on disk.
 func (s *Store) AddAudit(e AuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	name := auditFile(e.User)
 	var entries []AuditEntry
-	if err := s.file("audit.json", &entries, false); err != nil {
+	if err := s.file(name, &entries); err != nil {
 		return err
 	}
-	e.ID = shortID("a")
+	e.ID = shortID()
 	entries = append(entries, e)
 	if len(entries) > maxAudit {
 		entries = entries[len(entries)-maxAudit:]
 	}
-	return s.save("audit.json", entries)
+	return s.save(name, entries)
 }
 
-// ListAudit returns audit entries newest-first.
-func (s *Store) ListAudit(limit int) ([]AuditEntry, error) {
+// ListAudit returns a user's audit entries newest-first.
+func (s *Store) ListAudit(user string, limit int) ([]AuditEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var entries []AuditEntry
-	if err := s.file("audit.json", &entries, false); err != nil {
+	if err := s.file(auditFile(user), &entries); err != nil {
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].TS.After(entries[j].TS) })
-	if limit > 0 && len(entries) > limit {
-		entries = entries[:limit]
+	// The file name is only a partition hint; trust the entry's User on read so
+	// a sanitized-name collision can never leak another user's entries.
+	owned := entries[:0]
+	for _, e := range entries {
+		if e.User == user {
+			owned = append(owned, e)
+		}
 	}
-	return entries, nil
-}
-
-// ---- agent config ----
-
-// GetAgentConfig returns the saved config merged over defaults. An explicitly
-// saved empty model ("Runtime Default" on the portal) is preserved so the
-// selector stays on Runtime Default and the instance keeps no override.
-func (s *Store) GetAgentConfig() (AgentConfig, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cfg := s.defaultConfig()
-	if err := s.file("agent-config.json", &cfg, false); err != nil {
-		return AgentConfig{}, err
+	sort.Slice(owned, func(i, j int) bool { return owned[i].TS.After(owned[j].TS) })
+	if limit > 0 && len(owned) > limit {
+		owned = owned[:limit]
 	}
-	return cfg, nil
-}
-
-// SaveAgentConfig persists the config.
-func (s *Store) SaveAgentConfig(cfg AgentConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.save("agent-config.json", cfg)
+	return owned, nil
 }

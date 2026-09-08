@@ -91,10 +91,14 @@ export interface AuditEntry {
   detail?: string
 }
 
+// Agent config served by GET /api/agent/config: the caller's own selections,
+// which live on the AgentInstance CR (design §3.2). exists = the instance is
+// provisioned; model "" = "Runtime Default" (clear the override); systemPrompt
+// "" = template instructions only.
 export interface AgentConfig {
-  model?: string
-  systemPrompt?: string
-  skills?: Array<{ name: string; enabled: boolean }>
+  exists: boolean
+  model: string
+  systemPrompt: string
 }
 
 export interface AgentStatus {
@@ -219,4 +223,9 @@ export interface AgentConfirmView {
   override: string
   allowlistOwned: AllowlistRule[]
   templatePolicy: string
+  // Approval-channel state (issue #127): "up" | "pairing" | "down" |
+  // "unconfigured". A gated policy (Allowlist / AlwaysAsk) is only enforced
+  // while the channel is up; "down"/"unconfigured" means gated turns fail
+  // closed until the channel recovers.
+  channel: string
 }

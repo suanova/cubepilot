@@ -14,13 +14,17 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
-	"github.com/suanova/cubepilot/internal/store"
 )
 
-// handleAudit serves GET /api/audit?limit=400 -- newest-first M5 entries.
+// handleAudit serves GET /api/audit?limit=400 -- the caller's own newest-first
+// audit entries (per-user ledger; a user never sees another user's activity).
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store is not configured"})
 		return
 	}
 	limit := 400
@@ -29,7 +33,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	entries, err := s.store.ListAudit(limit)
+	entries, err := s.store.ListAudit(s.userOf(r), limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -37,81 +41,90 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
-// handleAgentConfig serves GET/PUT /api/agent/config -- the persisted Agent
-// config desired state. systemPrompt is applied live to subsequent chat turns;
-// model/skills are stored preferences (applied on instance rebuild).
+// agentConfigView is the Agent Config page's read of the caller's agent: the
+// instance's own selections live on the AgentInstance CR (design §3.2), not in
+// any global config store. model is the explicit SelectedModel ("" = "Runtime
+// Default": clear the override, the gateway's configured primary decides);
+// systemPrompt is the UserInstructions appended after the template default
+// ("" = template only).
+type agentConfigView struct {
+	Exists       bool   `json:"exists"`
+	Model        string `json:"model"`
+	SystemPrompt string `json:"systemPrompt"`
+}
+
+// handleAgentConfig serves GET/PUT /api/agent/config. GET reads the caller's
+// instance; PUT writes the caller's instance (SelectedModel + UserInstructions)
+// so a model/system-prompt edit takes effect on the next chat turn.
 func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
+	user := s.userOf(r)
 	switch r.Method {
 	case http.MethodGet:
-		cfg, err := s.store.GetAgentConfig()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"config": s.agentConfig(r.Context(), user)})
+	case http.MethodPut:
+		// Config lives on the AgentInstance CR; without the CR client there is
+		// nowhere to write it, so answer a controlled 503 instead of panicking.
+		if s.cr == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "agent config is stored on the AgentInstance CR, which is unavailable (no Kubernetes client)"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
-	case http.MethodPut:
 		var body struct {
-			Config store.AgentConfig `json:"config"`
+			Config agentConfigView `json:"config"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
-		body.Config.Model = strings.TrimSpace(body.Config.Model)
 		// Fail at save time, not at chat time: the resolver is fail-closed on an
 		// explicit selectedModel, so a model that is not in the builtin template
 		// would brick the instance (issue #117 model-less default). Empty =
 		// "Runtime Default" (clear the override).
-		if ok, err := s.agentTemplateHasModel(r.Context(), body.Config.Model); err != nil {
+		model := strings.TrimSpace(body.Config.Model)
+		if ok, err := s.agentTemplateHasModel(r.Context(), model); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		} else if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not in the agent-for-cloud template (add it under Agent Config -> LLM Config first)", body.Config.Model)})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not in the agent-for-cloud template (add it under Agent Config -> LLM Config first)", model)})
 			return
 		}
-		if err := s.store.SaveAgentConfig(body.Config); err != nil {
+		name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+		var inst v1alpha1.AgentInstance
+		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &inst); err != nil {
+			if apierrors.IsNotFound(err) {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": errNoInstance.Error()})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		// A model switch must take effect on the next chat turn: write it to
-		// the caller's AgentInstance.selectedModel (design §3.2: switching the
-		// model = editing selectedModel -> re-resolve), not just the global
-		// store preference. An empty model ("Runtime Default") clears the
-		// override so the gateway's configured primary decides.
-		if err := s.applyModelOverride(r, body.Config.Model); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update instance model: %v", err)})
+		inst.Spec.SelectedModel = model
+		inst.Spec.UserInstructions = strings.TrimSpace(body.Config.SystemPrompt)
+		if err := s.cr.Update(r.Context(), &inst); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"config": body.Config})
+		writeJSON(w, http.StatusOK, map[string]any{"config": s.agentConfig(r.Context(), user)})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or PUT required"})
 	}
 }
 
-// applyModelOverride writes the model to the caller's AgentInstance
-// selectedModel so the switch takes effect on the next chat turn (the resolver
-// sends the override from spec.selectedModel). An empty model clears the
-// override ("Runtime Default": the gateway's configured primary decides). A
-// not-yet-provisioned instance is fine -- the provisioning path carries the
-// selection when the instance is created.
-func (s *Server) applyModelOverride(r *http.Request, model string) error {
+// agentConfig returns the caller's current selections from their AgentInstance,
+// or a not-provisioned view when there is no instance yet.
+func (s *Server) agentConfig(ctx context.Context, user string) agentConfigView {
+	var v agentConfigView
 	if s.cr == nil {
-		return nil
+		return v
 	}
-	user := s.userOf(r)
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &inst); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
+	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+		return v // not provisioned
 	}
-	if inst.Spec.SelectedModel == model {
-		return nil
-	}
-	inst.Spec.SelectedModel = model
-	return s.cr.Update(r.Context(), &inst)
+	v.Exists = true
+	v.Model = inst.Spec.SelectedModel
+	v.SystemPrompt = inst.Spec.UserInstructions
+	return v
 }
 
 // agentTemplateHasModel reports whether model is an inline model of the builtin

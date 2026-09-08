@@ -50,7 +50,7 @@ func main() {
 		log.Fatalf("cr client: %v", err)
 	}
 
-	st, err := store.New(cfg.DataDir, cfg.LLMModel)
+	st, err := store.New(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
@@ -89,9 +89,12 @@ func main() {
 	// (None | Allowlist | AlwaysAsk, template default + instance override).
 	// The device master key is auto-generated and persisted in a Secret, so no
 	// operator key is needed; the in-pod supervisor auto-pairs the derived
-	// per-user devices. EnableHITL stays configured on every start (idle when no
-	// gated policy is in effect).
-	srv.EnableHITL()
+	// per-user devices. Because live chat runs over the same gateway device
+	// channel, failing to bring the channel up leaves the API unable to serve
+	// turns at all -- treat it as a fatal configuration error.
+	if err := srv.EnableHITL(); err != nil {
+		log.Fatalf("enable hitl: %v", err)
+	}
 
 	// Seed the builtin skills into the repository + Skill CRDs (the API owns
 	// the skill lifecycle). Retries in the background until it converges.

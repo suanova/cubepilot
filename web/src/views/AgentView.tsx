@@ -33,7 +33,7 @@ function LockIcon() {
 }
 
 export default function AgentView() {
-  const [cfg, setCfg] = useState<AgentConfig>({})
+  const [cfg, setCfg] = useState<AgentConfig>({ exists: false, model: '', systemPrompt: '' })
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [skills, setSkills] = useState<Array<{ name: string; enabled: boolean }>>([])
   const [hasInstance, setHasInstance] = useState(false)
@@ -186,7 +186,7 @@ export default function AgentView() {
     if (provisioning) return
     setProvisioning(true)
     try {
-      const inst = await api.createInstance({ templateRef: 'agent-for-cloud', selectedModel: cfg.model || undefined })
+      const inst = await api.createInstance({ templateRef: 'agent-for-cloud', selectedModel: cfg.model || undefined, userInstructions: cfg.systemPrompt || undefined })
       showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
       await loadAgentView()
     } catch (e) {
@@ -218,19 +218,20 @@ export default function AgentView() {
   }
 
   async function saveAgentConfig() {
-    // The model must be explicit: saving an empty selection would leave the
-    // instance with no override, so prompt instead of silently saving.
-    if (!cfg.model) {
-      showToast('Add or select a model first')
+    // The selections live on the instance CR, so provisioning must come first.
+    if (!hasInstance) {
+      showToast('Provision your instance on the Agent Config page first')
       return
     }
     try {
-      // Skills are persisted by the toggle above (enabledSkills); the store
-      // preference is inert, so the save is model + systemPrompt only.
-      await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt })
-      showToast('Config saved - system prompt takes effect immediately')
+      // Skills are persisted separately by the toggles above (enabledSkills);
+      // here it is model (selectedModel) + system prompt (userInstructions),
+      // both of which the resolver reads on the next turn.
+      const v = await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt })
+      setCfg(v)
+      showToast('Config saved - model and system prompt take effect on the next turn')
     } catch (e) {
-      showToast('Save failed: ' + e)
+      showToast('Save failed: ' + (e instanceof Error ? e.message : String(e)))
     }
   }
 
@@ -260,7 +261,7 @@ export default function AgentView() {
           <div className="view-title">Agent Config</div>
           <div className="view-desc">Model selection - Skills - System prompt - Confirm rules - Instance status</div>
         </div>
-        <button className="btn primary" onClick={saveAgentConfig}>
+        <button className="btn primary" onClick={saveAgentConfig} disabled={!hasInstance} title={hasInstance ? undefined : 'Provision your instance first'}>
           <CheckIcon />
           Save Config
         </button>
@@ -439,6 +440,15 @@ export default function AgentView() {
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
                     Effective: <span className="pill neutral">{confirm.confirmPolicy || 'None'}</span>
                     {' '}{confirm.override ? 'you override' : 'inherited from template'}
+                  </div>
+                )}
+                {confirm && confirm.exists && (confirm.confirmPolicy === 'Allowlist' || confirm.confirmPolicy === 'AlwaysAsk') && confirm.channel && confirm.channel !== 'up' && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: confirm.channel === 'pairing' ? 'var(--warn)' : 'var(--danger)' }}>
+                    {confirm.channel === 'unconfigured'
+                      ? 'Approval channel is not configured — gated policies cannot be enforced.'
+                      : confirm.channel === 'pairing'
+                        ? 'Approval channel is pairing (first-time device setup) — it enables automatically in a moment.'
+                        : 'Approval channel is unreachable — Allowlist / AlwaysAsk turns are refused until it recovers.'}
                   </div>
                 )}
                 {confirm && !confirm.exists && (

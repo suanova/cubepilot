@@ -68,9 +68,9 @@ export const api = {
   listAudit: (limit = 400) =>
     apiFetch<{ entries: AuditEntry[] | null }>(`/api/audit?limit=${limit}`).then((d) => d.entries ?? []),
 
-  // Agent config (FR-M2-005)
+  // Agent config (per-user instance CR: selectedModel + userInstructions)
   agentConfig: () => apiFetch<{ config: AgentConfig }>('/api/agent/config').then((d) => d.config),
-  saveAgentConfig: (config: AgentConfig) =>
+  saveAgentConfig: (config: { model?: string; systemPrompt?: string }) =>
     apiFetch<{ config: AgentConfig }>('/api/agent/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
