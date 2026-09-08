@@ -98,3 +98,60 @@ func (c *Client) EnsureSessionGuarded(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+// SubscribeSessionMessages opts this connection into the live message stream
+// of one session (sessions.messages.subscribe). While subscribed, the gateway
+// pushes agent / chat / session.message events for that session onto this
+// connection (issue #130: live tool activity for the chat SSE).
+func (c *Client) SubscribeSessionMessages(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.messages.subscribe", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.messages.subscribe %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// UnsubscribeSessionMessages stops the live message stream for one session
+// (sessions.messages.unsubscribe).
+func (c *Client) UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error {
+	_, err := c.Call(ctx, "sessions.messages.unsubscribe", map[string]any{"key": sessionKey})
+	if err != nil {
+		return fmt.Errorf("sessions.messages.unsubscribe %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+// SendSessionMessage sends a user message into a session (sessions.send) and
+// returns once the gateway ACKs the run start. The ACK carries the run id
+// (chat.send responds {status:"started", runId} before the run finishes); the
+// run's live events arrive on the subscribed session-message stream while it
+// runs, and AgentWait blocks until the run is terminal. runID is empty when the
+// gateway did not echo one (older/failure path).
+func (c *Client) SendSessionMessage(ctx context.Context, sessionKey, message string) (runID string, err error) {
+	raw, err := c.Call(ctx, "sessions.send", map[string]any{"key": sessionKey, "message": message})
+	if err != nil {
+		return "", fmt.Errorf("sessions.send %q: %w", sessionKey, err)
+	}
+	var ack struct {
+		Status string `json:"status"`
+		RunID  string `json:"runId"`
+	}
+	// The ACK payload may be absent on some error shapes; ignore decode failure
+	// and keep going (the caller can still complete via terminal events).
+	_ = json.Unmarshal(raw, &ack)
+	return ack.RunID, nil
+}
+
+// AgentWait blocks on the same connection until the run identified by runID is
+// terminal, then returns (agent.wait is the authoritative run completion RPC;
+// chat.send only ACKs start).
+func (c *Client) AgentWait(ctx context.Context, runID string) error {
+	if runID == "" {
+		return fmt.Errorf("agent.wait: empty run id")
+	}
+	_, err := c.Call(ctx, "agent.wait", map[string]any{"runId": runID})
+	if err != nil {
+		return fmt.Errorf("agent.wait %q: %w", runID, err)
+	}
+	return nil
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha512"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/instances"
+	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 )
 
@@ -24,6 +26,11 @@ type hitlGateway interface {
 	Connected() bool
 	Connect(ctx context.Context) error
 	OnApprovalRequested(f func(ws.ApprovalRequested))
+	OnEvent(f func(evName string, payload []byte))
+	SubscribeSessionMessages(ctx context.Context, sessionKey string) error
+	UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error
+	SendSessionMessage(ctx context.Context, sessionKey, message string) (runID string, err error)
+	AgentWait(ctx context.Context, runID string) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
 	EnsureSessionGuarded(ctx context.Context, key string) error
@@ -57,6 +64,32 @@ type hitlManager struct {
 	conns      map[string]*userHitlConn
 	connecting map[string]*sync.Mutex // serializes first connect per user
 	revPol     map[string]string      // user -> applied policy revision
+
+	liveMu sync.Mutex
+	live   map[string]*liveTurn // sessionKey -> active live-tool turn (issue #130)
+}
+
+// liveTurn is one chat turn driving and observing a session over its live
+// message stream (issue #130 WS-only chat). The projector folds the gateway's
+// agent (tool/lifecycle) and chat (text) frames into SSE events that sink
+// writes to the browser; when the run goes terminal, done is closed so the
+// RunLiveTurn caller knows the turn is over.
+type liveTurn struct {
+	user string
+	sink func(openclaw.Event) error
+	proj *liveProjector
+
+	done    chan struct{}
+	once    sync.Once
+	doneErr error
+}
+
+// finish marks the turn terminal (idempotent).
+func (t *liveTurn) finish(err error) {
+	t.once.Do(func() {
+		t.doneErr = err
+		close(t.done)
+	})
 }
 
 type userHitlConn struct {
@@ -78,6 +111,7 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 		conns:      map[string]*userHitlConn{},
 		connecting: map[string]*sync.Mutex{},
 		revPol:     map[string]string{},
+		live:       map[string]*liveTurn{},
 	}
 	m.newClient = func(url string, dev *ws.Device) hitlGateway {
 		return ws.NewClient(url, token, dev)
@@ -179,6 +213,13 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 		if m.bridge != nil {
 			m.bridge(user, ev)
 		}
+	})
+	// Live tool stream (issue #130): every session-message event this
+	// connection receives is routed to the active live turn for its session
+	// (one per chat turn, see AttachLive). The gateway fans these only to
+	// subscribed sessions, so an idle connection sees no tool traffic.
+	gw.OnEvent(func(evName string, payload []byte) {
+		m.routeLive(user, evName, payload)
 	})
 
 	m.mu.Lock()
@@ -338,4 +379,142 @@ func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, dec
 		gwDecision = "allow-once"
 	}
 	return c.gw.ResolveApproval(ctx, approvalID, gwDecision)
+}
+
+// wsRunTail is how long RunLiveTurn waits after agent.wait for a terminal chat
+// frame (final/aborted/error) to reflect in doneErr before returning. Content
+// frames are TCP-ordered before the agent.wait response, so this is normally
+// already resolved and returns immediately.
+const wsRunTail = 500 * time.Millisecond
+
+// registerLive registers the live turn for a session so connection events route
+// to it. The turn stays registered until releaseLive.
+func (m *hitlManager) registerLive(user, sessionKey string, sink func(openclaw.Event) error) *liveTurn {
+	t := &liveTurn{user: user, sink: sink, proj: newLiveProjector(), done: make(chan struct{})}
+	m.liveMu.Lock()
+	if m.live == nil {
+		m.live = map[string]*liveTurn{}
+	}
+	m.live[sessionKey] = t
+	m.liveMu.Unlock()
+	return t
+}
+
+// releaseLive unregisters the session's live turn and, best-effort, unsubscribes
+// its message stream.
+func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
+	m.liveMu.Lock()
+	if cur, ok := m.live[sessionKey]; ok && cur.user == user {
+		delete(m.live, sessionKey)
+	}
+	m.liveMu.Unlock()
+	// Best-effort unsubscribe on a short deadline: the conn may already be gone,
+	// and Call blocks until the pump exits if it is.
+	uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = gw.UnsubscribeSessionMessages(uctx, sessionKey)
+}
+
+// RunLiveTurn drives one full chat turn entirely over the user's gateway
+// WebSocket (issue #130 WS-only chat): it subscribes the session's live message
+// stream, sends the user message with sessions.send, and streams every event
+// the run produces into sink (assistant text deltas, tool calls/results) as it
+// happens. sink is invoked from the WS read goroutine, so it must be safe for
+// concurrent calls with the caller (stream.Send is).
+//
+// sessions.send only ACKs the run start ({status:"started", runId}); the run's
+// content arrives on the subscription afterwards. agent.wait(runId) blocks until
+// the run is terminal and is the authoritative completion signal, so the turn
+// stays subscribed long enough to receive everything (fix: a previous version
+// returned on the start ACK and unsubscribed ~3s in, before the first token).
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message string, sink func(openclaw.Event) error) error {
+	gw, err := m.conn(ctx, user)
+	if err != nil {
+		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
+		return err
+	}
+	// sessions.send only auto-creates the agent's main session, not arbitrary
+	// conversation keys (the OpenAI-compat HTTP surface created those on the
+	// fly; the WS surface does not). Ensure the session row exists first so a
+	// fresh conversation can be sent to. PreTurn already guards gated sessions;
+	// this is the idempotent path for the rest.
+	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
+		m.sayf("chat %s: %s: ensure session: %v", user, sessionKey, err)
+		return err
+	}
+	t := m.registerLive(user, sessionKey, sink)
+	defer m.releaseLive(user, sessionKey, gw)
+
+	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
+		m.sayf("chat %s: %s: subscribe: %v", user, sessionKey, err)
+		return err
+	}
+	runID, err := gw.SendSessionMessage(ctx, sessionKey, message)
+	if err != nil {
+		return err
+	}
+	if runID != "" {
+		// Authoritative completion: blocks until the run the gateway started for
+		// us is done. All its content frames (TCP-ordered before this response)
+		// have already streamed into sink by the time it returns.
+		if err := gw.AgentWait(ctx, runID); err != nil {
+			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
+			return err
+		}
+	}
+	// Settle a moment so any terminal chat frame (final/aborted/error) that the
+	// projector mapped can be reflected in doneErr before we return.
+	select {
+	case <-t.done:
+	case <-time.After(wsRunTail):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return t.doneErr
+}
+
+// routeLive fans a gateway session-message event to the active live turn for
+// its session (invoked from the connection's event sink). Events without a
+// session key (heartbeats, ticks) and events for sessions with no active turn
+// are ignored. A write error from the sink stops the turn (the browser went
+// away); the terminal lifecycle event then releases the RunLiveTurn caller.
+func (m *hitlManager) routeLive(user, evName string, payload []byte) {
+	var hdr struct {
+		SessionKey string `json:"sessionKey"`
+	}
+	if err := json.Unmarshal(payload, &hdr); err != nil || hdr.SessionKey == "" {
+		return
+	}
+	m.liveMu.Lock()
+	t := m.live[hdr.SessionKey]
+	m.liveMu.Unlock()
+	if t == nil || t.user != user {
+		return
+	}
+	evs, terminal := t.proj.feed(hdr.SessionKey, evName, payload)
+	for _, ev := range evs {
+		if err := t.sink(ev); err != nil {
+			t.finish(err)
+			return
+		}
+	}
+	if terminal {
+		// A chat "error"/"aborted" frame is a terminal failure; surface its text
+		// so the caller emits message_done with an error instead of a plain done.
+		var err error
+		if evName == "chat" {
+			var st struct {
+				State string `json:"state"`
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(payload, &st) == nil && (st.State == "error" || st.State == "aborted") {
+				msg := st.Error
+				if msg == "" {
+					msg = "agent run " + st.State
+				}
+				err = fmt.Errorf("%s", msg)
+			}
+		}
+		t.finish(err)
+	}
 }

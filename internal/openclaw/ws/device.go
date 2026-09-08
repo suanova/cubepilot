@@ -28,8 +28,13 @@ const protocolVersion = 4
 // to what the paired device row approves; use the hello auth.scopes as truth).
 var defaultScopes = []string{"operator.admin", "operator.read", "operator.write", "operator.approvals"}
 
-// caps advertised so the gateway fans exec-approval broadcasts to this client.
-var defaultCaps = []string{"approvals", "exec-approvals"}
+// caps advertised to the gateway. approvals / exec-approvals fan exec-approval
+// broadcasts to this client; tool-events registers a chat.send initiator as a
+// run tool recipient (agent stream="tool"); session-scoped-events scopes the
+// agent/chat/session.tool broadcasts to sessions this client explicitly
+// subscribed (sessions.messages.subscribe), which keeps live chat content off
+// unrelated sessions (issue #130).
+var defaultCaps = []string{"approvals", "exec-approvals", "tool-events", "session-scoped-events"}
 
 // Device is an Ed25519 operator identity paired with the gateway.
 type Device struct {

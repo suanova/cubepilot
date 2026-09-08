@@ -1,0 +1,131 @@
+package server
+
+import (
+	"testing"
+
+	"github.com/suanova/cubepilot/internal/openclaw"
+)
+
+const conv = "agent:main:conv-1"
+
+func TestLiveProjector_ToolStream(t *testing.T) {
+	p := newLiveProjector()
+	var evs []openclaw.Event
+	feed := func(payload string) {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		evs = append(evs, got...)
+	}
+
+	// Canonical stream="tool": start carries the tool call.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"start","name":"exec","title":"exec kubectl get pods","args":{"command":"kubectl get pods -n default"},"toolCallId":"call_1"}}`)
+	if len(evs) != 1 || evs[0].Type != openclaw.EventToolCall || evs[0].CallID != "call_1" {
+		t.Fatalf("tool start = %+v", evs)
+	}
+	if evs[0].Arguments != `{"command":"kubectl get pods -n default"}` {
+		t.Fatalf("arguments = %q, want the JSON args", evs[0].Arguments)
+	}
+
+	// update phases carry no SSE event.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"update","partialResult":{},"toolCallId":"call_1"}}`)
+	if len(evs) != 1 {
+		t.Fatalf("update must not emit, got %d", len(evs))
+	}
+
+	// result emits the tool_result once.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"No resources found"},"toolCallId":"call_1"}}`)
+	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].Output != "No resources found" {
+		t.Fatalf("tool result = %+v", evs)
+	}
+
+	// A duplicate result for the same call must not double-emit.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"x"},"toolCallId":"call_1"}}`)
+	if len(evs) != 2 {
+		t.Fatalf("duplicate result emitted: %d events", len(evs))
+	}
+}
+
+func TestLiveProjector_CommandOutputOverridesToolResult(t *testing.T) {
+	p := newLiveProjector()
+	var evs []openclaw.Event
+	feed := func(payload string) {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		evs = append(evs, got...)
+	}
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"start","name":"exec","title":"exec kubectl","toolCallId":"c2"}}`)
+	// command_output streams the real output and marks the result; the later
+	// stream tool result for the same call is dropped as a duplicate.
+	feed(`{"sessionKey":"` + conv + `","stream":"command_output","data":{"phase":"end","toolCallId":"c2","output":"real output","exitCode":0}}`)
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"output":"stale"},"toolCallId":"c2"}}`)
+	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].Output != "real output" {
+		t.Fatalf("events = %+v, want command_output result to win", evs)
+	}
+}
+
+func TestLiveProjector_ItemToolMarksDoneWithoutOutput(t *testing.T) {
+	p := newLiveProjector()
+	var evs []openclaw.Event
+	feed := func(payload string) {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		evs = append(evs, got...)
+	}
+	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"start","name":"read","title":"read file","meta":"read /tmp/x","toolCallId":"c3"}}`)
+	feed(`{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"end","name":"read","title":"read file","toolCallId":"c3"}}`)
+	if len(evs) != 2 || evs[1].Type != openclaw.EventToolResult || evs[1].CallID != "c3" {
+		t.Fatalf("events = %+v, want item-end to mark the card done", evs)
+	}
+}
+
+func TestLiveProjector_ChatText(t *testing.T) {
+	p := newLiveProjector()
+	var evs []openclaw.Event
+	feed := func(payload string) {
+		got, _ := p.feed(conv, "chat", []byte(payload))
+		evs = append(evs, got...)
+	}
+
+	feed(`{"sessionKey":"` + conv + `","runId":"r1","state":"delta","deltaText":"hello "}`)
+	feed(`{"sessionKey":"` + conv + `","runId":"r1","state":"delta","deltaText":"world"}`)
+	if len(evs) != 2 || evs[0].Type != openclaw.EventMessageDelta || evs[1].Delta != "world" {
+		t.Fatalf("deltas = %+v", evs)
+	}
+	// final after deltas is a snapshot and must not duplicate.
+	feed(`{"sessionKey":"` + conv + `","runId":"r1","state":"final","deltaText":"hello world"}`)
+	if len(evs) != 2 {
+		t.Fatalf("final duplicated text: %d events", len(evs))
+	}
+
+	// A reply that arrives only as final (no deltas) emits the text once.
+	p2 := newLiveProjector()
+	got, _ := p2.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","runId":"r2","state":"final","deltaText":"short answer"}`))
+	if len(got) != 1 || got[0].Type != openclaw.EventMessageDelta || got[0].Delta != "short answer" {
+		t.Fatalf("final-only = %+v", got)
+	}
+}
+
+func TestLiveProjector_TerminalByChatState(t *testing.T) {
+	for _, state := range []string{"final", "aborted", "error"} {
+		p := newLiveProjector()
+		_, term := p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"`+state+`"}`))
+		if !term {
+			t.Fatalf("chat state %q must be terminal", state)
+		}
+	}
+	// Status and lifecycle are NOT terminal (lifecycle end precedes chat final).
+	p := newLiveProjector()
+	if _, term := p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"status"}`)); term {
+		t.Fatal("status must not be terminal")
+	}
+	if _, term := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"lifecycle","data":{"phase":"end"}}`)); term {
+		t.Fatal("lifecycle end must not terminate the turn by itself")
+	}
+}
+
+func TestLiveProjector_IgnoresUnrelatedAndMalformed(t *testing.T) {
+	p := newLiveProjector()
+	if got, term := p.feed(conv, "session.message", []byte(`{"role":"user"}`)); len(got) != 0 || term {
+		t.Fatalf("session.message must be ignored")
+	}
+	if got, _ := p.feed(conv, "agent", []byte(`not json`)); len(got) != 0 {
+		t.Fatalf("malformed payload must be ignored, got %+v", got)
+	}
+}

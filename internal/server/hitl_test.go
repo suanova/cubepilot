@@ -8,6 +8,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 )
 
@@ -23,6 +24,17 @@ type fakeHitlGateway struct {
 	getErr       error
 	setErr       error
 	initialAllow []ws.AllowlistEntry
+
+	// live-tool channel (issue #130)
+	onEvent      func(evName string, payload []byte)
+	subscribes   []string
+	unsubscribes []string
+	sends        []string // "sessionKey|message"
+	sendBlock    chan struct{}
+	waits        []string // runIds passed to agent.wait
+	subscribeErr error
+	sendErr      error
+	waitErr      error
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
@@ -43,6 +55,30 @@ func (f *fakeHitlGateway) Connect(ctx context.Context) error {
 	return nil
 }
 func (f *fakeHitlGateway) OnApprovalRequested(cb func(ws.ApprovalRequested)) { f.onRequested = cb }
+func (f *fakeHitlGateway) OnEvent(cb func(evName string, payload []byte))    { f.onEvent = cb }
+func (f *fakeHitlGateway) SubscribeSessionMessages(ctx context.Context, key string) error {
+	f.subscribes = append(f.subscribes, key)
+	return f.subscribeErr
+}
+func (f *fakeHitlGateway) UnsubscribeSessionMessages(ctx context.Context, key string) error {
+	f.unsubscribes = append(f.unsubscribes, key)
+	return nil
+}
+func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message string) (string, error) {
+	f.sends = append(f.sends, key+"|"+message)
+	if f.sendBlock != nil {
+		select {
+		case <-f.sendBlock:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return "r-1", f.sendErr
+}
+func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
+	f.waits = append(f.waits, runID)
+	return f.waitErr
+}
 func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -274,5 +310,89 @@ func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
 	}
 	if len(agent.Allowlist) != 1 || agent.Allowlist[0].Pattern != "helm" {
 		t.Errorf("allowlist = %+v, want exactly the effective helm entry", agent.Allowlist)
+	}
+}
+
+func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
+	gw := &fakeHitlGateway{sendBlock: make(chan struct{})}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+
+	var got []openclaw.Event
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(ev openclaw.Event) error {
+			got = append(got, ev)
+			return nil
+		})
+	}()
+
+	// Wait until the send is outstanding (subscribe has happened and the conn
+	// event router is installed), then stream a live run: tool start/output and
+	// a visible-text delta.
+	for i := 0; i < 200 && len(gw.sends) == 0; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	if len(gw.sends) != 1 || gw.sends[0] != "conv-1|hi" {
+		t.Fatalf("sends = %v, want [conv-1|hi]", gw.sends)
+	}
+	if gw.onEvent == nil {
+		t.Fatal("conn did not register an OnEvent router")
+	}
+
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","title":"exec kubectl get pods","meta":"kubectl get pods","toolCallId":"c1"}}`))
+	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"r1","state":"delta","deltaText":"正在查询…"}`))
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"command_output","data":{"phase":"end","toolCallId":"c1","output":"ok","exitCode":0}}`))
+	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","stream":"lifecycle","data":{"phase":"end"}}`))
+
+	// Release the send; the run is terminal, so RunLiveTurn should return.
+	close(gw.sendBlock)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunLiveTurn error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLiveTurn did not return after terminal event")
+	}
+
+	if len(gw.subscribes) != 1 || gw.subscribes[0] != "conv-1" {
+		t.Fatalf("subscribes = %v, want [conv-1]", gw.subscribes)
+	}
+	if len(gw.unsubscribes) != 1 || gw.unsubscribes[0] != "conv-1" {
+		t.Fatalf("unsubscribes = %v, want [conv-1]", gw.unsubscribes)
+	}
+	var hasCall, hasResult, hasDelta bool
+	for _, ev := range got {
+		switch ev.Type {
+		case openclaw.EventToolCall:
+			hasCall = ev.CallID == "c1"
+		case openclaw.EventToolResult:
+			hasResult = ev.CallID == "c1"
+		case openclaw.EventMessageDelta:
+			hasDelta = ev.Delta == "正在查询…"
+		}
+	}
+	if !hasCall || !hasResult || !hasDelta {
+		t.Fatalf("events = %+v, want a tool_call, tool_result and message_delta", got)
+	}
+}
+
+func TestHitl_RunLiveTurnSendError(t *testing.T) {
+	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(openclaw.Event) error { return nil }); err == nil {
+		t.Fatal("RunLiveTurn returned nil, want the send error")
+	}
+	if len(gw.subscribes) != 1 {
+		t.Fatalf("subscribes = %v, want the session subscribed before send", gw.subscribes)
+	}
+	if len(gw.unsubscribes) != 1 {
+		t.Fatalf("unsubscribes = %v, want cleanup on error", gw.unsubscribes)
+	}
+	m.liveMu.Lock()
+	_, live := m.live["conv-1"]
+	m.liveMu.Unlock()
+	if live {
+		t.Fatal("live turn leaked after send error")
 	}
 }
