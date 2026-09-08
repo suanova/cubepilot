@@ -47,6 +47,7 @@ type liveCall struct {
 // SSE events. One lives per active chat turn, so state is bounded by the turn.
 type liveProjector struct {
 	calls map[string]*liveCall
+	order []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
 	texts map[string]bool // runId -> assistant text already emitted (final de-dup)
 }
 
@@ -246,8 +247,11 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 // deferred). Called when the run goes terminal so no card stays "Running".
 func (p *liveProjector) finalizeAll(sessionKey string) []openclaw.Event {
 	var out []openclaw.Event
-	for id, call := range p.calls {
-		if !call.started || call.resultOut {
+	// Iterate in tool-call insertion order so deferred results replay in the
+	// gateway's sequence (audit/ledger order stays deterministic).
+	for _, id := range p.order {
+		call, ok := p.calls[id]
+		if !ok || !call.started || call.resultOut {
 			continue
 		}
 		call.resultOut = true
@@ -396,6 +400,7 @@ func (p *liveProjector) call(id string) *liveCall {
 	if !ok {
 		c = &liveCall{}
 		p.calls[id] = c
+		p.order = append(p.order, id)
 	}
 	return c
 }
