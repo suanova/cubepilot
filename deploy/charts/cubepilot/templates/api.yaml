@@ -1,6 +1,6 @@
 # API -- Portal REST/SSE + JSON metadata store. Stateless except a single
-# claim that holds both the API's own metadata dir and the skill repository as
-# sibling subdirectories under api.dataDir. ReadWriteOnce by default (the API
+# claim that holds the API's JSON metadata at the api.dataDir root and the
+# skill repository in its skills/ subdirectory. ReadWriteOnce by default (the API
 # is single-replica and kind's default StorageClass is RWO-only); a future
 # multi-replica API sets api.accessModes [ReadWriteMany] on a shared
 # StorageClass (design §9 / §11.1). Note RWX alone is not enough for replicas
@@ -80,10 +80,11 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-data
 ---
-# Single claim for the API: the JSON metadata dir (audit tables) and the skill
-# repository (published skill tars) live as sibling subdirectories under
-# api.dataDir (the app mkdirs both -- store.New and the skill repository).
-# ReadWriteMany + a shared StorageClass enables API replicas > 1 (see header).
+# Single claim for the API: its JSON metadata (audit tables) lives at the
+# api.dataDir root and the skill repository (published skill tars) in the
+# api.dataDir/skills subdirectory (the app mkdirs both -- store.New and the
+# skill repository). ReadWriteMany + a shared StorageClass enables API
+# replicas > 1 (see header).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

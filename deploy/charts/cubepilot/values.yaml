@@ -54,8 +54,9 @@ api:
   name: cubepilot-api
   replicas: 1
   image: harbor.isuanova.com/suanova/cubepilot-api:latest
-  # One claim backs both the API's own metadata dir and the skill repository
-  # ({{ .Values.api.dataDir }}/skills; sibling subdirs -- the app mkdirs them).
+  # One claim backs both the API's JSON metadata (at the {{ .Values.api.dataDir }}
+  # root) and the skill repository ({{ .Values.api.dataDir }}/skills -- the app
+  # mkdirs them).
   dataDir: /opt/cubepilot/data
   storage: 1Gi
   # Access mode of the single API claim. ReadWriteOnce is the default (works
