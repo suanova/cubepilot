@@ -51,24 +51,38 @@ func (c *Client) ResolveApproval(ctx context.Context, id, decision string) error
 // PatchSessionGuarded sets a session's permissionMode to guarded
 // (sessions.patch). Requires the session to exist.
 func (c *Client) PatchSessionGuarded(ctx context.Context, key string) error {
-	_, err := c.Call(ctx, "sessions.patch", sessionPatchParams{Key: key, PermissionMode: "guarded"})
+	guarded := "guarded"
+	_, err := c.Call(ctx, "sessions.patch", sessionPatchParams{Key: key, PermissionMode: stringField(guarded)})
 	return err
 }
 
-// SetSessionModel applies the selected model to a session before its next
-// interactive turn. An empty model sends JSON null, explicitly clearing a
-// model override left by an earlier selection instead of silently retaining it.
-func (c *Client) SetSessionModel(ctx context.Context, key, model string) error {
-	params := map[string]any{"key": key}
-	if model == "" {
-		params["model"] = nil
-	} else {
-		params["model"] = model
+// PatchSessionSettings atomically applies the selected model and permission
+// mode changes before a turn. Empty values are encoded as JSON null so an old
+// override is explicitly cleared.
+func (c *Client) PatchSessionSettings(ctx context.Context, key string, patch SessionSettingsPatch) error {
+	params := sessionPatchParams{Key: key}
+	if patch.Model.Set {
+		params.Model = stringField(patch.Model.Value)
+	}
+	if patch.PermissionMode.Set {
+		params.PermissionMode = stringField(patch.PermissionMode.Value)
 	}
 	if _, err := c.Call(ctx, "sessions.patch", params); err != nil {
-		return fmt.Errorf("sessions.patch model for %q: %w", key, err)
+		return fmt.Errorf("sessions.patch settings for %q: %w", key, err)
 	}
 	return nil
+}
+
+// stringField returns a pointer-to-pointer representation that distinguishes
+// an omitted field from an explicit JSON null.
+func stringField(value string) **string {
+	if value == "" {
+		var cleared *string
+		return &cleared
+	}
+	set := value
+	ptr := &set
+	return &ptr
 }
 
 // CreateSessionGuarded creates a session with permissionMode guarded
@@ -98,16 +112,29 @@ func (c *Client) DevicePairApprove(ctx context.Context, requestID string) error 
 	return err
 }
 
-// CreateSession creates a session with the default (unguarded) permissions
-// (sessions.create). Used to ensure a fresh conversation session exists before
-// sending to it; guarded sessions are only applied by the HITL policy path
-// (EnsureSessionGuarded), never for ordinary chat.
-func (c *Client) CreateSession(ctx context.Context, sessionKey string) error {
-	_, err := c.Call(ctx, "sessions.create", map[string]any{"key": sessionKey})
+// CreateSession ensures a conversation session exists and returns the mutable
+// state needed to avoid redundant settings patches. On OpenClaw v2026.8.2,
+// sessions.create adopts an existing key instead of returning an exists error.
+func (c *Client) CreateSession(ctx context.Context, sessionKey string) (SessionState, error) {
+	raw, err := c.Call(ctx, "sessions.create", map[string]any{"key": sessionKey})
 	if err != nil {
-		return fmt.Errorf("sessions.create %q: %w", sessionKey, err)
+		return SessionState{}, fmt.Errorf("sessions.create %q: %w", sessionKey, err)
 	}
-	return nil
+	var out struct {
+		Entry struct {
+			ProviderOverride string `json:"providerOverride"`
+			ModelOverride    string `json:"modelOverride"`
+			PermissionMode   string `json:"permissionMode"`
+		} `json:"entry"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return SessionState{}, fmt.Errorf("decode sessions.create %q: %w", sessionKey, err)
+	}
+	model := out.Entry.ModelOverride
+	if out.Entry.ProviderOverride != "" {
+		model = out.Entry.ProviderOverride + "/" + model
+	}
+	return SessionState{Model: model, PermissionMode: out.Entry.PermissionMode}, nil
 }
 
 // EnsureSessionGuarded makes the session guarded, creating it if absent. A

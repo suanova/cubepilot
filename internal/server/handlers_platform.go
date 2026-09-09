@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/skill"
 )
@@ -147,6 +148,11 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		owner := s.userOf(r)
 		name := k8s.InstanceName(owner, templateRef)
+		userInstructions := strings.TrimSpace(body.UserInstructions)
+		if err := instructions.Validate(userInstructions); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 
 		// Idempotent: an existing instance owned by the caller is returned
 		// as-is (the controller converges it; no duplicate Pod/PVC churn).
@@ -176,7 +182,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 				Lifecycle:        &v1alpha1.LifecycleSpec{Strategy: "resident"},
 				SelectedModel:    strings.TrimSpace(body.SelectedModel),
 				EnabledSkills:    body.EnabledSkills,
-				UserInstructions: strings.TrimSpace(body.UserInstructions),
+				UserInstructions: userInstructions,
 			},
 		}
 		if err := s.cr.Create(r.Context(), inst); err != nil {

@@ -18,9 +18,9 @@ type fakeOneShotRunner struct {
 	called bool
 }
 
-func (f *fakeOneShotRunner) SetModel(model string) { f.model = model }
-func (f *fakeOneShotRunner) StreamChat(_ context.Context, _ ChatParams, _ func(Event) error) error {
+func (f *fakeOneShotRunner) StreamChat(_ context.Context, params ChatParams, _ func(Event) error) error {
 	f.called = true
+	f.model = params.Model
 	return nil
 }
 
@@ -40,11 +40,10 @@ func TestComposeExposesCompleteAgentRuntime(t *testing.T) {
 	sessions := &fakeSessionReader{}
 	rt := Compose(live, oneShot, sessions)
 
-	rt.SetModel("provider/model")
 	if err := rt.RunLiveTurn(t.Context(), "session-1", LiveTurnParams{Message: "hello"}, func(Event) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.StreamChat(t.Context(), ChatParams{}, func(Event) error { return nil }); err != nil {
+	if err := rt.StreamChat(t.Context(), ChatParams{Model: "provider/model"}, func(Event) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	got, err := rt.ListSessions(t.Context())

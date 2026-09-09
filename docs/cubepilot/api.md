@@ -432,7 +432,6 @@ Scheduler 以平台身份创建，前端只读（📘 设计 §3.5/§7）。
 |---|---|---|
 | `message_start` | `session_id` | 记录 session id，进入「回答中」 |
 | `agent_thinking` | `session_id` | 通用思考中状态 |
-| `agent_status` | `session_id`, `status` | 启动细分状态：preparing / building_context / starting_model |
 | `message_delta` | `session_id`, `delta` | 追加助手文本 |
 | `text_replace` | `session_id`, `delta` | 用完整快照替换当前助手文本 |
 | `tool_call` | `session_id`, `name`, `call_id`, `arguments`(JSON 字符串) | 展示工具调用（可折叠） |

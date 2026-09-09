@@ -134,11 +134,6 @@ export interface SSEAgentThinking {
   type: 'agent_thinking'
   session_id: string
 }
-export interface SSEAgentStatus {
-  type: 'agent_status'
-  session_id: string
-  status: 'preparing' | 'building_context' | 'starting_model'
-}
 export interface SSEToolCall {
   type: 'tool_call'
   session_id: string
@@ -191,7 +186,6 @@ export interface SSEConfirmResolved {
 export type SSEEvent =
   | SSEMessageStart
   | SSEAgentThinking
-  | SSEAgentStatus
   | SSEToolCall
   | SSEToolResult
   | SSEMessageDelta

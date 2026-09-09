@@ -28,7 +28,6 @@ var (
 type Client struct {
 	baseURL string
 	token   string
-	model   string // optional backend model override (x-openclaw-model)
 	http    *http.Client
 }
 
@@ -42,13 +41,6 @@ func New(baseURL, token string) *Client {
 	}
 }
 
-// SetModel sets the backend model override sent as x-openclaw-model on chat
-// requests (empty = use the agent's normal configured model). Overrides are
-// per-request hot-effective: no instance restart needed (design §3.2).
-func (c *Client) SetModel(model string) {
-	c.model = model
-}
-
 // ChatMessage is a single chat turn message.
 type ChatMessage = agentruntime.ChatMessage
 
@@ -60,15 +52,10 @@ type ChatParams = agentruntime.ChatParams
 // emits a terminal message_done event (even on error). Portal chat does not use
 // this method; it runs over the gateway WebSocket protocol.
 func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error {
-	// The request body always carries the agent target (gateway validates it
-	// as `openclaw` or `openclaw/<agentId>`); the backend model override goes
-	// through the x-openclaw-model header only.
-	target := p.Model
-	if target == "" {
-		target = "openclaw/default"
-	}
+	// The request body carries the OpenClaw agent target. The runtime-neutral
+	// Model field is the backend model override and is sent separately below.
 	body, err := json.Marshal(map[string]any{
-		"model":    target,
+		"model":    "openclaw/default",
 		"stream":   true,
 		"messages": p.Messages,
 	})
@@ -89,8 +76,8 @@ func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) 
 	// Backend model override: the body keeps the agent target; x-openclaw-model
 	// switches the backend provider/model for this turn (shared-secret callers
 	// may use it directly, hot override without a restart).
-	if c.model != "" {
-		req.Header.Set("x-openclaw-model", c.model)
+	if p.Model != "" {
+		req.Header.Set("x-openclaw-model", p.Model)
 	}
 
 	resp, err := c.http.Do(req)

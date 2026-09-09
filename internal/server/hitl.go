@@ -37,11 +37,10 @@ type hitlGateway interface {
 	UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error
 	SendSessionMessage(ctx context.Context, sessionKey, message, idempotencyKey string) (runID string, err error)
 	AgentWait(ctx context.Context, runID string) error
-	CreateSession(ctx context.Context, sessionKey string) error
-	SetSessionModel(ctx context.Context, sessionKey, model string) error
+	CreateSession(ctx context.Context, sessionKey string) (ws.SessionState, error)
+	PatchSessionSettings(ctx context.Context, sessionKey string, patch ws.SessionSettingsPatch) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
-	EnsureSessionGuarded(ctx context.Context, key string) error
 	ResolveApproval(ctx context.Context, id, decision string) error
 	Close()
 }
@@ -61,10 +60,11 @@ func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string,
 	if r.manager == nil {
 		return fmt.Errorf("live chat unavailable: runtime live channel is not configured")
 	}
-	if err := r.manager.PreTurn(ctx, r.user, sessionKey); err != nil {
+	guarded, err := r.manager.PreTurn(ctx, r.user)
+	if err != nil {
 		return fmt.Errorf("confirmation gating failed: %w", err)
 	}
-	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, emit)
+	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, guarded, emit)
 }
 
 // hitlManager owns the per-user approval connections (issue #20). It is inert
@@ -313,8 +313,9 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 }
 
 // PreTurn is called at the start of an interactive turn. For Allowlist and
-// AlwaysAsk it ensures the approval connection, applies the effective exec
-// policy once per config revision, and guards the session.
+// AlwaysAsk it ensures the approval connection and applies the effective exec
+// policy once per config revision. It returns whether the session must be
+// guarded; RunLiveTurn reconciles that state atomically with the model.
 //
 // Both gated policies fail closed (issue #127): confirmPolicy is the single
 // authority for whether a turn is guarded, so if the policy cannot be resolved
@@ -324,19 +325,19 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 // issue #127 exists to remove. Only a resolved None/empty policy passes through
 // (an unresolvable config is treated as gated-unknown and fails closed, not as
 // None).
-func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) error {
+func (m *hitlManager) PreTurn(ctx context.Context, user string) (bool, error) {
 	pol, allow, rev, err := m.resolved(ctx, user)
 	if err != nil {
-		return fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
+		return false, fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
 	}
 	switch pol {
 	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
 	default: // None / empty -> pass-through
-		return nil
+		return false, nil
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
-		return fmt.Errorf("hitl %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
+		return false, fmt.Errorf("hitl %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
 	}
 	// Apply the effective exec policy when the resolved-config revision changed;
 	// only a successful apply advances revPol so a transient failure is retried
@@ -346,16 +347,13 @@ func (m *hitlManager) PreTurn(ctx context.Context, user, sessionKey string) erro
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
 		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
-			return fmt.Errorf("hitl %s: cannot apply %s exec policy: %w", user, pol, err)
+			return false, fmt.Errorf("hitl %s: cannot apply %s exec policy: %w", user, pol, err)
 		}
 		m.mu.Lock()
 		m.revPol[user] = rev
 		m.mu.Unlock()
 	}
-	if err := gw.EnsureSessionGuarded(ctx, sessionKey); err != nil {
-		return fmt.Errorf("hitl %s: cannot guard %s session %s: %w", user, pol, sessionKey, err)
-	}
-	return nil
+	return true, nil
 }
 
 // channelState reports whether the per-user approval channel can currently
@@ -504,7 +502,7 @@ func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
 // the run is terminal and is the authoritative completion signal, so the turn
 // stays subscribed long enough to receive everything (fix: a previous version
 // returned on the start ACK and unsubscribed ~3s in, before the first token).
-func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, sink func(agentruntime.Event) error) error {
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, guarded bool, sink func(agentruntime.Event) error) error {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
@@ -512,21 +510,33 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}
 	// sessions.send only auto-creates the agent's main session, not arbitrary
 	// conversation keys (the OpenAI-compat HTTP surface created those on the
-	// fly; the WS surface does not). Create the conversation session first,
-	// UNGUARDED: guarded permission mode is applied only by PreTurn when a
-	// confirm policy needs it -- forcing it here for every turn would park
-	// write tools behind approvals in non-gated installs (the e2e DevEnvironment
-	// create timed out for exactly this reason). Create is best-effort: an
-	// already-existing session errors and is ignored; subscribe/send below
-	// surface any real failure.
-	_ = gw.CreateSession(ctx, sessionKey)
-	// sessions.send has no model field. Apply the selected model through the
-	// gateway's official per-session patch before sending; an empty selection
-	// clears a previous override so "Runtime Default" really returns to the
-	// configured primary model.
-	if err := gw.SetSessionModel(ctx, sessionKey, model); err != nil {
-		m.sayf("chat %s: %s: apply model: %v", user, sessionKey, err)
+	// fly; the WS surface does not). sessions.create adopts an existing key, so
+	// every error is a real preparation failure and must be surfaced.
+	state, err := gw.CreateSession(ctx, sessionKey)
+	if err != nil {
+		m.sayf("chat %s: %s: ensure session: %v", user, sessionKey, err)
 		return err
+	}
+	// sessions.send has no model or permission fields. Reconcile both through
+	// one typed sessions.patch so a failed update cannot leave only half of the
+	// desired turn state applied. None policy explicitly clears an old guarded
+	// mode; unchanged fields are omitted to avoid a redundant hot-path RPC.
+	desiredPermission := ""
+	if guarded {
+		desiredPermission = "guarded"
+	}
+	patch := ws.SessionSettingsPatch{
+		Model: ws.OptionalString{Set: state.Model != model, Value: model},
+		PermissionMode: ws.OptionalString{
+			Set:   state.PermissionMode != desiredPermission,
+			Value: desiredPermission,
+		},
+	}
+	if patch.Model.Set || patch.PermissionMode.Set {
+		if err := gw.PatchSessionSettings(ctx, sessionKey, patch); err != nil {
+			m.sayf("chat %s: %s: apply session settings: %v", user, sessionKey, err)
+			return err
+		}
 	}
 	t := m.registerLive(user, sessionKey, sink)
 	defer m.releaseLive(user, sessionKey, gw)

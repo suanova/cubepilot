@@ -49,7 +49,6 @@ type liveProjector struct {
 	calls  map[string]*liveCall
 	order  []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
 	texts  map[string]bool // runId -> assistant text already emitted (final de-dup)
-	status string          // last normalized startup status (duplicate suppression)
 }
 
 func newLiveProjector() *liveProjector {
@@ -100,7 +99,6 @@ type agentOutput struct {
 type chatDelta struct {
 	RunID     string `json:"runId"`
 	State     string `json:"state"`
-	Phase     string `json:"phase"`
 	DeltaText string `json:"deltaText"`
 	Replace   bool   `json:"replace"`
 	Message   *struct {
@@ -113,7 +111,7 @@ type chatDelta struct {
 
 // feed processes one live event frame for the turn's session and returns any
 // SSE events it maps to, plus whether the event terminates the run. evName is
-// the gateway event name ("agent" for run/tool events, "chat" for text/status).
+// the gateway event name ("agent" for run/tool events, "chat" for text).
 func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agentruntime.Event, bool) {
 	switch evName {
 	case "agent":
@@ -186,17 +184,6 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 			return nil, false
 		}
 		switch d.State {
-		case "status":
-			status := normalizeLiveStatus(d.Phase)
-			if status == "" || status == p.status {
-				return nil, false
-			}
-			p.status = status
-			return []agentruntime.Event{{
-				Type:      agentruntime.EventAgentStatus,
-				SessionID: sessionKey,
-				Status:    status,
-			}}, false
 		case "delta":
 			if d.DeltaText == "" {
 				return nil, false
@@ -253,22 +240,6 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 		}
 	}
 	return nil, false
-}
-
-// normalizeLiveStatus decouples CubePilot's public SSE contract from
-// OpenClaw's finer-grained startup phases. Unknown future phases are ignored;
-// the generic agent_thinking event remains the fallback.
-func normalizeLiveStatus(phase string) string {
-	switch phase {
-	case "preparing_workspace", "naming_worktree", "creating_worktree", "running_setup", "provisioning_environment":
-		return "preparing"
-	case "preparing_context":
-		return "building_context"
-	case "starting_model":
-		return "starting_model"
-	default:
-		return ""
-	}
 }
 
 // finalizeAll emits a tool_result for every started call that never reached a

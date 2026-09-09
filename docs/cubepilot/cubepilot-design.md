@@ -309,7 +309,7 @@ interface AgentRuntime {
 }
 ```
 
-统一事件：`message_start`、`agent_thinking`、`agent_status`、`message_delta`、`text_replace`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`。
+统一事件：`message_start`、`agent_thinking`、`message_delta`、`text_replace`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`。
 
 `ResolvedAgentConfig` 包含模型名（内联）、系统指令、启用的 skill 列表、用户身份、凭据挂载位置、PVC 路径；不包含明文密钥。
 

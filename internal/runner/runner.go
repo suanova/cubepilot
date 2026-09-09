@@ -46,14 +46,14 @@ func (r *Runner) RunTask(ctx context.Context, creator, sessionKey, prompt string
 	client := openclaw.New(r.mgr.BaseURL(creator), r.token)
 	// Apply the creator's selectedModel the same way the chat path does
 	// (design §3.2/§3.3: fail-closed on an unavailable selection).
-	if model, err := r.mgr.SelectedModelFor(ctx, creator); err != nil {
+	model, err := r.mgr.SelectedModelFor(ctx, creator)
+	if err != nil {
 		return "", fmt.Errorf("model resolution: %w", err)
-	} else if model != "" {
-		client.SetModel(model)
 	}
 	var buf strings.Builder
 	var doneErr string
-	err := client.StreamChat(ctx, openclaw.ChatParams{
+	err = client.StreamChat(ctx, openclaw.ChatParams{
+		Model:      model,
 		SessionKey: sessionKey,
 		Messages:   []openclaw.ChatMessage{{Role: "user", Content: prompt}},
 	}, func(ev openclaw.Event) error {

@@ -11,7 +11,6 @@ import (
 const (
 	EventMessageStart    = "message_start"
 	EventAgentThinking   = "agent_thinking"
-	EventAgentStatus     = "agent_status"
 	EventToolCall        = "tool_call"
 	EventToolResult      = "tool_result"
 	EventMessageDelta    = "message_delta"
@@ -32,7 +31,6 @@ type Event struct {
 	Command   string `json:"command,omitempty"`
 	Level     string `json:"level,omitempty"`
 	Message   string `json:"message,omitempty"`
-	Status    string `json:"status,omitempty"`
 	Approved  *bool  `json:"approved,omitempty"`
 	Delta     string `json:"delta,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -50,7 +48,9 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-// ChatParams carries the inputs for a one-shot turn.
+// ChatParams carries the inputs for a one-shot turn. Model is an optional
+// resolved per-turn backend model override; an empty value means the runtime
+// default.
 type ChatParams struct {
 	Model      string
 	SessionKey string
@@ -79,7 +79,6 @@ type LiveTurnRunner interface {
 // OneShotRunner drives non-interactive turns such as scheduled tasks and
 // synchronous inspections.
 type OneShotRunner interface {
-	SetModel(model string)
 	StreamChat(ctx context.Context, params ChatParams, emit func(Event) error) error
 }
 

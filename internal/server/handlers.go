@@ -60,14 +60,13 @@ func (s *Server) sessionReaderFor(user string) agentruntime.SessionReader {
 // oneShotRunnerFor returns the HTTP adapter for non-interactive turns, with the
 // selected model applied as a per-request override. Interactive Portal chat
 // must use RunLiveTurn and the gateway WebSocket protocol instead.
-func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (agentruntime.OneShotRunner, error) {
+func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (agentruntime.OneShotRunner, string, error) {
 	rt := s.agentRuntimeFor(user)
 	if model, err := s.mgr.SelectedModelFor(ctx, user); err != nil {
-		return rt, err
-	} else if model != "" {
-		rt.SetModel(model)
+		return rt, "", err
+	} else {
+		return rt, model, nil
 	}
-	return rt, nil
 }
 
 // handleSessions lists the OpenClaw sessions for the current user.
@@ -354,14 +353,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionKey := "inspect-" + uuid.NewString()[:8]
-	client, cerr := s.oneShotRunnerFor(r.Context(), user)
+	client, model, cerr := s.oneShotRunnerFor(r.Context(), user)
 	if cerr != nil {
 		// Fail-closed: an inspection must run with the user's selected model,
 		// never silently with a different one.
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
 		return
 	}
-	content, err := inspect.Run(r.Context(), client, sessionKey, func(ev agentruntime.Event) {
+	content, err := inspect.Run(r.Context(), client, sessionKey, model, func(ev agentruntime.Event) {
 		s.recordToolCall(user, ev)
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.

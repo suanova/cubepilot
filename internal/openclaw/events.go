@@ -8,7 +8,6 @@ import agentruntime "github.com/suanova/cubepilot/internal/runtime"
 const (
 	EventMessageStart    = agentruntime.EventMessageStart
 	EventAgentThinking   = agentruntime.EventAgentThinking
-	EventAgentStatus     = agentruntime.EventAgentStatus
 	EventToolCall        = agentruntime.EventToolCall
 	EventToolResult      = agentruntime.EventToolResult
 	EventMessageDelta    = agentruntime.EventMessageDelta

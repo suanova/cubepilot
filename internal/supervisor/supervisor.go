@@ -105,12 +105,6 @@ const (
 	systemPromptEnd   = instructions.ManagedEnd
 	// systemPromptHeader prefixes the managed instructions inside the markers.
 	systemPromptHeader = "## User-configured instructions"
-
-	// maxSystemPromptBytes caps the rendered instructions: a user/template
-	// prompt larger than this is refused (keeps the last-good file) rather than
-	// bloating every turn's project context. OpenClaw truncates bootstrap files
-	// at bootstrapMaxChars anyway; the cap keeps the workspace file sane.
-	maxSystemPromptBytes = instructions.MaxBytes
 )
 
 // Supervisor manages the OpenClaw gateway process and keeps the workspace

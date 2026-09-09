@@ -114,6 +114,16 @@ func (mg *mockGateway) respondMethod(f requestFrame) {
 			"paired": []any{},
 		})
 		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+	case "sessions.create":
+		payload, _ := json.Marshal(map[string]any{
+			"sessionId": "session-1",
+			"entry": map[string]any{
+				"providerOverride": "provider",
+				"modelOverride":    "model",
+				"permissionMode":   "guarded",
+			},
+		})
+		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
 	default:
 		mg.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: json.RawMessage(`{"ok":true}`)})
 	}
@@ -171,6 +181,13 @@ func TestClientConnectAndCall(t *testing.T) {
 
 	if err := cli.EnsureSessionGuarded(ctx, "conv-1"); err != nil {
 		t.Fatalf("EnsureSessionGuarded: %v", err)
+	}
+	state, err := cli.CreateSession(ctx, "conv-1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if state.Model != "provider/model" || state.PermissionMode != "guarded" {
+		t.Fatalf("session state = %+v, want provider/model and guarded", state)
 	}
 	if err := cli.ResolveApproval(ctx, "appr-1", "allow-once"); err != nil {
 		t.Fatalf("ResolveApproval: %v", err)
