@@ -11,6 +11,12 @@ cannot carry the operation. This note is the agreed contract.
 > Prerequisite: the six platform CRDs are Namespaced (issue #146 / PR #147,
 > pending merge) and live in the install namespace.
 
+The boundary is drawn in code as well: `internal/server/server.go` `Handler()`
+groups the route table into two annotated sections -- **REST-only platform
+services** (no kube-apiserver equivalent) and the **CRD facade** (HTTP mirror
+of the six CRDs). Any change to the REST surface should keep an endpoint in the
+section that matches its data plane.
+
 ## Deployment model (assumed)
 
 - CubePilot is installed in the same namespace as the consuming UI (e.g.
