@@ -158,7 +158,7 @@ func (s *Server) Handler() http.Handler {
 	// CRD facade -- HTTP mirror of the six ai.cubestack.io CRDs, kept for
 	// HTTP-only clients (e.g. the open-source reference UI). Clients with
 	// kube-apiserver access may perform the same operations directly on the CRs
-	// (namespaced, issue #146); see docs/notes/cubestack-ui-direct-crds-2026-09-09.md.
+	// (namespaced, issue #146); the data-plane contract is recorded in issue #148.
 	// Caveats: agent/config and agent/confirm GET recompute template+instance
 	// effective values (no merged value is stored in status); llms writes an
 	// AgentTemplate model plus a credential Secret (both k8s objects).
