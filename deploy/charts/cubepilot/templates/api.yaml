@@ -1,7 +1,11 @@
-# API -- Portal REST/SSE + JSON metadata store. Stateless except the single
-# RWO PVC -> single replica today; shared storage enables replicas > 1
-# (design §9 / §11.1).
-{{- $skillRepo := default dict .Values.api.skillRepo }}
+# API -- Portal REST/SSE + JSON metadata store. Stateless except a single
+# claim that holds the API's JSON metadata at the api.dataDir root and the
+# skill repository in its skills/ subdirectory. ReadWriteOnce by default (the API
+# is single-replica and kind's default StorageClass is RWO-only); a future
+# multi-replica API sets api.accessModes [ReadWriteMany] on a shared
+# StorageClass (design §9 / §11.1). Note RWX alone is not enough for replicas
+# > 1 -- the JSON metadata store is single-writer and per-session state
+# (SSE hub / HITL) is in-memory, so app-level state handling is the real gate.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,7 +35,7 @@ spec:
             - name: CUBEPILOT_DATA_DIR
               value: {{ .Values.api.dataDir }}
             - name: CUBEPILOT_SKILLS_DIR
-              value: /var/lib/cubepilot/skills
+              value: {{ .Values.api.dataDir }}/skills
             {{- range .Values.api.extraEnv }}
             - name: {{ .name }}
               {{- if .secretKeyRef }}
@@ -59,8 +63,6 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.api.dataDir }}
-            - name: skill-repo
-              mountPath: /var/lib/cubepilot/skills
           {{- with .Values.api.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -77,49 +79,25 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.api.name }}-data
-        - name: skill-repo
-          {{- if $skillRepo.existingClaim }}
-          persistentVolumeClaim:
-            claimName: {{ $skillRepo.existingClaim }}
-          {{- else }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.api.name }}-skill-repo
-          {{- end }}
 ---
-# Metadata store for tasks / reports / audit / agent config (JSON "tables").
+# Single claim for the API: its JSON metadata (audit tables) lives at the
+# api.dataDir root and the skill repository (published skill tars) in the
+# api.dataDir/skills subdirectory (the app mkdirs both -- store.New and the
+# skill repository). ReadWriteMany + a shared StorageClass enables API
+# replicas > 1 (see header).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.api.name }}-data
   namespace: {{ .Release.Namespace }}
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: {{ toYaml .Values.api.accessModes | nindent 2 }}
   {{- with .Values.api.storageClassName }}
   storageClassName: {{ . }}
   {{- end }}
   resources:
     requests:
       storage: {{ .Values.api.storage }}
----
-# Shared skill repository (design §2.2). Only the API server mounts it; the
-# operator publishes skills over HTTP. AccessModes default to ReadWriteOnce
-# (single-replica API, kind-friendly); production multi-replica sets RWX with a
-# CephFS StorageClass. Skipped when api.skillRepo.existingClaim is set.
-{{- if not $skillRepo.existingClaim }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Values.api.name }}-skill-repo
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes: {{ toYaml (default (list "ReadWriteOnce") $skillRepo.accessModes) | nindent 2 }}
-  {{- with $skillRepo.storageClassName }}
-  storageClassName: {{ . }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ $skillRepo.size | default "1Gi" }}
-{{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -49,24 +49,24 @@ operator:
   nodeSelector: {}
   tolerations: []
 
-# --- api (Portal REST/SSE + JSON metadata store, single RWO PVC) ---------
+# --- api (Portal REST/SSE + JSON metadata store, single PVC) ------------
 api:
   name: cubepilot-api
   replicas: 1
   image: harbor.isuanova.com/suanova/cubepilot-api:latest
+  # One claim backs both the API's JSON metadata (at the {{ .Values.api.dataDir }}
+  # root) and the skill repository ({{ .Values.api.dataDir }}/skills -- the app
+  # mkdirs them).
   dataDir: /opt/cubepilot/data
   storage: 1Gi
+  # Access mode of the single API claim. ReadWriteOnce is the default (works
+  # on kind's local-path StorageClass; the API is single-replica). Production
+  # API replicas > 1 set [ReadWriteMany] with a shared CephFS/NFS StorageClass
+  # -- note RWX alone does not make the API multi-replica: its JSON metadata
+  # store is single-writer and per-session state (SSE / HITL) is in-memory, so
+  # app-level state handling is the real gate.
   storageClassName: ""
-  # skillRepo is the shared skill repository (design §2.2). Only the API
-  # server mounts it (publish + serve); the operator publishes over HTTP. The
-  # API is single-replica, so ReadWriteOnce is the default (works on kind's
-  # local-path StorageClass); production multi-replica sets accessModes
-  # [ReadWriteMany] with a CephFS RWX StorageClass.
-  skillRepo:
-    storageClassName: ""
-    accessModes: [ReadWriteOnce]
-    size: 1Gi
-    # existingClaim: ""    # reuse an existing PVC instead of creating one
+  accessModes: [ReadWriteOnce]
   resources: {}
   nodeSelector: {}
   tolerations: []
