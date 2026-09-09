@@ -3,6 +3,11 @@
 # PR head with no secrets in scope, so there is no pwn-request surface here.
 # The secret-gated kind e2e (chat e2e needs CUBEPILOT_LLM_APIKEY) lives in
 # e2e.yaml on `pull_request_target`.
+#
+# A change that touches only docs/ or markdown files skips the job bodies: each
+# job still runs and reports success so Mergify's required checks stay green,
+# but the checks do no real work (see the "Detect code changes" step in each
+# job). Manual runs (workflow_dispatch) always run the full jobs.
 
 name: ci
 
@@ -13,7 +18,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read          # actions/checkout
+  pull-requests: read     # dorny/paths-filter lists PR files via the REST API
 
 jobs:
   test:
@@ -22,26 +28,70 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+
+      # Only a docs-only change (docs/** or any *.md) skips the steps below;
+      # anything else -- .github/, go.mod, Makefile, deploy/, web/, internal/,
+      # ... -- counts as a code change and runs the full job. PRs are diffed
+      # through the GitHub REST API; pushes to main against the pre-push tip
+      # (github.event.before). A workflow_dispatch run has no earlier commit to
+      # diff against, so `base` falls back to the current commit (empty diff)
+      # and the gated steps below force-run via the workflow_dispatch check.
+      - name: Detect code changes (docs-only skips the job body)
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          # `code` is true when at least one changed file is not excluded by a
+          # negated doc pattern (predicate-quantifier: some-with-excludes).
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!**/*.md'
+              - '!*.md'
+
+      - name: Install Go
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26'
-      - run: go vet ./...
-      - run: go build ./...
+
+      - name: go vet
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: go vet ./...
+
+      - name: go build
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: go build ./...
+
       # Exclude test/ (the Ginkgo e2e suite) -- it needs a live cluster and runs
       # in e2e.yaml. vet above still type-checks it.
-      - run: go test $(go list ./... | grep -v /test/)
-      - run: go mod verify
+      - name: go test (excluding e2e suite)
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: go test $(go list ./... | grep -v /test/)
+
+      - name: go mod verify
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: go mod verify
+
       - name: golangci-lint
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
           # .golangci.yaml targets the module's Go 1.26; the v2 prebuilt binary
           # is built with a newer Go, so the default binary install works.
+
       # Fast chart sanity (the e2e job does a real helm upgrade --install, which
       # also renders the chart; lint catches malformed charts before that).
       - name: Install helm (chart lint)
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: azure/setup-helm@v5
-      - run: helm lint deploy/charts/cubepilot
+
+      - name: helm lint
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: helm lint deploy/charts/cubepilot
 
   web:
     name: Web build (type-check + vite)
@@ -49,12 +99,33 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+
+      # Same docs-only gate as the test job above.
+      - name: Detect code changes (docs-only skips the job body)
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!**/*.md'
+              - '!*.md'
+
+      - name: Install Node
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
+
       - name: Install dependencies
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: npm ci
         working-directory: web
+
       - name: Build (type-check + vite)
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: npm run build
         working-directory: web
