@@ -46,9 +46,9 @@ type liveCall struct {
 // liveProjector folds the live session-message events of one chat turn into
 // SSE events. One lives per active chat turn, so state is bounded by the turn.
 type liveProjector struct {
-	calls  map[string]*liveCall
-	order  []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
-	texts  map[string]bool // runId -> assistant text already emitted (final de-dup)
+	calls map[string]*liveCall
+	order []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
+	texts map[string]bool // runId -> assistant text already emitted (final de-dup)
 }
 
 func newLiveProjector() *liveProjector {
