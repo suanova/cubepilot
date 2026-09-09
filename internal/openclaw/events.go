@@ -1,54 +1,24 @@
 package openclaw
 
-import "encoding/json"
+import agentruntime "github.com/suanova/cubepilot/internal/runtime"
 
 // Event types of the CubePilot streaming contract (design doc FR-M1-003).
 // confirm_* (issue #20) are emitted by the HITL approval path; the rest stream
 // the chat turn.
 const (
-	EventMessageStart  = "message_start"
-	EventAgentThinking = "agent_thinking"
-	EventToolCall      = "tool_call"
-	EventToolResult    = "tool_result"
-	EventMessageDelta  = "message_delta"
-	// EventTextReplace replaces the accumulated assistant text with a full
-	// snapshot (the gateway emits replace:true when the latest assistant text is
-	// no longer a prefix of what was streamed -- e.g. commentary rewritten after
-	// a tool ran). The frontend resets the bubble text to Delta.
-	EventTextReplace     = "text_replace"
-	EventMessageDone     = "message_done"
-	EventConfirmPending  = "confirm_pending" // a matched write paused for the human
-	EventConfirmResolved = "confirm_resolved"
+	EventMessageStart    = agentruntime.EventMessageStart
+	EventAgentThinking   = agentruntime.EventAgentThinking
+	EventToolCall        = agentruntime.EventToolCall
+	EventToolResult      = agentruntime.EventToolResult
+	EventMessageDelta    = agentruntime.EventMessageDelta
+	EventTextReplace     = agentruntime.EventTextReplace
+	EventMessageDone     = agentruntime.EventMessageDone
+	EventConfirmPending  = agentruntime.EventConfirmPending
+	EventConfirmResolved = agentruntime.EventConfirmResolved
 )
 
-// Event is a single CubePilot SSE event payload.
-type Event struct {
-	Type      string `json:"type"`
-	SessionID string `json:"session_id,omitempty"`
-	// Tool call / result fields.
-	Name      string `json:"name,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-	// Confirm fields (confirm_pending / confirm_resolved, issue #20). call_id
-	// carries the gateway approval id; Name carries the tool ("exec").
-	Command string `json:"command,omitempty"`
-	Level   string `json:"level,omitempty"` // "read" | "write"
-	Message string `json:"message,omitempty"`
-	// Approved is *bool so confirm_resolved can carry an explicit false (reject)
-	// while every other event omits the key entirely.
-	Approved *bool `json:"approved,omitempty"`
-	// Streaming text fields.
-	Delta string `json:"delta,omitempty"`
-	// Terminal error, carried on message_done.
-	Error string `json:"error,omitempty"`
-}
-
-// Marshal returns the SSE "data:" payload for an event.
-func (e Event) Marshal() []byte {
-	b, _ := json.Marshal(e)
-	return b
-}
+// Event aliases the runtime-neutral event contract for OpenClaw mapper users.
+type Event = agentruntime.Event
 
 // ChatChunk is the OpenAI-compatible streamed chunk from OpenClaw's
 // /v1/chat/completions gateway endpoint (runs the full agent loop server-side).

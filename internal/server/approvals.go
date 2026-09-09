@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suanova/cubepilot/internal/openclaw"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -88,8 +88,8 @@ func (s *ApprovalService) Begin(user string, p pendingApproval) {
 	s.bySession[p.SessionKey] = p.ApprovalID
 	s.mu.Unlock()
 
-	s.hub.PublishTo(p.SessionKey, openclaw.Event{
-		Type:      openclaw.EventConfirmPending,
+	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+		Type:      agentruntime.EventConfirmPending,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
 		Name:      p.Tool,
@@ -169,8 +169,8 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 		restore()
 		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
 	}
-	s.hub.PublishTo(p.SessionKey, openclaw.Event{
-		Type:      openclaw.EventConfirmResolved,
+	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+		Type:      agentruntime.EventConfirmResolved,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
 		Approved:  &approved,

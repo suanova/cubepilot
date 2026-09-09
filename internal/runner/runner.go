@@ -34,24 +34,26 @@ func New(mgr manager, token string) *Runner {
 	return &Runner{mgr: mgr, token: token}
 }
 
-// RunTask runs one task turn: prompt -> agent instance -> collected deltas.
-// The instance is warmed (CR phase Warm + gateway reachable) before the
-// stream starts.
+// RunTask runs one non-interactive task turn over the gateway's HTTP
+// compatibility endpoint: prompt -> agent instance -> collected deltas. Unlike
+// Portal chat, a scheduled task needs only a final result and no live approval
+// channel, so it deliberately does not occupy the shared WebSocket connection.
+// The instance is warmed before the stream starts.
 func (r *Runner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
 	if err := r.mgr.Ensure(ctx, creator); err != nil {
 		return "", fmt.Errorf("instance warming failed: %w", err)
 	}
-	client := openclaw.New(r.mgr.BaseURL(creator), r.token) // openclaw.AgentRuntime
+	client := openclaw.New(r.mgr.BaseURL(creator), r.token)
 	// Apply the creator's selectedModel the same way the chat path does
 	// (design §3.2/§3.3: fail-closed on an unavailable selection).
-	if model, err := r.mgr.SelectedModelFor(ctx, creator); err != nil {
+	model, err := r.mgr.SelectedModelFor(ctx, creator)
+	if err != nil {
 		return "", fmt.Errorf("model resolution: %w", err)
-	} else if model != "" {
-		client.SetModel(model)
 	}
 	var buf strings.Builder
 	var doneErr string
-	err := client.StreamChat(ctx, openclaw.ChatParams{
+	err = client.StreamChat(ctx, openclaw.ChatParams{
+		Model:      model,
 		SessionKey: sessionKey,
 		Messages:   []openclaw.ChatMessage{{Role: "user", Content: prompt}},
 	}, func(ev openclaw.Event) error {

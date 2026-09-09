@@ -1,8 +1,8 @@
-// Package openclaw implements a minimal HTTP client for driving an OpenClaw
-// gateway (v2026.8.2) as the CubePilot agent runtime. The chat turn runs the
-// full agent loop via the OpenAI-compatible /v1/chat/completions endpoint; the
-// always-enabled /tools/invoke and /sessions/{key}/history endpoints provide
-// session listing and history.
+// Package openclaw implements the HTTP side of CubePilot's OpenClaw adapter.
+// Interactive Portal chat is intentionally driven by internal/openclaw/ws so
+// text, tools, approvals, and completion share one ordered live stream. This
+// client is reserved for read-only session APIs and one-shot background turns,
+// where request/response HTTP semantics are the simpler and more stable fit.
 package openclaw
 
 import (
@@ -15,33 +15,19 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
-// AgentRuntime is the narrow runtime interface the platform depends on
-// (design §4: start/stop/chat/runTask/updateConfig/health). Phase one only
-// needs the chat and session/history read surface; lifecycle methods are
-// added when a second runtime arrives or the gateway lifecycle moves
-// in-process. *Client implements this interface -- depend on the interface,
-// not the concrete type.
-type AgentRuntime interface {
-	// SetModel overrides the backend model for subsequent chat turns
-	// (empty = use the agent's normal configured model).
-	SetModel(model string)
-	// StreamChat runs one agent turn and emits mapped events.
-	StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error
-	// ListSessions lists the gateway sessions.
-	ListSessions(ctx context.Context) ([]Session, error)
-	// GetHistory returns the raw session transcript.
-	GetHistory(ctx context.Context, sessionKey string, limit int) (json.RawMessage, error)
-}
-
-var _ AgentRuntime = (*Client)(nil)
+var (
+	_ agentruntime.OneShotRunner = (*Client)(nil)
+	_ agentruntime.SessionReader = (*Client)(nil)
+)
 
 // Client is an authenticated HTTP client for one OpenClaw gateway.
 type Client struct {
 	baseURL string
 	token   string
-	model   string // optional backend model override (x-openclaw-model)
 	http    *http.Client
 }
 
@@ -55,40 +41,21 @@ func New(baseURL, token string) *Client {
 	}
 }
 
-// SetModel sets the backend model override sent as x-openclaw-model on chat
-// requests (empty = use the agent's normal configured model). Overrides are
-// per-request hot-effective: no instance restart needed (design §3.2
-// selectedModel -> AgentRuntime.updateConfig takes effect hot).
-func (c *Client) SetModel(model string) {
-	c.model = model
-}
-
 // ChatMessage is a single chat turn message.
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+type ChatMessage = agentruntime.ChatMessage
 
 // ChatParams carries the inputs for one agent turn.
-type ChatParams struct {
-	Model      string        // e.g. "openclaw/default"
-	SessionKey string        // stable session routing (x-openclaw-session-key)
-	Messages   []ChatMessage // recent conversation history
-}
+type ChatParams = agentruntime.ChatParams
 
-// StreamChat POSTs a chat turn and invokes emit for each mapped CubePilot event
-// as the OpenAI-compatible SSE stream is decoded. It always emits a terminal
-// message_done event (even on error).
+// StreamChat POSTs a one-shot/background turn and invokes emit for each mapped
+// CubePilot event as the OpenAI-compatible SSE stream is decoded. It always
+// emits a terminal message_done event (even on error). Portal chat does not use
+// this method; it runs over the gateway WebSocket protocol.
 func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error {
-	// The request body always carries the agent target (gateway validates it
-	// as `openclaw` or `openclaw/<agentId>`); the backend model override goes
-	// through the x-openclaw-model header only.
-	target := p.Model
-	if target == "" {
-		target = "openclaw/default"
-	}
+	// The request body carries the OpenClaw agent target. The runtime-neutral
+	// Model field is the backend model override and is sent separately below.
 	body, err := json.Marshal(map[string]any{
-		"model":    target,
+		"model":    "openclaw/default",
 		"stream":   true,
 		"messages": p.Messages,
 	})
@@ -109,8 +76,8 @@ func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) 
 	// Backend model override: the body keeps the agent target; x-openclaw-model
 	// switches the backend provider/model for this turn (shared-secret callers
 	// may use it directly, hot override without a restart).
-	if c.model != "" {
-		req.Header.Set("x-openclaw-model", c.model)
+	if p.Model != "" {
+		req.Header.Set("x-openclaw-model", p.Model)
 	}
 
 	resp, err := c.http.Do(req)
@@ -165,10 +132,7 @@ func (c *Client) fail(emit func(Event) error, err error) error {
 }
 
 // Session is a minimal projection of an OpenClaw session from sessions_list.
-type Session struct {
-	SessionKey string `json:"sessionKey"`
-	Title      string `json:"title"`
-}
+type Session = agentruntime.Session
 
 // ListSessions returns the sessions visible to the gateway via /tools/invoke.
 // The gateway payload nests the list under result.details (same JSON also

@@ -1,9 +1,8 @@
 // Package ws implements a minimal gateway-protocol WebSocket client for the
 // OpenClaw gateway (v2026.8.2), authenticated as a paired operator device. It
-// exists to drive the exec-approval HITL surface (issue #20): subscribe to
-// exec approval broadcasts, resolve them, author the per-agent exec-approvals
-// policy, and set a session's permissionMode. The platform keeps chat on HTTP;
-// this WS client is the approvals/control channel.
+// drives interactive chat and the exec-approval HITL surface: it subscribes to
+// session events and approval broadcasts, sends turns, resolves approvals, and
+// reconciles per-session model and permission state.
 //
 // The wire shapes here are ported from OpenClaw TS at tag v2026.8.2
 // (packages/gateway-protocol/src/schema/frames.ts, device-auth.ts,

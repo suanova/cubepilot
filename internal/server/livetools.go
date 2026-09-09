@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/suanova/cubepilot/internal/openclaw"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // Live chat projection (issue #130, WS-only chat). Chat turns are driven over
@@ -21,8 +21,8 @@ import (
 //   - agent stream="item" / "command_output"           (tool+command lifecycle
 //     and streamed output; kept as a richer/back-compat source, deduped per
 //     call id)
-//   - chat  state delta/final/aborted/error            (visible assistant text;
-//     aborted/error mark the run terminal)
+//   - chat  state status/delta/final/aborted/error     (startup status and
+//     visible assistant text; aborted/error mark the run terminal)
 
 const (
 	// liveOutputCap bounds per-tool output accumulation so a runaway stream
@@ -111,8 +111,8 @@ type chatDelta struct {
 
 // feed processes one live event frame for the turn's session and returns any
 // SSE events it maps to, plus whether the event terminates the run. evName is
-// the gateway event name ("agent" for run/tool events, "chat" for text/status).
-func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openclaw.Event, bool) {
+// the gateway event name ("agent" for run/tool events, "chat" for text).
+func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agentruntime.Event, bool) {
 	switch evName {
 	case "agent":
 		var fr agentFrame
@@ -140,8 +140,8 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				if args == "" {
 					args = it.Title
 				}
-				return []openclaw.Event{{
-					Type:      openclaw.EventToolCall,
+				return []agentruntime.Event{{
+					Type:      agentruntime.EventToolCall,
 					SessionID: sessionKey,
 					Name:      it.Name,
 					CallID:    it.ToolCallID,
@@ -175,7 +175,7 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				if out == "" {
 					out = o.Summary
 				}
-				return []openclaw.Event{liveResult(sessionKey, o.ToolCallID, call.name, out)}, false
+				return []agentruntime.Event{liveResult(sessionKey, o.ToolCallID, call.name, out)}, false
 			}
 		}
 	case "chat":
@@ -193,21 +193,21 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				// A snapshot that supersedes previously streamed text (e.g. a
 				// commentary rewritten after the tool ran): the frontend must
 				// replace the bubble text, not append.
-				return []openclaw.Event{{
-					Type:      openclaw.EventTextReplace,
+				return []agentruntime.Event{{
+					Type:      agentruntime.EventTextReplace,
 					SessionID: sessionKey,
 					Delta:     d.DeltaText,
 				}}, false
 			}
-			return []openclaw.Event{{
-				Type:      openclaw.EventMessageDelta,
+			return []agentruntime.Event{{
+				Type:      agentruntime.EventMessageDelta,
 				SessionID: sessionKey,
 				Delta:     d.DeltaText,
 			}}, false
 		case "final":
 			// final is a full snapshot of the run's text; only surface it when no
 			// delta was streamed (short replies that arrive as one frame).
-			var evs []openclaw.Event
+			var evs []agentruntime.Event
 			if !p.texts[d.RunID] {
 				text := d.DeltaText
 				if text == "" && d.Message != nil {
@@ -221,8 +221,8 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 				}
 				if text != "" {
 					p.texts[d.RunID] = true
-					evs = append(evs, openclaw.Event{
-						Type:      openclaw.EventMessageDelta,
+					evs = append(evs, agentruntime.Event{
+						Type:      agentruntime.EventMessageDelta,
 						SessionID: sessionKey,
 						Delta:     text,
 					})
@@ -245,8 +245,8 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 // finalizeAll emits a tool_result for every started call that never reached a
 // command_output terminal (non-exec tools whose stream="tool" result was
 // deferred). Called when the run goes terminal so no card stays "Running".
-func (p *liveProjector) finalizeAll(sessionKey string) []openclaw.Event {
-	var out []openclaw.Event
+func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
+	var out []agentruntime.Event
 	// Iterate in tool-call insertion order so deferred results replay in the
 	// gateway's sequence (audit/ledger order stays deterministic).
 	for _, id := range p.order {
@@ -266,7 +266,7 @@ func (p *liveProjector) finalizeAll(sessionKey string) []openclaw.Event {
 
 // toolEvent maps one agent stream="tool" frame. start begins the card,
 // update streams nothing (progress), result emits the tool_result once.
-func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []openclaw.Event {
+func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
 	var t agentTool
 	if err := json.Unmarshal(data, &t); err != nil || t.ToolCallID == "" {
 		return nil
@@ -287,8 +287,8 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 		} else if t.Title != "" {
 			args = t.Title
 		}
-		return []openclaw.Event{{
-			Type:      openclaw.EventToolCall,
+		return []agentruntime.Event{{
+			Type:      agentruntime.EventToolCall,
 			SessionID: sessionKey,
 			Name:      t.Name,
 			CallID:    t.ToolCallID,
@@ -317,7 +317,7 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []ope
 		if t.IsError && out == "" {
 			out = t.ErrorString
 		}
-		return []openclaw.Event{liveResult(sessionKey, t.ToolCallID, call.name, out)}
+		return []agentruntime.Event{liveResult(sessionKey, t.ToolCallID, call.name, out)}
 	}
 	return nil
 }
@@ -415,9 +415,9 @@ func (c *liveCall) append(s string) {
 	c.output.WriteString(s)
 }
 
-func liveResult(sessionKey, callID, name, output string) openclaw.Event {
-	return openclaw.Event{
-		Type:      openclaw.EventToolResult,
+func liveResult(sessionKey, callID, name, output string) agentruntime.Event {
+	return agentruntime.Event{
+		Type:      agentruntime.EventToolResult,
 		SessionID: sessionKey,
 		Name:      name,
 		CallID:    callID,

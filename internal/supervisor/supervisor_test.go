@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
 )
@@ -518,7 +519,7 @@ func TestSyncInstructions(t *testing.T) {
 	}
 
 	// Oversized instructions are refused (no write, file keeps last-good).
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: strings.Repeat("x", maxSystemPromptBytes+1)}); err != nil {
+	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: strings.Repeat("x", instructions.MaxChars+1)}); err != nil {
 		t.Fatalf("oversize: %v", err)
 	}
 	raw, _ = os.ReadFile(agentsPath)

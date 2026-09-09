@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suanova/cubepilot/internal/openclaw"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // per-session SSE hub (issue #20 HITL). One active chat turn streams to the
@@ -72,7 +72,7 @@ func IsStreamConflict(err error) bool {
 // PublishTo injects an event into the session's active stream, if any. It is a
 // best-effort, non-blocking on the caller (used from the WS approval goroutine);
 // returns false when no stream is active or the stream has closed.
-func (h *Hub) PublishTo(sessionKey string, ev openclaw.Event) bool {
+func (h *Hub) PublishTo(sessionKey string, ev agentruntime.Event) bool {
 	h.mu.Lock()
 	s, ok := h.active[sessionKey]
 	h.mu.Unlock()
@@ -114,7 +114,7 @@ func (s *Stream) Start() {
 
 // Send writes one event to the browser under the stream lock and returns the
 // write error (if any) so the caller aborts the turn exactly like today's emit.
-func (s *Stream) Send(ev openclaw.Event) error {
+func (s *Stream) Send(ev agentruntime.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -129,7 +129,7 @@ func (s *Stream) Send(ev openclaw.Event) error {
 }
 
 // inject is the external-event path (approvals arriving on the WS connection).
-func (s *Stream) inject(ev openclaw.Event) error {
+func (s *Stream) inject(ev agentruntime.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

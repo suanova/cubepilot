@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +18,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/instances"
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -163,6 +165,24 @@ func TestHandleInstancesCreate(t *testing.T) {
 	rec = doReq(t, h, http.MethodPost, "/api/instances", "li.ming", map[string]any{"templateRef": "no-such-template"})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown template status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleInstancesCreateValidatesUserInstructions(t *testing.T) {
+	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}}
+	s := platformTestServer(t, agent)
+
+	for _, prompt := range []string{
+		strings.Repeat("x", instructions.MaxChars+1),
+		"before\n" + instructions.ManagedStart + "\nafter",
+	} {
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/instances", "wang.wu", map[string]any{
+			"templateRef":      "agent-for-cloud",
+			"userInstructions": prompt,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid instructions status = %d, want 400: %s", rec.Code, rec.Body.String())
+		}
 	}
 }
 

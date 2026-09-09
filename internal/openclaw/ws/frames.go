@@ -213,11 +213,33 @@ type devicePairApproveParams struct {
 // --- sessions.patch / sessions.create params ---
 
 type sessionPatchParams struct {
-	Key            string `json:"key"`
-	PermissionMode string `json:"permissionMode"`
+	Key            string   `json:"key"`
+	PermissionMode **string `json:"permissionMode,omitempty"`
+	Model          **string `json:"model,omitempty"`
 }
 
 type sessionCreateParams struct {
 	Key            string `json:"key"`
 	PermissionMode string `json:"permissionMode"`
+}
+
+// SessionState is the mutable session state needed to reconcile a turn before
+// it starts.
+type SessionState struct {
+	Model          string
+	PermissionMode string
+}
+
+// OptionalString represents one optional sessions.patch field. Set=false
+// omits the field; Set=true with an empty Value sends JSON null to clear it.
+type OptionalString struct {
+	Set   bool
+	Value string
+}
+
+// SessionSettingsPatch carries the model and permission changes for one
+// atomic sessions.patch call.
+type SessionSettingsPatch struct {
+	Model          OptionalString
+	PermissionMode OptionalString
 }

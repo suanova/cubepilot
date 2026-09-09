@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // fakeHitlGateway implements hitlGateway in memory.
@@ -33,12 +35,16 @@ type fakeHitlGateway struct {
 	sends        []string // "sessionKey|message"
 	lastIdem     string
 	creates      []string // sessionKeys passed to sessions.create
+	models       []string // "sessionKey|model"; empty model clears the override
+	unguarded    []string // sessionKeys whose explicit permission mode was cleared
+	states       map[string]ws.SessionState
 	sendBlock    chan struct{}
 	waits        []string // runIds passed to agent.wait
 	subscribeErr error
 	sendErr      error
 	waitErr      error
 	createErr    error
+	modelErr     error
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
@@ -84,9 +90,43 @@ func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
 	f.waits = append(f.waits, runID)
 	return f.waitErr
 }
-func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) error {
+func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) (ws.SessionState, error) {
 	f.creates = append(f.creates, key)
-	return f.createErr
+	if f.createErr != nil {
+		return ws.SessionState{}, f.createErr
+	}
+	if f.states == nil {
+		f.states = map[string]ws.SessionState{}
+	}
+	state, ok := f.states[key]
+	if !ok {
+		state = ws.SessionState{}
+		f.states[key] = state
+	}
+	return state, nil
+}
+func (f *fakeHitlGateway) PatchSessionSettings(ctx context.Context, key string, patch ws.SessionSettingsPatch) error {
+	if f.modelErr != nil {
+		return f.modelErr
+	}
+	if f.guardErr != nil {
+		return f.guardErr
+	}
+	state := f.states[key]
+	if patch.Model.Set {
+		f.models = append(f.models, key+"|"+patch.Model.Value)
+		state.Model = patch.Model.Value
+	}
+	if patch.PermissionMode.Set {
+		if patch.PermissionMode.Value == "guarded" {
+			f.guarded = append(f.guarded, key)
+		} else {
+			f.unguarded = append(f.unguarded, key)
+		}
+		state.PermissionMode = patch.PermissionMode.Value
+	}
+	f.states[key] = state
+	return nil
 }
 func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	if f.getErr != nil {
@@ -109,10 +149,6 @@ func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.Approv
 	}
 	f.policySets = append(f.policySets, file)
 	return &ws.ApprovalsSnapshot{}, nil
-}
-func (f *fakeHitlGateway) EnsureSessionGuarded(ctx context.Context, key string) error {
-	f.guarded = append(f.guarded, key)
-	return f.guardErr
 }
 func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision string) error {
 	f.resolves = append(f.resolves, id+"|"+decision)
@@ -147,13 +183,13 @@ func newTestHitl(pol v1alpha1.ConfirmPolicy, rev string, gw *fakeHitlGateway, al
 
 var tLogf = func(format string, args ...any) {}
 
-func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
+func TestHitl_PreTurnAppliesAllowlistOncePerRevision(t *testing.T) {
 	gw := &fakeHitlGateway{}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
-	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
-		t.Fatalf("guarded = %v, want [conv-1]", gw.guarded)
+	guarded, _ := m.PreTurn(context.Background(), "alice")
+	if !guarded {
+		t.Fatal("Allowlist policy must require a guarded session")
 	}
 	// The allowlist is applied exactly once for the revision...
 	if len(gw.policySets) != 1 {
@@ -164,18 +200,14 @@ func TestHitl_PreTurnGuardsAllowlistOncePerRevision(t *testing.T) {
 		t.Fatalf("allowlist not written to agents.main: %+v", gw.policySets[0])
 	}
 
-	// ...and again guards (idempotent) without re-applying the allowlist.
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
+	// ...without re-applying the allowlist on the next turn.
+	_, _ = m.PreTurn(context.Background(), "alice")
 	if len(gw.policySets) != 1 {
 		t.Errorf("policy sets = %d after second turn, want 1", len(gw.policySets))
 	}
-	if len(gw.guarded) != 2 {
-		t.Errorf("guarded calls = %d, want 2 (per turn)", len(gw.guarded))
-	}
-
 	// A policy change applies the allowlist again.
 	m.revPol["alice"] = "rev-1-old"
-	_ = m.PreTurn(context.Background(), "alice", "conv-2")
+	_, _ = m.PreTurn(context.Background(), "alice")
 	if len(gw.policySets) != 2 {
 		t.Errorf("policy sets = %d after revision change, want 2", len(gw.policySets))
 	}
@@ -190,9 +222,9 @@ func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 
 	gw := &fakeHitlGateway{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
-	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
-		t.Fatalf("guarded = %v after retry, want [conv-1]", gw.guarded)
+	guarded, _ := m.PreTurn(context.Background(), "alice")
+	if !guarded {
+		t.Fatal("Allowlist policy must require a guarded session")
 	}
 	if !gw.connected {
 		t.Fatal("expected the gateway to connect after the NOT_PAIRED retry")
@@ -203,7 +235,10 @@ func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 	for _, pol := range []v1alpha1.ConfirmPolicy{"", v1alpha1.ConfirmPolicyNone} {
 		gw := &fakeHitlGateway{}
 		m := newTestHitl(pol, "rev-1", gw)
-		_ = m.PreTurn(context.Background(), "alice", "conv-1")
+		guarded, _ := m.PreTurn(context.Background(), "alice")
+		if guarded {
+			t.Errorf("pol=%q: unexpectedly requested a guarded session", pol)
+		}
 		if len(gw.guarded) != 0 || len(gw.policySets) != 0 || gw.connected {
 			t.Errorf("pol=%q: expected no-op, guarded=%v policySets=%d connected=%v", pol, gw.guarded, len(gw.policySets), gw.connected)
 		}
@@ -213,7 +248,7 @@ func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
 	gw := &fakeHitlGateway{}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	_ = m.PreTurn(context.Background(), "alice", "conv-1") // establishes the conn
+	_, _ = m.PreTurn(context.Background(), "alice") // establishes the conn
 
 	if err := m.ResolveApproval(context.Background(), "alice", "appr-1", "approve"); err != nil {
 		t.Fatalf("resolve approve: %v", err)
@@ -239,7 +274,7 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		fed = append(fed, user+"|"+ev.ID+"|"+ev.Request.SessionKey+"|"+ev.Request.Command)
 	}
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
+	_, _ = m.PreTurn(context.Background(), "alice")
 	if gw.onRequested == nil {
 		t.Fatal("expected the gateway to have an approval callback")
 	}
@@ -259,7 +294,7 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
 	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAlwaysAsk, "rev-1", gw)
-	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+	if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 		t.Fatal("AlwaysAsk PreTurn should fail closed when the policy cannot be applied")
 	}
 }
@@ -271,7 +306,7 @@ func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
 func TestHitl_AllowlistFailsClosedOnPolicyError(t *testing.T) {
 	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+	if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 		t.Fatal("Allowlist PreTurn should fail closed when the policy cannot be applied")
 	}
 	// The failed apply must not advance the revision watermark (retried next turn).
@@ -287,23 +322,11 @@ func TestHitl_GatedPoliciesFailClosedOnChannelDown(t *testing.T) {
 	for _, pol := range []v1alpha1.ConfirmPolicy{v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk} {
 		gw := &fakeHitlGateway{connectErr: fmt.Errorf("ws dial: connection refused")}
 		m := newTestHitl(pol, "rev-1", gw)
-		if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+		if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 			t.Errorf("%s: PreTurn should fail closed when the channel is down", pol)
 		}
 		if len(gw.guarded) != 0 {
 			t.Errorf("%s: session guarded despite the failed connect: %v", pol, gw.guarded)
-		}
-	}
-}
-
-// TestHitl_GatedPoliciesFailClosedOnGuardError verifies a session that cannot
-// be guarded fails the turn closed for both gated policies (issue #127).
-func TestHitl_GatedPoliciesFailClosedOnGuardError(t *testing.T) {
-	for _, pol := range []v1alpha1.ConfirmPolicy{v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk} {
-		gw := &fakeHitlGateway{guardErr: fmt.Errorf("exec.approvals.guard: boom")}
-		m := newTestHitl(pol, "rev-1", gw)
-		if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
-			t.Errorf("%s: PreTurn should fail closed when the session cannot be guarded", pol)
 		}
 	}
 }
@@ -316,7 +339,7 @@ func TestHitl_FailsClosedOnPolicyResolutionError(t *testing.T) {
 	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error) {
 		return "", nil, "", fmt.Errorf("resolver: boom")
 	}
-	if err := m.PreTurn(context.Background(), "alice", "conv-1"); err == nil {
+	if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 		t.Fatal("PreTurn should fail closed when the policy cannot be resolved")
 	}
 }
@@ -357,15 +380,15 @@ func TestHitl_ChannelState(t *testing.T) {
 	})
 }
 
-// TestHitl_AlwaysAskGuardsAndClearsAllowlist verifies AlwaysAsk writes an empty
-// allowlist (so every command misses and asks) and still guards the session.
-func TestHitl_AlwaysAskGuardsAndClearsAllowlist(t *testing.T) {
+// TestHitl_AlwaysAskRequiresGuardAndClearsAllowlist verifies AlwaysAsk writes
+// an empty allowlist and marks the turn for guarded session reconciliation.
+func TestHitl_AlwaysAskRequiresGuardAndClearsAllowlist(t *testing.T) {
 	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "kubectl", ArgPattern: "^get "}}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAlwaysAsk, "rev-1", gw)
 
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
-	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
-		t.Fatalf("guarded = %v, want [conv-1]", gw.guarded)
+	guarded, _ := m.PreTurn(context.Background(), "alice")
+	if !guarded {
+		t.Fatal("AlwaysAsk policy must require a guarded session")
 	}
 	if len(gw.policySets) != 1 {
 		t.Fatalf("policy sets = %d, want 1", len(gw.policySets))
@@ -387,7 +410,7 @@ func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
 	effective := []v1alpha1.AllowlistRule{{Pattern: "helm", ArgPattern: `^list`}}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw, effective)
 
-	_ = m.PreTurn(context.Background(), "alice", "conv-1")
+	_, _ = m.PreTurn(context.Background(), "alice")
 	if len(gw.policySets) != 1 {
 		t.Fatalf("policy sets = %d, want 1", len(gw.policySets))
 	}
@@ -406,8 +429,12 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 
 	var got []openclaw.Event
 	done := make(chan error, 1)
+	runner := &openClawLiveRunner{manager: m, user: "alice"}
 	go func() {
-		done <- m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(ev openclaw.Event) error {
+		done <- runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
+			Message: "hi",
+			Model:   "provider/model",
+		}, func(ev openclaw.Event) error {
 			got = append(got, ev)
 			return nil
 		})
@@ -453,6 +480,12 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	if len(gw.subscribes) != 1 || gw.subscribes[0] != "conv-1" {
 		t.Fatalf("subscribes = %v, want [conv-1]", gw.subscribes)
 	}
+	if len(gw.models) != 1 || gw.models[0] != "conv-1|provider/model" {
+		t.Fatalf("model patches = %v, want [conv-1|provider/model]", gw.models)
+	}
+	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
+		t.Fatalf("live adapter did not prepare confirmation gating: %v", gw.guarded)
+	}
 	if len(gw.unsubscribes) != 1 || gw.unsubscribes[0] != "conv-1" {
 		t.Fatalf("unsubscribes = %v, want [conv-1]", gw.unsubscribes)
 	}
@@ -475,11 +508,14 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(openclaw.Event) error { return nil }); err == nil {
+	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
 		t.Fatal("RunLiveTurn returned nil, want the send error")
 	}
 	if len(gw.subscribes) != 1 {
 		t.Fatalf("subscribes = %v, want the session subscribed before send", gw.subscribes)
+	}
+	if len(gw.models) != 0 {
+		t.Fatalf("unchanged Runtime Default must not patch the session model, got %v", gw.models)
 	}
 	if len(gw.unsubscribes) != 1 {
 		t.Fatalf("unsubscribes = %v, want cleanup on error", gw.unsubscribes)
@@ -489,6 +525,59 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	m.liveMu.Unlock()
 	if live {
 		t.Fatal("live turn leaked after send error")
+	}
+}
+
+func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
+	gw := &fakeHitlGateway{modelErr: fmt.Errorf("model unavailable")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "model unavailable") {
+		t.Fatalf("RunLiveTurn error = %v, want model patch failure", err)
+	}
+	if len(gw.subscribes) != 0 || len(gw.sends) != 0 {
+		t.Fatalf("turn started after model patch failure: subscribes=%v sends=%v", gw.subscribes, gw.sends)
+	}
+}
+
+func TestHitl_RunLiveTurnSurfacesSessionCreateError(t *testing.T) {
+	gw := &fakeHitlGateway{createErr: fmt.Errorf("session store unavailable")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
+	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "session store unavailable") {
+		t.Fatalf("RunLiveTurn error = %v, want session creation failure", err)
+	}
+	if len(gw.models) != 0 || len(gw.subscribes) != 0 || len(gw.sends) != 0 {
+		t.Fatalf("turn advanced after create failure: models=%v subscribes=%v sends=%v", gw.models, gw.subscribes, gw.sends)
+	}
+}
+
+func TestHitl_RunLiveTurnClearsStaleGuardForNonePolicy(t *testing.T) {
+	gw := &fakeHitlGateway{
+		sendErr: fmt.Errorf("stop after preparation"),
+		states: map[string]ws.SessionState{
+			"conv-1": {PermissionMode: "guarded"},
+		},
+	}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
+	runner := &openClawLiveRunner{manager: m, user: "alice"}
+	_ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
+	if len(gw.unguarded) != 1 || gw.unguarded[0] != "conv-1" {
+		t.Fatalf("stale guarded state was not cleared: %v", gw.unguarded)
+	}
+}
+
+func TestHitl_RunLiveTurnSkipsUnchangedSessionSettings(t *testing.T) {
+	gw := &fakeHitlGateway{
+		sendErr: fmt.Errorf("stop after preparation"),
+		states: map[string]ws.SessionState{
+			"conv-1": {Model: "provider/model", PermissionMode: "guarded"},
+		},
+	}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	_ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	if len(gw.models) != 0 || len(gw.guarded) != 0 || len(gw.unguarded) != 0 {
+		t.Fatalf("unchanged session settings were patched: models=%v guarded=%v unguarded=%v", gw.models, gw.guarded, gw.unguarded)
 	}
 }
 

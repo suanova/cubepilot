@@ -106,22 +106,32 @@ func TestClient_GetHistory_DefaultsLimit(t *testing.T) {
 	}
 }
 
-func TestClient_SetModel_SendsOverrideHeader(t *testing.T) {
-	gotHeader := make(chan string, 1)
+func TestClient_StreamChatSendsPerTurnModelOverride(t *testing.T) {
+	type requestValues struct{ header, target string }
+	got := make(chan requestValues, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader <- r.Header.Get("x-openclaw-model")
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		got <- requestValues{header: r.Header.Get("x-openclaw-model"), target: body.Model}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL, "secret")
-	c.SetModel("gpt-4o")
-	if err := c.StreamChat(t.Context(), ChatParams{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
+	if err := c.StreamChat(t.Context(), ChatParams{Model: "gpt-4o", Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
 		t.Fatalf("StreamChat: %v", err)
 	}
-	if h := <-gotHeader; h != "gpt-4o" {
-		t.Errorf("x-openclaw-model = %q, want gpt-4o", h)
+	values := <-got
+	if values.header != "gpt-4o" {
+		t.Errorf("x-openclaw-model = %q, want gpt-4o", values.header)
+	}
+	if values.target != "openclaw/default" {
+		t.Errorf("request model target = %q, want openclaw/default", values.target)
 	}
 }
 

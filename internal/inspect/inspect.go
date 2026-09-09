@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/suanova/cubepilot/internal/openclaw"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 const prompt = `Run a basic health inspection of the current Kubernetes cluster:
@@ -23,18 +23,19 @@ Classify findings by severity: P0 critical / P1 important / P2 minor, and output
 [Read-only note] If your credentials are rejected by RBAC, state the actual permission scope and do not retry rejected operations.`
 
 // Run executes the inspection prompt against the given agent instance and
-// returns the agent's final natural-language report text. onEvent (optional)
-// receives every stream event so callers can record tool calls for audit.
-func Run(ctx context.Context, oc openclaw.AgentRuntime, sessionKey string, onEvent func(openclaw.Event)) (string, error) {
+// returns the agent's final natural-language report text. model is the optional
+// per-turn backend override; onEvent receives stream events for audit.
+func Run(ctx context.Context, runner agentruntime.OneShotRunner, sessionKey, model string, onEvent func(agentruntime.Event)) (string, error) {
 	var buf strings.Builder
-	err := oc.StreamChat(ctx, openclaw.ChatParams{
+	err := runner.StreamChat(ctx, agentruntime.ChatParams{
+		Model:      model,
 		SessionKey: sessionKey,
-		Messages:   []openclaw.ChatMessage{{Role: "user", Content: prompt}},
-	}, func(ev openclaw.Event) error {
+		Messages:   []agentruntime.ChatMessage{{Role: "user", Content: prompt}},
+	}, func(ev agentruntime.Event) error {
 		if onEvent != nil {
 			onEvent(ev)
 		}
-		if ev.Type == openclaw.EventMessageDelta {
+		if ev.Type == agentruntime.EventMessageDelta {
 			buf.WriteString(ev.Delta)
 		}
 		return nil
