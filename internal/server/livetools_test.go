@@ -138,6 +138,28 @@ func TestLiveProjector_TerminalByChatState(t *testing.T) {
 	}
 }
 
+func TestLiveProjector_ChatStatus(t *testing.T) {
+	p := newLiveProjector()
+
+	got, term := p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"status","phase":"preparing_workspace"}`))
+	if term || len(got) != 1 || got[0].Type != openclaw.EventAgentStatus || got[0].Status != "preparing" {
+		t.Fatalf("workspace status = %+v, terminal = %v", got, term)
+	}
+	// Multiple OpenClaw workspace phases collapse to one stable CubePilot status.
+	got, _ = p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"status","phase":"running_setup"}`))
+	if len(got) != 0 {
+		t.Fatalf("duplicate normalized status emitted: %+v", got)
+	}
+	got, _ = p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"status","phase":"preparing_context"}`))
+	if len(got) != 1 || got[0].Status != "building_context" {
+		t.Fatalf("context status = %+v", got)
+	}
+	got, _ = p.feed(conv, "chat", []byte(`{"sessionKey":"`+conv+`","state":"status","phase":"future_phase"}`))
+	if len(got) != 0 {
+		t.Fatalf("unknown status must be ignored, got %+v", got)
+	}
+}
+
 func TestLiveProjector_IgnoresUnrelatedAndMalformed(t *testing.T) {
 	p := newLiveProjector()
 	if got, term := p.feed(conv, "session.message", []byte(`{"role":"user"}`)); len(got) != 0 || term {

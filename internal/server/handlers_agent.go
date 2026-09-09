@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -80,6 +81,11 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		// would brick the instance (issue #117 model-less default). Empty =
 		// "Runtime Default" (clear the override).
 		model := strings.TrimSpace(body.Config.Model)
+		systemPrompt := strings.TrimSpace(body.Config.SystemPrompt)
+		if err := instructions.Validate(systemPrompt); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		if ok, err := s.agentTemplateHasModel(r.Context(), model); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -98,7 +104,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		inst.Spec.SelectedModel = model
-		inst.Spec.UserInstructions = strings.TrimSpace(body.Config.SystemPrompt)
+		inst.Spec.UserInstructions = systemPrompt
 		if err := s.cr.Update(r.Context(), &inst); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

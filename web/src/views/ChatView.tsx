@@ -50,6 +50,7 @@ interface BubbleMsg {
   thinking: boolean // true while phase !== 'done'
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
+  runtimeStatus?: 'preparing' | 'building_context' | 'starting_model'
   confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
 }
 
@@ -413,7 +414,13 @@ export default function ChatView() {
             setPhase(bubble, 'thinking')
             return
           }
+          if (ev.type === 'agent_status') {
+            bubble.runtimeStatus = ev.status
+            setPhase(bubble, 'thinking')
+            return
+          }
           if (ev.type === 'tool_call') {
+            bubble.runtimeStatus = undefined
             setPhase(bubble, 'tools')
             bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.call_id || '', done: false })
             return
@@ -451,6 +458,7 @@ export default function ChatView() {
             return
           }
           if (ev.type === 'message_delta') {
+            bubble.runtimeStatus = undefined
             setPhase(bubble, 'streaming')
             bubble.text = (bubble.text || '') + (ev.delta || '')
             return
@@ -458,6 +466,7 @@ export default function ChatView() {
           if (ev.type === 'text_replace') {
             // Snapshot superseding earlier text (e.g. commentary rewritten after
             // a tool ran): replace, never append (issue #130).
+            bubble.runtimeStatus = undefined
             setPhase(bubble, 'streaming')
             bubble.text = ev.delta || ''
             return
@@ -515,6 +524,9 @@ export default function ChatView() {
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
     switch (b.phase) {
       case 'thinking':
+        if (b.runtimeStatus === 'preparing') return `Preparing workspace... ${secs}s`
+        if (b.runtimeStatus === 'building_context') return `Preparing context... ${secs}s`
+        if (b.runtimeStatus === 'starting_model') return `Starting model... ${secs}s`
         return `Thinking... ${secs}s`
       case 'tools': {
         const n = b.tools.filter((t) => !t.done).length

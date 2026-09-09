@@ -211,7 +211,7 @@ Publishing the images/chart to the registry is handled separately by the
 
 | Check | Action | Expected |
 |---|---|---|
-| Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start -> agent_thinking -> tool_call(exec kubectl) -> message_delta -> message_done`, ending with a natural-language summary of real kind Pod state |
+| Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start -> agent_thinking -> [agent_status] -> tool_call(exec kubectl) -> message_delta -> message_done`, ending with a natural-language summary of real kind Pod state |
 | Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-admin` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
 | User isolation | Deploy a second user (`--set 'agents.users=admin\,li.ming'`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |

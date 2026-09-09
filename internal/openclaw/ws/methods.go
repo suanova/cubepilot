@@ -55,6 +55,22 @@ func (c *Client) PatchSessionGuarded(ctx context.Context, key string) error {
 	return err
 }
 
+// SetSessionModel applies the selected model to a session before its next
+// interactive turn. An empty model sends JSON null, explicitly clearing a
+// model override left by an earlier selection instead of silently retaining it.
+func (c *Client) SetSessionModel(ctx context.Context, key, model string) error {
+	params := map[string]any{"key": key}
+	if model == "" {
+		params["model"] = nil
+	} else {
+		params["model"] = model
+	}
+	if _, err := c.Call(ctx, "sessions.patch", params); err != nil {
+		return fmt.Errorf("sessions.patch model for %q: %w", key, err)
+	}
+	return nil
+}
+
 // CreateSessionGuarded creates a session with permissionMode guarded
 // (sessions.create). Used when patch reports the session does not exist.
 func (c *Client) CreateSessionGuarded(ctx context.Context, key string) error {

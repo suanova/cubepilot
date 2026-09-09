@@ -25,7 +25,7 @@ Classify findings by severity: P0 critical / P1 important / P2 minor, and output
 // Run executes the inspection prompt against the given agent instance and
 // returns the agent's final natural-language report text. onEvent (optional)
 // receives every stream event so callers can record tool calls for audit.
-func Run(ctx context.Context, oc openclaw.AgentRuntime, sessionKey string, onEvent func(openclaw.Event)) (string, error) {
+func Run(ctx context.Context, oc openclaw.OneShotRunner, sessionKey string, onEvent func(openclaw.Event)) (string, error) {
 	var buf strings.Builder
 	err := oc.StreamChat(ctx, openclaw.ChatParams{
 		SessionKey: sessionKey,

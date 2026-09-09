@@ -1,8 +1,8 @@
-// Package openclaw implements a minimal HTTP client for driving an OpenClaw
-// gateway (v2026.8.2) as the CubePilot agent runtime. The chat turn runs the
-// full agent loop via the OpenAI-compatible /v1/chat/completions endpoint; the
-// always-enabled /tools/invoke and /sessions/{key}/history endpoints provide
-// session listing and history.
+// Package openclaw implements the HTTP side of CubePilot's OpenClaw adapter.
+// Interactive Portal chat is intentionally driven by internal/openclaw/ws so
+// text, tools, approvals, and completion share one ordered live stream. This
+// client is reserved for read-only session APIs and one-shot background turns,
+// where request/response HTTP semantics are the simpler and more stable fit.
 package openclaw
 
 import (
@@ -17,25 +17,29 @@ import (
 	"time"
 )
 
-// AgentRuntime is the narrow runtime interface the platform depends on
-// (design §4: start/stop/chat/runTask/updateConfig/health). Phase one only
-// needs the chat and session/history read surface; lifecycle methods are
-// added when a second runtime arrives or the gateway lifecycle moves
-// in-process. *Client implements this interface -- depend on the interface,
-// not the concrete type.
-type AgentRuntime interface {
+// OneShotRunner is the HTTP surface for non-interactive turns such as scheduled
+// tasks and synchronous inspections. Interactive Portal chat must use the
+// gateway WebSocket adapter instead.
+type OneShotRunner interface {
 	// SetModel overrides the backend model for subsequent chat turns
 	// (empty = use the agent's normal configured model).
 	SetModel(model string)
 	// StreamChat runs one agent turn and emits mapped events.
 	StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error
+}
+
+// SessionReader is the read-only HTTP surface for session metadata/history.
+type SessionReader interface {
 	// ListSessions lists the gateway sessions.
 	ListSessions(ctx context.Context) ([]Session, error)
 	// GetHistory returns the raw session transcript.
 	GetHistory(ctx context.Context, sessionKey string, limit int) (json.RawMessage, error)
 }
 
-var _ AgentRuntime = (*Client)(nil)
+var (
+	_ OneShotRunner = (*Client)(nil)
+	_ SessionReader = (*Client)(nil)
+)
 
 // Client is an authenticated HTTP client for one OpenClaw gateway.
 type Client struct {
@@ -57,8 +61,7 @@ func New(baseURL, token string) *Client {
 
 // SetModel sets the backend model override sent as x-openclaw-model on chat
 // requests (empty = use the agent's normal configured model). Overrides are
-// per-request hot-effective: no instance restart needed (design §3.2
-// selectedModel -> AgentRuntime.updateConfig takes effect hot).
+// per-request hot-effective: no instance restart needed (design §3.2).
 func (c *Client) SetModel(model string) {
 	c.model = model
 }
@@ -76,9 +79,10 @@ type ChatParams struct {
 	Messages   []ChatMessage // recent conversation history
 }
 
-// StreamChat POSTs a chat turn and invokes emit for each mapped CubePilot event
-// as the OpenAI-compatible SSE stream is decoded. It always emits a terminal
-// message_done event (even on error).
+// StreamChat POSTs a one-shot/background turn and invokes emit for each mapped
+// CubePilot event as the OpenAI-compatible SSE stream is decoded. It always
+// emits a terminal message_done event (even on error). Portal chat does not use
+// this method; it runs over the gateway WebSocket protocol.
 func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error {
 	// The request body always carries the agent target (gateway validates it
 	// as `openclaw` or `openclaw/<agentId>`); the backend model override goes

@@ -8,9 +8,13 @@ import "encoding/json"
 const (
 	EventMessageStart  = "message_start"
 	EventAgentThinking = "agent_thinking"
-	EventToolCall      = "tool_call"
-	EventToolResult    = "tool_result"
-	EventMessageDelta  = "message_delta"
+	// EventAgentStatus refines the generic thinking state with a stable,
+	// runtime-neutral startup phase (preparing, building_context, or
+	// starting_model).
+	EventAgentStatus  = "agent_status"
+	EventToolCall     = "tool_call"
+	EventToolResult   = "tool_result"
+	EventMessageDelta = "message_delta"
 	// EventTextReplace replaces the accumulated assistant text with a full
 	// snapshot (the gateway emits replace:true when the latest assistant text is
 	// no longer a prefix of what was streamed -- e.g. commentary rewritten after
@@ -35,6 +39,7 @@ type Event struct {
 	Command string `json:"command,omitempty"`
 	Level   string `json:"level,omitempty"` // "read" | "write"
 	Message string `json:"message,omitempty"`
+	Status  string `json:"status,omitempty"`
 	// Approved is *bool so confirm_resolved can carry an explicit false (reject)
 	// while every other event omits the key entirely.
 	Approved *bool `json:"approved,omitempty"`

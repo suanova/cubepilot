@@ -38,6 +38,7 @@ type hitlGateway interface {
 	SendSessionMessage(ctx context.Context, sessionKey, message, idempotencyKey string) (runID string, err error)
 	AgentWait(ctx context.Context, runID string) error
 	CreateSession(ctx context.Context, sessionKey string) error
+	SetSessionModel(ctx context.Context, sessionKey, model string) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
 	EnsureSessionGuarded(ctx context.Context, key string) error
@@ -482,7 +483,7 @@ func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
 // the run is terminal and is the authoritative completion signal, so the turn
 // stays subscribed long enough to receive everything (fix: a previous version
 // returned on the start ACK and unsubscribed ~3s in, before the first token).
-func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message string, sink func(openclaw.Event) error) error {
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, sink func(openclaw.Event) error) error {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
@@ -498,6 +499,14 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	// already-existing session errors and is ignored; subscribe/send below
 	// surface any real failure.
 	_ = gw.CreateSession(ctx, sessionKey)
+	// sessions.send has no model field. Apply the selected model through the
+	// gateway's official per-session patch before sending; an empty selection
+	// clears a previous override so "Runtime Default" really returns to the
+	// configured primary model.
+	if err := gw.SetSessionModel(ctx, sessionKey, model); err != nil {
+		m.sayf("chat %s: %s: apply model: %v", user, sessionKey, err)
+		return err
+	}
 	t := m.registerLive(user, sessionKey, sink)
 	defer m.releaseLive(user, sessionKey, gw)
 

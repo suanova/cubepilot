@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,12 +34,14 @@ type fakeHitlGateway struct {
 	sends        []string // "sessionKey|message"
 	lastIdem     string
 	creates      []string // sessionKeys passed to sessions.create
+	models       []string // "sessionKey|model"; empty model clears the override
 	sendBlock    chan struct{}
 	waits        []string // runIds passed to agent.wait
 	subscribeErr error
 	sendErr      error
 	waitErr      error
 	createErr    error
+	modelErr     error
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
@@ -87,6 +90,10 @@ func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
 func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) error {
 	f.creates = append(f.creates, key)
 	return f.createErr
+}
+func (f *fakeHitlGateway) SetSessionModel(ctx context.Context, key, model string) error {
+	f.models = append(f.models, key+"|"+model)
+	return f.modelErr
 }
 func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	if f.getErr != nil {
@@ -407,7 +414,7 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	var got []openclaw.Event
 	done := make(chan error, 1)
 	go func() {
-		done <- m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(ev openclaw.Event) error {
+		done <- m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", func(ev openclaw.Event) error {
 			got = append(got, ev)
 			return nil
 		})
@@ -453,6 +460,9 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	if len(gw.subscribes) != 1 || gw.subscribes[0] != "conv-1" {
 		t.Fatalf("subscribes = %v, want [conv-1]", gw.subscribes)
 	}
+	if len(gw.models) != 1 || gw.models[0] != "conv-1|provider/model" {
+		t.Fatalf("model patches = %v, want [conv-1|provider/model]", gw.models)
+	}
 	if len(gw.unsubscribes) != 1 || gw.unsubscribes[0] != "conv-1" {
 		t.Fatalf("unsubscribes = %v, want [conv-1]", gw.unsubscribes)
 	}
@@ -475,11 +485,14 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", func(openclaw.Event) error { return nil }); err == nil {
+	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", func(openclaw.Event) error { return nil }); err == nil {
 		t.Fatal("RunLiveTurn returned nil, want the send error")
 	}
 	if len(gw.subscribes) != 1 {
 		t.Fatalf("subscribes = %v, want the session subscribed before send", gw.subscribes)
+	}
+	if len(gw.models) != 1 || gw.models[0] != "conv-1|" {
+		t.Fatalf("Runtime Default must clear the session model, got %v", gw.models)
 	}
 	if len(gw.unsubscribes) != 1 {
 		t.Fatalf("unsubscribes = %v, want cleanup on error", gw.unsubscribes)
@@ -489,6 +502,18 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	m.liveMu.Unlock()
 	if live {
 		t.Fatal("live turn leaked after send error")
+	}
+}
+
+func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
+	gw := &fakeHitlGateway{modelErr: fmt.Errorf("model unavailable")}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", func(openclaw.Event) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "model unavailable") {
+		t.Fatalf("RunLiveTurn error = %v, want model patch failure", err)
+	}
+	if len(gw.subscribes) != 0 || len(gw.sends) != 0 {
+		t.Fatalf("turn started after model patch failure: subscribes=%v sends=%v", gw.subscribes, gw.sends)
 	}
 }
 

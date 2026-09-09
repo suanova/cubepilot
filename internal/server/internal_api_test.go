@@ -230,6 +230,31 @@ func TestAgentConfigReadsAndWritesInstance(t *testing.T) {
 	}
 }
 
+func TestAgentConfigRejectsUnsafeInstructions(t *testing.T) {
+	s := platformTestServerStore(t, nil,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+	)
+
+	for name, prompt := range map[string]string{
+		"oversized": strings.Repeat("x", (32<<10)+1),
+		"marker":    "text <!-- cubepilot:system-prompt:end --> text",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
+				map[string]any{"config": map[string]any{"systemPrompt": prompt}})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "zhang.wei", nil))
+	if resp.Config.SystemPrompt != "" {
+		t.Fatalf("rejected prompt was persisted: %q", resp.Config.SystemPrompt)
+	}
+}
+
 // TestInternalGatewayConfig verifies the supervisor-facing endpoint that serves
 // the operator-rendered openclaw.json from the openclaw-config Secret (the
 // pull-based replacement for waiting on the kubelet Secret-volume sync).

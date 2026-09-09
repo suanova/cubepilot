@@ -41,17 +41,18 @@ func (s *Server) userOf(r *http.Request) string {
 	return s.cfg.DefaultUser
 }
 
-// clientFor returns the OpenClaw client for a user's agent instance, with the
-// explicitly selected model applied as an x-openclaw-model per-request
-// override (design §3.2/§3.3). No override is sent when the user did not
-// explicitly select a model -- the gateway runs its configured primary, so
-// the deployer's provider config decides the default. Fail-closed: an
-// explicitly selected model that is missing/unavailable is an error that
-// callers generating content must surface; read-only callers may ignore it
-// (the override only affects chat turns, not session/history reads).
-func (s *Server) clientFor(user string) (openclaw.AgentRuntime, error) {
+// sessionReaderFor returns the read-only HTTP adapter for session metadata and
+// history. Model selection never affects these endpoints.
+func (s *Server) sessionReaderFor(user string) openclaw.SessionReader {
+	return openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+}
+
+// oneShotRunnerFor returns the HTTP adapter for non-interactive turns, with the
+// selected model applied as a per-request override. Interactive Portal chat
+// must use RunLiveTurn and the gateway WebSocket protocol instead.
+func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (openclaw.OneShotRunner, error) {
 	c := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-	if model, err := s.mgr.SelectedModelFor(context.Background(), user); err != nil {
+	if model, err := s.mgr.SelectedModelFor(ctx, user); err != nil {
 		return c, err
 	} else if model != "" {
 		c.SetModel(model)
@@ -66,13 +67,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
-	client, cerr := s.clientFor(user)
-	if cerr != nil {
-		// Read-only path: the selectedModel override does not affect session
-		// listing -- proceed with the runtime default model.
-		s.logf("model resolution for %s: %v", user, cerr)
-		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-	}
+	client := s.sessionReaderFor(user)
 	sessions, err := client.ListSessions(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
@@ -94,12 +89,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
-	client, cerr := s.clientFor(user)
-	if cerr != nil {
-		// Read-only path: history reads are not affected by the model override.
-		s.logf("model resolution for %s: %v", user, cerr)
-		client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-	}
+	client := s.sessionReaderFor(user)
 	history, err := client.GetHistory(r.Context(), sessionKey, 200)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
@@ -202,12 +192,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// fail-closed error that flows through the shared tail below (metrics are
 	// finalized) instead of an early return.
 	var runErr error
+	var selectedModel string
 	if s.hitl == nil {
 		runErr = fmt.Errorf("live chat unavailable: gateway device channel is not configured")
 		s.logf("%s: %s", user, runErr)
-	} else if _, cerr := s.clientFor(user); cerr != nil {
+	} else if model, cerr := s.mgr.SelectedModelFor(r.Context(), user); cerr != nil {
 		runErr = cerr
 		s.logf("model resolution for %s: %v", user, cerr)
+	} else {
+		selectedModel = model
 	}
 
 	// Drive the whole turn over the WebSocket: RunLiveTurn subscribes the
@@ -216,7 +209,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if runErr != nil {
 		streamErr = runErr
 		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
-	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, emitLive); err != nil {
+	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, selectedModel, emitLive); err != nil {
 		streamErr = err
 		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
 	} else {
@@ -238,12 +231,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []openclaw.Event {
 	var out []openclaw.Event
 	for attempt := 0; attempt < 4; attempt++ {
-		client, cerr := s.clientFor(user)
-		if cerr != nil {
-			// Read-only drain: the model override does not affect history reads.
-			s.logf("model resolution for %s: %v", user, cerr)
-			client = openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-		}
+		client := s.sessionReaderFor(user)
 		raw, err := client.GetHistory(ctx, sessionKey, 50)
 		if err == nil {
 			for _, ev := range parseHistoryTools(sessionKey, raw) {
@@ -367,7 +355,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionKey := "inspect-" + uuid.NewString()[:8]
-	client, cerr := s.clientFor(user)
+	client, cerr := s.oneShotRunnerFor(r.Context(), user)
 	if cerr != nil {
 		// Fail-closed: an inspection must run with the user's selected model,
 		// never silently with a different one.

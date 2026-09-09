@@ -52,7 +52,7 @@ Portal / Web (前端)
 | 任务模板（创建向导，只读） | k8s API server · `tasktemplates` |
 | 任务 CRUD / 暂停恢复 / 手动触发 | k8s API server · `tasks` |
 | 巡检报告（只读） | k8s API server · `taskruns` |
-| 对话（浮窗 / 独立 tab，SSE） | cubepilot-api · `POST /api/chat` |
+| 对话（浮窗 / 独立 tab，SSE） | cubepilot-api · `POST /api/messages` |
 | 会话历史 / 确认决策 | cubepilot-api · `/api/sessions/*` |
 | 技能发布（上传 tar 写技能仓库） | cubepilot-api · `/api/skills*` |
 
@@ -409,34 +409,37 @@ Scheduler 以平台身份创建，前端只读（📘 设计 §3.5/§7）。
 
 | 接口（🛠 路径拟定） | 方法 | 说明 |
 |---|---|---|
-| `POST /api/chat` | 发送消息 | 响应为 **SSE 流**（事件契约见 §4.2） |
+| `POST /api/messages` | 发送消息 | 响应为 **SSE 流**（事件契约见 §4.2） |
 | `GET /api/sessions/{sessionId}/messages` | 会话历史 | 渲染 / 刷新后恢复 |
 | `POST /api/sessions/{sessionId}/confirm` | 确认决策 | 写操作 HITL（收到 `confirm_pending` 后调用） |
 
 请求体（发送消息）：
 
 ```json
-{ "sessionId": "conv-xxx", "content": "帮我创建一个 DevEnvironment" }
+{ "session_id": "conv-xxx", "content": "帮我创建一个 DevEnvironment" }
 ```
 
-> - `sessionId` 缺省时服务端新建，经 `message_start` 事件返回；前端持久化后复用。
+> - `session_id` 缺省时服务端新建，经 `message_start` 事件返回；前端持久化后复用。
 > - 📘 设计 §1.1：session **全局统一**（浮窗与独立 tab 共用同一会话，不按模块区分）——前端维护一个 sessionId 即可。
 > - 📘 设计 §3.6：会话与消息真源在实例 PVC（Agent 私有数据），历史经平台服务代取，前端不感知存储位置。
+> - 实现传输：浏览器到 cubepilot-api 是 HTTP/SSE；cubepilot-api 通过 OpenClaw gateway protocol WS 发起交互回合并订阅文本、工具、确认和终态。session 列表/历史仍是 HTTP 只读查询。
 
 ## 4.2 SSE 事件契约（对话）📘
 
-设计 §4 的**统一事件**，共 8 个（字段为 🛠 拟定）：
+设计 §4 的**统一事件**（字段为当前实现）：
 
 | 事件（📘） | 数据字段（🛠） | 前端行为 |
 |---|---|---|
-| `message_start` | `sessionId` | 记录 sessionId，进入「回答中」 |
-| `message_delta` | `sessionId`, `delta` | 追加助手文本 |
-| `tool_call` | `sessionId`, `name`, `callId`, `arguments`(JSON 字符串) | 展示工具调用（可折叠） |
-| `tool_result` | `sessionId`, `name`, `callId`, `output` | 展示结果摘要 |
-| `confirm_pending` | `sessionId`, `callId`, `name`(=tool), `command`, `level`(read/write), `message` | 写操作命中确认规则，弹确认框 |
-| `confirm_resolved` | `sessionId`, `callId`, `approved` | 决策已提交，继续 |
-| `message_done` | `sessionId`, `error`(空=成功) | 终态，清除「回答中」 |
-| `error` | `sessionId`, `error` | 致命错误 |
+| `message_start` | `session_id` | 记录 session id，进入「回答中」 |
+| `agent_thinking` | `session_id` | 通用思考中状态 |
+| `agent_status` | `session_id`, `status` | 启动细分状态：preparing / building_context / starting_model |
+| `message_delta` | `session_id`, `delta` | 追加助手文本 |
+| `text_replace` | `session_id`, `delta` | 用完整快照替换当前助手文本 |
+| `tool_call` | `session_id`, `name`, `call_id`, `arguments`(JSON 字符串) | 展示工具调用（可折叠） |
+| `tool_result` | `session_id`, `name`, `call_id`, `output` | 展示结果摘要 |
+| `confirm_pending` | `session_id`, `call_id`, `name`(=tool), `command`, `level`(read/write), `message` | 写操作命中确认规则，弹确认框 |
+| `confirm_resolved` | `session_id`, `call_id`, `approved` | 决策已提交，继续 |
+| `message_done` | `session_id`, `error`(空=成功) | 唯一终态，清除「回答中」 |
 
 - 写操作 HITL 时序（📘 设计 §5，issue #20 已实现）：`… → confirm_pending →（前端 POST /api/sessions/{key}/confirm，body {decision:"approve"|"reject"}）→ confirm_resolved → tool_result → … → message_done`。
 - **实现语义（2026-09-04）**：仅**交互回合**启用——ConfirmWrites 用户回合开头把会话置 `permissionMode=guarded`（OpenClaw ask:on-miss），并把**只读 argv allowlist**（kubectl 读动词 + 只读安全命令）合并进 per-agent exec-approvals policy；读命中直放，写 miss 由 gateway 原生 exec 审批暂停。批准 → `allow-once` 同回合继续；拒绝 → `deny`，写不执行。cron / 一次性回合不 guard，维持现状。恢复：刷新后 `GET /api/sessions/{key}/confirm/pending` 取回未决确认。

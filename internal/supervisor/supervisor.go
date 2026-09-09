@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
@@ -100,8 +101,8 @@ const (
 	// workspace bootstrap set, re-read from disk at the start of each run).
 	agentsFileName = "AGENTS.md"
 
-	systemPromptStart = "<!-- cubepilot:system-prompt:start -->"
-	systemPromptEnd   = "<!-- cubepilot:system-prompt:end -->"
+	systemPromptStart = instructions.ManagedStart
+	systemPromptEnd   = instructions.ManagedEnd
 	// systemPromptHeader prefixes the managed instructions inside the markers.
 	systemPromptHeader = "## User-configured instructions"
 
@@ -109,7 +110,7 @@ const (
 	// prompt larger than this is refused (keeps the last-good file) rather than
 	// bloating every turn's project context. OpenClaw truncates bootstrap files
 	// at bootstrapMaxChars anyway; the cap keeps the workspace file sane.
-	maxSystemPromptBytes = 32 << 10
+	maxSystemPromptBytes = instructions.MaxBytes
 )
 
 // Supervisor manages the OpenClaw gateway process and keeps the workspace
@@ -465,19 +466,11 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 	if cfg != nil {
 		desired = strings.TrimSpace(cfg.Instructions)
 	}
-	if len(desired) > maxSystemPromptBytes {
-		log.Printf("supervisor: instructions (%d bytes) exceed %d; skipping AGENTS.md sync", len(desired), maxSystemPromptBytes)
-		return nil
-	}
-	// The user/template instructions are rendered verbatim into the managed
-	// block, so either reserved marker inside them would be mistaken for the
-	// block's own delimiters: reconcileInstructions would treat an embedded
-	// end marker as the block terminator, preserve the suffix after it, and
-	// append another block on the next poll -- growing the file unbounded and
-	// leaving a stale suffix that survives clears. Reject such instructions
-	// (keep the last-good file) rather than let them corrupt the block.
-	if strings.Contains(desired, systemPromptStart) || strings.Contains(desired, systemPromptEnd) {
-		log.Printf("supervisor: instructions contain a reserved system-prompt marker; skipping AGENTS.md sync")
+	// Instructions are rendered verbatim into the managed block. Keep the
+	// last-good file when an operator-controlled template bypasses the public
+	// API policy and supplies oversized content or a reserved marker.
+	if err := instructions.Validate(desired); err != nil {
+		log.Printf("supervisor: %v; skipping AGENTS.md sync", err)
 		return nil
 	}
 	current, err := readNoFollow(path)

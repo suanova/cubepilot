@@ -21,8 +21,8 @@ import (
 //   - agent stream="item" / "command_output"           (tool+command lifecycle
 //     and streamed output; kept as a richer/back-compat source, deduped per
 //     call id)
-//   - chat  state delta/final/aborted/error            (visible assistant text;
-//     aborted/error mark the run terminal)
+//   - chat  state status/delta/final/aborted/error     (startup status and
+//     visible assistant text; aborted/error mark the run terminal)
 
 const (
 	// liveOutputCap bounds per-tool output accumulation so a runaway stream
@@ -46,9 +46,10 @@ type liveCall struct {
 // liveProjector folds the live session-message events of one chat turn into
 // SSE events. One lives per active chat turn, so state is bounded by the turn.
 type liveProjector struct {
-	calls map[string]*liveCall
-	order []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
-	texts map[string]bool // runId -> assistant text already emitted (final de-dup)
+	calls  map[string]*liveCall
+	order  []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
+	texts  map[string]bool // runId -> assistant text already emitted (final de-dup)
+	status string          // last normalized startup status (duplicate suppression)
 }
 
 func newLiveProjector() *liveProjector {
@@ -99,6 +100,7 @@ type agentOutput struct {
 type chatDelta struct {
 	RunID     string `json:"runId"`
 	State     string `json:"state"`
+	Phase     string `json:"phase"`
 	DeltaText string `json:"deltaText"`
 	Replace   bool   `json:"replace"`
 	Message   *struct {
@@ -184,6 +186,17 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 			return nil, false
 		}
 		switch d.State {
+		case "status":
+			status := normalizeLiveStatus(d.Phase)
+			if status == "" || status == p.status {
+				return nil, false
+			}
+			p.status = status
+			return []openclaw.Event{{
+				Type:      openclaw.EventAgentStatus,
+				SessionID: sessionKey,
+				Status:    status,
+			}}, false
 		case "delta":
 			if d.DeltaText == "" {
 				return nil, false
@@ -240,6 +253,22 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]openc
 		}
 	}
 	return nil, false
+}
+
+// normalizeLiveStatus decouples CubePilot's public SSE contract from
+// OpenClaw's finer-grained startup phases. Unknown future phases are ignored;
+// the generic agent_thinking event remains the fallback.
+func normalizeLiveStatus(phase string) string {
+	switch phase {
+	case "preparing_workspace", "naming_worktree", "creating_worktree", "running_setup", "provisioning_environment":
+		return "preparing"
+	case "preparing_context":
+		return "building_context"
+	case "starting_model":
+		return "starting_model"
+	default:
+		return ""
+	}
 }
 
 // finalizeAll emits a tool_result for every started call that never reached a
