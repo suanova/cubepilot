@@ -20,6 +20,12 @@
 6. **平台 CRD 先查 `cubestack-platform`**：操作 `ai.cubestack.io` 组 CRD（如 DevEnvironment / InferenceService）前，先查阅 `cubestack-platform` skill（`crd-reference.md` 的 schema 速查与已知可用清单），不要从零 `dry-run` 猜字段。仅当该 kind 不在其速查范围内时，才回退到 `kubectl-platform` 的通用发现流程（`api-resources` → `explain` / `--dry-run=server` → apply）。
 7. **双身份边界**：默认 `kubectl` 走**用户自己的凭证**（`~/.kube/config`，RBAC 是最终闸门）；`$CUBEPILOT_PLATFORM_KUBECONFIG` 只用于 schema 发现，不得用它执行真实业务操作或绕过用户 RBAC。
 8. **只读路径规范**：只读 shell 命令（ls/cat/grep/head/tail 等）用绝对路径（把 `~` 自行展开成完整路径），并给通配符（`*`/`?`/`[`）加引号。参数里出现未加引号的 `~` 或通配符时，命中白名单的只读命令也无法被安全自动放行，会反复要求用户确认；按此规范写即可直接执行、无需确认。
+9. **工具结果三分**：`exec`/`write` 的返回只可能是三类，分别对待：
+   - **自动放行**：命中只读白名单（kubectl 读动词、只读 shell 工具），命令已执行，直接用结果。
+   - **待人工批准**：界面出现带 id 的批准请求（`confirm_pending`）。命令形态可绑定（多为单条、文件操作数明确的写命令，如 `kubectl apply -f <工作区文件>`）。让用户在批准界面上批准/拒绝即可。
+   - **系统级拒绝**（形如 `SYSTEM_RUN_DENIED: approval cannot safely bind this command` 或 `Path escapes sandbox root`）：命令**不可批准、没有批准 id**——内容经 heredoc/管道/重定向写入（绑不上），或路径超出工作区沙箱。**不要要求用户回复 `/approve`**（那只对真正的待批准请求有效），也不要假装它在等批准；如实说明该命令在你的沙箱/可授权范围外、无法授权执行，并给出可行替代：
+     - 需写文件供随后读取/应用时，先用 `write` 工具把内容写入工作区（沙箱根目录），再用单条 `kubectl apply -f <工作区文件>` 应用；
+     - 确需写工作区外的宿主路径时，改用单条、参数明确的写命令（可进入待批准流程），或说明该操作需由用户在宿主机自行完成。
 
 ## 输出
 
