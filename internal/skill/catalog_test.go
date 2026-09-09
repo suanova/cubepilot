@@ -13,7 +13,7 @@ import (
 // Skill contributes its name).
 func TestToolSetForAgent(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 		Spec: v1alpha1.AgentTemplateSpec{
 			Skills: []string{"harbor", "cluster-inspection"},
 		},

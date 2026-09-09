@@ -184,8 +184,8 @@ func TestPollNoChange(t *testing.T) {
 	ws := t.TempDir()
 	cfg := &resolver.ResolvedAgentConfig{
 		Revision: "fixed",
-		Agent:    "agent-for-cloud",
-		Instance: "li-ming-agent-for-cloud",
+		Agent:    "cubepilot",
+		Instance: "li-ming-cubepilot",
 	}
 	srv := testAPI(t, cfg, "li.ming", "")
 
@@ -226,8 +226,8 @@ func TestPollSyncsOnChange(t *testing.T) {
 
 	cfg1 := &resolver.ResolvedAgentConfig{
 		Revision: "rev-1",
-		Agent:    "agent-for-cloud",
-		Instance: "li-ming-agent-for-cloud",
+		Agent:    "cubepilot",
+		Instance: "li-ming-cubepilot",
 		Skills: []resolver.ResolvedSkill{
 			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Revision: "r1"},
 		},
@@ -239,8 +239,8 @@ func TestPollSyncsOnChange(t *testing.T) {
 
 	cfg2 := &resolver.ResolvedAgentConfig{
 		Revision: "rev-2",
-		Agent:    "agent-for-cloud",
-		Instance: "li-ming-agent-for-cloud",
+		Agent:    "cubepilot",
+		Instance: "li-ming-cubepilot",
 		Skills: []resolver.ResolvedSkill{
 			{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Revision: "r2"},
 		},

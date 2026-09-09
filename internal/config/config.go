@@ -9,11 +9,11 @@ import (
 )
 
 // DefaultLLMEndpoint is the default OpenAI-compatible base URL of the platform
-// default LLM (the builtin agent-for-cloud model).
+// default LLM (the builtin cubepilot model).
 const DefaultLLMEndpoint = "https://api.deepseek.com"
 
 // DefaultLLMModel is the default model name (backend model id) of the platform
-// default LLM (the builtin agent-for-cloud model).
+// default LLM (the builtin cubepilot model).
 const DefaultLLMModel = "deepseek-v4-flash"
 
 // Config holds all runtime configuration for the assistant service + instance manager.

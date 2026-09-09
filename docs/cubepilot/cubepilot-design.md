@@ -28,8 +28,8 @@
 
 ## 1.3 核心决策
 
-1. 一个内置模板：`agent-for-cloud`。
-2. 每用户一个实例：`(user, agent-for-cloud)` 对应一个 Runtime Pod 和一个 PVC。
+1. 一个内置模板：`cubepilot`。
+2. 每用户一个实例：`(user, cubepilot)` 对应一个 Runtime Pod 和一个 PVC。
 3. 一个 Runtime 接口、一个实现：平台依赖 `AgentRuntime`，当前唯一实现是 `OpenClawRuntime`。
 4. 工具用 **OpenClaw 原生 skill + exec kubectl** 执行（用户最小权限 + RBAC 兜底）；写操作加**尽力而为的简单 HITL**（命令匹配命中即确认，不保证防住所有变体）。MCP Gateway 是阶段二统一执行边界，阶段一不建。
 5. 能力分两层：generic（kubectl 执行 + schema 发现，零登记）+ skill（经**技能市场**发布、一键安装的 SKILL.md 目录）。不单独建 Model CRD——模型内联在 AgentTemplate 的 `models` 列表（支持外部）。
@@ -105,13 +105,13 @@ CubePilot 依赖平台安装时提供的 Ceph 存储：
 
 ## 3.1 AgentTemplate
 
-当前只有一个平台内置模板 `agent-for-cloud`。它不是完整 Agent Registry，也不是可由用户创建的市场对象。
+当前只有一个平台内置模板 `cubepilot`。它不是完整 Agent Registry，也不是可由用户创建的市场对象。
 
 ```yaml
 apiVersion: ai.cubestack.io/v1alpha1
 kind: AgentTemplate
 metadata:
-  name: agent-for-cloud
+  name: cubepilot
 spec:
   runtime: OpenClaw
   displayName: 平台管理助手
@@ -138,20 +138,20 @@ spec:
 apiVersion: ai.cubestack.io/v1alpha1
 kind: AgentInstance
 metadata:
-  name: zhang-wei-agent-for-cloud
+  name: zhang-wei-cubepilot
 spec:
   owner: zhang.wei
-  templateRef: agent-for-cloud           # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
+  templateRef: cubepilot           # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
   selectedModel: deepseek-v4-flash         # 从模板 models 里选（覆盖 defaultModel）
   enabledSkills: [kubectl-platform, cluster-inspection]   # 启用的 skill 子集
   userInstructions: "回答尽量简洁，使用中文。"
   # confirmPolicy: None             # 可选：#120 起可覆盖模板默认（None | Allowlist | AlwaysAsk）；缺省 = 继承模板
   # allowlist: [{ pattern: helm }]  # 可选：实例自有 allowlist；空 = 继承模板有效默认
-  dataVolume: { pvc: pvc-zhang-wei-agent-for-cloud }
+  dataVolume: { pvc: pvc-zhang-wei-cubepilot }
   identity: { mode: user, principalRef: { userRef: zhang.wei } }
 status:
   phase: Ready
-  podName: agent-zhang-wei-agent-for-cloud
+  podName: agent-zhang-wei-cubepilot
 ```
 
 可覆盖的字段：模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及确认策略覆盖（`confirmPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`/`allowlist`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
@@ -278,7 +278,7 @@ status:
   error: ""                               # 失败原因
 ```
 
-模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 skill 版本**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `agent-for-cloud` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
+模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 skill 版本**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `cubepilot` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
 
 ## 3.6 数据真源
 
@@ -421,7 +421,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 本设计是这条线上的第一站。
 
 ```text
-现在（本设计）：每个用户一个内置 agent-for-cloud
+现在（本设计）：每个用户一个内置 cubepilot
     平台能力 API 化，Agent 只做理解、规划、汇总；平台负责执行、授权、记录。
     │
     ├──► 阶段二：Agent 一等对象落地
@@ -436,7 +436,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 收敛为稳定接口——`AgentRuntime`（§4）、统一 `AgentEvent` 契约、`ResolvedAgentConfig`。
 未来引入第二个 Agent、第二个 Runtime、集中 MCP 网关，都是在这些接口上的加法实现（§8.2），不重建核心对象模型。
 
-用户自建 Agent 与内置 agent-for-cloud 的能力差异 = Agent 定义（tools / instructions / identity）的差异，
+用户自建 Agent 与内置 cubepilot 的能力差异 = Agent 定义（tools / instructions / identity）的差异，
 而非平台能力的差异；平台层新增任何能力，内置与自建 Agent 同时受益。这一演进不改动本设计的接口。
 
 ---
@@ -490,7 +490,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 | 需求 | 内容 | 达到的效果 |
 |---|---|---|
 | 对话闭环 | Portal 对话（各页浮窗 + 独立 tab，session 全局统一）+ SSE 流式 | 用户在任意页面唤出助手，自然语言对话、流式看到回答与工具调用 |
-| 每用户实例 | 一个 `agent-for-cloud` 模板，每用户一个 Pod + PVC | 用户间物理隔离；会话/记忆跨重启保留 |
+| 每用户实例 | 一个 `cubepilot` 模板，每用户一个 Pod + PVC | 用户间物理隔离；会话/记忆跨重启保留 |
 | 平台资源操作 | OpenClaw skill + exec kubectl（用户最小权限 + RBAC 兜底）+ schema 发现（两个 kubeconfig + 内置 skill） | **自然语言创建 DevEnvironment、部署 InferenceService、查异常 Pod / GPU / 资源状态**，越权被 RBAC 拒绝 |
 | 简单 HITL | 写操作命令匹配命中即确认（尽力而为，不保证防住变体） | 常见写操作（如 `kubectl delete`）有确认，变体可能漏网（接受） |
 | 定时巡检 | TaskTemplate/Task/TaskRun，预置 `daily-inspection` | 每日自动出 P0/P1/P2 巡检报告，附证据链 |

@@ -14,9 +14,9 @@ type AgentRuntime string
 
 const (
 	// DefaultAgentName is the builtin platform agent template (design §3.1:
-	// agent-for-cloud is the first platform-preset AgentTemplate,
+	// cubepilot is the first platform-preset AgentTemplate,
 	// auto-instantiated per user, and non-deletable).
-	DefaultAgentName = "agent-for-cloud"
+	DefaultAgentName = "cubepilot"
 
 	// RuntimeOpenClaw is the default runtime (OpenClaw gateway).
 	RuntimeOpenClaw AgentRuntime = "OpenClaw"
@@ -227,7 +227,7 @@ type AgentTemplateStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentTemplate is the declarative definition of an agent (design doc §3.1)
-// -- the platform's first-class object. The builtin agent-for-cloud is the
+// -- the platform's first-class object. The builtin cubepilot is the
 // preset first template; user-created templates are phase 2+.
 type AgentTemplate struct {
 	metav1.TypeMeta   `json:",inline"`

@@ -12,7 +12,7 @@ import (
 // AgentTemplate with inline models (design §3.1/§3.3).
 func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 	in := &AgentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 		Spec: AgentTemplateSpec{
 			Runtime:       RuntimeOpenClaw,
 			DefaultModel:  "deepseek-v4-flash",
@@ -43,7 +43,7 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 // TestAgentTemplateRevision verifies the revision is a spec-only content hash:
 // deterministic across re-creation, unchanged by status, changed by spec.
 func TestAgentTemplateRevision(t *testing.T) {
-	a := &AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}, Spec: AgentTemplateSpec{DefaultModel: "deepseek-v4-flash"}}
+	a := &AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"}, Spec: AgentTemplateSpec{DefaultModel: "deepseek-v4-flash"}}
 	base := a.Revision()
 	if len(base) != 12 {
 		t.Fatalf("revision = %q, want 12 hex chars", base)

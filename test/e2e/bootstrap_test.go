@@ -35,7 +35,7 @@ var _ = Describe("Builtin bootstrap", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("bootstraps the builtin agent-for-cloud template", func() {
+	It("bootstraps the builtin cubepilot template", func() {
 		tpl := &v1alpha1.AgentTemplate{}
 		Eventually(func() error {
 			return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: controller.BuiltinAgentName}, tpl)

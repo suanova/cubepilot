@@ -62,7 +62,7 @@ group/version：**`ai.cubestack.io/v1alpha1`**（📘，见设计全部 YAML）�
 
 | kind（📘） | REST 路径尾段（🛠 常规复数） | 前端读写 | 状态字段写方 | 前端用途 |
 |---|---|---|---|---|
-| `AgentTemplate` | `agenttemplates` | 只读 | — | 平台内置模板（阶段一仅 `agent-for-cloud`），配置页数据源 |
+| `AgentTemplate` | `agenttemplates` | 只读 | — | 平台内置模板（阶段一仅 `cubepilot`），配置页数据源 |
 | `AgentInstance` | `agentinstances` | 读 + 建 + 改 | 控制器 | 「Agent 配置」页：开通 / 选模型 / 启技能 / 用户指令 |
 | `Skill` | `skills` | 读；安装=改实例 | 控制器 | 技能市场：浏览 / 详情 / 安装 |
 | `TaskTemplate` | `tasktemplates` | 只读 | — | 任务创建向导 |
@@ -104,7 +104,7 @@ group/version：**`ai.cubestack.io/v1alpha1`**（📘，见设计全部 YAML）�
 {
   "apiVersion": "ai.cubestack.io/v1alpha1",
   "kind": "AgentInstance",
-  "metadata": { "name": "zhang-wei-agent-for-cloud", "annotations": {}, "resourceVersion": "12345" },
+  "metadata": { "name": "zhang-wei-cubepilot", "annotations": {}, "resourceVersion": "12345" },
   "spec": { … },
   "status": { … }
 }
@@ -170,10 +170,10 @@ Content-Type: application/merge-patch+json
 
 ## 3.1 `agenttemplates` —— Agent 模板（只读）
 
-阶段一只有平台内置 `agent-for-cloud`（📘 设计 §3.1），前端只读。
+阶段一只有平台内置 `cubepilot`（📘 设计 §3.1），前端只读。
 
 - `GET /apis/ai.cubestack.io/v1alpha1/agenttemplates`
-- `GET /apis/ai.cubestack.io/v1alpha1/agenttemplates/agent-for-cloud`
+- `GET /apis/ai.cubestack.io/v1alpha1/agenttemplates/cubepilot`
 
 对象（📘 字段来自设计 §3.1 YAML）：
 
@@ -181,7 +181,7 @@ Content-Type: application/merge-patch+json
 {
   "apiVersion": "ai.cubestack.io/v1alpha1",
   "kind": "AgentTemplate",
-  "metadata": { "name": "agent-for-cloud" },
+  "metadata": { "name": "cubepilot" },
   "spec": {
     "runtime": "OpenClaw",
     "displayName": "平台管理助手",
@@ -206,7 +206,7 @@ Content-Type: application/merge-patch+json
 
 ### 添加 LLM（cubepilot-api · `POST /api/llms`）
 
-平台管理员追加一个 OpenAI 兼容模型到内置 `agent-for-cloud` 模板；operator 将其渲染进网关配置。非 public 模型会创建一个 `llm-<name>` 凭据 Secret（只存 apiKey）。
+平台管理员追加一个 OpenAI 兼容模型到内置 `cubepilot` 模板；operator 将其渲染进网关配置。非 public 模型会创建一个 `llm-<name>` 凭据 Secret（只存 apiKey）。
 
 ```json
 { "name": "qwen2.5-72b", "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
@@ -226,14 +226,14 @@ Content-Type: application/merge-patch+json
 {
   "apiVersion": "ai.cubestack.io/v1alpha1",
   "kind": "AgentInstance",
-  "metadata": { "name": "zhang-wei-agent-for-cloud" },
+  "metadata": { "name": "zhang-wei-cubepilot" },
   "spec": {
     "owner": "zhang.wei",
-    "templateRef": "agent-for-cloud",
+    "templateRef": "cubepilot",
     "selectedModel": "deepseek-v4-flash",
     "enabledSkills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"],
     "userInstructions": "回答尽量简洁，使用中文。",
-    "dataVolume": { "pvc": "pvc-zhang-wei-agent-for-cloud" },
+    "dataVolume": { "pvc": "pvc-zhang-wei-cubepilot" },
     "identity": { "mode": "user", "principalRef": { "userRef": "zhang.wei" } }
   }
 }
@@ -241,7 +241,7 @@ Content-Type: application/merge-patch+json
 
 前端注意：
 
-- `metadata.name` = `{sanitize(owner)}-{templateRef}`（如 `zhang-wei-agent-for-cloud`），前端按此规则生成，保证幂等（重复创建同 name → 409，前端视为「已存在」）。
+- `metadata.name` = `{sanitize(owner)}-{templateRef}`（如 `zhang-wei-cubepilot`），前端按此规则生成，保证幂等（重复创建同 name → 409，前端视为「已存在」）。
 - **`spec.owner` 与 `spec.identity.principalRef.userRef` 必须 = 当前登录用户**（§2.8）。
 - `selectedModel` 只允许从 §3.1 模板的 `models` 里选（📘）；`enabledSkills` 是启用的技能子集（📘）。
 - 开通后 `status.phase` 由控制器从创建 → `Ready`（可用 watch 刷新）；`status.podName` 只读展示。

@@ -28,7 +28,7 @@ import (
 // list) ----
 
 // handleAgentTemplates serves GET /api/agenttemplates -- the template
-// registry (phase one: the builtin agent-for-cloud list; phase two opens
+// registry (phase one: the builtin cubepilot list; phase two opens
 // user creation / review and publish).
 func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
