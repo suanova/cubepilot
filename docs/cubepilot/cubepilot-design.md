@@ -313,7 +313,7 @@ interface AgentRuntime {
 
 `ResolvedAgentConfig` 包含模型名（内联）、系统指令、启用的 skill 列表、用户身份、凭据挂载位置、PVC 路径；不包含明文密钥。
 
-`AgentRuntime` 接口按交互语义而非“统一传输”实现：Portal 交互聊天由 Service 通过 OpenClaw gateway protocol WebSocket 发起并订阅，文本、工具事件、确认和终态共用同一有序实时通道；定时任务和同步巡检是只需要最终结果的 one-shot 调用，保留 OpenAI-compatible HTTP/SSE；session 列表与历史是无状态只读查询，保留 HTTP。生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总、加载 skill、exec kubectl（§5）。
+Go 实现中的完整 `AgentRuntime` 组合 `LiveTurnRunner`、`OneShotRunner` 与 `SessionReader` 三个语义面；新增 runtime 只需实现该完整契约，不依赖 OpenClaw 协议。传输按交互语义而非“形式统一”选择：Portal 交互聊天由 OpenClaw adapter 通过 gateway protocol WebSocket 发起并订阅，文本、工具事件、确认和终态共用同一有序实时通道；定时任务和同步巡检是只需要最终结果的 one-shot 调用，保留 OpenAI-compatible HTTP/SSE；session 列表与历史是无状态只读查询，保留 HTTP。生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总、加载 skill、exec kubectl（§5）。
 
 **配置注入**：injector 负责把配置 + skill 内容落到 Pod 的 workspace——渲染系统提示词写 OpenClaw 配置、从技能仓库共享文件卷（只读挂载）读取启用 skill 的 tar 解压到 workspace/skills。OpenClaw 扫目录加载、文件监听热重载。
 

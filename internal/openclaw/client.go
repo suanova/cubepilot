@@ -15,30 +15,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
-// OneShotRunner is the HTTP surface for non-interactive turns such as scheduled
-// tasks and synchronous inspections. Interactive Portal chat must use the
-// gateway WebSocket adapter instead.
-type OneShotRunner interface {
-	// SetModel overrides the backend model for subsequent chat turns
-	// (empty = use the agent's normal configured model).
-	SetModel(model string)
-	// StreamChat runs one agent turn and emits mapped events.
-	StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error
-}
-
-// SessionReader is the read-only HTTP surface for session metadata/history.
-type SessionReader interface {
-	// ListSessions lists the gateway sessions.
-	ListSessions(ctx context.Context) ([]Session, error)
-	// GetHistory returns the raw session transcript.
-	GetHistory(ctx context.Context, sessionKey string, limit int) (json.RawMessage, error)
-}
-
 var (
-	_ OneShotRunner = (*Client)(nil)
-	_ SessionReader = (*Client)(nil)
+	_ agentruntime.OneShotRunner = (*Client)(nil)
+	_ agentruntime.SessionReader = (*Client)(nil)
 )
 
 // Client is an authenticated HTTP client for one OpenClaw gateway.
@@ -67,17 +50,10 @@ func (c *Client) SetModel(model string) {
 }
 
 // ChatMessage is a single chat turn message.
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+type ChatMessage = agentruntime.ChatMessage
 
 // ChatParams carries the inputs for one agent turn.
-type ChatParams struct {
-	Model      string        // e.g. "openclaw/default"
-	SessionKey string        // stable session routing (x-openclaw-session-key)
-	Messages   []ChatMessage // recent conversation history
-}
+type ChatParams = agentruntime.ChatParams
 
 // StreamChat POSTs a one-shot/background turn and invokes emit for each mapped
 // CubePilot event as the OpenAI-compatible SSE stream is decoded. It always
@@ -169,10 +145,7 @@ func (c *Client) fail(emit func(Event) error, err error) error {
 }
 
 // Session is a minimal projection of an OpenClaw session from sessions_list.
-type Session struct {
-	SessionKey string `json:"sessionKey"`
-	Title      string `json:"title"`
-}
+type Session = agentruntime.Session
 
 // ListSessions returns the sessions visible to the gateway via /tools/invoke.
 // The gateway payload nests the list under result.details (same JSON also

@@ -11,6 +11,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // fakeHitlGateway implements hitlGateway in memory.
@@ -413,8 +414,12 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 
 	var got []openclaw.Event
 	done := make(chan error, 1)
+	runner := &openClawLiveRunner{manager: m, user: "alice"}
 	go func() {
-		done <- m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", func(ev openclaw.Event) error {
+		done <- runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
+			Message: "hi",
+			Model:   "provider/model",
+		}, func(ev openclaw.Event) error {
 			got = append(got, ev)
 			return nil
 		})
@@ -462,6 +467,9 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	}
 	if len(gw.models) != 1 || gw.models[0] != "conv-1|provider/model" {
 		t.Fatalf("model patches = %v, want [conv-1|provider/model]", gw.models)
+	}
+	if len(gw.guarded) != 1 || gw.guarded[0] != "conv-1" {
+		t.Fatalf("live adapter did not prepare confirmation gating: %v", gw.guarded)
 	}
 	if len(gw.unsubscribes) != 1 || gw.unsubscribes[0] != "conv-1" {
 		t.Fatalf("unsubscribes = %v, want [conv-1]", gw.unsubscribes)

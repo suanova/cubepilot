@@ -18,7 +18,7 @@
 - **Task 状态字符串枚举**：`spec.state: Enabled | Paused`（自定义 bool），CRD default=Enabled。
 - **枚举值 CRD 校验**：六种枚举（runtime / provider / skill type / confirmPolicy / trigger / task state）均带 `kubebuilder:validation:Enum`。
 - **统一事件契约**：message_start / agent_thinking / agent_status / message_delta / text_replace / tool_call / tool_result / confirm_pending / confirm_resolved / message_done 已实现（设计 §4）。`agent_status` 将 OpenClaw 的细粒度启动 phase 归一为 preparing / building_context / starting_model，避免 Portal 绑定上游内部枚举。
-- **Runtime 传输边界**：Portal 交互聊天与 HITL 使用 gateway protocol WS，确保文本、工具、确认、终态位于同一有序实时通道；定时任务和同步巡检使用窄接口 `OneShotRunner` 走 OpenAI-compatible HTTP/SSE；session 列表与历史使用 `SessionReader` 走 HTTP。只读、一次性调用不为“统一”而迁移到 WS。
+- **Runtime 契约与传输边界**：平台级 `internal/runtime.AgentRuntime` 组合 `LiveTurnRunner` / `OneShotRunner` / `SessionReader`，新增 runtime 只需实现这一完整语义契约；OpenClaw adapter 内部组合 WS 与 HTTP 实现。Portal 交互聊天与 HITL 使用 gateway protocol WS，确保文本、工具、确认、终态位于同一有序实时通道；定时任务和同步巡检走 OpenAI-compatible HTTP/SSE；session 列表与历史走 HTTP。只读、一次性调用不为“统一”而迁移到 WS。
 - **能力目录 + Skill 落盘**：能力分层（generic / domain），Skill CRD 登记；supervisor 把启用能力以 `SKILL.md` 渲染到实例 `workspace/skills/`；OpenClaw 文件监听热重载。
 - **Pod 安全基线**：非 root、seccomp RuntimeDefault、drop ALL、禁特权提升、readOnlyRootFS、emptyDir /tmp（设计 §6）。
 - **观测**：healthz / readyz / metrics / readiness 全绿。

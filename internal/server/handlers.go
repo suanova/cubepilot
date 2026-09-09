@@ -14,6 +14,7 @@ import (
 	"github.com/suanova/cubepilot/internal/inspect"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/openclaw"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // agentMainKey is the agent id an OpenAI-http run resolves to (openclaw/default
@@ -41,23 +42,32 @@ func (s *Server) userOf(r *http.Request) string {
 	return s.cfg.DefaultUser
 }
 
-// sessionReaderFor returns the read-only HTTP adapter for session metadata and
-// history. Model selection never affects these endpoints.
-func (s *Server) sessionReaderFor(user string) openclaw.SessionReader {
-	return openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+// agentRuntimeFor composes the OpenClaw implementation's HTTP and WebSocket
+// surfaces behind CubePilot's complete runtime-neutral contract. A future
+// runtime replaces this construction without changing the handlers.
+func (s *Server) agentRuntimeFor(user string) agentruntime.AgentRuntime {
+	httpClient := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+	live := &openClawLiveRunner{manager: s.hitl, user: user}
+	return agentruntime.Compose(live, httpClient, httpClient)
+}
+
+// sessionReaderFor returns the read-only runtime surface for session metadata
+// and history. Model selection never affects these endpoints.
+func (s *Server) sessionReaderFor(user string) agentruntime.SessionReader {
+	return s.agentRuntimeFor(user)
 }
 
 // oneShotRunnerFor returns the HTTP adapter for non-interactive turns, with the
 // selected model applied as a per-request override. Interactive Portal chat
 // must use RunLiveTurn and the gateway WebSocket protocol instead.
-func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (openclaw.OneShotRunner, error) {
-	c := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
+func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (agentruntime.OneShotRunner, error) {
+	rt := s.agentRuntimeFor(user)
 	if model, err := s.mgr.SelectedModelFor(ctx, user); err != nil {
-		return c, err
+		return rt, err
 	} else if model != "" {
-		c.SetModel(model)
+		rt.SetModel(model)
 	}
-	return c, nil
+	return rt, nil
 }
 
 // handleSessions lists the OpenClaw sessions for the current user.
@@ -156,9 +166,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// the SSE as one ordered feed -- no OpenAI-compat HTTP run, no transcript
 	// polling, no end-of-run drain. emitLive is the single write path for both
 	// the handler and the WS read goroutine (Stream.Send is concurrency-safe).
-	emitLive := func(ev openclaw.Event) error {
+	emitLive := func(ev agentruntime.Event) error {
 		s.recordToolCall(user, ev)
-		if ev.Type == openclaw.EventMessageDelta && firstToken.IsZero() {
+		if ev.Type == agentruntime.EventMessageDelta && firstToken.IsZero() {
 			firstToken = time.Now()
 			metrics.ObserveFirstToken(firstToken.Sub(started).Milliseconds())
 		}
@@ -166,54 +176,43 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Announce the session up front so the client can track the conversation.
-	_ = emitLive(openclaw.Event{Type: openclaw.EventMessageStart, SessionID: sessionKey})
-	_ = emitLive(openclaw.Event{Type: openclaw.EventAgentThinking, SessionID: sessionKey})
+	_ = emitLive(agentruntime.Event{Type: agentruntime.EventMessageStart, SessionID: sessionKey})
+	_ = emitLive(agentruntime.Event{Type: agentruntime.EventAgentThinking, SessionID: sessionKey})
 
 	// Ensure the instance is running; this may cold-start the Pod.
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
+		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
 
-	// Confirmation gating (issue #20 / #127): ensure the gateway approval
-	// channel and a guarded session before the turn streams, so a gated write
-	// can pause for the Portal decision. Allowlist and AlwaysAsk both fail
-	// closed -- a PreTurn error means the gate could not be applied, so the turn
-	// must not start instead of running a write that would not ask.
-	if s.hitl != nil {
-		if err := s.hitl.PreTurn(r.Context(), user, sessionKey); err != nil {
-			_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("confirmation gating failed: %v", err)})
-			return
-		}
-	}
-
-	// WS-only chat needs the gateway device channel (sessions.send runs over
-	// it) and a resolvable selected model; a failure in either is surfaced as a
-	// fail-closed error that flows through the shared tail below (metrics are
-	// finalized) instead of an early return.
+	// Resolve the model before starting the runtime-neutral live turn. The
+	// OpenClaw implementation drives it over WS and includes native confirmation
+	// gating; another runtime can provide the same semantics using another
+	// transport without changing this handler.
 	var runErr error
 	var selectedModel string
-	if s.hitl == nil {
-		runErr = fmt.Errorf("live chat unavailable: gateway device channel is not configured")
-		s.logf("%s: %s", user, runErr)
-	} else if model, cerr := s.mgr.SelectedModelFor(r.Context(), user); cerr != nil {
+	if model, cerr := s.mgr.SelectedModelFor(r.Context(), user); cerr != nil {
 		runErr = cerr
 		s.logf("model resolution for %s: %v", user, cerr)
 	} else {
 		selectedModel = model
 	}
+	runtimeAdapter := s.agentRuntimeFor(user)
 
 	// Drive the whole turn over the WebSocket: RunLiveTurn subscribes the
 	// session, sends the message, and returns when the run is terminal (all
 	// text/tool events were already streamed via emitLive as they arrived).
 	if runErr != nil {
 		streamErr = runErr
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
-	} else if err := s.hitl.RunLiveTurn(r.Context(), user, sessionKey, body.Content, selectedModel, emitLive); err != nil {
+		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
+	} else if err := runtimeAdapter.RunLiveTurn(r.Context(), sessionKey, agentruntime.LiveTurnParams{
+		Message: body.Content,
+		Model:   selectedModel,
+	}, emitLive); err != nil {
 		streamErr = err
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
+		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
 	} else {
-		_ = stream.Send(openclaw.Event{Type: openclaw.EventMessageDone, SessionID: sessionKey})
+		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey})
 	}
 	metrics.ObserveTurn(time.Since(started).Milliseconds())
 	if streamErr != nil {
@@ -228,8 +227,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 // The gateway's /v1/chat/completions stream does not expose tool calls, so the
 // transcript is the authoritative source. Retries briefly to let the gateway
 // flush the transcript file after the turn ends.
-func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []openclaw.Event {
-	var out []openclaw.Event
+func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []agentruntime.Event {
+	var out []agentruntime.Event
 	for attempt := 0; attempt < 4; attempt++ {
 		client := s.sessionReaderFor(user)
 		raw, err := client.GetHistory(ctx, sessionKey, 50)
@@ -266,7 +265,7 @@ type historyItem struct {
 	} `json:"content"`
 }
 
-func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
+func parseHistoryTools(sessionKey string, raw []byte) []agentruntime.Event {
 	var h struct {
 		Items []historyItem `json:"items"`
 	}
@@ -282,23 +281,23 @@ func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
 		id, name string
 		args     json.RawMessage
 	}
-	var out []openclaw.Event
+	var out []agentruntime.Event
 	var pending []pendingCall
 	for _, it := range h.Items {
 		for _, c := range it.Content {
 			switch c.Type {
 			case "toolCall":
 				pending = append(pending, pendingCall{id: c.ID, name: c.Name, args: c.Arguments})
-				out = append(out, openclaw.Event{
-					Type:      openclaw.EventToolCall,
+				out = append(out, agentruntime.Event{
+					Type:      agentruntime.EventToolCall,
 					SessionID: sessionKey,
 					Name:      c.Name,
 					CallID:    c.ID,
 					Arguments: string(c.Arguments),
 				})
 			case "toolResult":
-				out = append(out, openclaw.Event{
-					Type:      openclaw.EventToolResult,
+				out = append(out, agentruntime.Event{
+					Type:      agentruntime.EventToolResult,
 					SessionID: sessionKey,
 					Name:      "exec",
 					Output:    c.Text,
@@ -309,8 +308,8 @@ func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
 				if it.Role == "toolResult" && len(pending) > 0 {
 					pc := pending[0]
 					pending = pending[1:]
-					out = append(out, openclaw.Event{
-						Type:      openclaw.EventToolResult,
+					out = append(out, agentruntime.Event{
+						Type:      agentruntime.EventToolResult,
 						SessionID: sessionKey,
 						Name:      pc.name,
 						CallID:    pc.id,
@@ -324,8 +323,8 @@ func parseHistoryTools(sessionKey string, raw []byte) []openclaw.Event {
 }
 
 // recordToolCall writes an M5 audit entry for each observed tool_call event.
-func (s *Server) recordToolCall(user string, ev openclaw.Event) {
-	if ev.Type != openclaw.EventToolCall || s.store == nil {
+func (s *Server) recordToolCall(user string, ev agentruntime.Event) {
+	if ev.Type != agentruntime.EventToolCall || s.store == nil {
 		return
 	}
 	entry := audit.Entry(user, ev.SessionID, ev.Name, ev.Arguments)
@@ -362,12 +361,12 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
 		return
 	}
-	content, err := inspect.Run(r.Context(), client, sessionKey, func(ev openclaw.Event) {
+	content, err := inspect.Run(r.Context(), client, sessionKey, func(ev agentruntime.Event) {
 		s.recordToolCall(user, ev)
 	})
 	// Tool calls are not on the stream; replay the transcript for audit.
 	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, map[string]bool{}) {
-		if ev.Type == openclaw.EventToolCall {
+		if ev.Type == agentruntime.EventToolCall {
 			s.recordToolCall(user, ev)
 		}
 	}
@@ -378,7 +377,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"report": content})
 }
 
-func writeSSE(w http.ResponseWriter, ev openclaw.Event) error {
+func writeSSE(w http.ResponseWriter, ev agentruntime.Event) error {
 	if _, err := fmt.Fprintf(w, "event: %s\n", ev.Type); err != nil {
 		return err
 	}

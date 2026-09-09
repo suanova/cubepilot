@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/instances"
-	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // hitlPairRetryDelay is the pause between NOT_PAIRED connect retries while the
@@ -44,6 +44,27 @@ type hitlGateway interface {
 	EnsureSessionGuarded(ctx context.Context, key string) error
 	ResolveApproval(ctx context.Context, id, decision string) error
 	Close()
+}
+
+// openClawLiveRunner adapts the user-scoped WS/HITL manager to CubePilot's
+// runtime-neutral interactive-turn contract. PreTurn is deliberately inside
+// this adapter: confirmation setup is part of running an interactive turn, not
+// a responsibility every HTTP handler or future runtime must know about.
+type openClawLiveRunner struct {
+	manager *hitlManager
+	user    string
+}
+
+var _ agentruntime.LiveTurnRunner = (*openClawLiveRunner)(nil)
+
+func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string, params agentruntime.LiveTurnParams, emit func(agentruntime.Event) error) error {
+	if r.manager == nil {
+		return fmt.Errorf("live chat unavailable: runtime live channel is not configured")
+	}
+	if err := r.manager.PreTurn(ctx, r.user, sessionKey); err != nil {
+		return fmt.Errorf("confirmation gating failed: %w", err)
+	}
+	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, emit)
 }
 
 // hitlManager owns the per-user approval connections (issue #20). It is inert
@@ -84,7 +105,7 @@ type hitlManager struct {
 // RunLiveTurn caller knows the turn is over.
 type liveTurn struct {
 	user string
-	sink func(openclaw.Event) error
+	sink func(agentruntime.Event) error
 	proj *liveProjector
 
 	runMu sync.Mutex
@@ -445,7 +466,7 @@ const wsRunTail = 500 * time.Millisecond
 
 // registerLive registers the live turn for a session so connection events route
 // to it. The turn stays registered until releaseLive.
-func (m *hitlManager) registerLive(user, sessionKey string, sink func(openclaw.Event) error) *liveTurn {
+func (m *hitlManager) registerLive(user, sessionKey string, sink func(agentruntime.Event) error) *liveTurn {
 	t := &liveTurn{user: user, sink: sink, proj: newLiveProjector(), done: make(chan struct{})}
 	m.liveMu.Lock()
 	if m.live == nil {
@@ -483,7 +504,7 @@ func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
 // the run is terminal and is the authoritative completion signal, so the turn
 // stays subscribed long enough to receive everything (fix: a previous version
 // returned on the start ACK and unsubscribed ~3s in, before the first token).
-func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, sink func(openclaw.Event) error) error {
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, sink func(agentruntime.Event) error) error {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
