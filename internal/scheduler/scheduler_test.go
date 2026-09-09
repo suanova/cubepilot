@@ -73,7 +73,7 @@ func dueTask(created time.Time) *v1alpha1.Task {
 	}
 }
 
-// readyInstance returns a Ready agent-for-cloud instance for the owner -- the
+// readyInstance returns a Ready cubepilot instance for the owner -- the
 // instance the scheduler looks up before firing a task.
 func readyInstance(owner string) *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
@@ -472,7 +472,7 @@ func TestNewTaskRunSkeleton(t *testing.T) {
 }
 
 // TestSchedulerSkipsRunWhenInstanceMissing verifies the pre-fire instance
-// check: when the owner's agent-for-cloud instance does not exist, the
+// check: when the owner's cubepilot instance does not exist, the
 // scheduler records a Failed TaskRun and does not invoke the runner (issue #26
 // AC: failure writes a TaskRun and executes nothing).
 func TestSchedulerSkipsRunWhenInstanceMissing(t *testing.T) {

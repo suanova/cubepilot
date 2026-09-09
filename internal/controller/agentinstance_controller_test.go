@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	testInstanceName = "zhang-wei-agent-for-cloud"
-	testPodName      = "agent-zhang-wei-agent-for-cloud"
-	testPVCName      = "data-zhang-wei-agent-for-cloud"
+	testInstanceName = "zhang-wei-cubepilot"
+	testPodName      = "agent-zhang-wei-cubepilot"
+	testPVCName      = "data-zhang-wei-cubepilot"
 	testNamespace    = "cubepilot"
 )
 
@@ -37,7 +37,7 @@ func testAgentCfg() config.Config {
 
 func testTemplate() *v1alpha1.AgentTemplate {
 	return &v1alpha1.AgentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot", Namespace: testNamespace},
 		Spec:       v1alpha1.AgentTemplateSpec{Runtime: v1alpha1.RuntimeOpenClaw},
 	}
 }
@@ -46,7 +46,7 @@ func testInstance() *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
 		Spec: v1alpha1.AgentInstanceSpec{
-			TemplateRef: "agent-for-cloud",
+			TemplateRef: "cubepilot",
 			Owner:       "zhang.wei",
 			Identity: v1alpha1.IdentitySpec{
 				Mode:         v1alpha1.IdentityModeUser,
@@ -300,7 +300,7 @@ func TestModelConfiguredCondition(t *testing.T) {
 		}
 		// Add a keyed model + its credential Secret, then reconcile again.
 		var tpl v1alpha1.AgentTemplate
-		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "agent-for-cloud"}, &tpl); err != nil {
+		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cubepilot"}, &tpl); err != nil {
 			t.Fatal(err)
 		}
 		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{

@@ -294,7 +294,7 @@ func TestInternalGatewayConfigPerUserPrimary(t *testing.T) {
 		},
 		// The template the instance references (must contain the selected model).
 		&v1alpha1.AgentTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 			Spec: v1alpha1.AgentTemplateSpec{
 				DefaultModel: "deepseek-v4-flash-0731",
 				Models: []v1alpha1.TemplateModelSpec{
@@ -306,10 +306,10 @@ func TestInternalGatewayConfigPerUserPrimary(t *testing.T) {
 		// An instance with an explicit selectedModel (resolver looks it up by
 		// name without a namespace).
 		&v1alpha1.AgentInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
+			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-cubepilot"},
 			Spec: v1alpha1.AgentInstanceSpec{
 				Owner:         "li.ming",
-				TemplateRef:   "agent-for-cloud",
+				TemplateRef:   "cubepilot",
 				SelectedModel: "deepseek-v4-pro-0813",
 			},
 		},
@@ -341,7 +341,7 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 		// selection) but has an empty endpoint, so the operator's renderer never
 		// puts it in the allowlist.
 		&v1alpha1.AgentTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 			Spec: v1alpha1.AgentTemplateSpec{
 				DefaultModel: "deepseek-v4-flash-0731",
 				Models: []v1alpha1.TemplateModelSpec{
@@ -351,10 +351,10 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 			},
 		},
 		&v1alpha1.AgentInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
+			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-cubepilot"},
 			Spec: v1alpha1.AgentInstanceSpec{
 				Owner:         "li.ming",
-				TemplateRef:   "agent-for-cloud",
+				TemplateRef:   "cubepilot",
 				SelectedModel: "deepseek-v4-dropped",
 			},
 		},

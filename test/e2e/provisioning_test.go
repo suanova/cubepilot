@@ -19,7 +19,7 @@ import (
 
 var _ = Describe("Instance provisioning", func() {
 	ctx := context.Background()
-	instName := "e2e-" + rand.String(8) + "-agent-for-cloud"
+	instName := "e2e-" + rand.String(8) + "-cubepilot"
 	// Expected child names come from the production builders so the assertion
 	// can never drift from what the controller actually creates.
 	podName := k8s.ResourceName("agent", instName)

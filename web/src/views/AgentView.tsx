@@ -178,7 +178,7 @@ export default function AgentView() {
     if (provisioning) return
     setProvisioning(true)
     try {
-      const inst = await api.createInstance({ templateRef: 'agent-for-cloud', selectedModel: cfg.model || undefined, userInstructions: cfg.systemPrompt || undefined })
+      const inst = await api.createInstance({ templateRef: 'cubepilot', selectedModel: cfg.model || undefined, userInstructions: cfg.systemPrompt || undefined })
       showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
       await loadAgentView()
     } catch (e) {

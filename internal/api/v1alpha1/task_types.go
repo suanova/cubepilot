@@ -42,7 +42,7 @@ type TaskSpec struct {
 	Params map[string]string `json:"params,omitempty"`
 	// Owner is the task owner; execution identity = owner (RBAC matches the
 	// owner; the per-user instance is derived from it -- design §3.5: phase
-	// one has one agent-for-cloud instance per user, no agentInstanceRef).
+	// one has one cubepilot instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
 	// Trigger is Manual | Cron.
 	Trigger TaskTriggerKind `json:"trigger"`

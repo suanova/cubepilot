@@ -32,7 +32,7 @@ spec:
       openAPIV3Schema:
         description: |-
           AgentTemplate is the declarative definition of an agent (design doc §3.1)
-          -- the platform's first-class object. The builtin agent-for-cloud is the
+          -- the platform's first-class object. The builtin cubepilot is the
           preset first template; user-created templates are phase 2+.
         properties:
           apiVersion:

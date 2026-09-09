@@ -84,7 +84,7 @@ type LifecycleSpec struct {
 // instance per user per template, single-writer.
 type AgentInstanceSpec struct {
 	// TemplateRef points to the AgentTemplate definition (e.g.
-	// agent-for-cloud). Not pinned to a revision -- template updates take
+	// cubepilot). Not pinned to a revision -- template updates take
 	// effect on the next reconcile/restart (design §3.1/§3.2).
 	TemplateRef string `json:"templateRef"`
 	// Owner is the user the instance belongs to.

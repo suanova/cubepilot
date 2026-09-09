@@ -98,12 +98,12 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 // caller's own instances -- even with a ?user= filter naming someone else.
 func TestHandleInstancesOwnerScoped(t *testing.T) {
 	li := &v1alpha1.AgentInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "li-ming-agent-for-cloud"},
-		Spec:       v1alpha1.AgentInstanceSpec{Owner: "li.ming", TemplateRef: "agent-for-cloud"},
+		ObjectMeta: metav1.ObjectMeta{Name: "li-ming-cubepilot"},
+		Spec:       v1alpha1.AgentInstanceSpec{Owner: "li.ming", TemplateRef: "cubepilot"},
 	}
 	wang := &v1alpha1.AgentInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "wang-wu-agent-for-cloud"},
-		Spec:       v1alpha1.AgentInstanceSpec{Owner: "wang.wu", TemplateRef: "agent-for-cloud"},
+		ObjectMeta: metav1.ObjectMeta{Name: "wang-wu-cubepilot"},
+		Spec:       v1alpha1.AgentInstanceSpec{Owner: "wang.wu", TemplateRef: "cubepilot"},
 	}
 	s := platformTestServer(t, li, wang)
 
@@ -115,7 +115,7 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 	got := decode[struct {
 		Instances []v1alpha1.AgentInstance `json:"instances"`
 	}](t, rec)
-	if len(got.Instances) != 1 || got.Instances[0].Name != "li-ming-agent-for-cloud" {
+	if len(got.Instances) != 1 || got.Instances[0].Name != "li-ming-cubepilot" {
 		t.Errorf("li.ming sees %+v, want only own instance", got.Instances)
 	}
 
@@ -124,7 +124,7 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 	got = decode[struct {
 		Instances []v1alpha1.AgentInstance `json:"instances"`
 	}](t, rec)
-	if len(got.Instances) != 1 || got.Instances[0].Name != "li-ming-agent-for-cloud" {
+	if len(got.Instances) != 1 || got.Instances[0].Name != "li-ming-cubepilot" {
 		t.Errorf("li.ming sees %+v, want only own instance", got.Instances)
 	}
 }
@@ -133,12 +133,12 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 // caller's own instance (owner forced server-side), is idempotent, and
 // rejects unknown agent refs.
 func TestHandleInstancesCreate(t *testing.T) {
-	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}}
+	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"}}
 	s := platformTestServer(t, agent)
 	h := s.Handler()
 
 	// Create.
-	rec := doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "agent-for-cloud"})
+	rec := doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -150,7 +150,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 	}
 
 	// Idempotent repeat.
-	rec = doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "agent-for-cloud"})
+	rec = doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("repeat status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -169,7 +169,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 }
 
 func TestHandleInstancesCreateValidatesUserInstructions(t *testing.T) {
-	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"}}
+	agent := &v1alpha1.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"}}
 	s := platformTestServer(t, agent)
 
 	for _, prompt := range []string{
@@ -177,7 +177,7 @@ func TestHandleInstancesCreateValidatesUserInstructions(t *testing.T) {
 		"before\n" + instructions.ManagedStart + "\nafter",
 	} {
 		rec := doReq(t, s.Handler(), http.MethodPost, "/api/instances", "wang.wu", map[string]any{
-			"templateRef":      "agent-for-cloud",
+			"templateRef":      "cubepilot",
 			"userInstructions": prompt,
 		})
 		if rec.Code != http.StatusBadRequest {

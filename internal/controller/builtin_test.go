@@ -34,13 +34,13 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-// TestBuiltinAgentShape verifies the builtin agent-for-cloud definition
+// TestBuiltinAgentShape verifies the builtin cubepilot definition
 // (design §3.1: builtin: true, auto-instantiated per user, non-deletable;
 // model[0] primary).
 func TestBuiltinAgentShape(t *testing.T) {
 	agent := BuiltinAgentTemplate(config.DefaultLLMEndpoint, config.DefaultLLMModel)
-	if agent.Name != "agent-for-cloud" {
-		t.Errorf("name = %s, want agent-for-cloud", agent.Name)
+	if agent.Name != "cubepilot" {
+		t.Errorf("name = %s, want cubepilot", agent.Name)
 	}
 	if agent.Spec.Registry == nil || !agent.Spec.Registry.Builtin {
 		t.Error("builtin flag missing")
@@ -76,9 +76,9 @@ func TestBuiltinAgentShape(t *testing.T) {
 // DNS-1123 sanitization.
 func TestInstanceNameFor(t *testing.T) {
 	cases := []struct{ user, agent, want string }{
-		{"zhang.wei", "agent-for-cloud", "zhang-wei-agent-for-cloud"},
-		{"Zhang Wei", "agent-for-cloud", "zhang-wei-agent-for-cloud"},
-		{"li.ming", "agent-for-cloud", "li-ming-agent-for-cloud"},
+		{"zhang.wei", "cubepilot", "zhang-wei-cubepilot"},
+		{"Zhang Wei", "cubepilot", "zhang-wei-cubepilot"},
+		{"li.ming", "cubepilot", "li-ming-cubepilot"},
 	}
 	for _, c := range cases {
 		if got := InstanceNameFor(c.user, c.agent); got != c.want {
@@ -152,8 +152,8 @@ func TestBootstrapEnsure(t *testing.T) {
 
 	// Agent definition exists.
 	var agent v1alpha1.AgentTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &agent); err != nil {
-		t.Fatalf("agent-for-cloud not created: %v", err)
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "cubepilot", Namespace: "cubepilot"}, &agent); err != nil {
+		t.Fatalf("cubepilot not created: %v", err)
 	}
 	if len(agent.Spec.Skills) != len(skill.BuiltinSkillNames()) {
 		t.Errorf("agent skills = %v, want the builtin presets", agent.Spec.Skills)
@@ -168,8 +168,8 @@ func TestBootstrapEnsure(t *testing.T) {
 	// Models are inlined in the template (design §3.3): the builtin template
 	// carries the preset inline model entries.
 	tmpl := v1alpha1.AgentTemplate{}
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &tmpl); err != nil {
-		t.Fatalf("agent-for-cloud template not found: %v", err)
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "cubepilot", Namespace: "cubepilot"}, &tmpl); err != nil {
+		t.Fatalf("cubepilot template not found: %v", err)
 	}
 	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)) {
 		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)))
@@ -184,7 +184,7 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("instances = %d, want 2", len(insts.Items))
 	}
 	for _, inst := range insts.Items {
-		if inst.Spec.TemplateRef != "agent-for-cloud" {
+		if inst.Spec.TemplateRef != "cubepilot" {
 			t.Errorf("instance %s templateRef = %s", inst.Name, inst.Spec.TemplateRef)
 		}
 		if inst.Spec.Identity.Mode != v1alpha1.IdentityModeUser || inst.Spec.Identity.PrincipalRef.UserRef == "" {
@@ -206,7 +206,7 @@ func TestBootstrapEnsure(t *testing.T) {
 }
 
 // TestBootstrapEnsureNoDefaultModel verifies that with no LLM endpoint/model
-// configured the builtin agent-for-cloud template is created model-less (issue
+// configured the builtin cubepilot template is created model-less (issue
 // #117: "no default LLM" is a first-class install state; LLMs are added later
 // from the Portal).
 func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
@@ -221,8 +221,8 @@ func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 	var agent v1alpha1.AgentTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &agent); err != nil {
-		t.Fatalf("agent-for-cloud not created: %v", err)
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "cubepilot", Namespace: "cubepilot"}, &agent); err != nil {
+		t.Fatalf("cubepilot not created: %v", err)
 	}
 	if len(agent.Spec.Models) != 0 {
 		t.Errorf("models = %v, want none when no LLM configured", agent.Spec.Models)

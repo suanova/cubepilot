@@ -263,7 +263,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 }
 
 // templateFor fetches the AgentTemplate definition by name (nil when missing:
-// the builtin bootstrap creates agent-for-cloud before instances, but a
+// the builtin bootstrap creates cubepilot before instances, but a
 // missing template must not crash the loop).
 func (r *AgentInstanceReconciler) templateFor(ctx context.Context, name string) (*v1alpha1.AgentTemplate, error) {
 	var tmpl v1alpha1.AgentTemplate

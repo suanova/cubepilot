@@ -146,7 +146,7 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 // turn, and writes the report (Completed / Failed) with the platform identity.
 func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
 	// Pre-fire instance-availability check (design §3.5: the scheduler never
-	// holds user permissions; the per-user agent-for-cloud instance is the
+	// holds user permissions; the per-user cubepilot instance is the
 	// execution identity). When the owner's instance no longer exists (e.g.
 	// the user was disabled and its instance reclaimed), record a Failed
 	// TaskRun and execute nothing rather than running with a stale identity.
@@ -256,7 +256,7 @@ func (r *ReconcileScheduler) skillRevisions(ctx context.Context, names []string)
 	return strings.Join(revs, ", ")
 }
 
-// ownerInstanceMissing returns an error when the owner has no agent-for-cloud
+// ownerInstanceMissing returns an error when the owner has no cubepilot
 // instance at all -- a definitive "cannot execute" (the disabled-user case:
 // instance deleted/reclaimed). Transient read errors are logged and treated as
 // available so a cache hiccup never fabricates a failure.
@@ -265,7 +265,7 @@ func (r *ReconcileScheduler) ownerInstanceMissing(ctx context.Context, owner str
 	var inst v1alpha1.AgentInstance
 	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: name}, &inst); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("owner %q has no agent-for-cloud instance (%s); run skipped", owner, name)
+			return fmt.Errorf("owner %q has no cubepilot instance (%s); run skipped", owner, name)
 		}
 		log.Printf("scheduler: lookup instance %s: %v", name, err)
 	}

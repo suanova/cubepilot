@@ -23,9 +23,9 @@ import (
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
-// BuiltinAgentName is the preset platform agent (design §5.1: agent-for-cloud
+// BuiltinAgentName is the preset platform agent (design §5.1: cubepilot
 // is the first platform-preset Agent, auto-instantiated per user, non-deletable).
-const BuiltinAgentName = "agent-for-cloud"
+const BuiltinAgentName = "cubepilot"
 
 // BuiltinTaskTemplateName is the preset inspection task template
 // (design §3.3.2 the preset inspection template daily-inspection).
@@ -77,7 +77,7 @@ func BuiltinModels(endpoint, modelName string) []v1alpha1.TemplateModelSpec {
 	}
 }
 
-// BuiltinAgentTemplate returns the builtin agent-for-cloud template
+// BuiltinAgentTemplate returns the builtin cubepilot template
 // (design §3.1), with the platform default model at the given endpoint and
 // model name.
 func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
@@ -97,7 +97,7 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 			DefaultModel:  modelName,
 			Models:        BuiltinModels(endpoint, modelName),
 			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
-			Instructions: "You are the intelligent assistant of the CubeStack platform (agent-for-cloud)." +
+			Instructions: "You are the intelligent assistant of the CubeStack platform (CubePilot)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
 			Skills: BuiltinSkills,
@@ -155,7 +155,7 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 }
 
 // BuiltinBootstrapReconciler reconciles the builtin platform objects: the
-// agent-for-cloud Agent definition, the preset Skills and the
+// cubepilot Agent definition, the preset Skills and the
 // daily-inspection TaskTemplate. It also instantiates the builtin agent for
 // every configured user (auto-instantiated per user, design §3.1 / §5.3),
 // reconciling the
