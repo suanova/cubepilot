@@ -6,13 +6,8 @@ import type { ChangeEvent } from 'react'
 import { api } from '@/api'
 import type { PlatformObject } from '@/api/types'
 import { packSkillDir } from '@/utils/pack'
+import { skillSpecStr } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
-
-// specStr reads a string field from the CR spec (Record<string, unknown>).
-function specStr(sk: PlatformObject, key: string): string {
-  const v = sk.spec?.[key]
-  return typeof v === 'string' ? v : ''
-}
 
 export default function PublishView() {
   const [skills, setSkills] = useState<PlatformObject[]>([])
@@ -167,12 +162,12 @@ export default function PublishView() {
                     <div key={sk.metadata.name} className="toggle">
                       <div className="toggle-info">
                         <div className="toggle-title">
-                          {specStr(sk, 'displayName') || sk.metadata.name}{' '}
+                          {skillSpecStr(sk, 'displayName') || sk.metadata.name}{' '}
                           <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{sk.metadata.name}</span>
                         </div>
-                        <div className="toggle-desc">{specStr(sk, 'description') || 'No description'}</div>
+                        <div className="toggle-desc">{skillSpecStr(sk, 'description') || 'No description'}</div>
                       </div>
-                      <span className="pill neutral">{specStr(sk, 'visibility') || 'Platform'}</span>
+                      <span className="pill neutral">{skillSpecStr(sk, 'visibility') || 'Platform'}</span>
                       <span className={`pill ${phase === 'Available' ? 'success' : 'neutral'}`}>{phase || 'unknown'}</span>
                     </div>
                   )
