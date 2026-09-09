@@ -1,20 +1,10 @@
 // Agent config view -- model / system prompt / instance status / skills (FR-M2-005).
 import { useEffect, useState } from 'react'
 import { api } from '@/api'
-import type { AgentConfig, AgentConfirmView, AgentStatus, AllowlistRule } from '@/api/types'
+import type { AgentConfig, AgentConfirmView, AgentStatus, AllowlistRule, PlatformObject } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
-import { enabledSkillsFromInstances } from '@/utils/skills'
+import { enabledSkillsFromInstances, skillSpecStr } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
-
-const SKILL_LABELS: Record<string, string> = {
-  'kubectl-platform': 'Platform Resource Operations',
-  'cluster-inspection': 'Smart Inspection',
-  'cubestack-platform': 'CubeStack Platform',
-}
-
-// kubectl-platform is shown locked in the System section; keep it out of the
-// toggleable Platform-skills list.
-const LOCKED_SYSTEM_SKILLS = ['kubectl-platform']
 
 interface TemplateModel {
   name: string
@@ -28,14 +18,11 @@ function CheckIcon() {
 function WarnIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>
 }
-function LockIcon() {
-  return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
-}
 
 export default function AgentView() {
   const [cfg, setCfg] = useState<AgentConfig>({ exists: false, model: '', systemPrompt: '' })
   const [status, setStatus] = useState<AgentStatus | null>(null)
-  const [skills, setSkills] = useState<Array<{ name: string; enabled: boolean }>>([])
+  const [skills, setSkills] = useState<Array<{ sk: PlatformObject; enabled: boolean }>>([])
   const [hasInstance, setHasInstance] = useState(false)
   const [provisioning, setProvisioning] = useState(false)
   const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
@@ -66,7 +53,10 @@ export default function AgentView() {
     }
   }
 
-  // The toggle list comes from the real enabledSkills (AgentInstance CR); an
+  // The toggle list comes from the same Skill catalog the Publisher page lists
+  // (issue #152): every visible skill, including kubectl-platform, is an
+  // ordinary toggle -- there is no front-end notion of a locked system skill.
+  // The on/off state reflects the real enabledSkills (AgentInstance CR); an
   // empty set is the resolver's "all enabled" baseline. Without an instance
   // there is no workspace to install into, so the toggles are all off instead.
   async function loadSkills() {
@@ -76,8 +66,10 @@ export default function AgentView() {
       setHasInstance(has)
       const enabled = has ? enabledSkillsFromInstances(instances) : []
       const on = !has ? new Set<string>() : enabled.length === 0 ? new Set(skillList.map((s) => s.metadata.name)) : new Set(enabled)
-      const toggleable = skillList.filter((sk) => sk.status?.phase !== 'Unreachable' && !LOCKED_SYSTEM_SKILLS.includes(sk.metadata.name))
-      setSkills(toggleable.map((sk) => ({ name: sk.metadata.name, enabled: on.has(sk.metadata.name) })))
+      // Unreachable skills are hidden: install is refused for them, so a
+      // toggle would never be usable.
+      const toggleable = skillList.filter((sk) => sk.status?.phase !== 'Unreachable')
+      setSkills(toggleable.map((sk) => ({ sk, enabled: on.has(sk.metadata.name) })))
     } catch (e) {
       console.error('loadSkills', e)
     }
@@ -199,7 +191,7 @@ export default function AgentView() {
   // Toggle writes the real enabledSkills (install/uninstall); the supervisor
   // picks it up on its next sync. Errors surface via toast.
   async function toggleSkill(name: string) {
-    const cur = skills.find((s) => s.name === name)
+    const cur = skills.find((s) => s.sk.metadata.name === name)
     if (!cur) return
     if (!hasInstance) {
       showToast('Provision your instance on the Agent Config page first')
@@ -515,36 +507,23 @@ export default function AgentView() {
           <span className="card-hint">Platform skills installed into your instance workspace - toggles write enabledSkills (synced on the next supervisor poll)</span>
         </div>
         <div className="card-pad" style={{ paddingTop: 4, paddingBottom: 10 }}>
-          <div className="skill-group">System Skills - built-in, cannot be disabled</div>
-          <div className="toggle">
-            <div className="toggle-info">
-              <div className="toggle-title">
-                Platform Resource Operations <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>kubectl</span>
-              </div>
-              <div className="toggle-desc">Connects to the K8s API Server as the user to read/write platform resources (RBAC enforced)</div>
-            </div>
-            <span className="lock-badge">
-              <LockIcon />
-              System
-            </span>
-          </div>
           <div className="skill-group">Platform Skills</div>
           {skills.length ? (
-            skills.map((sk) => (
-              <div key={sk.name} className="toggle">
+            skills.map((s) => (
+              <div key={s.sk.metadata.name} className="toggle">
                 <div className="toggle-info">
                   <div className="toggle-title">
-                    {SKILL_LABELS[sk.name] || sk.name}{' '}
-                    <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(sk.name)}</span>
+                    {skillSpecStr(s.sk, 'displayName') || s.sk.metadata.name}{' '}
+                    <span className="mono" style={{ color: 'var(--muted)', fontWeight: 500 }}>{esc(s.sk.metadata.name)}</span>
                   </div>
-                  <div className="toggle-desc">From the platform skill catalog - toggling syncs your instance enabledSkills on the next supervisor poll</div>
+                  <div className="toggle-desc">{skillSpecStr(s.sk, 'description') || 'No description'}</div>
                 </div>
                 <button
                   className="switch"
                   role="switch"
-                  aria-checked={sk.enabled}
-                  aria-label={SKILL_LABELS[sk.name] || sk.name}
-                  onClick={() => toggleSkill(sk.name)}
+                  aria-checked={s.enabled}
+                  aria-label={skillSpecStr(s.sk, 'displayName') || s.sk.metadata.name}
+                  onClick={() => toggleSkill(s.sk.metadata.name)}
                 />
               </div>
             ))
