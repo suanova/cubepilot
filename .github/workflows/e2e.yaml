@@ -9,7 +9,12 @@
 # takes effect for fork PRs after it lands on main. The job checks out the PR
 # head explicitly (see the checkout step) so the PR's code is what runs.
 # Security: the PR's checked-out code runs with the secret in scope; the
-# GITHUB_TOKEN is limited to contents: read (below).
+# GITHUB_TOKEN is read-only (contents + pull-requests reads, below).
+#
+# A docs-only change (docs/**, root-level *.md, or .claude/**) skips the job
+# body: the job still runs and reports success so Mergify's required checks
+# stay green, but nothing is deployed or tested (see the "Detect code changes"
+# step). Manual runs (workflow_dispatch) always run the full job.
 
 name: e2e
 
@@ -20,7 +25,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read          # actions/checkout
+  pull-requests: read     # dorny/paths-filter lists PR files via the REST API
 
 jobs:
   e2e:
@@ -38,27 +44,60 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           allow-unsafe-pr-checkout: true
 
+      # A docs-only change skips the heavy steps below. Only docs/**, root-level
+      # *.md, and .claude/** are treated as documentation. Everything else --
+      # including runtime/embedded markdown (internal/skill/skills/**/*.md,
+      # workspace/AGENTS.md, workspace/SOUL.md), .github/, go.mod, Makefile,
+      # deploy/, web/ -- counts as a code change and runs the full job.
+      # pull_request_target PRs are diffed through the GitHub REST API; pushes
+      # to main are diffed against the pre-push tip (github.event.before). A
+      # workflow_dispatch run has no earlier commit to diff against, so `base`
+      # falls back to the current commit (empty diff) and the gated steps below
+      # force-run via the workflow_dispatch check.
+      - name: Detect code changes (docs-only skips the job body)
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          # `code` is true when at least one changed file is not excluded by a
+          # negated doc pattern (predicate-quantifier: some-with-excludes).
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!.claude/**'
+              - '!*.md'
+
+      # ---- Heavy steps: run only when code (not just docs) changed ----
       - name: Install kind
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64"
           sudo chmod +x /usr/local/bin/kind
 
       - name: Install kubectl
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           curl -fsSLO "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
       - name: Install helm
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
       - name: Install jq
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - uses: actions/setup-go@v7
+      - name: Install Go
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26'
 
       - name: Pre-pull base images (de-risk BuildKit metadata pulls)
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           docker pull harbor.isuanova.com/library/golang:1.26-bookworm
           docker pull harbor.isuanova.com/library/debian:bookworm-slim
@@ -72,6 +111,7 @@ jobs:
       # CUBEPILOT_LLM_MODEL. Without the secret the job still runs the deploy
       # path with a placeholder key; the chat spec is filtered out.
       - name: Run e2e (Ginkgo binary; chat gated on the provider secret)
+        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         env:
           CHAT_KEY: ${{ secrets.CUBEPILOT_LLM_APIKEY }}
           CHAT_ENDPOINT: ${{ vars.CUBEPILOT_LLM_ENDPOINT }}
