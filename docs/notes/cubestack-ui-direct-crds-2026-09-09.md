@@ -8,8 +8,8 @@ operate the six `ai.cubestack.io` platform CRDs **directly against the
 kube-apiserver** (CRD-first), falling back to CubePilot REST only where a CRD
 cannot carry the operation. This note is the agreed contract.
 
-> Prerequisite: the six platform CRDs are Namespaced (issue #146 / PR #147,
-> pending merge) and live in the install namespace.
+> The six platform CRDs are Namespaced (issue #146) and live in the install
+> namespace.
 
 The boundary is drawn in code as well: `internal/server/server.go` `Handler()`
 groups the route table into two annotated sections -- **REST-only platform
