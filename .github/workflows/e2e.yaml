@@ -11,10 +11,10 @@
 # Security: the PR's checked-out code runs with the secret in scope; the
 # GITHUB_TOKEN is read-only (contents + pull-requests reads, below).
 #
-# A change that touches only docs/ or markdown files skips the job body: the
-# job still runs and reports success so Mergify's required checks stay green,
-# but nothing is deployed or tested (see the "Detect code changes" step).
-# Manual runs (workflow_dispatch) always run the full job.
+# A docs-only change (docs/**, root-level *.md, or .claude/**) skips the job
+# body: the job still runs and reports success so Mergify's required checks
+# stay green, but nothing is deployed or tested (see the "Detect code changes"
+# step). Manual runs (workflow_dispatch) always run the full job.
 
 name: e2e
 
@@ -44,9 +44,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           allow-unsafe-pr-checkout: true
 
-      # Only a docs-only change (docs/** or any *.md) skips the heavy steps
-      # below; anything else -- .github/, go.mod, Makefile, deploy/, web/,
-      # internal/, ... -- counts as a code change and runs the full job.
+      # A docs-only change skips the heavy steps below. Only docs/**, root-level
+      # *.md, and .claude/** are treated as documentation. Everything else --
+      # including runtime/embedded markdown (internal/skill/skills/**/*.md,
+      # workspace/AGENTS.md, workspace/SOUL.md), .github/, go.mod, Makefile,
+      # deploy/, web/ -- counts as a code change and runs the full job.
       # pull_request_target PRs are diffed through the GitHub REST API; pushes
       # to main are diffed against the pre-push tip (github.event.before). A
       # workflow_dispatch run has no earlier commit to diff against, so `base`
@@ -64,7 +66,7 @@ jobs:
             code:
               - '**'
               - '!docs/**'
-              - '!**/*.md'
+              - '!.claude/**'
               - '!*.md'
 
       # ---- Heavy steps: run only when code (not just docs) changed ----

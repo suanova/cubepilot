@@ -4,10 +4,10 @@
 # The secret-gated kind e2e (chat e2e needs CUBEPILOT_LLM_APIKEY) lives in
 # e2e.yaml on `pull_request_target`.
 #
-# A change that touches only docs/ or markdown files skips the job bodies: each
-# job still runs and reports success so Mergify's required checks stay green,
-# but the checks do no real work (see the "Detect code changes" step in each
-# job). Manual runs (workflow_dispatch) always run the full jobs.
+# A docs-only change (docs/**, root-level *.md, or .claude/**) skips the job
+# bodies: each job still runs and reports success so Mergify's required checks
+# stay green, but the checks do no real work (see the "Detect code changes"
+# step in each job). Manual runs (workflow_dispatch) always run the full jobs.
 
 name: ci
 
@@ -29,13 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Only a docs-only change (docs/** or any *.md) skips the steps below;
-      # anything else -- .github/, go.mod, Makefile, deploy/, web/, internal/,
-      # ... -- counts as a code change and runs the full job. PRs are diffed
-      # through the GitHub REST API; pushes to main against the pre-push tip
-      # (github.event.before). A workflow_dispatch run has no earlier commit to
-      # diff against, so `base` falls back to the current commit (empty diff)
-      # and the gated steps below force-run via the workflow_dispatch check.
+      # A docs-only change skips the steps below. Only docs/**, root-level
+      # *.md, and .claude/** are treated as documentation. Everything else --
+      # including runtime/embedded markdown (internal/skill/skills/**/*.md,
+      # workspace/AGENTS.md, workspace/SOUL.md), .github/, go.mod, Makefile,
+      # deploy/, web/ -- counts as a code change and runs the full job. PRs are
+      # diffed through the GitHub REST API; pushes to main against the
+      # pre-push tip (github.event.before). A workflow_dispatch run has no
+      # earlier commit to diff against, so `base` falls back to the current
+      # commit (empty diff) and the gated steps below force-run via the
+      # workflow_dispatch check.
       - name: Detect code changes (docs-only skips the job body)
         id: changes
         uses: dorny/paths-filter@v4
@@ -48,7 +51,7 @@ jobs:
             code:
               - '**'
               - '!docs/**'
-              - '!**/*.md'
+              - '!.claude/**'
               - '!*.md'
 
       - name: Install Go
@@ -111,7 +114,7 @@ jobs:
             code:
               - '**'
               - '!docs/**'
-              - '!**/*.md'
+              - '!.claude/**'
               - '!*.md'
 
       - name: Install Node
