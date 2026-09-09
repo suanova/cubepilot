@@ -63,8 +63,13 @@ model and strictly safer:
   ...): instances still share one namespace today. Name simplification can
   follow if a per-user/tenant namespace model is adopted later.
 - Deploying this change requires replacing the installed CRDs (scope cannot be
-  mutated in place) -- delete then re-install; pre-release, no migration is
-  carried.
+  mutated in place): delete the six cluster-scoped CRDs and let the chart
+  install the namespaced ones. **Deleting a CRD deletes all of its custom
+  resources.** The builtin bootstrap / API seed re-creates only the supported
+  builtin objects (agent-for-cloud template, per-user instances, preset skills,
+  the daily-inspection task template); user-created Tasks, TaskRuns and other
+  custom resources are **not** restored and must be backed up if they need to
+  survive. Pre-release, no in-place migration is carried.
 - Applying validation (admission webhook) for the REST-layer checks is still
   outstanding (see the architecture review) and becomes more relevant once
   clients write the CRDs directly.
