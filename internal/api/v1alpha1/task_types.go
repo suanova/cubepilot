@@ -77,7 +77,6 @@ type TaskStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
 // +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
 // +kubebuilder:printcolumn:name="Trigger",type="string",JSONPath=".spec.trigger"

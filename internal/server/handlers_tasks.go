@@ -144,7 +144,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var list v1alpha1.TaskList
-		if err := s.cr.List(r.Context(), &list); err != nil {
+		if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -194,7 +194,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		params := body.Params
 		if templateRef != "" {
 			var tpl v1alpha1.TaskTemplate
-			if err := s.cr.Get(r.Context(), types.NamespacedName{Name: templateRef}, &tpl); err != nil {
+			if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: templateRef}, &tpl); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("unknown task template %q", templateRef)})
 				return
 			}
@@ -240,7 +240,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			ObjectMeta: metav1.ObjectMeta{
 				// CR name must be DNS-1123; the human name lives in the
 				// display-name annotation (CJK input would otherwise be lost).
-				Name: fmt.Sprintf("%s-task-%s", k8s.Sanitize(s.userOf(r)), uuid.NewString()[:8]),
+				Name:      fmt.Sprintf("%s-task-%s", k8s.Sanitize(s.userOf(r)), uuid.NewString()[:8]),
+				Namespace: s.cfg.Namespace,
 				Annotations: map[string]string{
 					v1alpha1.TaskDisplayNameAnnotation: body.Name,
 				},
@@ -340,7 +341,7 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	key := types.NamespacedName{Name: id}
+	key := types.NamespacedName{Namespace: s.cfg.Namespace, Name: id}
 
 	switch action {
 	case "":
@@ -357,7 +358,7 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "not your task"})
 			return
 		}
-		task := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: id}}
+		task := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: s.cfg.Namespace}}
 		if err := s.cr.Delete(r.Context(), task); err != nil {
 			if apierrors.IsNotFound(err) {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -439,7 +440,7 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		}
 		// TaskRun CRs are labelled with the owning task; newest first.
 		var list v1alpha1.TaskRunList
-		if err := s.cr.List(r.Context(), &list, client.MatchingLabels{"cubepilot/task": id}); err != nil {
+		if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{"cubepilot/task": id}); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

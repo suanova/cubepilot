@@ -18,7 +18,7 @@ var _ = Describe("Skill CEL validation", func() {
 
 	It("rejects source.type=Path with s3 set", func() {
 		bad := &v1alpha1.Skill{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-path-s3"},
+			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-path-s3", Namespace: fw.Namespace},
 			Spec: v1alpha1.SkillSpec{
 				DisplayName: "Bad",
 				Visibility:  v1alpha1.SkillVisibilityPlatform,
@@ -35,7 +35,7 @@ var _ = Describe("Skill CEL validation", func() {
 
 	It("rejects source.type=Path without path", func() {
 		bad := &v1alpha1.Skill{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-path-missing"},
+			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-path-missing", Namespace: fw.Namespace},
 			Spec: v1alpha1.SkillSpec{
 				DisplayName: "Bad",
 				Visibility:  v1alpha1.SkillVisibilityPlatform,
@@ -48,7 +48,7 @@ var _ = Describe("Skill CEL validation", func() {
 
 	It("rejects source.type=S3 with path set", func() {
 		bad := &v1alpha1.Skill{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-s3"},
+			ObjectMeta: metav1.ObjectMeta{Name: "bad-skill-s3", Namespace: fw.Namespace},
 			Spec: v1alpha1.SkillSpec{
 				DisplayName: "Bad",
 				Visibility:  v1alpha1.SkillVisibilityPlatform,
@@ -65,7 +65,7 @@ var _ = Describe("Skill CEL validation", func() {
 
 	It("accepts a valid source.type=Path skill", func() {
 		good := &v1alpha1.Skill{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-skill-path"},
+			ObjectMeta: metav1.ObjectMeta{Name: "good-skill-path", Namespace: fw.Namespace},
 			Spec: v1alpha1.SkillSpec{
 				DisplayName: "Good",
 				Visibility:  v1alpha1.SkillVisibilityPlatform,

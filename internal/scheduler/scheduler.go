@@ -165,7 +165,7 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	templateRev, skillRev := "", ""
 	if task.Spec.TemplateRef != "" {
 		var tpl v1alpha1.TaskTemplate
-		if err := r.Get(ctx, types.NamespacedName{Name: task.Spec.TemplateRef}, &tpl); err == nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: task.Spec.TemplateRef}, &tpl); err == nil {
 			prompt = renderTemplate(tpl.Spec.Instruction, task.Spec.Params)
 			templateRev = tpl.Revision()
 			skillRev = r.skillRevisions(ctx, tpl.Spec.Skills)
@@ -247,7 +247,7 @@ func (r *ReconcileScheduler) skillRevisions(ctx context.Context, names []string)
 	var revs []string
 	for _, name := range names {
 		var skill v1alpha1.Skill
-		if err := r.Get(ctx, types.NamespacedName{Name: name}, &skill); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: name}, &skill); err != nil {
 			log.Printf("scheduler: skill %s: %v (revision skipped)", name, err)
 			continue
 		}
@@ -263,7 +263,7 @@ func (r *ReconcileScheduler) skillRevisions(ctx context.Context, names []string)
 func (r *ReconcileScheduler) ownerInstanceMissing(ctx context.Context, owner string) error {
 	name := k8s.InstanceName(owner, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: name}, &inst); err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("owner %q has no agent-for-cloud instance (%s); run skipped", owner, name)
 		}
@@ -306,15 +306,15 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 }
 
 // NewTaskRun builds the TaskRun skeleton (design §3.3.4: creatorTaskRef links
-// back to the Task; written with the platform identity). TaskRun is a
-// cluster-scoped CRD, so no
-// namespace is set. Exported for reuse by the server's manual-run path.
+// back to the Task; written with the platform identity). The TaskRun lives in
+// the same namespace as its Task (namespaced CRD scope, issue #146).
 func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
 	ts := time.Now().UTC()
 	name := fmt.Sprintf("%s-%s", task.Name, ts.Format("20060102-150405"))
 	return &v1alpha1.TaskRun{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name:      name,
+			Namespace: task.Namespace,
 			Labels: map[string]string{
 				"cubepilot/task": task.Name,
 			},

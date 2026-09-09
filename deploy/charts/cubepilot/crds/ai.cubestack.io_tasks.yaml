@@ -12,7 +12,7 @@ spec:
     listKind: TaskList
     plural: tasks
     singular: task
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.templateRef

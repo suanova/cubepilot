@@ -31,23 +31,27 @@ const BuiltinAgentName = "agent-for-cloud"
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
 
-// Per-user identity ClusterRoles the platform binds each user's ServiceAccount
-// to (issue #19): `view` is the built-in read-only ClusterRole (deliberately
-// excludes secrets); cubepilot-user-crds (declared in the chart rbac.yaml)
-// grants full ai.cubestack.io CRUD. ClusterRoleBindings reference these by
-// name, so the operator needs only get/bind on them.
+// Per-user identity bindings (issue #19): `view` is the built-in read-only
+// ClusterRole (deliberately excludes secrets) bound via a ClusterRoleBinding --
+// the agent is a cluster-ops assistant, so its discovery read is cluster-wide.
+// cubepilot-user-crds (declared in the chart rbac.yaml) is a namespaced Role
+// granting full ai.cubestack.io CRUD; with namespaced CRD scope (issue #146) it
+// is bound via a RoleBinding in the install namespace so a per-user identity
+// reaches only its own namespace's CRs.
 const (
 	UserViewClusterRole = "view"
-	UserCRDsClusterRole = "cubepilot-user-crds"
+	UserCRDsRole        = "cubepilot-user-crds"
 )
 
-// userCRBName builds the per-user ClusterRoleBinding name.
-func userCRBName(user, role string) string {
-	short := role
-	if role == UserCRDsClusterRole {
-		short = "crds"
-	}
-	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
+// userCRBName builds the per-user ClusterRoleBinding name (the `view` role).
+func userCRBName(user string) string {
+	return "cubepilot-user-" + UserViewClusterRole + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
+}
+
+// userRoleBindingName builds the per-user RoleBinding name for the CRD Role
+// ("cubepilot-user-crds-<user>-<hash>", the historical CRB name style).
+func userRoleBindingName(user string) string {
+	return "cubepilot-user-crds-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
 }
 
 // BuiltinSkills are the preset domain skills the builtin agent references
@@ -162,11 +166,13 @@ type BuiltinBootstrapReconciler struct {
 	Cfg    config.Config
 }
 
-// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates;skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;bind,resourceNames=view;cubepilot-user-crds
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;bind,resourceNames=view
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;bind,resourceNames=cubepilot-user-crds
 
 // Reconcile ensures the builtin objects exist (create-if-missing).
 func (r *BuiltinBootstrapReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -194,11 +200,14 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		agent.Spec.Models = nil
 		agent.Spec.DefaultModel = ""
 	}
+	agent.Namespace = r.Cfg.Namespace
 	if err := r.createIfMissing(ctx, agent); err != nil {
 		return err
 	}
 	// 2. Task template.
-	if err := r.createIfMissing(ctx, BuiltinTaskTemplate()); err != nil {
+	taskTemplate := BuiltinTaskTemplate()
+	taskTemplate.Namespace = r.Cfg.Namespace
+	if err := r.createIfMissing(ctx, taskTemplate); err != nil {
 		return err
 	}
 	// 3. Per-user builtin agent instances (auto-instantiated per user;
@@ -226,8 +235,9 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		}
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   InstanceNameFor(user, BuiltinAgentName),
-				Labels: map[string]string{"cubepilot/builtin": "true"},
+				Name:      InstanceNameFor(user, BuiltinAgentName),
+				Namespace: r.Cfg.Namespace,
+				Labels:    map[string]string{"cubepilot/builtin": "true"},
 			},
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: BuiltinAgentName,
@@ -249,8 +259,9 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 }
 
 // ensurePerUserKubeconfigAccess mints the per-user identity (issue #19): a
-// namespaced ServiceAccount, ClusterRoleBindings to `view` and
-// `cubepilot-user-crds`, and a kubeconfig Secret (SA token inlined) under
+// namespaced ServiceAccount, a ClusterRoleBinding to the cluster `view` role
+// and a RoleBinding to the namespaced cubepilot-user-crds Role (namespaced CRD
+// scope, issue #146), and a kubeconfig Secret (SA token inlined) under
 // k8s.UserKubeconfigSecretFor so the AgentInstance controller's existing
 // dual-kubeconfig mount picks it up unchanged. Idempotent; when the token
 // Secret's token is not yet populated (API server fills it asynchronously) it
@@ -266,19 +277,34 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		return err
 	}
 
-	for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
-		crb := &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(user, role), Labels: builtinLabels},
-			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role},
-			Subjects: []rbacv1.Subject{{
-				Kind:      "ServiceAccount",
-				Name:      saName,
-				Namespace: r.Cfg.Namespace,
-			}},
-		}
-		if err := r.createIfMissing(ctx, crb); err != nil {
-			return err
-		}
+	// Cluster `view` (cluster-wide discovery read; the assistant operates
+	// cluster resources, design §5.3).
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: userCRBName(user), Labels: builtinLabels},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: UserViewClusterRole},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      saName,
+			Namespace: r.Cfg.Namespace,
+		}},
+	}
+	if err := r.createIfMissing(ctx, crb); err != nil {
+		return err
+	}
+	// Namespaced CRD CRUD: a RoleBinding in the install namespace (namespaced
+	// CRD scope, issue #146) -- the per-user SA reaches only this namespace's
+	// ai.cubestack.io objects.
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: userRoleBindingName(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: UserCRDsRole},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      saName,
+			Namespace: r.Cfg.Namespace,
+		}},
+	}
+	if err := r.createIfMissing(ctx, rb); err != nil {
+		return err
 	}
 
 	// Token: a legacy service-account-token Secret (the API server writes the

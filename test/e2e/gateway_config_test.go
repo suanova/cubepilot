@@ -25,7 +25,7 @@ var _ = Describe("Gateway config", func() {
 		// in CI stay robust.
 		tpl := &v1alpha1.AgentTemplate{}
 		Eventually(func() error {
-			return fw.CtrlClient.Get(ctx, types.NamespacedName{Name: controller.BuiltinAgentName}, tpl)
+			return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: controller.BuiltinAgentName}, tpl)
 		}).Should(Succeed())
 		expectedPrimary := tpl.Spec.DefaultModel + "/" + tpl.Spec.DefaultModel
 

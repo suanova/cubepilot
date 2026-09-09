@@ -40,7 +40,7 @@ func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list v1alpha1.AgentTemplateList
-	if err := s.cr.List(r.Context(), &list); err != nil {
+	if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -61,7 +61,7 @@ func (s *Server) handleTaskTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list v1alpha1.TaskTemplateList
-	if err := s.cr.List(r.Context(), &list); err != nil {
+	if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -80,7 +80,7 @@ func (s *Server) handleAgentTemplateByID(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &tmpl); err != nil {
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &tmpl); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
@@ -109,7 +109,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// never be used to read another user's instances.
 		me := s.userOf(r)
 		var list v1alpha1.AgentInstanceList
-		if err := s.cr.List(r.Context(), &list); err != nil {
+		if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -142,7 +142,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// reference registered templates; an unknown ref would create a
 		// permanently Failed instance that the controller cannot converge).
 		var tmpl v1alpha1.AgentTemplate
-		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: templateRef}, &tmpl); err != nil {
+		if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: templateRef}, &tmpl); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("unknown template %q", templateRef)})
 			return
 		}
@@ -159,7 +159,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		// An instance with the same name but a different owner is a conflict
 		// -- never leak it.
 		var existing v1alpha1.AgentInstance
-		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &existing); err == nil {
+		if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &existing); err == nil {
 			if existing.Spec.Owner != owner {
 				writeJSON(w, http.StatusConflict, map[string]any{"error": "instance name already taken"})
 				return
@@ -169,7 +169,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		}
 
 		inst := &v1alpha1.AgentInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.cfg.Namespace},
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: templateRef,
 				Owner:       owner,
@@ -211,7 +211,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list v1alpha1.SkillList
-	if err := s.cr.List(r.Context(), &list); err != nil {
+	if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -232,7 +232,7 @@ func (s *Server) handleTaskRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list v1alpha1.TaskRunList
-	if err := s.cr.List(r.Context(), &list); err != nil {
+	if err := s.cr.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -268,7 +268,7 @@ func (s *Server) handleTaskRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var run v1alpha1.TaskRun
-	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &run); err != nil {
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &run); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
@@ -432,7 +432,7 @@ func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var skillCR v1alpha1.Skill
-	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: name}, &skillCR); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
@@ -544,7 +544,7 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 	}
 
 	// Upsert the Skill CRD.
-	key := client.ObjectKey{Name: name}
+	key := client.ObjectKey{Namespace: s.cfg.Namespace, Name: name}
 	var skillCR v1alpha1.Skill
 	err = s.cr.Get(ctx, key, &skillCR)
 	switch {
@@ -561,7 +561,7 @@ func (s *Server) publishSkill(ctx context.Context, name, displayName, descriptio
 			return nil, err
 		}
 	case apierrors.IsNotFound(err):
-		skillCR = v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		skillCR = v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.cfg.Namespace}}
 		if opts.Builtin {
 			addBuiltinLabels(&skillCR)
 		}
@@ -618,7 +618,7 @@ func sha256Hex(data []byte) string {
 
 // patchSkillPhase sets status.phase via the status subresource (idempotent).
 func (s *Server) patchSkillPhase(ctx context.Context, name string, phase v1alpha1.SkillPhase) error {
-	skillCR := &v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	skillCR := &v1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.cfg.Namespace}}
 	patch := fmt.Sprintf(`{"status":{"phase":%q}}`, phase)
 	return s.cr.Status().Patch(ctx, skillCR, client.RawPatch(types.MergePatchType, []byte(patch)))
 }
@@ -630,7 +630,7 @@ func (s *Server) patchSkillPhase(ctx context.Context, name string, phase v1alpha
 func (s *Server) toggleSkillInstance(ctx context.Context, user string) (v1alpha1.AgentInstance, bool, error) {
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(ctx, client.ObjectKey{Name: name}, &inst); err != nil {
+	if err := s.cr.Get(ctx, client.ObjectKey{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 		if apierrors.IsNotFound(err) {
 			return inst, false, nil
 		}
@@ -643,7 +643,7 @@ func (s *Server) toggleSkillInstance(ctx context.Context, user string) (v1alpha1
 // excluded) — the baseline the resolver enables when enabledSkills is empty.
 func (s *Server) visibleSkillNames(ctx context.Context) ([]string, error) {
 	var list v1alpha1.SkillList
-	if err := s.cr.List(ctx, &list); err != nil {
+	if err := s.cr.List(ctx, &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(list.Items))
@@ -693,7 +693,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var skillCR v1alpha1.Skill
-	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: name}, &skillCR); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
@@ -752,7 +752,7 @@ func (s *Server) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	// Reject unknown skills before any allow-list materialization (an unknown
 	// name is not in the all-enabled baseline either).
 	var skillCR v1alpha1.Skill
-	if err := s.cr.Get(r.Context(), client.ObjectKey{Name: name}, &skillCR); err != nil {
+	if err := s.cr.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: name}, &skillCR); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}

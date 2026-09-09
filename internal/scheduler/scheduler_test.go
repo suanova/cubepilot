@@ -113,7 +113,7 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: runner,
 	}
 
@@ -227,7 +227,7 @@ func TestSchedulerRunFailed(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: runner,
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -300,7 +300,7 @@ func TestManualRunAnnotationFiresEvenWhenPaused(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: runner,
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -348,7 +348,7 @@ func TestPausedTaskDoesNotFire(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: &fakeRunner{}, // must not be invoked
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -387,7 +387,7 @@ func TestNotDueTaskDoesNotFire(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: &fakeRunner{},
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -421,7 +421,7 @@ func TestManualOnlyTaskDoesNotFire(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: &fakeRunner{},
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -487,7 +487,7 @@ func TestSchedulerSkipsRunWhenInstanceMissing(t *testing.T) {
 
 	r := &ReconcileScheduler{
 		Client: cl,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Cfg:    config.Config{Namespace: ""},
 		Runner: runner,
 	}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{

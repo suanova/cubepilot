@@ -19,7 +19,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("rejects an out-of-enum spec.state", func() {
 		bad := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-task-state"},
+			ObjectMeta: metav1.ObjectMeta{Name: "bad-task-state", Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:   "zhang.wei",
 				Trigger: v1alpha1.TaskTriggerCron,
@@ -32,7 +32,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("rejects an out-of-enum spec.trigger", func() {
 		bad := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-task-trigger"},
+			ObjectMeta: metav1.ObjectMeta{Name: "bad-task-trigger", Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:   "zhang.wei",
 				Trigger: "Whenever",
@@ -44,7 +44,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("accepts valid enums (state Enabled, trigger Manual)", func() {
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-enums"},
+			ObjectMeta: metav1.ObjectMeta{Name: "good-task-enums", Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:   "zhang.wei",
 				Trigger: v1alpha1.TaskTriggerManual,
