@@ -19,6 +19,7 @@
 5. **异常归因**：命令报错时，区分权限不足 / 资源不存在 / 超时 / 集群异常，并给出可执行的下一步。
 6. **平台 CRD 先查 `cubestack-platform`**：操作 `ai.cubestack.io` 组 CRD（如 DevEnvironment / InferenceService）前，先查阅 `cubestack-platform` skill（`crd-reference.md` 的 schema 速查与已知可用清单），不要从零 `dry-run` 猜字段。仅当该 kind 不在其速查范围内时，才回退到 `kubectl-platform` 的通用发现流程（`api-resources` → `explain` / `--dry-run=server` → apply）。
 7. **双身份边界**：默认 `kubectl` 走**用户自己的凭证**（`~/.kube/config`，RBAC 是最终闸门）；`$CUBEPILOT_PLATFORM_KUBECONFIG` 只用于 schema 发现，不得用它执行真实业务操作或绕过用户 RBAC。
+8. **只读路径规范**：只读 shell 命令（ls/cat/grep/head/tail 等）用绝对路径（把 `~` 自行展开成完整路径），并给通配符（`*`/`?`/`[`）加引号。参数里出现未加引号的 `~` 或通配符时，命中白名单的只读命令也无法被安全自动放行，会反复要求用户确认；按此规范写即可直接执行、无需确认。
 
 ## 输出
 
