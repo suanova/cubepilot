@@ -124,27 +124,23 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	// Per-user identity is generated: SA + cluster `view` ClusterRoleBinding +
-	// namespaced CRD RoleBinding + a kubeconfig Secret under the dual-kubeconfig
-	// naming scheme (issue #146: CRDs are namespaced, so CRD access is a
-	// RoleBinding in the install namespace).
+	// Per-user identity is generated: SA + view/CRD ClusterRoleBindings + a
+	// kubeconfig Secret under the dual-kubeconfig naming scheme (the assistant
+	// identity stays cluster-scoped -- it operates platform CRs in any
+	// namespace; only the component RBAC narrowed with namespaced CRDs).
 	for _, u := range users {
 		saName := k8s.UserServiceAccountName(u)
 		var sa corev1.ServiceAccount
 		if err := cl.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "cubepilot"}, &sa); err != nil {
 			t.Errorf("per-user SA %s not created: %v", saName, err)
 		}
-		var crb rbacv1.ClusterRoleBinding
-		if err := cl.Get(context.Background(), types.NamespacedName{Name: userCRBName(u)}, &crb); err != nil {
-			t.Errorf("view CRB not created: %v", err)
-		} else if crb.RoleRef.Name != UserViewClusterRole {
-			t.Errorf("view CRB roleRef = %s, want %s", crb.RoleRef.Name, UserViewClusterRole)
-		}
-		var rb rbacv1.RoleBinding
-		if err := cl.Get(context.Background(), types.NamespacedName{Name: userRoleBindingName(u), Namespace: "cubepilot"}, &rb); err != nil {
-			t.Errorf("CRD RoleBinding not created: %v", err)
-		} else if rb.RoleRef.Name != UserCRDsRole {
-			t.Errorf("CRD RoleBinding roleRef = %s, want %s", rb.RoleRef.Name, UserCRDsRole)
+		for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
+			var crb rbacv1.ClusterRoleBinding
+			if err := cl.Get(context.Background(), types.NamespacedName{Name: userCRBName(u, role)}, &crb); err != nil {
+				t.Errorf("CRB %s not created: %v", userCRBName(u, role), err)
+			} else if crb.RoleRef.Name != role {
+				t.Errorf("CRB %s roleRef = %s, want %s", userCRBName(u, role), crb.RoleRef.Name, role)
+			}
 		}
 		var kc corev1.Secret
 		if err := cl.Get(context.Background(), types.NamespacedName{Name: k8s.UserKubeconfigSecretFor(u), Namespace: "cubepilot"}, &kc); err != nil {

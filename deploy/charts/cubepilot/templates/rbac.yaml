@@ -1,11 +1,13 @@
 # RBAC (design §9 / §11.1: components separated, RBAC minimized per
-# component). The ai.cubestack.io platform CRDs are Namespaced (issue #146):
-# every component's CRD access is a Role in the install namespace, bound by a
-# RoleBinding to its ServiceAccount. Cluster-scope RBAC remains only where the
-# object is genuinely cluster-scoped: CRD discovery (apiextensions), the
-# per-user cluster `view` binding (cluster-ops discovery), and leader election.
-# The agent's role stays broad for now (FR-M3-001 per-user minimal RBAC is the
-# production contract).
+# component). The six ai.cubestack.io platform CRDs are Namespaced (issue
+# #146): every component's CRD access is a Role in the install namespace,
+# bound by a RoleBinding to its ServiceAccount. Cluster-scope RBAC remains
+# only where the object is genuinely cluster-scoped: CRD discovery
+# (apiextensions), the per-user assistant identity (the agent executes kubectl
+# with the user's identity and must operate platform CRs in any namespace,
+# e.g. generic CRD discovery creating CubeStack DevEnvironments), and leader
+# election. The agent's role stays broad for now (FR-M3-001 per-user minimal
+# RBAC is the production contract).
 #
 # Inspection (FR-M4-007) runs as the creator with the creator's permissions
 # (design §5.4 / FR-M4 authorization) -- no dedicated read-only credentials;
@@ -63,16 +65,6 @@ rules:
   - apiGroups: ["ai.cubestack.io"]
     resources: ["agentinstances/status", "agenttemplates/status", "skills/status", "tasks/status", "taskruns/status"]
     verbs: ["get", "update", "patch"]
-  # Per-user CRD access: the operator binds each user's SA to the namespaced
-  # cubepilot-user-crds Role via a RoleBinding in this namespace (RBAC binding
-  # authorization requires `bind` on the referenced Role).
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles", "rolebindings"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles"]
-    verbs: ["bind"]
-    resourceNames: ["cubepilot-user-crds"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -95,7 +87,7 @@ subjects:
     namespace: {{ .Release.Namespace }}
 
 # --- Operator: cluster-scope RBAC the operator still needs (CRD discovery +
-# binding the per-user cluster `view` role) ---
+# binding the per-user assistant roles) ---
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -105,13 +97,14 @@ rules:
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get", "list", "watch"]
-  # Per-user identity (issue #19): bind each user's SA to the built-in cluster
-  # `view` role (cluster-wide read-only discovery; excludes secrets) and own the
-  # per-user ClusterRoleBindings.
+  # Per-user identity (issue #19): bind each user's SA to `view` (cluster-wide
+  # read-only discovery, excludes secrets) and cubepilot-user-crds (cluster-wide
+  # ai.cubestack.io CRUD -- the assistant operates platform CRs in any
+  # namespace) and own the per-user ClusterRoleBindings.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get", "list", "watch", "bind"]
-    resourceNames: ["view"]
+    resourceNames: ["view", "cubepilot-user-crds"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterrolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
@@ -129,17 +122,18 @@ subjects:
     name: {{ .Values.serviceAccounts.operator }}
     namespace: {{ .Release.Namespace }}
 
-# --- Per-user platform identity (issue #19): each user gets the built-in
-# cluster `view` (ClusterRoleBinding, created by the operator) plus full
-# ai.cubestack.io CRUD scoped to the install namespace via this Role. The
-# operator creates one RoleBinding per user's SA referencing it (namespaced
-# CRD scope, issue #146).
+# --- Per-user platform identity (issue #19): each user's assistant SA gets the
+# built-in cluster `view` plus full ai.cubestack.io CRUD via this ClusterRole.
+# The operator creates one ClusterRoleBinding per user's SA referencing `view`
+# and this role. Kept cluster-scoped even though the six platform CRDs are
+# Namespaced (issue #146): the assistant runs kubectl as the user and must
+# operate platform CRs (including CubeStack CRDs like DevEnvironment) in any
+# namespace, not only the install namespace.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: cubepilot-user-crds
-  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: ["ai.cubestack.io"]
     resources: ["*"]

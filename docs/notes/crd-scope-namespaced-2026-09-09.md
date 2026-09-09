@@ -18,21 +18,24 @@ were cluster-wide.
 Namespacing is the dominant strategy -- compatible with every deployment
 model and strictly safer:
 
-- **RBAC returns to the k8s layer.** Component CRD access drops from
-  ClusterRole/ClusterRoleBinding to a Role/RoleBinding in the install
-  namespace (least privilege). A direct-k8s consumer (e.g. an external
-  platform UI operating these CRDs) can be scoped with a namespace Role /
-  kubeconfig instead of a cluster-wide grant.
-- **Per-user isolation becomes real.** Previously the `owner` field was
-  enforced only in the REST handlers; the per-user ServiceAccount could read
-  every tenant's CRs. Now CRD access for a per-user identity is a RoleBinding
-  in the install namespace (cluster `view` is retained only for discovery --
-  the agent is a cluster-ops assistant by design).
+- **Component RBAC returns to the k8s layer.** The operator's and API's CRD
+  access drops from ClusterRole/ClusterRoleBinding to a Role/RoleBinding in
+  the install namespace (least privilege). A direct-k8s consumer (e.g. an
+  external platform UI operating these CRDs per tenant) can be scoped with a
+  namespace Role / kubeconfig instead of a cluster-wide grant.
 - **Coexistence.** Independent installs can share one cluster (helm release
   namespaces) without CR-name collisions. Cluster scope forbade this, and k8s
   forbids changing an installed CRD's scope in place -- the later this change
   happens, the more painful it is. Pre-release, there is no compatibility
   burden.
+- **The per-user assistant identity is unchanged.** The agent executes kubectl
+  with the per-user identity and must operate platform CRs in *any* namespace
+  (generic CRD discovery creates e.g. CubeStack DevEnvironments in arbitrary
+  namespaces, not only the install namespace). So `cubepilot-user-crds` stays
+  a ClusterRole bound via ClusterRoleBinding, alongside cluster `view`. The
+  isolation gained by namespacing is at the component/coexistence layer, not
+  by narrowing the assistant (an e2e chat spec creates a DevEnvironment in the
+  `default` namespace and drove this decision).
 
 ## What changed
 
@@ -45,15 +48,13 @@ model and strictly safer:
   scopes to the install namespace (`cfg.Namespace`): controllers, scheduler,
   resolver, instance manager, REST handlers, builtin bootstrap.
 - RBAC (`deploy/charts/cubepilot/templates/rbac.yaml`):
-  - operator: `ai.cubestack.io` CRUD + status, per-user RoleBinding
-    management move into its namespaced Role; the cluster-scope pieces that
-    remain (CRD discovery via apiextensions, binding per-user cluster `view`)
-    stay in a trimmed ClusterRole.
+  - operator: `ai.cubestack.io` CRUD + status move into its namespaced Role;
+    the cluster-scope pieces that remain (CRD discovery via apiextensions,
+    binding the per-user assistant roles) stay in a trimmed ClusterRole.
   - api: platform CRD access moves into a namespaced Role (`<api>-crds`);
     only apiextensions CRD discovery stays cluster-scoped.
-  - `cubepilot-user-crds` is now a namespaced Role (was ClusterRole); the
-    builtin bootstrap creates a RoleBinding per user instead of a
-    ClusterRoleBinding. Per-user `view` ClusterRoleBinding unchanged.
+  - per-user assistant identity (`view` + `cubepilot-user-crds` ClusterRole,
+    ClusterRoleBindings): unchanged, by design (see Why).
 - Tests/e2e fixtures updated to create/read the CRs in a namespace.
 
 ## Notes / out of scope
@@ -64,9 +65,6 @@ model and strictly safer:
 - Deploying this change requires replacing the installed CRDs (scope cannot be
   mutated in place) -- delete then re-install; pre-release, no migration is
   carried.
-- The agent's cluster `view` read is a product-positioning property
-  (cluster-ops assistant operating cluster-wide resources), not affected by
-  namespacing the platform CRDs.
 - Applying validation (admission webhook) for the REST-layer checks is still
   outstanding (see the architecture review) and becomes more relevant once
   clients write the CRDs directly.
