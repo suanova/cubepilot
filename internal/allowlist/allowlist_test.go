@@ -7,8 +7,14 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 )
 
-// TestKubectlReadArgPattern exercises the kubectl read-verb matcher against
-// representative commands (design §3 / issue #20, ported from policy_test).
+// TestKubectlReadArgPattern exercises the kubectl read-verb matcher (design
+// §3 / issue #20). The pattern anchors on a read subcommand and treats the
+// remaining argv as data handed to kubectl, so output templates (jsonpath /
+// go-template / custom-columns, which embed `{ } ( ) [ ]` and `\n`) match.
+// Separator/substitution/redirect smuggling is not this rule's job: the
+// gateway evaluates the rule against one parsed command and refuses
+// unanalyzable constructs (a second command, `$(...)`, backticks, redirects)
+// before this pattern is consulted. Only the verb gates here.
 func TestKubectlReadArgPattern(t *testing.T) {
 	re := regexp.MustCompile(kubectlReadArgPattern)
 	pass := []string{
@@ -24,8 +30,14 @@ func TestKubectlReadArgPattern(t *testing.T) {
 		"top pods",
 		"-n default get pods",
 		"get pods -o wide -l app=foo,env=prod",
+		// -o output templates are argv data; their chars are not shell syntax.
+		"get devenvironment dev-4c8g -n default -o jsonpath=phase={.status.phase.name}{range .status.conditions[*]}{.type}={.status} ({.reason}){end}{range .status.endpoints[*]}{.name}: {.address}{end}",
+		`get devenvironment dev-4c8g -n default -o jsonpath=phase={.status.phase.name}{"\n"}{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}{range .status.endpoints[*]}{.name}: {.address}{"\n"}{end}`,
+		`get pods -o go-template={{range .items}}{{.metadata.name}}{{"\n"}}{{end}}`,
+		`get secret app -o custom-columns=DATA:.data.password`,
 	}
 	ask := []string{
+		// write subcommands must never match a read-verb rule
 		"delete pod foo",
 		"create -f pod.yaml",
 		"apply -f pod.yaml",
@@ -33,13 +45,8 @@ func TestKubectlReadArgPattern(t *testing.T) {
 		"delete ns staging",
 		"exec -it pod -- sh",
 		"edit deploy/app",
-		// separator / substitution smuggling must NOT match (issue #20 review).
-		"get pods; kubectl delete pod foo",
-		"get pods && kubectl delete ns staging",
-		"get pods | grep Running",
-		"get pods $(kubectl delete)",
-		"get pods `id`",
-		"get pods > /tmp/out",
+		"-n default delete pod foo",
+		"label pod foo tier=frontend",
 	}
 	for _, c := range pass {
 		if !re.MatchString(c) {

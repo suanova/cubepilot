@@ -7,20 +7,37 @@ package allowlist
 
 import "github.com/suanova/cubepilot/internal/api/v1alpha1"
 
-// kubectlReadArgPattern matches a kubectl command whose verb is a read and
-// whose remaining tokens (after optional leading global flags) are plain
-// words -- no separators/substitution.
-const kubectlReadArgPattern = `^((--[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|-[a-zA-Z0-9](\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|--namespace\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+|--context\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)\s+)*(get|list|watch|describe|logs|events|top|api-resources|api-versions|explain|version|diff|cluster-info)([A-Za-z0-9_./:=,%+*?@~"#'-]|\s)*$`
+// kubectlGlobalFlag matches one optional kubectl global flag that may precede
+// the subcommand (--kubeconfig=/x, --context prod, -n default, ...). Global
+// flag values are plain literal tokens, so their charset stays tight.
+const kubectlGlobalFlag = `--[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|-[a-zA-Z0-9](\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)?|--namespace\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+|--context\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+`
+
+// kubectlReadVerbs are the kubectl subcommands that only read cluster state.
+const kubectlReadVerbs = `get|list|watch|describe|logs|events|top|api-resources|api-versions|explain|version|diff|cluster-info`
+
+// kubectlReadArgPattern matches a kubectl command whose subcommand is a read
+// verb, after optional leading global flags. Everything after the verb is argv
+// handed to kubectl: resource names, selectors and -o jsonpath / go-template /
+// custom-columns output templates, which embed `{ } [ ] ( )` and `\n` escapes.
+// The tail is deliberately permissive because the gateway evaluates this rule
+// against a single parsed command: a separator (`;` `|` `&&`), a substitution
+// (`$(...)`/backtick) or a redirect splits the line into more commands or is
+// refused before this rule is consulted, so a permissive tail cannot smuggle a
+// second command. The verb stays anchored so a write subcommand
+// (delete/apply/exec/scale/...) never matches.
+const kubectlReadArgPattern = `^((` + kubectlGlobalFlag + `)\s+)*(` + kubectlReadVerbs + `)(\b[\s\S]*)?$`
 
 // safeArgPattern matches only space-separated plain words (no separators).
 const safeArgPattern = `^[A-Za-z0-9_./:=,%+*?@~"#'-]+(\s+[A-Za-z0-9_./:=,%+*?@~"#'-]+)*$`
 
-// Default returns the platform builtin safe-read allowlist. The arg patterns
-// are anchored and only allow a safe token charset to the end of the command,
-// so an allowlisted "read" cannot smuggle shell separators or substitution
-// through. Deliberately no command-wrapper bins (env, xargs, sh, ...) that can
-// exec a following command, no `date` (`date -s` changes the clock) and no
-// `curl` (can write).
+// Default returns the platform builtin safe-read allowlist. The kubectl rule
+// anchors on a read verb -- the gateway matches each rule against one parsed
+// command, so verb-gating, not a token charset, is the security boundary. The
+// read-only shell tools keep a plain-word-only arg charset instead: they run
+// through a real shell, where an allowed separator would be interpreted.
+// Deliberately no command-wrapper bins (env, xargs, sh, ...) that can exec a
+// following command, no `date` (`date -s` changes the clock) and no `curl`
+// (can write).
 func Default() []v1alpha1.AllowlistRule {
 	kubectl := v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern}
 	safeBins := []string{"ls", "cat", "pwd", "grep", "head", "tail", "wc", "jq", "echo", "printf", "which"}
