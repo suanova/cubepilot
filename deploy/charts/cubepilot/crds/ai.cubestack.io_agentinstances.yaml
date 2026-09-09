@@ -12,7 +12,7 @@ spec:
     listKind: AgentInstanceList
     plural: agentinstances
     singular: agentinstance
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.templateRef

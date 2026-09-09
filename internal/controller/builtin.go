@@ -34,8 +34,13 @@ const BuiltinTaskTemplateName = "daily-inspection"
 // Per-user identity ClusterRoles the platform binds each user's ServiceAccount
 // to (issue #19): `view` is the built-in read-only ClusterRole (deliberately
 // excludes secrets); cubepilot-user-crds (declared in the chart rbac.yaml)
-// grants full ai.cubestack.io CRUD. ClusterRoleBindings reference these by
-// name, so the operator needs only get/bind on them.
+// grants full ai.cubestack.io CRUD cluster-wide. The assistant executes kubectl
+// with the user's identity and must operate platform CRs in any namespace
+// (generic CRD discovery creates e.g. CubeStack DevEnvironments in arbitrary
+// namespaces, not only the install namespace), so even though the six platform
+// CRDs are Namespaced (issue #146) the per-user binding stays a
+// ClusterRoleBinding. ClusterRoleBindings reference these roles by name, so
+// the operator needs only get/bind on them.
 const (
 	UserViewClusterRole = "view"
 	UserCRDsClusterRole = "cubepilot-user-crds"
@@ -162,7 +167,7 @@ type BuiltinBootstrapReconciler struct {
 	Cfg    config.Config
 }
 
-// +kubebuilder:rbac:groups=ai.cubestack.io,resources=skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates;skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;delete
@@ -194,11 +199,14 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		agent.Spec.Models = nil
 		agent.Spec.DefaultModel = ""
 	}
+	agent.Namespace = r.Cfg.Namespace
 	if err := r.createIfMissing(ctx, agent); err != nil {
 		return err
 	}
 	// 2. Task template.
-	if err := r.createIfMissing(ctx, BuiltinTaskTemplate()); err != nil {
+	taskTemplate := BuiltinTaskTemplate()
+	taskTemplate.Namespace = r.Cfg.Namespace
+	if err := r.createIfMissing(ctx, taskTemplate); err != nil {
 		return err
 	}
 	// 3. Per-user builtin agent instances (auto-instantiated per user;
@@ -226,8 +234,9 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 		}
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   InstanceNameFor(user, BuiltinAgentName),
-				Labels: map[string]string{"cubepilot/builtin": "true"},
+				Name:      InstanceNameFor(user, BuiltinAgentName),
+				Namespace: r.Cfg.Namespace,
+				Labels:    map[string]string{"cubepilot/builtin": "true"},
 			},
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: BuiltinAgentName,

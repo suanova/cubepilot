@@ -63,7 +63,7 @@ func New(cr client.Client, cfg config.Config) *Manager {
 		cfg:     cfg,
 		ns:      cfg.Namespace,
 		port:    int32(cfg.AgentPort),
-		resolve: resolver.New(cr),
+		resolve: resolver.New(cr, cfg.Namespace),
 		active:  map[string]time.Time{},
 		probe:   probeTCP,
 	}
@@ -170,7 +170,7 @@ func (m *Manager) waitCRWarm(ctx context.Context, instanceName string) error {
 // crReady reports whether the AgentInstance CR is in the Ready phase.
 func (m *Manager) crReady(ctx context.Context, instanceName string) bool {
 	var inst v1alpha1.AgentInstance
-	err := m.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
+	err := m.cr.Get(ctx, types.NamespacedName{Namespace: m.ns, Name: instanceName}, &inst)
 	if err != nil {
 		return false // controller still creating / transient read error
 	}
@@ -218,7 +218,7 @@ func (m *Manager) InstanceStatus(ctx context.Context, user string) (exists bool,
 // InstanceStatusFor reports the live state of an agent instance.
 func (m *Manager) InstanceStatusFor(ctx context.Context, k AgentKey) (exists bool, phase string, startedAt time.Time) {
 	var inst v1alpha1.AgentInstance
-	if err := m.cr.Get(ctx, types.NamespacedName{Name: k.InstanceName()}, &inst); err != nil {
+	if err := m.cr.Get(ctx, types.NamespacedName{Namespace: m.ns, Name: k.InstanceName()}, &inst); err != nil {
 		return false, "not provisioned (resident policy)", time.Time{}
 	}
 	p := string(inst.Status.Phase)

@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/controller"
@@ -37,7 +38,7 @@ var _ = Describe("Builtin bootstrap", func() {
 	It("bootstraps the builtin agent-for-cloud template", func() {
 		tpl := &v1alpha1.AgentTemplate{}
 		Eventually(func() error {
-			return fw.CtrlClient.Get(ctx, types.NamespacedName{Name: controller.BuiltinAgentName}, tpl)
+			return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: controller.BuiltinAgentName}, tpl)
 		}).Should(Succeed())
 		Expect(tpl.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
 		Expect(tpl.Spec.DefaultModel).NotTo(BeEmpty())
@@ -54,7 +55,7 @@ var _ = Describe("Builtin bootstrap", func() {
 
 		var list v1alpha1.SkillList
 		Eventually(func() error {
-			if err := fw.CtrlClient.List(ctx, &list); err != nil {
+			if err := fw.CtrlClient.List(ctx, &list, client.InNamespace(fw.Namespace)); err != nil {
 				return err
 			}
 			if len(list.Items) == 0 {
@@ -77,7 +78,7 @@ var _ = Describe("Builtin bootstrap", func() {
 
 		tt := &v1alpha1.TaskTemplate{}
 		Eventually(func() error {
-			return fw.CtrlClient.Get(ctx, types.NamespacedName{Name: controller.BuiltinTaskTemplateName}, tt)
+			return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: controller.BuiltinTaskTemplateName}, tt)
 		}).Should(Succeed())
 		Expect(tt.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
 	})
@@ -87,7 +88,7 @@ var _ = Describe("Builtin bootstrap", func() {
 			name := controller.InstanceNameFor(user, controller.BuiltinAgentName)
 			inst := &v1alpha1.AgentInstance{}
 			Eventually(func() error {
-				return fw.CtrlClient.Get(ctx, types.NamespacedName{Name: name}, inst)
+				return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: name}, inst)
 			}).Should(Succeed(), "builtin instance %s for user %s should exist", name, user)
 			Expect(inst.Spec.TemplateRef).To(Equal(controller.BuiltinAgentName))
 			Expect(inst.Spec.Identity.PrincipalRef.UserRef).To(Equal(user))

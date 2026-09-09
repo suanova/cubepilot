@@ -24,7 +24,10 @@ func testResolver(t *testing.T, objs ...client.Object) *Resolver {
 		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
 		WithObjects(objs...).
 		Build()
-	return New(cl)
+	// The fake client stores the ns-less test objects under namespace ""; an
+	// empty namespace on the resolver keeps reads consistent with them (unit
+	// tests exercise the pure merge, not the namespace plumbing).
+	return New(cl, "")
 }
 
 func template(name string, mod func(*v1alpha1.AgentTemplate)) *v1alpha1.AgentTemplate {

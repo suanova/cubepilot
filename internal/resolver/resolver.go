@@ -110,11 +110,13 @@ func (c *ResolvedAgentConfig) fingerprint() string {
 // Resolver resolves ResolvedAgentConfig from CRs.
 type Resolver struct {
 	cr client.Client
+	ns string
 }
 
-// New returns a Resolver backed by the controller-runtime client.
-func New(cr client.Client) *Resolver {
-	return &Resolver{cr: cr}
+// New returns a Resolver backed by the controller-runtime client, reading
+// platform CRs from namespace (namespaced CRD scope, issue #146).
+func New(cr client.Client, namespace string) *Resolver {
+	return &Resolver{cr: cr, ns: namespace}
 }
 
 // ResolveForUser resolves the default agent instance config for a user. A
@@ -132,7 +134,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	instanceName := k8s.InstanceName(user, agent)
 
 	var inst v1alpha1.AgentInstance
-	err := r.cr.Get(ctx, types.NamespacedName{Name: instanceName}, &inst)
+	err := r.cr.Get(ctx, types.NamespacedName{Namespace: r.ns, Name: instanceName}, &inst)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return &ResolvedAgentConfig{}, nil // not provisioned -- runtime default
@@ -153,7 +155,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	if inst.Spec.TemplateRef != "" {
 		cfg.Agent = inst.Spec.TemplateRef
 		var def v1alpha1.AgentTemplate
-		if err := r.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
+		if err := r.cr.Get(ctx, types.NamespacedName{Namespace: r.ns, Name: inst.Spec.TemplateRef}, &def); err == nil {
 			cfg.ConfirmPolicy = normalizeConfirmPolicy(def.Spec.ConfirmPolicy)
 			tmplAllowlist = def.Spec.Allowlist
 			cfg.Instructions = def.Spec.Instructions
@@ -220,7 +222,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	// further restrict to an explicit enabledSkills subset (design §3.2);
 	// empty = all declared/all visible.
 	var skills v1alpha1.SkillList
-	if err := r.cr.List(ctx, &skills); err != nil {
+	if err := r.cr.List(ctx, &skills, client.InNamespace(r.ns)); err != nil {
 		return nil, fmt.Errorf("list skills: %w", err)
 	}
 	restrict := map[string]bool{}

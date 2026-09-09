@@ -53,7 +53,7 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(r.Context(), types.NamespacedName{Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
+	if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("builtin template: %v", err)})
 		return
 	}

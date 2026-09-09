@@ -95,7 +95,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 		var inst v1alpha1.AgentInstance
-		if err := s.cr.Get(r.Context(), types.NamespacedName{Name: name}, &inst); err != nil {
+		if err := s.cr.Get(r.Context(), types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 			if apierrors.IsNotFound(err) {
 				writeJSON(w, http.StatusConflict, map[string]any{"error": errNoInstance.Error()})
 				return
@@ -124,7 +124,7 @@ func (s *Server) agentConfig(ctx context.Context, user string) agentConfigView {
 	}
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 		return v // not provisioned
 	}
 	v.Exists = true
@@ -142,7 +142,7 @@ func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool,
 		return true, nil
 	}
 	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}

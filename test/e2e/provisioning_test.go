@@ -40,7 +40,7 @@ var _ = Describe("Instance provisioning", func() {
 		}
 
 		inst := &v1alpha1.AgentInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: instName},
+			ObjectMeta: metav1.ObjectMeta{Name: instName, Namespace: fw.Namespace},
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: controller.BuiltinAgentName,
 				Owner:       "e2e.user",
@@ -61,7 +61,7 @@ var _ = Describe("Instance provisioning", func() {
 
 	AfterEach(func() {
 		inst := &v1alpha1.AgentInstance{}
-		if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: instName}, inst); err == nil {
+		if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: instName}, inst); err == nil {
 			Expect(fw.CtrlClient.Delete(ctx, inst)).To(Succeed())
 		} else if !apierrors.IsNotFound(err) {
 			Expect(err).NotTo(HaveOccurred())
@@ -73,7 +73,7 @@ var _ = Describe("Instance provisioning", func() {
 		// The ai.cubestack.io/agentinstance finalizer removes the PVC, Pod and
 		// Service; wait until everything is gone.
 		Eventually(func() error {
-			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: instName}, &v1alpha1.AgentInstance{}); err == nil {
+			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: instName}, &v1alpha1.AgentInstance{}); err == nil {
 				return fmt.Errorf("agentinstance %s not gone yet", instName)
 			} else if !apierrors.IsNotFound(err) {
 				return err
@@ -109,7 +109,7 @@ var _ = Describe("Instance provisioning", func() {
 		// healed by the controller, so Eventually retries across it.
 		Eventually(func() error {
 			inst := &v1alpha1.AgentInstance{}
-			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: instName}, inst); err != nil {
+			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: instName}, inst); err != nil {
 				return err
 			}
 			if inst.Status.Phase != v1alpha1.InstanceCreating && inst.Status.Phase != v1alpha1.InstanceReady {

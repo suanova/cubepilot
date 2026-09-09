@@ -87,7 +87,6 @@ type SkillStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="DisplayName",type="string",JSONPath=".spec.displayName"
 // +kubebuilder:printcolumn:name="Visibility",type="string",JSONPath=".spec.visibility"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

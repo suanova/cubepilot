@@ -143,7 +143,7 @@ func (s *Server) confirmView(ctx context.Context, user string) (confirmView, err
 	}
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &inst)
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return view, nil // not provisioned
@@ -155,7 +155,7 @@ func (s *Server) confirmView(ctx context.Context, user string) (confirmView, err
 	view.AllowlistOwned = toConfirmRules(inst.Spec.Allowlist)
 	if inst.Spec.TemplateRef != "" {
 		var def v1alpha1.AgentTemplate
-		if err := s.cr.Get(ctx, types.NamespacedName{Name: inst.Spec.TemplateRef}, &def); err == nil {
+		if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: inst.Spec.TemplateRef}, &def); err == nil {
 			view.TemplatePolicy = def.Spec.ConfirmPolicy
 		}
 	}
@@ -177,7 +177,7 @@ func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.Conf
 	}
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 		if apierrors.IsNotFound(err) {
 			return errNoInstance
 		}
@@ -227,7 +227,7 @@ func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1
 	}
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(ctx, types.NamespacedName{Name: name}, &inst); err != nil {
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 		return false, err
 	}
 	base := inst.Spec.Allowlist

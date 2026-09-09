@@ -37,7 +37,7 @@ func testAgentCfg() config.Config {
 
 func testTemplate() *v1alpha1.AgentTemplate {
 	return &v1alpha1.AgentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud"},
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-for-cloud", Namespace: testNamespace},
 		Spec:       v1alpha1.AgentTemplateSpec{Runtime: v1alpha1.RuntimeOpenClaw},
 	}
 }
@@ -300,7 +300,7 @@ func TestModelConfiguredCondition(t *testing.T) {
 		}
 		// Add a keyed model + its credential Secret, then reconcile again.
 		var tpl v1alpha1.AgentTemplate
-		if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tpl); err != nil {
+		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "agent-for-cloud"}, &tpl); err != nil {
 			t.Fatal(err)
 		}
 		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{

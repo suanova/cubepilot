@@ -35,7 +35,7 @@ type OpenClawConfigReconciler struct {
 // Reconcile renders and reconciles the openclaw-config Secret.
 func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
 	var tpls v1alpha1.AgentTemplateList
-	if err := r.List(ctx, &tpls); err != nil {
+	if err := r.List(ctx, &tpls, client.InNamespace(r.Cfg.Namespace)); err != nil {
 		return ctrl.Result{}, err
 	}
 	var providers []gateway.Provider

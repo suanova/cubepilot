@@ -12,7 +12,7 @@ spec:
     listKind: SkillList
     plural: skills
     singular: skill
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.displayName

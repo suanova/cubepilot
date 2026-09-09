@@ -267,7 +267,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 // missing template must not crash the loop).
 func (r *AgentInstanceReconciler) templateFor(ctx context.Context, name string) (*v1alpha1.AgentTemplate, error) {
 	var tmpl v1alpha1.AgentTemplate
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &tmpl); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: name}, &tmpl); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -309,12 +309,12 @@ func (r *AgentInstanceReconciler) modelAvailable(ctx context.Context, agent *v1a
 // refreshed when models or their credential Secrets appear/disappear.
 func (r *AgentInstanceReconciler) mapAllToInstances(_ context.Context, _ client.Object) []reconcile.Request {
 	var list v1alpha1.AgentInstanceList
-	if err := r.List(context.Background(), &list); err != nil {
+	if err := r.List(context.Background(), &list, client.InNamespace(r.Cfg.Namespace)); err != nil {
 		return nil
 	}
 	reqs := make([]reconcile.Request, 0, len(list.Items))
 	for i := range list.Items {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: list.Items[i].Namespace, Name: list.Items[i].Name}})
 	}
 	return reqs
 }

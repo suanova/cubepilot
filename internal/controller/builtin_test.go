@@ -125,7 +125,9 @@ func TestBootstrapEnsure(t *testing.T) {
 	}
 
 	// Per-user identity is generated: SA + view/CRD ClusterRoleBindings + a
-	// kubeconfig Secret under the dual-kubeconfig naming scheme.
+	// kubeconfig Secret under the dual-kubeconfig naming scheme (the assistant
+	// identity stays cluster-scoped -- it operates platform CRs in any
+	// namespace; only the component RBAC narrowed with namespaced CRDs).
 	for _, u := range users {
 		saName := k8s.UserServiceAccountName(u)
 		var sa corev1.ServiceAccount
@@ -150,7 +152,7 @@ func TestBootstrapEnsure(t *testing.T) {
 
 	// Agent definition exists.
 	var agent v1alpha1.AgentTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &agent); err != nil {
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &agent); err != nil {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 	if len(agent.Spec.Skills) != len(skill.BuiltinSkillNames()) {
@@ -159,14 +161,14 @@ func TestBootstrapEnsure(t *testing.T) {
 
 	// TaskTemplate exists.
 	var tpl v1alpha1.TaskTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "daily-inspection"}, &tpl); err != nil {
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "daily-inspection", Namespace: "cubepilot"}, &tpl); err != nil {
 		t.Fatalf("daily-inspection template not created: %v", err)
 	}
 
 	// Models are inlined in the template (design §3.3): the builtin template
 	// carries the preset inline model entries.
 	tmpl := v1alpha1.AgentTemplate{}
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &tmpl); err != nil {
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &tmpl); err != nil {
 		t.Fatalf("agent-for-cloud template not found: %v", err)
 	}
 	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)) {
@@ -175,7 +177,7 @@ func TestBootstrapEnsure(t *testing.T) {
 
 	// Per-user instances exist (auto-instantiated per user).
 	var insts v1alpha1.AgentInstanceList
-	if err := cl.List(context.Background(), &insts); err != nil {
+	if err := cl.List(context.Background(), &insts, client.InNamespace("cubepilot")); err != nil {
 		t.Fatalf("list instances: %v", err)
 	}
 	if len(insts.Items) != 2 {
@@ -195,7 +197,7 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("Ensure #2: %v", err)
 	}
 	var insts2 v1alpha1.AgentInstanceList
-	if err := cl.List(context.Background(), &insts2); err != nil {
+	if err := cl.List(context.Background(), &insts2, client.InNamespace("cubepilot")); err != nil {
 		t.Fatal(err)
 	}
 	if len(insts2.Items) != 2 {
@@ -219,7 +221,7 @@ func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 	var agent v1alpha1.AgentTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud"}, &agent); err != nil {
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "agent-for-cloud", Namespace: "cubepilot"}, &agent); err != nil {
 		t.Fatalf("agent-for-cloud not created: %v", err)
 	}
 	if len(agent.Spec.Models) != 0 {

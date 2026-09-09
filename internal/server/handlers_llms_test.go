@@ -32,7 +32,9 @@ func addLLMTestServer(t *testing.T, objs ...client.Object) *Server {
 }
 
 func TestHandleAddLLM(t *testing.T) {
-	s := addLLMTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash"))
+	builtin := controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash")
+	builtin.Namespace = "cubepilot"
+	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"My Qwen","endpoint":"https://api.example.com/v1","apiKey":"sk-2"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
@@ -44,7 +46,7 @@ func TestHandleAddLLM(t *testing.T) {
 
 	// Model appended to the builtin template.
 	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(context.Background(), types.NamespacedName{Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
+	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
 	if len(tmpl.Spec.Models) != 2 || tmpl.Spec.Models[1].Name != "my-qwen" {
@@ -64,7 +66,9 @@ func TestHandleAddLLM(t *testing.T) {
 }
 
 func TestHandleAddLLMPublicNoKey(t *testing.T) {
-	s := addLLMTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash"))
+	builtin := controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash")
+	builtin.Namespace = "cubepilot"
+	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"local-ollama","endpoint":"http://localhost:11434/v1"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
@@ -74,7 +78,7 @@ func TestHandleAddLLMPublicNoKey(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var tmpl v1alpha1.AgentTemplate
-	if err := s.cr.Get(context.Background(), types.NamespacedName{Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
+	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
 	m := tmpl.Spec.Models[len(tmpl.Spec.Models)-1]

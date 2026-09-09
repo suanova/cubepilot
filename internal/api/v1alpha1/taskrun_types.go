@@ -116,7 +116,6 @@ type TaskRunSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Task",type="string",JSONPath=".spec.creatorTaskRef.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
