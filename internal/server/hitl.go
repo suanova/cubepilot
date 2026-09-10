@@ -122,12 +122,13 @@ type liveTurn struct {
 	runMu sync.Mutex
 	runID string // runId of the turn's run; set from the send ACK, filters events
 
-	done    chan struct{}
-	once    sync.Once
-	doneErr error
-	// doneStopped is written inside once.Do and read only through outcome(),
-	// which is mutex-guarded so the agent.wait tail path cannot race it.
+	done chan struct{}
+	once sync.Once
+	// doneErr and doneStopped are written together inside once.Do and read only
+	// through outcome(), which returns both under resMu so no caller can observe
+	// a torn pair (a stopped turn that looks completed, or vice versa).
 	resMu       sync.Mutex
+	doneErr     error
 	doneStopped bool
 }
 
@@ -169,12 +170,15 @@ func (t *liveTurn) finishWith(err error, stopped bool) {
 	})
 }
 
-// outcome reports how the turn ended. Safe to call after terminal and from the
-// agent.wait tail path where t.done did not close.
-func (t *liveTurn) outcome() agentruntime.TurnOutcome {
+// outcome reports how the turn ended -- both the outcome and the terminal
+// error -- from a single guarded read, so the agent.wait tail path (where
+// t.done never closed) can never see the two halves inconsistently and report
+// a stopped turn as (Stopped:false, err:nil), i.e. a plain completion. Safe to
+// call after terminal.
+func (t *liveTurn) outcome() (agentruntime.TurnOutcome, error) {
 	t.resMu.Lock()
 	defer t.resMu.Unlock()
-	return agentruntime.TurnOutcome{Stopped: t.doneStopped}
+	return agentruntime.TurnOutcome{Stopped: t.doneStopped}, t.doneErr
 }
 
 type userHitlConn struct {
@@ -676,7 +680,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}()
 	select {
 	case <-t.done:
-		return t.outcome(), t.doneErr
+		return t.outcome()
 	case err := <-waitDone:
 		if err != nil {
 			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
@@ -690,7 +694,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 		case <-ctx.Done():
 			return agentruntime.TurnOutcome{}, ctx.Err()
 		}
-		return t.outcome(), t.doneErr
+		return t.outcome()
 	case <-ctx.Done():
 		return agentruntime.TurnOutcome{}, ctx.Err()
 	}
@@ -764,12 +768,4 @@ func chatTerminalOutcome(payload []byte) (error, bool) {
 		msg = "agent run " + st.State
 	}
 	return fmt.Errorf("%s", msg), false
-}
-
-// chatTerminalErr is the diagnostic-only projection of chatTerminalOutcome, for
-// callers that do not care whether the terminal frame was a requested stop. It
-// returns nil for a request-initiated stop because that is not a failure.
-func chatTerminalErr(payload []byte) error {
-	err, _ := chatTerminalOutcome(payload)
-	return err
 }

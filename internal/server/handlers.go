@@ -203,20 +203,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// text/tool events were already streamed via emitLive as they arrived).
 	if runErr != nil {
 		streamErr = runErr
-		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
+		_ = stream.Send(liveTurnDone(sessionKey, agentruntime.TurnOutcome{}, runErr))
 	} else if outcome, err := runtimeAdapter.RunLiveTurn(r.Context(), sessionKey, agentruntime.LiveTurnParams{
 		Message: body.Content,
 		Model:   selectedModel,
 	}, emitLive); err != nil {
 		streamErr = err
-		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
-	} else if outcome.Stopped {
-		// The user stopped the turn: terminal, but not a failure, and not a
-		// normal completion -- the browser must not present the partial text as
-		// a finished answer.
-		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Stopped: true})
+		_ = stream.Send(liveTurnDone(sessionKey, agentruntime.TurnOutcome{}, err))
 	} else {
-		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey})
+		_ = stream.Send(liveTurnDone(sessionKey, outcome, nil))
 	}
 	metrics.ObserveTurn(time.Since(started).Milliseconds())
 	if streamErr != nil {
@@ -224,6 +219,23 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		metrics.Inc("cubepilot_turns_total", "status=ok", 1)
 	}
+}
+
+// liveTurnDone builds the single terminal SSE event for a finished live turn.
+// message_done is the only terminal event, and stopped and error are mutually
+// exclusive: a turn the user stopped is terminal but not a failure, so it
+// carries stopped=true and no error; a turn that failed carries its diagnostic
+// and no stopped flag. Keeping the choice in one place is what makes "a stop is
+// not a completion" verifiable without driving the whole HTTP handler.
+func liveTurnDone(sessionKey string, outcome agentruntime.TurnOutcome, err error) agentruntime.Event {
+	ev := agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey}
+	switch {
+	case err != nil:
+		ev.Error = err.Error()
+	case outcome.Stopped:
+		ev.Stopped = true
+	}
+	return ev
 }
 
 // extractToolEvents reconstructs tool_call / tool_result events for a just

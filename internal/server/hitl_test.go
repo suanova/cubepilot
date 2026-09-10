@@ -752,8 +752,11 @@ func TestChatTerminalOutcome(t *testing.T) {
 		{"rpc stop is an outcome", `{"state":"aborted","stopReason":"rpc"}`, "", true},
 		{"slash stop is an outcome", `{"state":"aborted","stopReason":"stop"}`, "", true},
 		{"stop keeps no error text", `{"state":"error","stopReason":"rpc","errorMessage":"ignored"}`, "", true},
-		{"timeout abort stays an error", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user", false},
+		{"timeout abort stays an error", `{"state":"aborted","stopReason":"timeout","errorMessage":"cancelled by user"}`, "cancelled by user", false},
 		{"error state stays an error", `{"state":"error","errorMessage":"provider boom"}`, "provider boom", false},
+		{"errorMessage aborted", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user", false},
+		{"error field is the fallback", `{"state":"error","error":"legacy msg"}`, "legacy msg", false},
+		{"no diagnostic gets a default", `{"state":"aborted"}`, "agent run aborted", false},
 		{"non-terminal state is ignored", `{"state":"final"}`, "", false},
 	}
 	for _, c := range cases {
@@ -768,22 +771,104 @@ func TestChatTerminalOutcome(t *testing.T) {
 	}
 }
 
-func TestChatTerminalErr(t *testing.T) {
-	cases := []struct{ name, payload, want string }{
-		{"errorMessage preserved", `{"state":"error","errorMessage":"provider boom","stopReason":"error"}`, "provider boom"},
-		{"errorMessage aborted", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user"},
-		{"error fallback", `{"state":"error","error":"legacy msg"}`, "legacy msg"},
-		{"no message default", `{"state":"aborted"}`, "agent run aborted"},
-		{"non-terminal state ignored", `{"state":"final"}`, ""},
+// TestLiveTurnOutcomeIsOneGuardedRead pins the accessor contract that makes the
+// agent.wait tail path safe: the outcome and the terminal error come back
+// together, so a stopped turn can never be reported as an unqualified
+// completion.
+func TestLiveTurnOutcomeIsOneGuardedRead(t *testing.T) {
+	stopped := &liveTurn{done: make(chan struct{})}
+	stopped.finishWith(nil, true)
+	if outcome, err := stopped.outcome(); !outcome.Stopped || err != nil {
+		t.Fatalf("stopped turn = (%+v, %v), want (Stopped:true, nil)", outcome, err)
 	}
-	for _, c := range cases {
-		err := chatTerminalErr([]byte(c.payload))
-		got := ""
-		if err != nil {
-			got = err.Error()
-		}
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
+
+	failed := &liveTurn{done: make(chan struct{})}
+	failed.finishWith(fmt.Errorf("boom"), false)
+	outcome, err := failed.outcome()
+	if outcome.Stopped || err == nil || err.Error() != "boom" {
+		t.Fatalf("failed turn = (%+v, %v), want (Stopped:false, boom)", outcome, err)
+	}
+}
+
+// runLiveTurnToTerminalFrame drives one turn through the real call path
+// (openClawLiveRunner -> hitlManager.RunLiveTurn -> routeLive) and feeds it a
+// single terminal chat frame before releasing the send, returning what
+// RunLiveTurn reported to its caller: the observable result the SSE handler
+// turns into the terminal message_done.
+func runLiveTurnToTerminalFrame(t *testing.T, frame string) (agentruntime.TurnOutcome, error) {
+	t.Helper()
+	gw := &fakeHitlGateway{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+
+	type result struct {
+		outcome agentruntime.TurnOutcome
+		err     error
+	}
+	res := make(chan result, 1)
+	runner := &openClawLiveRunner{manager: m, user: "alice"}
+	go func() {
+		outcome, err := runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
+		res <- result{outcome, err}
+	}()
+
+	// Wait for the fake to report the send rather than polling its fields: the
+	// receive orders this goroutine against everything the turn did before the
+	// send (the subscribe and the OnEvent registration included).
+	select {
+	case <-gw.sendRecorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sessions.send was never called")
+	}
+	onEvent := gw.eventSink()
+	run := gw.idempotencyKey()
+	if onEvent == nil || run == "" {
+		t.Fatal("turn did not register an event router for its run id")
+	}
+	onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`",`+frame+`}`))
+	// Release the send only once the turn is already terminal, so RunLiveTurn
+	// takes its terminal path (not the agent.wait tail) and reports the outcome
+	// the frame produced.
+	close(gw.sendBlock)
+
+	select {
+	case r := <-res:
+		return r.outcome, r.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLiveTurn did not return after the terminal frame")
+		return agentruntime.TurnOutcome{}, nil
+	}
+}
+
+// TestRunLiveTurnReportsRequestStoppedTurn closes the path from a terminal
+// frame to the caller's result for a request-initiated stop: the outcome must
+// report stopped, with no error. Without this, routeLive could classify a stop
+// as an ordinary completion and every turn would still look fine.
+func TestRunLiveTurnReportsRequestStoppedTurn(t *testing.T) {
+	for _, stopReason := range []string{"rpc", "stop"} {
+		t.Run(stopReason, func(t *testing.T) {
+			outcome, err := runLiveTurnToTerminalFrame(t, `"state":"aborted","stopReason":"`+stopReason+`"`)
+			if err != nil {
+				t.Fatalf("RunLiveTurn error = %v, want nil for a request-initiated stop", err)
+			}
+			if !outcome.Stopped {
+				t.Fatalf("stopReason=%q frame reported Stopped=false: a stopped turn is indistinguishable from a completed one", stopReason)
+			}
+		})
+	}
+}
+
+// TestRunLiveTurnReportsNonRequestAbortAsError closes the other half: an abort
+// the user did not ask for stays a failure, so the browser is told the turn
+// failed rather than that it was stopped.
+func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
+	outcome, err := runLiveTurnToTerminalFrame(t, `"state":"aborted","stopReason":"timeout","errorMessage":"run timed out"`)
+	if err == nil {
+		t.Fatal("RunLiveTurn error = nil for a timeout abort, want a failure")
+	}
+	if !strings.Contains(err.Error(), "run timed out") {
+		t.Fatalf("RunLiveTurn error = %v, want the frame's diagnostic", err)
+	}
+	if outcome.Stopped {
+		t.Fatal("RunLiveTurn reported Stopped=true for a non-request abort")
 	}
 }
