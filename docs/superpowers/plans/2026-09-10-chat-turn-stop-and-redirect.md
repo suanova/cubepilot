@@ -1155,9 +1155,12 @@ Append to `internal/server/abort_test.go`:
 // The reload-takeover path has no stream, so /turn must answer from the gateway
 // and must not be cached: it is per-session liveness, not a shareable resource.
 func TestHandleTurnStatus(t *testing.T) {
-	fake := newFakeHitl(t)
-	fake.busy = true
-	s := &Server{hitl: fake}
+	gw := &fakeAbortGateway{busy: true}
+	m := &hitlManager{
+		newClient: func(string, *ws.Device) hitlGateway { return gw },
+		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
+	}
+	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
 	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
