@@ -439,6 +439,13 @@ export default function ChatView() {
   // its answer arrives. The same window opens when the settling old stream
   // clears `streaming` mid-redirect and the composer offers Send again.
   const sendingRef = useRef(false)
+  // One abort per turn. The Stop control stays live for the whole redirect
+  // window (the composer still renders Stop while the send waits on the abort),
+  // and a click there would issue a second POST /abort for a run that is
+  // already settling -- a redundant request at best, and a spurious error toast
+  // if the gateway rejects the second one. Held across the request and released
+  // on every exit path: a missed release would leave Stop permanently inert.
+  const stoppingRef = useRef(false)
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -671,11 +678,19 @@ export default function ChatView() {
     // So the caller keeps the text and the Stop control, exactly as for a stop
     // the server refused.
     if (!currentSessionId) return false
+    // An abort is already in flight for this turn: join it by refusing, rather
+    // than starting a second request whose outcome nothing is waiting on. The
+    // caller treats a refusal as "the turn is still running", which is exactly
+    // what is true while the first abort settles.
+    if (stoppingRef.current) return false
+    stoppingRef.current = true
     try {
       await api.abortSession(currentSessionId)
     } catch (e) {
       showToast(String(e))
       return false
+    } finally {
+      stoppingRef.current = false
     }
     // The stream closes with message_done{stopped:true}; nothing more to do
     // here -- do NOT abort the local fetch, the server's terminal is cleaner.
@@ -699,6 +714,19 @@ export default function ChatView() {
       // both exits: the abandoned redirect below, and the send that follows. The
       // release cannot be observed by a second submission: from it to the
       // textarea being cleared there is no await, so both happen in one turn.
+      //
+      // The generation is captured *before* the await and re-checked *after*
+      // it, not just before the send. Everything below -- the bubbles, the POST
+      // body, the new stream -- is built from this render closure's
+      // `currentSessionId`, and the abort round trip is long (up to the
+      // server's settle timeout). A session switch or a new chat in that window
+      // runs dropStream(), and the continuation resumes as if it were still
+      // current, because it takes a fresh generation of its own: it would POST
+      // to the session the user left (silently giving it a turn that only shows
+      // up on reload) while painting that turn's bubbles into the view they
+      // switched to. The re-check is what makes the switch win; a check only
+      // before the send cannot see a switch that has not happened yet.
+      const genAtSend = streamGenRef.current
       sendingRef.current = true
       let stopped = false
       try {
@@ -706,6 +734,7 @@ export default function ChatView() {
       } finally {
         sendingRef.current = false
       }
+      if (streamGenRef.current !== genAtSend) return
       if (!stopped) return
     }
     const nextBubbles = [
