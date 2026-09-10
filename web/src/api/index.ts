@@ -8,6 +8,7 @@ import type {
   AuditEntry,
   HistoryMessage,
   PendingConfirm,
+  PendingQuestion,
   PlatformObject,
   Report,
   SessionInfo,
@@ -38,6 +39,31 @@ export const api = {
     apiFetch<PendingConfirm>(
       `/api/sessions/${encodeURIComponent(sessionKey)}/confirm/pending`,
     ),
+
+  // Ask-user questions (issue #161): answer or dismiss a question the agent is
+  // blocked on, and restore the card after a reload.
+  postQuestion: (sessionKey: string, id: string, answers: Record<string, string[]>) =>
+    apiFetch<{ question_id: string; cancelled: boolean }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/question`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, answers }),
+      },
+    ),
+  postQuestionCancel: (sessionKey: string, id: string) =>
+    apiFetch<{ question_id: string; cancelled: boolean }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/question`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, cancel: true }),
+      },
+    ),
+  pendingQuestions: (sessionKey: string) =>
+    apiFetch<{ questions: PendingQuestion[] }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/question/pending`,
+    ).then((d) => d.questions ?? []),
 
   // Tasks (FR-M4)
   listTasks: () => apiFetch<{ tasks: Task[] }>('/api/tasks').then((d) => d.tasks),

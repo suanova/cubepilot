@@ -183,6 +183,43 @@ export interface SSEConfirmResolved {
   approved?: boolean
 }
 
+// Ask-user (issue #161): the agent's ask_user tool is blocked on a human
+// answer. call_id is the gateway question id the answer must be submitted with.
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+export interface QuestionItem {
+  questionId: string
+  header: string
+  question: string
+  options: QuestionOption[]
+  multiSelect?: boolean
+}
+
+export interface QuestionPrompt {
+  questions: QuestionItem[]
+  // Remaining time when the event was produced (not an absolute deadline), so
+  // the countdown does not depend on this machine's clock matching the API's.
+  timeoutSeconds?: number
+}
+
+export interface SSEQuestionPending {
+  type: 'question_pending'
+  session_id: string
+  call_id?: string
+  question?: QuestionPrompt
+}
+
+export interface SSEQuestionResolved {
+  type: 'question_resolved'
+  session_id: string
+  call_id?: string
+  // Terminal status: answered | cancelled | expired.
+  message?: string
+}
+
 export type SSEEvent =
   | SSEMessageStart
   | SSEAgentThinking
@@ -193,6 +230,17 @@ export type SSEEvent =
   | SSEMessageDone
   | SSEConfirmPending
   | SSEConfirmResolved
+  | SSEQuestionPending
+  | SSEQuestionResolved
+
+// A question awaiting an answer, served by GET
+// /api/sessions/{key}/question/pending (used to restore a question card after a
+// reload). Mirrors the question_pending event payload.
+export interface PendingQuestion {
+  id: string
+  questions: QuestionItem[]
+  timeoutSeconds?: number
+}
 
 // A write awaiting a decision, served by GET /api/sessions/{key}/confirm/pending
 // (used to restore a confirmation card after a reload mid-approval).
