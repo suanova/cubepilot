@@ -1156,10 +1156,7 @@ Append to `internal/server/abort_test.go`:
 // and must not be cached: it is per-session liveness, not a shareable resource.
 func TestHandleTurnStatus(t *testing.T) {
 	gw := &fakeAbortGateway{busy: true}
-	m := &hitlManager{
-		newClient: func(string, *ws.Device) hitlGateway { return gw },
-		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
-	}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
