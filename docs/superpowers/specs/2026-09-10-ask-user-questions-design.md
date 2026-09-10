@@ -217,9 +217,10 @@ bridge are already process-local.
   an explicit id.
 - `s.hitl == nil` -> 503, the same failure surface as approvals.
 
-Error mapping: session mismatch / not found -> 404, not pending or expired ->
-409, malformed body / empty answer set -> 400, `QUESTION_INVALID_ANSWER` -> 400,
-otherwise 502. The `question.get` gate answers most of these directly; the
+Error mapping: session mismatch -> 404, `QUESTION_NOT_FOUND` -> 404, not pending
+or expired -> 409, `QUESTION_ALREADY_TERMINAL` -> 409, malformed body / empty
+answer set -> 400, `QUESTION_INVALID_ANSWER` -> 400, otherwise 502. The
+`question.get` gate answers most of these directly; the
 resolved `details.reason` backstops the get/resolve race.
 
 **hitlManager.** `ResolveQuestion`, `CancelQuestion`, `GetQuestion` and

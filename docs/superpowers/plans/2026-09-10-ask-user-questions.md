@@ -45,7 +45,7 @@
   - `QuestionPrompt`, `QuestionItem`, `QuestionOption`; `EventQuestionPending` / `EventQuestionResolved`; `Event.Question *QuestionPrompt`.
 
 - [ ] **3. Relay and routing index** (`internal/server/questions.go`, `hitl.go`)
-  - `projectableQuestion(record)`: no `isOther` / `isSecret` / `secretStore` and at least one option, on every question.
+  - `unsupportedQuestionReason(record)`: reject a record with no questions, or one whose question is `isSecret`, carries `secretStore`, or has no options. `isOther` must be allowed -- `ask_user` sets it on every question it emits.
   - Routing table `id -> sessionKey`, written on relay and on recovery, deleted on resolved.
   - `questionBridge` wired in `conn()`'s `OnEvent`; `question.requested` routes by its own `sessionKey`, `question.resolved` via the table.
   - `hitlManager.ResolveQuestion` / `CancelQuestion` / `GetQuestion` / `ListQuestions`; `hitlGateway` additions.

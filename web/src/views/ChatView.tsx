@@ -492,8 +492,23 @@ export default function ChatView() {
         ])
         requestAnimationFrame(scrollThread)
       }
-    } catch {
-      /* no pending question for this session */
+    } catch (e) {
+      // 404 is the ordinary "nothing pending for this session" answer. Anything
+      // else (a gateway failure, a dropped channel) means we could not tell: a
+      // parked turn would then look like an idle one, with no card and no way
+      // to send another message, so say so instead of staying silent.
+      if (!(e instanceof ApiError && e.status === 404) && activeSessionRef.current === id) {
+        setBubbles((prev) => [
+          ...prev,
+          {
+            kind: 'assistant' as const,
+            tools: [],
+            thinking: false,
+            phase: 'done' as const,
+            error: `Could not check for a pending question: ${String(e)}`,
+          },
+        ])
+      }
     }
     let p: PendingConfirm
     try {
