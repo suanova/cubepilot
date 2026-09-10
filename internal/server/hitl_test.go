@@ -334,6 +334,20 @@ func (f *fakeHitlGateway) sentMessages() []string {
 	return append([]string(nil), f.sends...)
 }
 
+// subscribedSessions returns a copy of the recorded SubscribeSessionMessages keys.
+func (f *fakeHitlGateway) subscribedSessions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.subscribes...)
+}
+
+// unsubscribedSessions returns a copy of the recorded UnsubscribeSessionMessages keys.
+func (f *fakeHitlGateway) unsubscribedSessions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.unsubscribes...)
+}
+
 // idempotencyKey returns the key the last send carried.
 func (f *fakeHitlGateway) idempotencyKey() string {
 	f.mu.Lock()

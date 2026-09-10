@@ -151,12 +151,17 @@ func (s *Server) relayQuestionRequested(rec ws.QuestionRecord) {
 		return
 	}
 	s.qroutes.put(rec.ID, rec.SessionKey)
-	s.hub.PublishTo(rec.SessionKey, agentruntime.Event{
+	// No open stream means no browser is watching this session: the question
+	// reaches the Portal only through reload recovery. Say so -- a silently
+	// dropped push is what made issue #167 hard to see.
+	if !s.hub.PublishTo(rec.SessionKey, agentruntime.Event{
 		Type:      agentruntime.EventQuestionPending,
 		SessionID: rec.SessionKey,
 		CallID:    rec.ID,
 		Question:  questionPrompt(rec),
-	})
+	}) {
+		s.logf("question %s: no open stream for session %s; push dropped", rec.ID, rec.SessionKey)
+	}
 }
 
 // relayQuestionResolved settles a question card. The broadcast carries no
@@ -169,12 +174,14 @@ func (s *Server) relayQuestionResolved(res ws.QuestionResolved) {
 		s.logf("question %s: resolved (%s) with no known session; not forwarded", res.ID, res.Status)
 		return
 	}
-	s.hub.PublishTo(sessionKey, agentruntime.Event{
+	if !s.hub.PublishTo(sessionKey, agentruntime.Event{
 		Type:      agentruntime.EventQuestionResolved,
 		SessionID: sessionKey,
 		CallID:    res.ID,
 		Message:   res.Status, // answered | cancelled | expired
-	})
+	}) {
+		s.logf("question %s: no open stream for session %s; resolution not delivered", res.ID, sessionKey)
+	}
 }
 
 // questionEntry is one pending question served to the Portal for reload
