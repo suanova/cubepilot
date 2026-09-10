@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,17 @@ type fakeHitlGateway struct {
 	waitErr      error
 	createErr    error
 	modelErr     error
+
+	// ask_user question channel (issue #161)
+	onQuestionRequested func(ws.QuestionRecord)
+	onQuestionResolved  func(ws.QuestionResolved)
+	questionResolves    []string // "id|resolvedBy|qid=label;qid2=a,b"
+	questionCancels     []string // "id|resolvedBy"
+	questionResolveErr  error
+	getQuestionErr      error
+	listQuestionsErr    error
+	questionRecords     map[string]ws.QuestionRecord
+	pendingQuestions    []ws.QuestionRecord
 }
 
 func (f *fakeHitlGateway) Connected() bool { return f.connected }
@@ -154,7 +166,52 @@ func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision stri
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
 }
+func (f *fakeHitlGateway) OnQuestionRequested(cb func(ws.QuestionRecord)) { f.onQuestionRequested = cb }
+func (f *fakeHitlGateway) OnQuestionResolved(cb func(ws.QuestionResolved)) {
+	f.onQuestionResolved = cb
+}
+func (f *fakeHitlGateway) ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error {
+	f.questionResolves = append(f.questionResolves, id+"|"+resolvedBy+"|"+flattenAnswers(answers))
+	return f.questionResolveErr
+}
+func (f *fakeHitlGateway) CancelQuestion(ctx context.Context, id, resolvedBy string) error {
+	f.questionCancels = append(f.questionCancels, id+"|"+resolvedBy)
+	return f.questionResolveErr
+}
+func (f *fakeHitlGateway) GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error) {
+	if f.getQuestionErr != nil {
+		return nil, f.getQuestionErr
+	}
+	if f.questionRecords == nil {
+		return nil, fmt.Errorf("question %q not found", id)
+	}
+	rec, ok := f.questionRecords[id]
+	if !ok {
+		return nil, fmt.Errorf("question %q not found", id)
+	}
+	return &rec, nil
+}
+func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
+	if f.listQuestionsErr != nil {
+		return nil, f.listQuestionsErr
+	}
+	return f.pendingQuestions, nil
+}
 func (f *fakeHitlGateway) Close() {}
+
+// flattenAnswers renders an answer map deterministically ("where=workspace,home").
+func flattenAnswers(answers map[string][]string) string {
+	keys := make([]string, 0, len(answers))
+	for k := range answers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+strings.Join(answers[k], ","))
+	}
+	return strings.Join(parts, ";")
+}
 
 // newTestHitl returns a manager whose gateway is a fresh fake per connect and
 // whose policy resolution is fixed. With no explicit allowlist, Allowlist

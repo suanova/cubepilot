@@ -18,7 +18,37 @@ const (
 	EventMessageDone     = "message_done"
 	EventConfirmPending  = "confirm_pending"
 	EventConfirmResolved = "confirm_resolved"
+	// EventQuestionPending surfaces an ask_user question the agent is blocked
+	// on; EventQuestionResolved settles its card. message carries the terminal
+	// status (answered / cancelled / expired).
+	EventQuestionPending  = "question_pending"
+	EventQuestionResolved = "question_resolved"
 )
+
+// QuestionOption is one selectable answer of a question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// QuestionItem is one question the human must answer. QuestionID is the key the
+// answer is submitted under.
+type QuestionItem struct {
+	QuestionID  string           `json:"questionId"`
+	Header      string           `json:"header"`
+	Question    string           `json:"question"`
+	Options     []QuestionOption `json:"options"`
+	MultiSelect bool             `json:"multiSelect,omitempty"`
+}
+
+// QuestionPrompt is the runtime-neutral projection of a pending question.
+// TimeoutSeconds is the time remaining when the event was produced (not an
+// absolute deadline), so a countdown does not depend on the reader's clock
+// agreeing with the producer's.
+type QuestionPrompt struct {
+	Questions      []QuestionItem `json:"questions"`
+	TimeoutSeconds int            `json:"timeoutSeconds,omitempty"`
+}
 
 // Event is one runtime-neutral event in CubePilot's streaming contract.
 type Event struct {
@@ -34,6 +64,9 @@ type Event struct {
 	Approved  *bool  `json:"approved,omitempty"`
 	Delta     string `json:"delta,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Question carries the pending question prompt on question_pending, with
+	// CallID holding the gateway question id used to answer it.
+	Question *QuestionPrompt `json:"question,omitempty"`
 }
 
 // Marshal returns the SSE data payload for an event.

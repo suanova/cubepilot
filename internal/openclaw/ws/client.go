@@ -17,6 +17,8 @@ const (
 	challengeEvent        = "connect.challenge"
 	execApprovalRequested = "exec.approval.requested"
 	execApprovalResolved  = "exec.approval.resolved"
+	questionRequested     = "question.requested"
+	questionResolved      = "question.resolved"
 
 	defaultClientVersion  = "cubepilot/2026.9"
 	defaultClientPlatform = "linux"
@@ -43,6 +45,11 @@ type Client struct {
 
 	onRequested func(ApprovalRequested)
 	onResolved  func(ApprovalResolved)
+	// onQuestionRequested / onQuestionResolved handle the ask_user question
+	// broadcasts (issue #161). They are separate from onEvent so a question is
+	// never mistaken for live turn content.
+	onQuestionRequested func(QuestionRecord)
+	onQuestionResolved  func(QuestionResolved)
 	// onEvent receives every non-approval event frame pushed by the gateway
 	// (agent / chat / session.message live-stream events, heartbeats, ...).
 	// Registered once per connection so callers can subscribe to session
@@ -76,6 +83,16 @@ func (c *Client) OnApprovalRequested(f func(ApprovalRequested)) {
 // OnApprovalResolved registers the handler for exec.approval.resolved.
 func (c *Client) OnApprovalResolved(f func(ApprovalResolved)) {
 	c.onResolved = f
+}
+
+// OnQuestionRequested registers the handler for question.requested.
+func (c *Client) OnQuestionRequested(f func(QuestionRecord)) {
+	c.onQuestionRequested = f
+}
+
+// OnQuestionResolved registers the handler for question.resolved.
+func (c *Client) OnQuestionResolved(f func(QuestionResolved)) {
+	c.onQuestionResolved = f
 }
 
 // OnEvent registers a callback for every non-approval event frame received on
@@ -272,7 +289,7 @@ func frameErrorOf(res responseFrame) error {
 	if res.Error == nil {
 		return fmt.Errorf("ws rpc failed")
 	}
-	return &rpcError{Code: res.Error.Code, Message: res.Error.Message}
+	return &rpcError{Code: res.Error.Code, Message: res.Error.Message, Reason: res.Error.reason()}
 }
 
 // writeReq sends one request frame over the given connection.
@@ -362,6 +379,22 @@ func (c *Client) dispatchEvent(ev eventFrame) {
 		var res ApprovalResolved
 		if err := json.Unmarshal(ev.Payload, &res); err == nil && res.ID != "" {
 			c.onResolved(res)
+		}
+	case questionRequested:
+		if c.onQuestionRequested == nil {
+			return
+		}
+		var rec QuestionRecord
+		if err := json.Unmarshal(ev.Payload, &rec); err == nil && rec.ID != "" {
+			c.onQuestionRequested(rec)
+		}
+	case questionResolved:
+		if c.onQuestionResolved == nil {
+			return
+		}
+		var res QuestionResolved
+		if err := json.Unmarshal(ev.Payload, &res); err == nil && res.ID != "" {
+			c.onQuestionResolved(res)
 		}
 	default:
 		// Live-stream pushes (agent / chat / session.message), heartbeats and

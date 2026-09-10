@@ -43,7 +43,8 @@ type Server struct {
 	cr        client.Client
 	hub       *Hub
 	approvals *ApprovalService
-	hitl      *hitlManager // nil when HITL is not configured (confirmPolicy stays declarative)
+	hitl      *hitlManager   // nil when HITL is not configured (confirmPolicy stays declarative)
+	qroutes   *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 
 // hitlMasterSecretName is the Secret holding the auto-generated device master
@@ -127,6 +128,15 @@ func (s *Server) EnableHITL() error {
 			CreatedAt:  time.Now(),
 		})
 	}
+	// Ask-user questions ride the same device connection (issue #161): a
+	// question the agent is blocked on is relayed onto the parked turn's SSE
+	// stream, and its resolution is addressed back to the same session.
+	m.questionRequested = func(_ string, rec ws.QuestionRecord) {
+		s.relayQuestionRequested(rec)
+	}
+	m.questionResolved = func(_ string, res ws.QuestionResolved) {
+		s.relayQuestionResolved(res)
+	}
 	s.logf("hitl: master key %s ensured; write confirmations enabled", hitlMasterSecretName)
 	return nil
 }
@@ -136,6 +146,7 @@ func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *sk
 	s := &Server{cfg: cfg, mgr: mgr, store: st, catalog: catalog, cr: cr}
 	s.hub = NewHub()
 	s.approvals = NewApprovalService(s.hub, st, s.logf)
+	s.qroutes = newQuestionRoutes()
 	return s
 }
 
@@ -187,6 +198,10 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 		s.handlePendingConfirm(w, r)
 	case strings.HasSuffix(r.URL.Path, "/confirm"):
 		s.handleConfirm(w, r)
+	case strings.HasSuffix(r.URL.Path, "/question/pending"):
+		s.handlePendingQuestion(w, r)
+	case strings.HasSuffix(r.URL.Path, "/question"):
+		s.handleQuestion(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -46,6 +47,70 @@ func (c *Client) SetApprovalsPolicy(ctx context.Context, file ApprovalsFile, bas
 func (c *Client) ResolveApproval(ctx context.Context, id, decision string) error {
 	_, err := c.Call(ctx, "exec.approval.resolve", approvalResolveParams{ID: id, Decision: decision})
 	return err
+}
+
+// ResolveQuestion answers a pending question (question.resolve). answers maps
+// each question's id to the selected option labels; resolvedBy is audit
+// metadata shown by the gateway, not an authorization input.
+func (c *Client) ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error {
+	if len(answers) == 0 {
+		return fmt.Errorf("question.resolve %q: empty answer set", id)
+	}
+	params := questionResolveParams{ID: id, Answers: &questionAnswers{Answers: answers}, ResolvedBy: resolvedBy}
+	if _, err := c.Call(ctx, "question.resolve", params); err != nil {
+		return fmt.Errorf("question.resolve %q: %w", id, err)
+	}
+	return nil
+}
+
+// CancelQuestion dismisses a pending question (question.resolve with
+// cancel:true), letting the agent continue instead of waiting out its timeout.
+func (c *Client) CancelQuestion(ctx context.Context, id, resolvedBy string) error {
+	params := questionResolveParams{ID: id, Cancel: true, ResolvedBy: resolvedBy}
+	if _, err := c.Call(ctx, "question.resolve", params); err != nil {
+		return fmt.Errorf("question.resolve cancel %q: %w", id, err)
+	}
+	return nil
+}
+
+// GetQuestion reads one question record (question.get). The gateway keeps a
+// terminal record for a short grace period, so this still answers shortly
+// after the question resolves.
+func (c *Client) GetQuestion(ctx context.Context, id string) (*QuestionRecord, error) {
+	raw, err := c.Call(ctx, "question.get", map[string]any{"id": id})
+	if err != nil {
+		return nil, fmt.Errorf("question.get %q: %w", id, err)
+	}
+	var out questionGetResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode question.get: %w", err)
+	}
+	return &out.Question, nil
+}
+
+// ListQuestions returns the gateway's pending questions (question.list).
+func (c *Client) ListQuestions(ctx context.Context) ([]QuestionRecord, error) {
+	raw, err := c.Call(ctx, "question.list", struct{}{})
+	if err != nil {
+		return nil, fmt.Errorf("question.list: %w", err)
+	}
+	var out QuestionListResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode question.list: %w", err)
+	}
+	return out.Questions, nil
+}
+
+// ReasonOf returns the gateway's structured error reason (error.details.reason)
+// when err wraps a failed RPC that carried one, or "" otherwise. Callers use it
+// to map a protocol-level reason such as QUESTION_ALREADY_TERMINAL onto their
+// own status without parsing message text.
+func ReasonOf(err error) string {
+	var re *rpcError
+	if errors.As(err, &re) {
+		return re.Reason
+	}
+	return ""
 }
 
 // PatchSessionGuarded sets a session's permissionMode to guarded
