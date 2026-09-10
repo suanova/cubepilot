@@ -179,6 +179,21 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 	return p, nil
 }
 
+// settle forgets a pending approval without deciding it. It is the abort path:
+// the run is gone, so there is nothing to allow or deny, and no decision is
+// recorded -- a stopped turn is neither an approval nor a rejection that a
+// later audit could attribute to the human. The session mapping is dropped only
+// when it still points at this approval, so a newer Begin for the same session
+// (which Resolve protects the same way) keeps its claim.
+func (s *ApprovalService) settle(p pendingApproval) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
+		delete(s.bySession, p.SessionKey)
+	}
+	delete(s.byID, p.ApprovalID)
+}
+
 func (s *ApprovalService) recordDecision(user string, p pendingApproval, approved bool) {
 	if s.store == nil {
 		return
