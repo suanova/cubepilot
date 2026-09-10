@@ -206,6 +206,8 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 		s.handlePendingQuestion(w, r)
 	case strings.HasSuffix(r.URL.Path, "/question"):
 		s.handleQuestion(w, r)
+	case strings.HasSuffix(r.URL.Path, "/abort"):
+		s.handleAbort(w, r)
 	default:
 		http.NotFound(w, r)
 	}
