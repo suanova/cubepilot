@@ -6,7 +6,7 @@
 
 **Architecture:** The gateway broadcasts `question.requested` / `question.resolved` over the per-user WebSocket device connection. The API relays them onto the parked turn's SSE stream as `question_pending` / `question_resolved`; the browser renders option buttons and posts the answer back to a new `POST /api/sessions/{key}/question` route, which resolves the question over the same connection with `question.resolve`. The API keeps no question state beyond a small `id -> sessionKey` routing table, because the resolved event carries no session key.
 
-**Tech Stack:** Go (API server), OpenClaw gateway (unchanged), React 18 web.
+**Tech Stack:** Go (API server), OpenClaw gateway (unchanged), React 19 web.
 
 **Spec:** `docs/superpowers/specs/2026-09-10-ask-user-questions-design.md`
 

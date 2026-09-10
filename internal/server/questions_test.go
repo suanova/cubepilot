@@ -21,6 +21,9 @@ func questionTestServer(t *testing.T, gw *fakeHitlGateway, session string) (*Ser
 	t.Helper()
 	s := platformTestServer(t)
 	s.hitl = newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	// A registered connection is only usable once its handshake completed, so
+	// the fixture marks the gateway connected rather than merely stored.
+	gw.connected = true
 	s.hitl.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
 	rec := httptest.NewRecorder()
 	if _, err := s.hub.Open(session, rec, rec); err != nil {
@@ -277,6 +280,28 @@ func TestHandleQuestionWithoutChannel(t *testing.T) {
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleQuestionDuringPairingReportsUnavailable: a connection is stored
+// before its handshake completes, so one that is still pairing must read as an
+// unavailable channel rather than failing later inside the RPC as a gateway
+// error.
+func TestHandleQuestionDuringPairingReportsUnavailable(t *testing.T) {
+	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+		"ask_1": questionRecord("ask_1", questionTestSession),
+	}}
+	s, _ := questionTestServer(t, gw, questionTestSession)
+	gw.connected = false // registered, handshake still in flight
+
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	pending := doReq(t, s.Handler(), http.MethodGet, "/api/sessions/conv-1/question/pending", "alice", nil)
+	if pending.Code != http.StatusNotFound {
+		t.Fatalf("pending status = %d, want 404: %s", pending.Code, pending.Body.String())
 	}
 }
 

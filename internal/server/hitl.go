@@ -468,11 +468,17 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 // liveConn returns the user's established gateway connection without dialing a
 // new one. Resolution and pending-state reads must not open a connection (and
 // trigger a device pairing) as a side effect of a status request.
+//
+// The connection is registered before its handshake completes (conn stores it
+// up front so the pairing retry loop can hold the per-user lock), so a stored
+// gateway is not necessarily a usable one: without the Connected check a call
+// made mid-pairing would fail inside Client.Call with "not connected" and
+// surface as a gateway error instead of the unavailable-channel status.
 func (m *hitlManager) liveConn(user string) (hitlGateway, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.conns[user]
-	if !ok || c == nil || c.gw == nil {
+	if !ok || c == nil || c.gw == nil || !c.gw.Connected() {
 		return nil, false
 	}
 	return c.gw, true

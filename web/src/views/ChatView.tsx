@@ -68,7 +68,12 @@ interface BubbleMsg {
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
   confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
-  question?: BubbleQuestion // a pending/resolved ask_user question on this bubble
+  // Every question this turn has asked, in order. The agent can ask several in
+  // one turn (a blocked ask_user resumes, then another follows), so they are
+  // kept as a collection rather than one slot that a later question replaces --
+  // that would drop an answered card's record and, on the recovery path, the
+  // other open questions.
+  questions?: BubbleQuestion[]
 }
 
 // newBubbleQuestion builds the card state for one question event or recovery
@@ -177,7 +182,10 @@ function QuestionCard({
               )}
             </div>
             <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>{item.question}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {/* role=group + aria-label give the options an accessible group and
+                name; the selected state itself is exposed by aria-pressed on
+                each button rather than by colour alone. */}
+            <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {item.options.map((o) => {
                 const active = picked.includes(o.label)
                 return (
@@ -185,6 +193,7 @@ function QuestionCard({
                     key={o.label}
                     onClick={() => onPick(question, item, o.label)}
                     disabled={settled || !!question.busy}
+                    aria-pressed={active}
                     title={o.description}
                     style={{
                       background: active ? 'var(--accent, #3b82f6)' : 'none',
@@ -459,13 +468,13 @@ export default function ChatView() {
       if (pending.length > 0) {
         setBubbles((prev) => [
           ...prev,
-          ...pending.map((p) => ({
+          {
             kind: 'assistant' as const,
             tools: [],
             thinking: false,
             phase: 'done' as const,
-            question: newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds),
-          })),
+            questions: pending.map((p) => newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds)),
+          },
         ])
         requestAnimationFrame(scrollThread)
       }
@@ -646,22 +655,28 @@ export default function ChatView() {
             // suppressed server-side so this is the only surface for it.
             if (ev.question && ev.question.questions?.length) {
               setPhase(bubble, 'tools')
-              bubble.question = newBubbleQuestion(
-                ev.session_id || currentSessionId || '',
-                ev.call_id || '',
-                ev.question.questions,
-                ev.question.timeoutSeconds,
-              )
+              bubble.questions = [
+                ...(bubble.questions || []),
+                newBubbleQuestion(
+                  ev.session_id || currentSessionId || '',
+                  ev.call_id || '',
+                  ev.question.questions,
+                  ev.question.timeoutSeconds,
+                ),
+              ]
               setBubbles([...bubblesRef.current])
               requestAnimationFrame(scrollThread)
             }
             return
           }
           if (ev.type === 'question_resolved') {
-            if (bubble.question && (!ev.call_id || bubble.question.questionId === ev.call_id)) {
-              bubble.question.resolved = true
-              bubble.question.outcome = ev.message || 'answered'
-              bubble.question.busy = false
+            // Settle only the matching card: another question of this turn may
+            // still be open.
+            const q = (bubble.questions || []).find((x) => !ev.call_id || x.questionId === ev.call_id)
+            if (q) {
+              q.resolved = true
+              q.outcome = ev.message || 'answered'
+              q.busy = false
               setBubbles([...bubblesRef.current])
             }
             return
@@ -804,9 +819,16 @@ export default function ChatView() {
       }
       q.deadline = live.timeoutSeconds ? Date.now() + live.timeoutSeconds * 1000 : undefined
       q.error = 'That answer was not accepted; the question is still open.'
-    } catch {
-      q.resolved = true
-      q.outcome = 'expired'
+    } catch (e2) {
+      // Only a confirmed "gone" settles the card. A transient failure would
+      // otherwise hide the controls while the agent is still parked, leaving
+      // the user unable to answer until a reload.
+      if (e2 instanceof ApiError && e2.status === 404) {
+        q.resolved = true
+        q.outcome = 'expired'
+        return
+      }
+      q.error = 'Could not refresh the question. Try again.'
     }
   }
 
@@ -817,7 +839,7 @@ export default function ChatView() {
   function statusLine(b: BubbleMsg): string {
     if (b.kind === 'user' || !b.phase) return ''
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
-    if (b.kind === 'assistant' && b.question && !b.question.resolved) return 'Awaiting your answer...'
+    if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
     switch (b.phase) {
       case 'thinking':
@@ -1005,9 +1027,11 @@ export default function ChatView() {
                         )}
                       </div>
                     )}
-                    {/* A question the agent is blocked on until it is answered
-                        (issue #161). */}
-                    {b.question && <QuestionCard question={b.question} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />}
+                    {/* Questions the agent is blocked on until answered, one
+                        card each (issue #161). */}
+                    {(b.questions || []).map((q) => (
+                      <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+                    ))}
                     {/* When an assistant reply ran tools, its closing text is the
                         takeaway: render it as a highlighted panel so it stands out
                         from the tool log. Assistant text renders as Markdown; user
