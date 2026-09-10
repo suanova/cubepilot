@@ -1264,7 +1264,7 @@ Assisted-by: Claude Code"
 - Modify: `web/src/api/index.ts`
 
 **Interfaces:**
-- Produces: `SSEMessageDone.stopped?: boolean`; `streamSSE(url, opts, onEvent, signal?)`; `api.abortSession(sessionKey, user)`; `api.sessionTurn(sessionKey, user)`.
+- Produces: `SSEMessageDone.stopped?: boolean`; `streamSSE(url, opts, onEvent, signal?)`; `api.abortSession(sessionKey)`; `api.sessionTurn(sessionKey)`. Neither method takes a user: `apiFetch` attaches `X-CubePilot-User` itself.
 
 - [ ] **Step 1: Extend the event type**
 
@@ -1293,7 +1293,19 @@ export async function streamSSE(
   onEvent: (name: string, ev: SSEEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const resp = await fetch(url, { ...opts, signal })
+  // The fetch itself must be guarded: when the signal aborts before the
+  // response headers arrive, fetch rejects with an AbortError that never
+  // reaches the reader loop below, so an unguarded call surfaces the cancel as
+  // a user-visible error. A genuine pre-response failure still emits the
+  // terminal event the caller resets on.
+  let resp: Response
+  try {
+    resp = await fetch(url, { ...opts, signal: signal ?? opts.signal })
+  } catch (e) {
+    if (signal?.aborted) return
+    emitDone(onEvent, String(e))
+    return
+  }
   // ...
 ```
 
@@ -1305,7 +1317,9 @@ In the read-failure branch, distinguish an intentional abort from a real one:
     } catch (e) {
       // An intentional cancel (unmount, session switch) is a clean stop, not a
       // transport failure: do not synthesize an error the user would see.
-      if (signal?.aborted) return
+      // Discriminate on the error, not on the flag: a real connection reset
+      // that happens to arrive after an unrelated abort must still surface.
+      if (isAbortError(e)) return
       streamError = String(e)
       break
     }
@@ -1314,7 +1328,7 @@ In the read-failure branch, distinguish an intentional abort from a real one:
 Also guard the missing-terminal fallback at the end of the function:
 
 ```ts
-  if (!sawDone && !signal?.aborted) {
+  if (!sawDone && !isAbortError(streamError)) {
     emitDone(onEvent, streamError)
   }
 ```
