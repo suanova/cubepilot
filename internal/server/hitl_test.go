@@ -897,26 +897,41 @@ func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
 // session: absent while no turn is registered, then present from the moment the
 // turn registers.
 //
-// The id is installed *before* RunLiveTurn subscribes and sends (hitl.go:693-694
+// The id is installed *before* RunLiveTurn subscribes and sends (hitl.go:691-699
 // calls setRunID right after registerLive), and the gateway's client run id is
 // the send's idempotency key. So the id-less window is those two statements
 // wide, with no I/O between them -- it is not a pre-ACK window stretching across
 // the subscribe/send round trip. An empty LiveRunID therefore means no turn is
 // registered at all, and that is the only condition the session-scoped abort
 // fallback can observe.
+//
+// The lookup is scoped to the requesting user: m.live is indexed by session key
+// alone, and a session key can be client-supplied, so an unscoped read would let
+// one user's /abort pick up another user's run id. routeLive applies the same
+// ownership rule when it routes.
 func TestHitl_LiveRunID(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
-	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
+	if id, ok := m.LiveRunID("alice", "conv-1"); ok || id != "" {
 		t.Fatalf("LiveRunID with no turn = (%q, %v), want empty", id, ok)
 	}
 
 	turn := m.registerLive("alice", "conv-1", nil)
-	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
+	if id, ok := m.LiveRunID("alice", "conv-1"); ok || id != "" {
 		t.Fatalf("LiveRunID in the registerLive..setRunID gap = (%q, %v), want empty", id, ok)
 	}
 	turn.setRunID("run-7")
-	if id, ok := m.LiveRunID("conv-1"); !ok || id != "run-7" {
+	if id, ok := m.LiveRunID("alice", "conv-1"); !ok || id != "run-7" {
 		t.Fatalf("LiveRunID = (%q, %v), want run-7", id, ok)
+	}
+
+	// Another user asking about the same session key must not see alice's run
+	// id: reading it is what would let their /abort kill her run.
+	if id, ok := m.LiveRunID("bob", "conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID for another user = (%q, %v), want empty", id, ok)
+	}
+	// The owner still reads it, so the check rejects only outsiders.
+	if id, ok := m.LiveRunID("alice", "conv-1"); !ok || id != "run-7" {
+		t.Fatalf("LiveRunID for the owner after another user read it = (%q, %v), want run-7", id, ok)
 	}
 }
 

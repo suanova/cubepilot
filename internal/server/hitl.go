@@ -592,14 +592,19 @@ func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, dec
 // already resolved and returns immediately.
 const wsRunTail = 500 * time.Millisecond
 
-// LiveRunID returns the run id of the session's active live turn, if any. The
-// browser never learns the run id; the server does, and passing it scopes an
+// LiveRunID returns the run id of the user's active live turn on this session.
+// The browser never learns the run id; the server does, and passing it scopes an
 // abort so it cannot kill a run promoted after this one settles.
-func (m *hitlManager) LiveRunID(sessionKey string) (string, bool) {
+//
+// The user is part of the key on purpose. m.live is indexed by session key
+// alone, and a session key can be client-supplied, so without the ownership
+// check one user's /abort could pick up another user's run id. routeLive checks
+// the same thing when it routes; keep them together.
+func (m *hitlManager) LiveRunID(user, sessionKey string) (string, bool) {
 	m.liveMu.Lock()
 	t := m.live[sessionKey]
 	m.liveMu.Unlock()
-	if t == nil {
+	if t == nil || t.user != user {
 		return "", false
 	}
 	t.runMu.Lock()
