@@ -871,7 +871,10 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 	live.setRunID("run-9")
 	gw.busy = false
 
-	s := &Server{hub: h, hitl: m}
+	// Build the Server through a helper, not a bare literal: settle touches
+	// s.approvals and s.qroutes as well as s.hitl, and a literal that omits them
+	// nil-panics on the test goroutine.
+	s := newAbortTestServer(h, m)
 
 	done := make(chan int, 1)
 	rec := httptest.NewRecorder()
@@ -919,6 +922,21 @@ func (f *fakeAbortGateway) AbortChat(_ context.Context, sessionKey, runID string
 
 func (f *fakeAbortGateway) SessionBusy(context.Context, string) (bool, error) {
 	return f.busy, nil
+}
+```
+
+```go
+// newAbortTestServer builds a Server with every collaborator settle and the
+// abort path touch. A bare &Server{hub: h, hitl: m} literal is not enough:
+// settlePendingForSession dereferences s.approvals and s.qroutes too, and a
+// missing one nil-panics on the test goroutine.
+func newAbortTestServer(h *Hub, m *hitlManager) *Server {
+	return &Server{
+		hub:       h,
+		hitl:      m,
+		approvals: NewApprovalService(h, nil, func(string, ...any) {}),
+		qroutes:   newQuestionRoutes(),
+	}
 }
 ```
 
@@ -1360,6 +1378,8 @@ In the `message_done` branch of the event callback:
 ```
 
 Add `stopped?: boolean` to the `BubbleMsg` interface. In `statusLine()` (around line 868), return `'Stopped'` when the newest bubble is stopped, and render a distinct muted marker on the bubble (reuse the existing `.tool-status` class).
+
+**A stopped confirmation must not read as "Rejected".** The abort settles a parked write confirmation by publishing `confirm_resolved` with no `approved` field, and the existing handler does `bubble.confirm.approved = !!ev.approved` (`ChatView.tsx:672-678`), which renders **Rejected** in red (`ChatView.tsx:998-1002`). So pressing Stop on a session parked on a confirm would look like the user denied the command. Distinguish the two: when the resolved event carries no `approved`, mark the card as stopped/dismissed and render it neutrally rather than as a rejection. `approved` is a `*bool` on the wire precisely so absent and false are distinguishable — do not collapse them.
 
 - [ ] **Step 3: Swap the send button for Stop while streaming**
 
