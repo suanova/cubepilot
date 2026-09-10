@@ -40,7 +40,7 @@ type liveCall struct {
 	// human answer, so a generic card would sit on "Running..." for the whole
 	// wait -- see isQuestionTool).
 	suppressed bool
-	output    strings.Builder
+	output     strings.Builder
 	// pendingResult is the stream="tool" result candidate. It is deferred, not
 	// emitted, because for exec-style tools the richer command_output arrives
 	// afterwards and should win; non-exec tools finalize it at their item end.

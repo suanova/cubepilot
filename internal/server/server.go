@@ -43,7 +43,7 @@ type Server struct {
 	cr        client.Client
 	hub       *Hub
 	approvals *ApprovalService
-	hitl      *hitlManager   // nil when HITL is not configured (confirmPolicy stays declarative)
+	hitl      *hitlManager    // nil when HITL is not configured (confirmPolicy stays declarative)
 	qroutes   *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 

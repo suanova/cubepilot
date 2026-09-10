@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
 // Ask-user questions (issue #161). When the agent calls OpenClaw's ask_user
