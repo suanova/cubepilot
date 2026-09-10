@@ -71,6 +71,13 @@ type fakeHitlGateway struct {
 	listQuestionsErr    error
 	questionRecords     map[string]ws.QuestionRecord
 	pendingQuestions    []ws.QuestionRecord
+
+	// chat.abort / chat.history (issue #166)
+	aborts         []string // "sessionKey|runID"; empty runID means the session-scoped form
+	abortErr       error
+	sessionBuses   []string // sessionKeys passed to chat.history
+	sessionBusy    bool
+	sessionBusyErr error
 }
 
 func (f *fakeHitlGateway) Connected() bool {
@@ -265,6 +272,18 @@ func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecor
 		return nil, f.listQuestionsErr
 	}
 	return f.pendingQuestions, nil
+}
+func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.aborts = append(f.aborts, key+"|"+runID)
+	return f.abortErr
+}
+func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionBuses = append(f.sessionBuses, key)
+	return f.sessionBusy, f.sessionBusyErr
 }
 func (f *fakeHitlGateway) Close() {}
 
@@ -870,5 +889,77 @@ func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
 	}
 	if outcome.Stopped {
 		t.Fatal("RunLiveTurn reported Stopped=true for a non-request abort")
+	}
+}
+
+// TestHitl_LiveRunID tracks the run id the server believes is live for a
+// session: absent before a turn registers, the send ACK's run id once it does,
+// and absent again for a turn whose ACK has not arrived yet (nothing to scope).
+func TestHitl_LiveRunID(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID with no turn = (%q, %v), want empty", id, ok)
+	}
+
+	turn := m.registerLive("alice", "conv-1", nil)
+	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID before the send ACK = (%q, %v), want empty", id, ok)
+	}
+	turn.setRunID("run-7")
+	if id, ok := m.LiveRunID("conv-1"); !ok || id != "run-7" {
+		t.Fatalf("LiveRunID = (%q, %v), want run-7", id, ok)
+	}
+}
+
+// TestHitl_AbortDelegatesToGateway pins the two things Task 5 depends on: the
+// run id the server holds reaches the gateway, and the empty-runID fallback
+// stays empty rather than being filled with something invented.
+func TestHitl_AbortDelegatesToGateway(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if err := m.Abort(context.Background(), "alice", "conv-1", ""); err != nil {
+		t.Fatalf("Abort without a run id: %v", err)
+	}
+	want := []string{"conv-1|run-7", "conv-1|"}
+	if len(gw.aborts) != 2 || gw.aborts[0] != want[0] || gw.aborts[1] != want[1] {
+		t.Fatalf("aborts = %v, want %v", gw.aborts, want)
+	}
+}
+
+func TestHitl_AbortRequiresAChannel(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil {
+		t.Fatal("Abort without a live gateway channel must fail")
+	}
+}
+
+// TestHitl_SessionBusyDelegatesToGateway: the manager must report the gateway's
+// answer untouched, since it is the only busy signal that survives a reload.
+func TestHitl_SessionBusyDelegatesToGateway(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("SessionBusy: %v", err)
+	}
+	if !busy {
+		t.Fatal("SessionBusy = false, want the gateway's true")
+	}
+	if len(gw.sessionBuses) != 1 || gw.sessionBuses[0] != "conv-1" {
+		t.Fatalf("sessionBuses = %v, want [conv-1]", gw.sessionBuses)
+	}
+}
+
+func TestHitl_SessionBusyRequiresAChannel(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusy without a live gateway channel must fail")
 	}
 }

@@ -58,6 +58,9 @@ type Client struct {
 
 	closeOnce sync.Once
 	done      chan struct{} // closed when the read pump exits
+
+	// callFn overrides Call in tests; nil means use the real transport.
+	callFn func(ctx context.Context, method string, params any) (json.RawMessage, error)
 }
 
 // NewClient returns a Client for url (ws://host/gateway), the shared gateway
@@ -408,6 +411,9 @@ func (c *Client) dispatchEvent(ev eventFrame) {
 
 // Call invokes a gateway method and returns its response payload.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if c.callFn != nil {
+		return c.callFn(ctx, method, params)
+	}
 	c.connMu.Lock()
 	conn := c.conn
 	c.connMu.Unlock()

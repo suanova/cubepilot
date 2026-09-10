@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -71,6 +72,56 @@ func (c *Client) CancelQuestion(ctx context.Context, id, resolvedBy string) erro
 		return fmt.Errorf("question.resolve cancel %q: %w", id, err)
 	}
 	return nil
+}
+
+// chatAbortParams is the chat.abort request body. runId is omitted entirely when
+// empty: the gateway's schema rejects an empty string, and omitting it is what
+// selects the session-scoped abort.
+type chatAbortParams struct {
+	SessionKey string `json:"sessionKey"`
+	RunID      string `json:"runId,omitempty"`
+}
+
+// AbortChat cancels a run (chat.abort). runID scopes the abort to that run and
+// is what the live-turn path passes; an empty runID aborts the session's active
+// run and is the fallback only when no run id is known (reload takeover).
+func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) error {
+	if sessionKey == "" {
+		return fmt.Errorf("chat.abort: empty session key")
+	}
+	if _, err := c.Call(ctx, "chat.abort", chatAbortParams{SessionKey: sessionKey, RunID: runID}); err != nil {
+		return fmt.Errorf("chat.abort %q: %w", sessionKey, err)
+	}
+	return nil
+}
+
+type chatHistoryParams struct {
+	SessionKey string `json:"sessionKey"`
+}
+
+// chatHistoryResult is the subset of chat.history's delta result this client
+// reads. The delta payload also carries messages and a deltaCursor that a future
+// stream re-attach would use; nothing here consumes them, and the gateway's
+// "reset" shape simply has no inFlightRun.
+type chatHistoryResult struct {
+	InFlightRun json.RawMessage `json:"inFlightRun"`
+}
+
+// SessionBusy reports whether the gateway has an in-flight run for the session.
+// It is the authoritative "is this session busy" signal: the SSE hub only knows
+// whether a browser is attached, which is false after a reload while the run is
+// still going.
+func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
+	raw, err := c.Call(ctx, "chat.history", chatHistoryParams{SessionKey: sessionKey})
+	if err != nil {
+		return false, fmt.Errorf("chat.history %q: %w", sessionKey, err)
+	}
+	var out chatHistoryResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, fmt.Errorf("decode chat.history: %w", err)
+	}
+	trimmed := strings.TrimSpace(string(out.InFlightRun))
+	return trimmed != "" && trimmed != "null", nil
 }
 
 // GetQuestion reads one question record (question.get). The gateway keeps a

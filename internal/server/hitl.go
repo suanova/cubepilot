@@ -48,6 +48,8 @@ type hitlGateway interface {
 	CancelQuestion(ctx context.Context, id, resolvedBy string) error
 	GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error)
 	ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error)
+	AbortChat(ctx context.Context, sessionKey, runID string) error
+	SessionBusy(ctx context.Context, sessionKey string) (bool, error)
 	Close()
 }
 
@@ -547,6 +549,29 @@ func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error
 	return gw.CancelQuestion(ctx, id, user)
 }
 
+// Abort cancels the session's active run over the user's gateway connection.
+// runID scopes the abort to the run the server believes is live so it cannot
+// kill a run promoted after that one settles; an empty runID falls back to the
+// session-scoped abort.
+func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return fmt.Errorf("abort %q: no live gateway channel", sessionKey)
+	}
+	return gw.AbortChat(ctx, sessionKey, runID)
+}
+
+// SessionBusy reports whether the gateway still has an in-flight run for the
+// session. Unlike the SSE hub this survives a browser disconnect, so it is the
+// only signal that means anything on the reload-takeover path.
+func (m *hitlManager) SessionBusy(ctx context.Context, user, sessionKey string) (bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return false, fmt.Errorf("session busy %q: no live gateway channel", sessionKey)
+	}
+	return gw.SessionBusy(ctx, sessionKey)
+}
+
 // ResolveApproval implements ApprovalResolver: the Portal decision is applied
 // to the user's gateway connection.
 func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, decision string) error {
@@ -566,6 +591,21 @@ func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, dec
 // frames are TCP-ordered before the agent.wait response, so this is normally
 // already resolved and returns immediately.
 const wsRunTail = 500 * time.Millisecond
+
+// LiveRunID returns the run id of the session's active live turn, if any. The
+// browser never learns the run id; the server does, and passing it scopes an
+// abort so it cannot kill a run promoted after this one settles.
+func (m *hitlManager) LiveRunID(sessionKey string) (string, bool) {
+	m.liveMu.Lock()
+	t := m.live[sessionKey]
+	m.liveMu.Unlock()
+	if t == nil {
+		return "", false
+	}
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	return t.runID, t.runID != ""
+}
 
 // registerLive registers the live turn for a session so connection events route
 // to it. The turn stays registered until releaseLive.
