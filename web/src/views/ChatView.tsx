@@ -423,6 +423,16 @@ export default function ChatView() {
   // "cannot tell" is not "idle" -- hiding Stop here would strand exactly the
   // user whose turn is running.
   const [turnCheckFailed, setTurnCheckFailed] = useState(false)
+  // The session whose banner Stop is waiting on `/abort`, or null. The server
+  // answers only once the turn has settled -- seconds -- so the banner's Stop
+  // reads "Stopping…" and the composer's Send is disabled for the whole window.
+  // It is also what refuses a send in that window, because Enter reaches
+  // `sendMessage` past the disabled button.
+  //
+  // A session rather than a bool: `stoppingRef` already says an abort is in
+  // flight for *some* turn, but a stop the user has navigated away from must
+  // neither label nor block the session they moved to.
+  const [stoppingSession, setStoppingSession] = useState<string | null>(null)
   // Only Allowlist policy honors a durable "always allow" grant; under
   // AlwaysAsk everything asks and under None nothing does (issue #116).
   const [allowAlwaysOk, setAllowAlwaysOk] = useState(false)
@@ -468,6 +478,17 @@ export default function ChatView() {
     const ticker = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(ticker)
   }, [])
+
+  // The without-a-stream banner is on screen: a turn this view holds no stream
+  // for, so the banner's Stop -- not this composer's Send -- owns it.
+  const bannerUp = (runningElsewhere || turnCheckFailed) && !streaming
+  // ...and that Stop is waiting on the server for the session on screen. The
+  // turn is then still running, so a send must not go out yet: it would be
+  // POSTed against a session whose turn is still settling (the redirect path
+  // that serializes stop-then-send is not available here, there being no stream
+  // to redirect), and retiring the banner would take away that turn's only Stop
+  // control. Both the controls and the refusal in `sendMessage` read this.
+  const stoppingElsewhere = bannerUp && stoppingSession === currentSessionId
 
   const chatTitle = (() => {
     if (!currentSessionId) return 'New conversation'
@@ -774,12 +795,14 @@ export default function ChatView() {
   // already contains the stopped turn's partial output.
   //
   // It shares `stoppingRef` with the streaming Stop: both issue the same
-  // gateway abort, and the banner's button stays live for the whole round trip
-  // (it is only withdrawn once the server has answered), so a second click
-  // would be a duplicate POST for a turn that is already settling. A stop the
-  // server refuses is an expected outcome -- 504 means it did not settle in
-  // time, 502 that the channel was unavailable -- so it is surfaced as a toast
-  // and the banner stays, because the turn is then still running.
+  // gateway abort. The banner's button is still on screen for the whole round
+  // trip -- it is only withdrawn once the server has answered -- and it is
+  // disabled in the meantime, but `stoppingRef` is what actually refuses a
+  // click that arrives before that re-render: a second POST for a turn that is
+  // already settling is redundant at best. A stop the server refuses is an
+  // expected outcome -- 504 means it did not settle in time, 502 that the
+  // channel was unavailable -- so it is surfaced as a toast and the banner
+  // stays, because the turn is then still running.
   async function stopElsewhere() {
     const session = currentSessionId
     if (!session) return
@@ -790,6 +813,7 @@ export default function ChatView() {
     // reloading the stopped session's history into the view they moved to.
     const gen = streamGenRef.current
     stoppingRef.current = true
+    setStoppingSession(session)
     try {
       await api.abortSession(session)
     } catch (e) {
@@ -797,6 +821,7 @@ export default function ChatView() {
       return
     } finally {
       stoppingRef.current = false
+      setStoppingSession(null)
     }
     if (streamGenRef.current !== gen) return
     // dropStream, not clearTurnElsewhere: the banner is done, and the
@@ -813,6 +838,16 @@ export default function ChatView() {
     if (sendingRef.current) return
     const text = el.value.trim()
     if (!text) return
+    // A banner Stop is in flight for the session on screen, so its turn is
+    // still running server-side. Refusing here is what keeps a send from racing
+    // that stop: the redirect branch below is not taken -- this view holds no
+    // stream to stop -- so the send would take the plain path and be POSTed
+    // against a turn that has not settled, retiring the banner and with it the
+    // running turn's only Stop control. The composer's Send is disabled and the
+    // banner's Stop reads "Stopping…" for the same window, so this is not a
+    // click swallowed in silence; and it is deliberately not a queue -- the
+    // text stays in the box, and Enter again once the stop answers sends it.
+    if (stoppingElsewhere) return
     if (streaming) {
       // Redirect: stop the running turn first. The server only answers once the
       // turn has settled, so the send below cannot hit the 409 guard. If the
@@ -1427,7 +1462,7 @@ export default function ChatView() {
               reload). It sits above the input, and is hidden while this view
               streams its own turn: the composer's Stop is the control for that
               one. */}
-          {(runningElsewhere || turnCheckFailed) && !streaming && (
+          {bannerUp && (
             <div className="turn-banner">
               {runningElsewhere && <span className="spin" />}
               <span>
@@ -1440,8 +1475,10 @@ export default function ChatView() {
                   Retry
                 </button>
               )}
-              <button className="btn sm" onClick={stopElsewhere}>
-                Stop
+              {/* Still on screen while the abort is in flight, unlike the
+                  composer's glyph button which has no label to change. */}
+              <button className="btn sm" onClick={stopElsewhere} disabled={stoppingElsewhere}>
+                {stoppingElsewhere ? 'Stopping…' : 'Stop'}
               </button>
             </div>
           )}
@@ -1467,7 +1504,11 @@ export default function ChatView() {
                 <StopIcon />
               </button>
             ) : (
-              <button className="send-btn" aria-label="Send" onClick={sendMessage}>
+              // Disabled while a banner Stop is in flight, so the refusal in
+              // `sendMessage` is something the user can see. Enter in the
+              // textarea still reaches it -- the button is a shortcut, not the
+              // only path -- which is why the refusal lives there too.
+              <button className="send-btn" aria-label="Send" onClick={sendMessage} disabled={stoppingElsewhere}>
                 <SendIcon />
               </button>
             )}
