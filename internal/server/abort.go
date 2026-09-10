@@ -10,11 +10,23 @@ import (
 // abortSettleTimeout bounds how long /abort waits for the session to go idle.
 // Bounded on purpose: a stop that cannot settle must report that, not hang the
 // UI forever.
-const abortSettleTimeout = 5 * time.Second
+//
+// A package-level var, in the style of hitlPairRetryDelay, so a test can shorten
+// it. As a const the 504 branch was reachable only through a request context
+// that was already cancelled, which left a regression to an unbounded wait
+// undetectable.
+var abortSettleTimeout = 5 * time.Second
 
 // abortRPCDeadline bounds a single chat.abort gateway RPC so a wedged WebSocket
 // cannot hold the HTTP request open until the client gives up.
 const abortRPCDeadline = 5 * time.Second
+
+// abortSettleRPCTimeout bounds the settle step's gateway calls. The settle runs
+// on a context detached from the request (see handleAbort), so this bound is the
+// only thing that keeps a wedged connection from holding the handler open:
+// ws.Client.Call blocks on the connection's write mutex before it ever selects
+// on the context, so no per-call cancellation can rescue it.
+const abortSettleRPCTimeout = 3 * time.Second
 
 // handleAbort serves POST /api/sessions/{key}/abort -- the Portal's Stop.
 //
@@ -25,6 +37,16 @@ const abortRPCDeadline = 5 * time.Second
 //     UI keeps showing a card for a dead run;
 //  3. wait for the session to be genuinely idle before returning, so the
 //     client's follow-up send cannot race hub.Open into a 409.
+//
+// Both gateway steps (1 and 2) run on contexts detached from the request. A
+// Stop is a command, not a read: it must not become a no-op because the client
+// that issued it went away. Detaching also removes an outright lie -- ws.Client.Call
+// writes the request frame BEFORE it selects on the context, so cancelling the
+// request mid-RPC leaves the abort delivered while the handler reports 502, and
+// a client that disconnects between (1) and (2) would leave behind the very
+// pending record (2) exists to clear, which resurfaces as a stale card on
+// reload. Each detached step keeps its own bound, and the response is simply
+// undeliverable once the client is gone.
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -46,7 +68,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		runID = id
 	}
 
-	rpcCtx, cancelRPC := context.WithTimeout(r.Context(), abortRPCDeadline)
+	rpcCtx, cancelRPC := context.WithTimeout(context.WithoutCancel(r.Context()), abortRPCDeadline)
 	defer cancelRPC()
 	if err := s.hitl.Abort(rpcCtx, user, sessionKey, runID); err != nil {
 		s.logf("abort %s/%s: %v", user, sessionKey, err)
@@ -55,9 +77,17 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Before the wait: the stream is still attached and can deliver the
-	// resolved events that drop the cards.
-	s.settlePendingForSession(r.Context(), user, sessionKey)
+	// resolved events that drop the cards. Detached and short-bounded for the
+	// same reason as the abort RPC above: it is post-abort cleanup, so a
+	// disconnect must not skip it, and a wedged gateway must not hold the
+	// request past abortSettleTimeout's whole budget.
+	settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(r.Context()), abortSettleRPCTimeout)
+	s.settlePendingForSession(settleCtx, user, sessionKey)
+	cancelSettle()
 
+	// The wait stays on the request context: its answer is only meaningful to
+	// the caller still holding the request open, and a client that gave up must
+	// not pin the handler for the rest of the budget.
 	ctx, cancel := context.WithTimeout(r.Context(), abortSettleTimeout)
 	defer cancel()
 
@@ -81,34 +111,39 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 // 409, and the gateway check is the only one that means anything on the
 // reload-takeover path, where no stream exists at all and a follow-up send
 // could otherwise be steered into the dying run and swallowed.
+//
+// Both signals are re-read rather than latched: "idle" is an observation about
+// an instant, and the session can become busy again right after it is seen (a
+// second tab starting a turn on the same session). The 200 is therefore only
+// written from a state that is still idle at the moment it is read.
 func (s *Server) waitSessionIdle(ctx context.Context, user, sessionKey string) error {
 	hubErr := make(chan error, 1)
-	go func() { hubErr <- s.hub.WaitIdle(ctx, sessionKey) }()
+	// armHubWait keeps exactly one WaitIdle in flight. WaitIdle is one-shot, so
+	// every report (idle again after a new stream opened, or a re-check that
+	// found the gateway still busy) has to re-arm it; a second concurrent
+	// waiter would only add a goroutine nothing reads.
+	armHubWait := func() { go func() { hubErr <- s.hub.WaitIdle(ctx, sessionKey) }() }
+	armHubWait()
 
-	// hubIdle latches: hubErr is delivered once, and re-selecting on a drained
-	// channel would block until ctx expires even though the hub is already idle.
-	hubIdle := false
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if !hubIdle {
-			select {
-			case err := <-hubErr:
-				if err != nil {
-					return err
-				}
-				hubIdle = true
-			default:
+		select {
+		case err := <-hubErr:
+			if err != nil {
+				return err
 			}
-		}
-		if hubIdle {
+			// The hub reported idle. It must still be idle at the moment both
+			// signals agree, not merely at the moment WaitIdle returned.
 			busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 			if err != nil {
 				return err
 			}
-			if !busy {
+			if !busy && !s.hub.Active(sessionKey) {
 				return nil
 			}
+			armHubWait()
+		default:
 		}
 		select {
 		case <-ticker.C:

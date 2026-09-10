@@ -176,22 +176,230 @@ func TestHandleAbortRejectsBadRequests(t *testing.T) {
 	}
 }
 
-// fakeAbortGateway is the hitlGateway slice /abort exercises.
-type fakeAbortGateway struct {
-	hitlGateway      // embed for the methods this test never calls
-	busy             bool
-	busyErr          error
-	abortErr         error
-	lastAbortSession string
-	lastAbortRunID   string
+// With the hub idle, the gateway's busy flag is the only gate left -- and it is
+// the gate that matters on the reload-takeover path, where no stream exists at
+// all. A SessionBusy that ERRORS is covered above; this pins the VALUE: a
+// gateway that keeps reporting a run in flight, with nothing for the hub to
+// wait on, must end as a 504, never as a 200 claiming a stop that did not
+// happen.
+func TestHandleAbortBusyGatewayIsNotSuccess(t *testing.T) {
+	// Long enough that the check is certainly consulted before the bound
+	// expires: a bound shorter than the loop's own cadence would 504 without
+	// ever asking the gateway, and then this test would pass even against a
+	// handler that ignores the answer.
+	shortenAbortSettleTimeout(t, 500*time.Millisecond)
+
+	h := NewHub() // no stream: the hub reports idle immediately
+	checked := make(chan struct{})
+	gw := &fakeAbortGateway{busyFunc: func(context.Context) (bool, error) {
+		select {
+		case <-checked:
+		default:
+			close(checked)
+		}
+		return true, nil // a run that never ends
+	}}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		done <- rec.Code
+	}()
+
+	select {
+	case <-checked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleAbort never consulted the gateway's busy state")
+	}
+
+	select {
+	case code := <-done:
+		if code != http.StatusGatewayTimeout {
+			t.Fatalf("code = %d, want 504: the gateway still has a run for this session", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleAbort never returned while the gateway stayed busy")
+	}
 }
 
-func (f *fakeAbortGateway) AbortChat(_ context.Context, sessionKey, runID string) error {
+// The wait must be ended by its own bound, not only by a client that gave up.
+// Here the request context stays live and the session never goes idle, so the
+// ONLY thing that can end the wait is abortSettleTimeout -- shortened so the
+// test is fast. With the bound removed the handler never returns at all, which
+// is what the watchdog below catches.
+func TestHandleAbortSettleTimeoutIsBounded(t *testing.T) {
+	shortenAbortSettleTimeout(t, 500*time.Millisecond)
+
+	h := NewHub()
+	w := httptest.NewRecorder()
+	stream, err := h.Open(abortTestKey, w, w)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer stream.Close()
+
+	gw := &fakeAbortGateway{}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	start := time.Now()
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		done <- rec.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code != http.StatusGatewayTimeout {
+			t.Fatalf("code = %d, want 504", code)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("the wait ran %v past its shortened bound", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleAbort never returned: the settle wait is not bounded")
+	}
+}
+
+// A client that is gone must not turn its Stop into a no-op. Both gateway steps
+// are commands, not replies: run on the request context, the abort RPC would be
+// cancelled mid-flight (after ws.Client.Call has already written the frame, so
+// the stop happens while the handler reports failure) and the settle would
+// silently skip the pending record the reload path resurrects as a stale card.
+// The response cannot be delivered either way; doing the work is the point.
+func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
+
+	if gw.abortCtxErr != nil {
+		t.Fatalf("the abort RPC ran on a dead context (%v): the frame is written before the context is consulted, so the stop happens and is then reported as failed", gw.abortCtxErr)
+	}
+	if !gw.listed {
+		t.Fatal("settle never asked the gateway for the session's pending records")
+	}
+	if gw.listCtxErr != nil {
+		t.Fatalf("settle ran on a dead context (%v): the pending record would survive on reload", gw.listCtxErr)
+	}
+}
+
+// "Idle" is an observation about an instant, not a latch: a second tab can open
+// a stream for the same session right after the hub reports idle, and answering
+// 200 with that stream open is the 409 this endpoint exists to remove. The fake
+// gateway holds the busy check open so the second stream opens in the window
+// between the hub report and the final answer -- no scheduling luck involved.
+func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
+	h := NewHub()
+	w1 := httptest.NewRecorder()
+	stream1, err := h.Open(abortTestKey, w1, w1)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	firstCheck := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	first := true
+	gw := &fakeAbortGateway{busyFunc: func(context.Context) (bool, error) {
+		if first {
+			first = false
+			close(firstCheck)
+			<-releaseFirst
+		}
+		return false, nil
+	}}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		done <- rec.Code
+	}()
+
+	select {
+	case code := <-done:
+		t.Fatalf("handleAbort returned %d while the stream was open", code)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// The first stream closes, the hub reports idle, and the handler parks
+	// inside the busy check.
+	stream1.Close()
+	select {
+	case <-firstCheck:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never reached the gateway busy check")
+	}
+
+	// A second turn opens before the handler reads the hub again.
+	w2 := httptest.NewRecorder()
+	stream2, err := h.Open(abortTestKey, w2, w2)
+	if err != nil {
+		t.Fatalf("open second stream: %v", err)
+	}
+	close(releaseFirst)
+
+	select {
+	case code := <-done:
+		t.Fatalf("handleAbort returned %d with a second stream open", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	stream2.Close()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("code = %d, want 200", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleAbort did not return after the second stream closed")
+	}
+
+	if gw.lastAbortSession != abortTestKey {
+		t.Fatalf("abort session = %q, want the canonical key %q", gw.lastAbortSession, abortTestKey)
+	}
+}
+
+// fakeAbortGateway is the hitlGateway slice /abort exercises.
+type fakeAbortGateway struct {
+	hitlGateway // embed for the methods this test never calls
+	busy        bool
+	busyErr     error
+	// busyFunc, when set, replaces the fixed busy/busyErr answer so a test can
+	// hold the handler inside the busy check (see TestHandleAbortRechecksHubAfterIdle).
+	busyFunc         func(context.Context) (bool, error)
+	abortErr         error
+	abortCtxErr      error
+	lastAbortSession string
+	lastAbortRunID   string
+	// listed and listCtxErr record the context the settle step handed to
+	// question.list, which is how the settle's detachment is observed.
+	listed     bool
+	listCtxErr error
+}
+
+func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID string) error {
 	f.lastAbortSession, f.lastAbortRunID = sessionKey, runID
+	f.abortCtxErr = ctx.Err()
 	return f.abortErr
 }
 
-func (f *fakeAbortGateway) SessionBusy(context.Context, string) (bool, error) {
+func (f *fakeAbortGateway) SessionBusy(ctx context.Context, _ string) (bool, error) {
+	if f.busyFunc != nil {
+		return f.busyFunc(ctx)
+	}
 	return f.busy, f.busyErr
 }
 
@@ -203,8 +411,20 @@ func (f *fakeAbortGateway) SessionBusy(context.Context, string) (bool, error) {
 // questions, which is the state the happy path settles in.
 func (f *fakeAbortGateway) Connected() bool { return true }
 
-func (f *fakeAbortGateway) ListQuestions(context.Context) ([]ws.QuestionRecord, error) {
+func (f *fakeAbortGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
+	f.listed = true
+	f.listCtxErr = ctx.Err()
 	return nil, nil
+}
+
+// shortenAbortSettleTimeout replaces the settle bound for one test. The 504
+// branch is otherwise reachable only through an already-cancelled request
+// context, which cannot tell a bounded wait from an unbounded one.
+func shortenAbortSettleTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := abortSettleTimeout
+	abortSettleTimeout = d
+	t.Cleanup(func() { abortSettleTimeout = prev })
 }
 
 // newAbortTestServer builds a Server with every collaborator settle and the
