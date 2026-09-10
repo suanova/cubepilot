@@ -1284,54 +1284,30 @@ export interface SSEMessageDone {
 
 - [ ] **Step 2: Thread an abort signal without inventing an error**
 
-In `web/src/api/sse.ts`, change the signature to accept an optional signal and make an intentional cancel silent:
-
-```ts
-export async function streamSSE(
-  url: string,
-  opts: RequestInit,
-  onEvent: (name: string, ev: SSEEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  // The fetch itself must be guarded: when the signal aborts before the
-  // response headers arrive, fetch rejects with an AbortError that never
-  // reaches the reader loop below, so an unguarded call surfaces the cancel as
-  // a user-visible error. A genuine pre-response failure still emits the
-  // terminal event the caller resets on.
-  let resp: Response
-  try {
-    resp = await fetch(url, { ...opts, signal: signal ?? opts.signal })
-  } catch (e) {
-    if (signal?.aborted) return
-    emitDone(onEvent, String(e))
-    return
-  }
-  // ...
-```
-
-In the read-failure branch, distinguish an intentional abort from a real one:
-
-```ts
-    try {
-      r = await reader.read()
-    } catch (e) {
-      // An intentional cancel (unmount, session switch) is a clean stop, not a
-      // transport failure: do not synthesize an error the user would see.
-      // Discriminate on the error, not on the flag: a real connection reset
-      // that happens to arrive after an unrelated abort must still surface.
-      if (isAbortError(e)) return
-      streamError = String(e)
-      break
-    }
-```
-
-Also guard the missing-terminal fallback at the end of the function:
-
-```ts
-  if (!sawDone && !isAbortError(streamError)) {
-    emitDone(onEvent, streamError)
-  }
-```
+> **Implemented — `web/src/api/sse.ts` is authoritative for this step.** The
+> sketch that used to sit here drifted from the shipped code twice, and one
+> drift was a defect: it guarded the fetch catch on the positional `signal`
+> alone while resolving the request's signal as `signal ?? opts.signal`, so a
+> caller passing its controller through `opts.signal` lost the protection that
+> step exists to provide. Read the file. What it must guarantee:
+>
+> - The initial `fetch` is inside a `try`. An abort that lands **before the
+>   response headers** rejects that promise directly and never reaches the
+>   reader loop, so an unguarded fetch surfaces the cancel to the caller's
+>   `catch` as a user-visible error. On the abort path, return silently; on any
+>   other pre-response failure, still emit the terminal event the caller resets
+>   on.
+> - The request's signal is `signal ?? opts.signal`, and **every** guard — the
+>   fetch catch, the reader catch, the end-of-function fallback — must consult
+>   that resolved value, not the positional parameter.
+> - Discriminate on the error, not on the flag, in the reader loop: a genuine
+>   transport failure that happens to arrive after an unrelated abort must still
+>   surface. In the fetch catch the signal is bound to the request, so the flag
+>   is a sound additional term there.
+> - Aborting emits **no** terminal event, and the function's doc comment must
+>   say so: Stop goes through the session abort API, which produces a real
+>   `message_done{stopped:true}`. A caller that wires Stop to the signal instead
+>   leaves the UI spinning forever.
 
 - [ ] **Step 3: Add the API methods**
 
