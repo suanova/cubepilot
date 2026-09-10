@@ -867,7 +867,7 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 	}
 	// A live turn is what supplies the run id; without one the handler falls
 	// back to the session-scoped abort.
-	live := m.registerLive("admin", "conv-1", func(agentruntime.Event) error { return nil })
+	live := m.registerLive("admin", abortTestKey, func(agentruntime.Event) error { return nil })
 	live.setRunID("run-9")
 	gw.busy = false
 
@@ -899,8 +899,8 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 		t.Fatal("handleAbort did not return after the stream closed")
 	}
 
-	if gw.lastAbortSession != "conv-1" {
-		t.Fatalf("abort session = %q", gw.lastAbortSession)
+	if gw.lastAbortSession != abortTestKey {
+		t.Fatalf("abort session = %q, want the canonicalised key", gw.lastAbortSession)
 	}
 	if gw.lastAbortRunID != "run-9" {
 		t.Fatalf("abort runID = %q, want the live turn's run id", gw.lastAbortRunID)
@@ -908,9 +908,14 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 }
 
 // fakeAbortGateway is the hitlGateway slice /abort exercises.
+//
+// The embedded interface is a placeholder, not a free pass: a method promoted
+// from a nil interface panics when called, and this path does call through it —
+// liveConn asks Connected, and settle asks ListQuestions. Both are stubbed
+// explicitly below.
 type fakeAbortGateway struct {
-	hitlGateway // embed for the methods this test never calls
-	busy            bool
+	hitlGateway
+	busy             bool
 	lastAbortSession string
 	lastAbortRunID   string
 }
@@ -923,6 +928,14 @@ func (f *fakeAbortGateway) AbortChat(_ context.Context, sessionKey, runID string
 func (f *fakeAbortGateway) SessionBusy(context.Context, string) (bool, error) {
 	return f.busy, nil
 }
+
+// Connected reports a usable connection: the state a real abort proceeds in.
+func (f *fakeAbortGateway) Connected() bool { return true }
+
+// ListQuestions reports no open questions, which is all this fixture needs.
+func (f *fakeAbortGateway) ListQuestions(context.Context) ([]ws.QuestionRecord, error) {
+	return nil, nil
+}
 ```
 
 ```go
@@ -930,14 +943,24 @@ func (f *fakeAbortGateway) SessionBusy(context.Context, string) (bool, error) {
 // abort path touch. A bare &Server{hub: h, hitl: m} literal is not enough:
 // settlePendingForSession dereferences s.approvals and s.qroutes too, and a
 // missing one nil-panics on the test goroutine.
+//
+// cfg.DefaultUser matters as much as the rest: userOf falls back to it, so a
+// zero cfg makes every request resolve to an empty user and fail 502 before the
+// handler does anything interesting.
 func newAbortTestServer(h *Hub, m *hitlManager) *Server {
 	return &Server{
+		cfg:       config.Config{DefaultUser: "admin"},
 		hub:       h,
 		hitl:      m,
 		approvals: NewApprovalService(h, nil, func(string, ...any) {}),
 		qroutes:   newQuestionRoutes(),
 	}
 }
+
+// The handler canonicalises the key it was given, so the hub stream, the live
+// turn and the assertions all use the canonical form while the request URL keeps
+// the raw one. That difference is the point: it pins the canonicalisation.
+const abortTestKey = "agent:main:conv-1"
 ```
 
 `hitlManager.registerLive` (`internal/server/hitl.go:547`) and `liveTurn.setRunID` (`:131`) are unexported but the test is in the same package. `hitlManager.conns` is `map[string]*userHitlConn` guarded by `m.mu`; `newClient` is only used by `Connect`, which this test does not call — the embedded `hitlGateway` keeps the fake compiling without stubbing every method.
