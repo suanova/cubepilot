@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -102,8 +103,12 @@ func TestHubWaitIdleRechecksMembership(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if err := h.WaitIdle(ctx, "conv-1"); err == nil {
-		t.Fatal("WaitIdle returned nil while the stream was still registered")
+	// The fabricated window closes closedCh before the call, so the wake branch
+	// is entered deterministically. Asserting *which* error comes back is what
+	// makes this independent of goroutine scheduling: a regression that returns a
+	// sentinel on the wake returns errStreamClosed here, not the ctx error.
+	if err := h.WaitIdle(ctx, "conv-1"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitIdle while still registered: want ctx deadline, got %v", err)
 	}
 
 	h.remove("conv-1", s)
@@ -130,10 +135,13 @@ func TestHubWaitIdleReturnsImmediatelyWhenIdle(t *testing.T) {
 // success -- and above all the client's very next send must not 409.
 //
 // TestHubWaitIdleRechecksMembership above fabricates the window by hand; this is
-// the coverage of the actual close path. An implementation that returns a
-// sentinel from the closedCh wake instead of re-checking membership passes the
-// existing tests but fails here: the stream is genuinely gone, so a wake that
-// reports failure is wrong.
+// the coverage of the actual close path, and the no-409 assertion below is the
+// property the abort endpoint promises its caller. The sentinel discrimination
+// deliberately does NOT rest here: the waiter below races s.Close(), so on a box
+// where the waiter is not scheduled first it takes the idle fast path and a
+// sentinel implementation goes unnoticed. That discrimination lives in the
+// fabricated test, which asserts *which* error comes back and is therefore
+// independent of scheduling.
 func TestHubWaitIdleUnblocksOnRealClose(t *testing.T) {
 	h := NewHub()
 	rec := httptest.NewRecorder()
@@ -142,10 +150,12 @@ func TestHubWaitIdleUnblocksOnRealClose(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 
-	// Buffered so the waiter never blocks handing its result back. The
-	// result channel plus the generous timeout below is what keeps this
-	// non-flaky: Close happens outside WaitIdle's own wait, so the assertion
-	// races nothing.
+	// Buffered so the waiter never blocks handing its result back. The result
+	// channel plus the generous timeout below keep this from failing
+	// spuriously, but the assertion does race the waiter's scheduling: if Close
+	// lands before the waiter runs, the waiter returns nil on the idle fast
+	// path. That race can only cost discrimination, never turn a correct
+	// implementation red -- a genuine hang is still caught by the timeout.
 	done := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
