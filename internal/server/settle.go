@@ -18,13 +18,23 @@ import (
 // stops resurrecting it. Deleting the records silently, or waiting for the
 // question timeout, are strictly worse.
 func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey string) {
-	if p, ok := s.approvals.Pending(user, sessionKey); ok {
-		s.approvals.settle(p)
-		s.hub.PublishTo(sessionKey, agentruntime.Event{
-			Type:      agentruntime.EventConfirmResolved,
-			SessionID: sessionKey,
-			CallID:    p.ApprovalID,
-		})
+	// A nil approval service is a real state, not an impossible one: handleConfirm
+	// and handlePendingConfirm both check for it, and a bare Server literal (the
+	// abort handler's own fixture) leaves it unset. The question half below is
+	// guarded the same way.
+	if s.approvals != nil {
+		if p, ok := s.approvals.Pending(user, sessionKey); ok {
+			s.approvals.settle(p)
+			// The record's own key addresses the stream, exactly as
+			// ApprovalService.Resolve does -- Pending only ever returns a record
+			// this session claimed, but a publish that follows the record rather
+			// than the caller cannot drift from it.
+			s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+				Type:      agentruntime.EventConfirmResolved,
+				SessionID: p.SessionKey,
+				CallID:    p.ApprovalID,
+			})
+		}
 	}
 
 	if s.hitl == nil {
@@ -36,6 +46,17 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 		return
 	}
 	for _, rec := range list {
+		// Only the session binding and the gateway's own pending status gate the
+		// cancel; the render filters the question endpoints apply
+		// (unsupportedQuestionReason, questionExpired) deliberately do not. Those
+		// filters decide what the Portal may paint or restore, and a settle paints
+		// nothing -- it closes the records of a run that is now dead. A card the
+		// browser already holds can still be on screen (a countdown that ran out
+		// leaves it locked until a question_resolved arrives), and a record this
+		// Portal never rendered -- a secret or free-text question the other paths
+		// drop -- is still an open question of the dead run, not one left to
+		// answer. Closing one that has no card is harmless: the client ignores a
+		// resolved event it cannot match.
 		if canonicalSessionKey(rec.SessionKey) != sessionKey || rec.Status != "pending" {
 			continue
 		}
