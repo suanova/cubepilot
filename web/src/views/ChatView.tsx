@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
 import type { HistoryContentBlock, HistoryMessage, PendingConfirm, QuestionItem, SessionInfo } from '@/api/types'
+import { showToast } from '@/stores/toast'
 import { shortSession } from '@/utils/format'
 
 const user = getCurrentUser()
@@ -68,6 +69,9 @@ interface BubbleMsg {
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
   confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
+  // The user stopped this turn. Its partial text is not a finished answer, so
+  // the bubble reads "Stopped" rather than the green Done check (issue #166).
+  stopped?: boolean
   // Every question this turn has asked, in order. The agent can ask several in
   // one turn (a blocked ask_user resumes, then another follows), so they are
   // kept as a collection rather than one slot that a later question replaces --
@@ -291,6 +295,22 @@ function SendIcon() {
   )
 }
 
+// A filled square, unlike the outline icons it sits beside. The shared `.icon`
+// class paints outlines (`fill:none`), and a CSS rule beats any presentation
+// attribute, so the fill is set inline where it wins.
+function StopIcon() {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      style={{ width: 13, height: 13, fill: 'currentColor', stroke: 'none' }}
+    >
+      <rect x="5" y="5" width="14" height="14" rx="2.5" />
+    </svg>
+  )
+}
+
 function DoneCheckIcon() {
   return (
     <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -391,6 +411,7 @@ export default function ChatView() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [bubbles, setBubbles] = useState<BubbleMsg[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [streaming, setStreaming] = useState(false)
   // Only Allowlist policy honors a durable "always allow" grant; under
   // AlwaysAsk everything asks and under None nothing does (issue #116).
   const [allowAlwaysOk, setAllowAlwaysOk] = useState(false)
@@ -401,6 +422,15 @@ export default function ChatView() {
   // slow history/pending request that resolves after a switch is discarded
   // instead of painting another session's confirmations onto this one.
   const activeSessionRef = useRef<string | null>(null)
+  // Monotonic stream generation: a stream opened for an earlier session (or
+  // before a session switch) must not write into the current view.
+  //
+  // The session id cannot be the guard. A brand-new chat has no id at send
+  // time -- the server mints one and reports it in message_start -- so guarding
+  // on the id would invalidate a just-started stream as soon as its own first
+  // event arrived, and nothing would ever render.
+  const streamGenRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -590,7 +620,18 @@ export default function ChatView() {
     setBubbles(out)
   }
 
+  // dropStream retires the live stream: every event still in flight for it is
+  // superseded (its generation no longer matches) and its fetch is cancelled.
+  // The streaming flag is cleared here rather than left to the retiring
+  // stream's own `finally`, which sees itself as stale and refuses to touch it.
+  function dropStream() {
+    streamGenRef.current++
+    abortRef.current?.abort()
+    setStreaming(false)
+  }
+
   const switchSession = useCallback(async (id: string) => {
+    dropStream()
     activeSessionRef.current = id
     setCurrentSessionId(id)
     await loadHistory(id)
@@ -598,6 +639,7 @@ export default function ChatView() {
   }, [])
 
   function newChat() {
+    dropStream()
     activeSessionRef.current = null
     setCurrentSessionId(null)
     setBubbles([])
@@ -605,11 +647,41 @@ export default function ChatView() {
     requestAnimationFrame(() => inputEl.current?.focus())
   }
 
+  // stopTurn asks the server to stop the session's running turn. It resolves
+  // true once the turn has settled (or when there is no session to stop yet)
+  // and false when the stop was attempted and refused -- the caller must then
+  // treat the turn as still running. An ApiError here is an expected outcome,
+  // not a crash: 504 means the turn did not settle in time and 502 that the
+  // gateway channel was unavailable, so it is surfaced as a toast and the stop
+  // control stays available rather than the page being painted as broken.
+  async function stopTurn(): Promise<boolean> {
+    // No session id yet: the request is still in flight and the server has not
+    // reported the id it minted, so there is nothing we can address.
+    if (!currentSessionId) return true
+    try {
+      await api.abortSession(currentSessionId)
+    } catch (e) {
+      showToast(String(e))
+      return false
+    }
+    // The stream closes with message_done{stopped:true}; nothing more to do
+    // here -- do NOT abort the local fetch, the server's terminal is cleaner.
+    return true
+  }
+
   async function sendMessage() {
     const el = inputEl.current
     if (!el) return
     const text = el.value.trim()
     if (!text) return
+    if (streaming) {
+      // Redirect: stop the running turn first. The server only answers once the
+      // turn has settled, so the send below cannot hit the 409 guard. If the
+      // stop did not take, the send is abandoned -- issuing it would be refused
+      // as a concurrent turn and would leave the running turn with no Stop
+      // control, so the user keeps their text and the Stop button instead.
+      if (!(await stopTurn())) return
+    }
     const nextBubbles = [
       ...bubblesRef.current,
       { kind: 'user' as const, text, tools: [], thinking: false },
@@ -621,6 +693,12 @@ export default function ChatView() {
     const bubble: BubbleMsg = nextBubbles[nextBubbles.length - 1]
     requestAnimationFrame(scrollThread)
 
+    const gen = ++streamGenRef.current
+    const stale = () => streamGenRef.current !== gen
+    const controller = new AbortController()
+    abortRef.current = controller
+    setStreaming(true)
+
     try {
       await streamSSE(
         '/api/messages',
@@ -630,6 +708,17 @@ export default function ChatView() {
           body: JSON.stringify({ session_id: currentSessionId, content: text }),
         },
         (_evName, ev) => {
+          if (stale()) {
+            // A superseded stream paints nothing into the current view -- with
+            // one exception. Its own terminal event only settles the bubble that
+            // stream owns, and a redirect keeps that bubble on screen: dropping
+            // it would leave the stopped turn spinning "Running..." forever.
+            // Every other event carries fresh content that belongs to a turn the
+            // view has moved on from (redirect) or to a session it left (switch),
+            // and the switch path aborts the fetch -- an aborted stream emits
+            // nothing at all, so it cannot reach here.
+            if (ev.type !== 'message_done') return
+          }
           if (ev.type === 'message_start') {
             if (ev.session_id) {
               setCurrentSessionId(ev.session_id)
@@ -672,7 +761,12 @@ export default function ChatView() {
           if (ev.type === 'confirm_resolved') {
             if (bubble.confirm && (!ev.call_id || bubble.confirm.approvalId === ev.call_id)) {
               bubble.confirm.resolved = true
-              bubble.confirm.approved = !!ev.approved
+              // `approved` is a *bool on the wire: absent means nobody decided
+              // this -- the turn was stopped while the write was parked -- and
+              // that is not the same as the explicit false of a rejection.
+              // Copying it only when present leaves the card reading "Stopped"
+              // instead of painting the user a red "Rejected" they never chose.
+              if (ev.approved !== undefined) bubble.confirm.approved = ev.approved
               bubble.confirm.busy = false
               setBubbles([...bubblesRef.current])
             }
@@ -724,18 +818,34 @@ export default function ChatView() {
           }
           if (ev.type === 'message_done') {
             setPhase(bubble, 'done')
-            if (ev.error) bubble.error = ev.error
+            // A stopped turn is neither a failure nor a normal completion, so
+            // it sets `stopped` and leaves `error` empty.
+            if (ev.stopped) bubble.stopped = true
+            else if (ev.error) bubble.error = ev.error
             return
           }
         },
+        controller.signal,
       )
     } catch (e) {
-      setPhase(bubble, 'done')
-      bubble.error = String(e)
+      // An intentional abort (unmount, session switch) is a clean stop, not a
+      // failure: the stream helper has already returned silently for it, and
+      // nothing here should paint the user an error they did not cause.
+      if (!stale() && !controller.signal.aborted) {
+        setPhase(bubble, 'done')
+        bubble.error = String(e)
+      }
     } finally {
-      // Push a new array reference so React re-renders with the mutated bubble.
-      setBubbles([...bubblesRef.current])
-      requestAnimationFrame(scrollThread)
+      // A superseded stream touches nothing: the flags and the bubble list now
+      // belong to its successor, or to the session that retired it (dropStream
+      // clears the flag precisely because this branch will refuse to).
+      if (!stale()) {
+        setStreaming(false)
+        // Push a new array reference so React re-renders with the mutated
+        // bubble.
+        setBubbles([...bubblesRef.current])
+        requestAnimationFrame(scrollThread)
+      }
     }
   }
 
@@ -865,8 +975,21 @@ export default function ChatView() {
     loadSessions()
   }, [])
 
+  // Unmount is the one teardown the stream cannot outlive: cancel the fetch so
+  // a reply cannot keep arriving into a view that is gone. Session switches and
+  // a new chat go through dropStream instead.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
+
   function statusLine(b: BubbleMsg): string {
     if (b.kind === 'user' || !b.phase) return ''
+    // Stopped outranks the parked-state lines below: a turn that was stopped
+    // cannot be waiting on a human, even when one of its cards has not been
+    // settled by the stream yet (a transient the settled event closes).
+    if (b.stopped) return 'Stopped'
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
     if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
@@ -938,7 +1061,15 @@ export default function ChatView() {
                         {statusLine(b)}
                       </div>
                     )}
-                    {b.phase === 'done' && !b.error && (
+                    {b.phase === 'done' && b.stopped && (
+                      // A stopped turn gets the muted marker, not the green Done
+                      // check: it neither finished nor failed.
+                      <div className="tool-status">
+                        <StopIcon />
+                        {statusLine(b)}
+                      </div>
+                    )}
+                    {b.phase === 'done' && !b.stopped && !b.error && (
                       <div className="tool-status done-mark">
                         <DoneCheckIcon />
                         {statusLine(b)}
@@ -989,7 +1120,22 @@ export default function ChatView() {
                         <div className="tool-head">
                           <ToolIcon />
                           <span className="tool-cmd">Write confirmation</span>
-                          {b.confirm.resolved ? (
+                          {b.confirm.resolved && b.confirm.approved === undefined ? (
+                            // Settled without a decision: the turn was stopped
+                            // while this write was parked. Neutral, not a
+                            // rejection the user never made.
+                            <span
+                              style={{
+                                fontSize: 12,
+                                borderRadius: 999,
+                                padding: '2px 10px',
+                                background: 'rgba(0,0,0,.07)',
+                                color: 'rgba(0,0,0,.55)',
+                              }}
+                            >
+                              Stopped
+                            </span>
+                          ) : b.confirm.resolved ? (
                             <span
                               style={{
                                 fontSize: 12,
@@ -1104,9 +1250,18 @@ export default function ChatView() {
                 }
               }}
             />
-            <button className="send-btn" aria-label="Send" onClick={sendMessage}>
-              <SendIcon />
-            </button>
+            {/* While a turn is running the send button becomes Stop. The
+                textarea stays enabled so the user can type the redirect they
+                want to send next. */}
+            {streaming ? (
+              <button className="send-btn" aria-label="Stop" onClick={stopTurn}>
+                <StopIcon />
+              </button>
+            ) : (
+              <button className="send-btn" aria-label="Send" onClick={sendMessage}>
+                <SendIcon />
+              </button>
+            )}
           </div>
           <div className="composer-hint">
             Operate platform resources via natural language - type <span className="mono">@</span> to reference a resource - write operations ask for your approval before they run
