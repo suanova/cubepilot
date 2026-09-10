@@ -412,6 +412,17 @@ export default function ChatView() {
   const [bubbles, setBubbles] = useState<BubbleMsg[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  // A turn running without a stream of this view's own: it was started in
+  // another tab, or this view was reloaded while the agent kept working. It can
+  // still be stopped; its output arrives on the next history refresh, because
+  // stream re-attach is out of scope.
+  const [runningElsewhere, setRunningElsewhere] = useState(false)
+  // The turn-status check itself failed. It is kept apart from
+  // `runningElsewhere` so the banner never claims a turn nobody confirmed, and
+  // it is still shown: the API answers 502 when it cannot determine, and
+  // "cannot tell" is not "idle" -- hiding Stop here would strand exactly the
+  // user whose turn is running.
+  const [turnCheckFailed, setTurnCheckFailed] = useState(false)
   // Only Allowlist policy honors a durable "always allow" grant; under
   // AlwaysAsk everything asks and under None nothing does (issue #116).
   const [allowAlwaysOk, setAllowAlwaysOk] = useState(false)
@@ -503,6 +514,45 @@ export default function ChatView() {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)
     }
+  }
+
+  // checkTurnElsewhere asks the server whether the session still has a turn in
+  // flight -- the only signal that survives a reload, since this view has no
+  // stream to consult.
+  //
+  // Best-effort in what a failure costs (nothing: history has already loaded
+  // and is never blocked by this), never in how one is read. An error here
+  // means the server could not determine the answer, so it is reported as
+  // exactly that rather than collapsed into "not running".
+  //
+  // `gen` is the generation the caller captured *before* its own await, and the
+  // answer is applied only while the view still holds it -- the same
+  // capture-then-re-check the redirect continuation uses. A session switch or a
+  // new chat in the window runs dropStream(), and an answer for the session the
+  // user left must not paint a banner onto the view they moved to.
+  async function checkTurnElsewhere(id: string, gen: number) {
+    try {
+      const { active } = await api.sessionTurn(id)
+      if (streamGenRef.current !== gen) return
+      setRunningElsewhere(!!active)
+      setTurnCheckFailed(false)
+    } catch {
+      // Never folded into "not running": the API answers 502 exactly when it
+      // could not determine whether the turn is still going.
+      if (streamGenRef.current !== gen) return
+      setRunningElsewhere(false)
+      setTurnCheckFailed(true)
+    }
+  }
+
+  // retryTurnCheck re-asks after a failed check. Without it an "unknown" banner
+  // would have no way back to a definite answer short of leaving the session,
+  // which is a poor trade for one cheap GET. The banner is withdrawn while the
+  // retry is in flight and returns if the check fails again.
+  function retryTurnCheck() {
+    if (!currentSessionId) return
+    setTurnCheckFailed(false)
+    void checkTurnElsewhere(currentSessionId, streamGenRef.current)
   }
 
   // syncAllowAlways refreshes whether a durable "Always allow" is meaningful
@@ -639,17 +689,39 @@ export default function ChatView() {
   // superseded (its generation no longer matches) and its fetch is cancelled.
   // The streaming flag is cleared here rather than left to the retiring
   // stream's own `finally`, which sees itself as stale and refuses to touch it.
+  //
+  // The without-a-stream banner is retired with it -- both describe a turn this
+  // view is leaving behind -- and the generation bump discards a turn-status
+  // check still in flight for it, whose snapshot could otherwise re-arm a
+  // banner that has just been retired.
   function dropStream() {
     streamGenRef.current++
     abortRef.current?.abort()
     setStreaming(false)
+    clearTurnElsewhere()
+  }
+
+  // clearTurnElsewhere retires the without-a-stream banner, both states at once
+  // so they can never disagree. The paths that leave a session's turn behind --
+  // a switch, a new chat, a stop -- all go through dropStream; a send clears it
+  // alongside its own generation bump; and the check's own answer is the third.
+  function clearTurnElsewhere() {
+    setRunningElsewhere(false)
+    setTurnCheckFailed(false)
   }
 
   const switchSession = useCallback(async (id: string) => {
     dropStream()
+    // Captured with the session, not after the history load: by then another
+    // switch (into a session whose history loaded faster) has already taken the
+    // view, and a check issued then would be asking about a session this view
+    // no longer shows.
+    const gen = streamGenRef.current
     activeSessionRef.current = id
     setCurrentSessionId(id)
     await loadHistory(id)
+    if (streamGenRef.current !== gen) return
+    void checkTurnElsewhere(id, gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -697,6 +769,44 @@ export default function ChatView() {
     return true
   }
 
+  // stopElsewhere stops a turn this view has no stream for. `/abort` does not
+  // answer until the turn has settled, so the history reload that follows it
+  // already contains the stopped turn's partial output.
+  //
+  // It shares `stoppingRef` with the streaming Stop: both issue the same
+  // gateway abort, and the banner's button stays live for the whole round trip
+  // (it is only withdrawn once the server has answered), so a second click
+  // would be a duplicate POST for a turn that is already settling. A stop the
+  // server refuses is an expected outcome -- 504 means it did not settle in
+  // time, 502 that the channel was unavailable -- so it is surfaced as a toast
+  // and the banner stays, because the turn is then still running.
+  async function stopElsewhere() {
+    const session = currentSessionId
+    if (!session) return
+    if (stoppingRef.current) return
+    // The round trip is long -- the server answers only once the turn has
+    // settled -- so the user can switch away mid-stop. The generation, captured
+    // before the await and re-checked after it, is what stops this from
+    // reloading the stopped session's history into the view they moved to.
+    const gen = streamGenRef.current
+    stoppingRef.current = true
+    try {
+      await api.abortSession(session)
+    } catch (e) {
+      showToast(String(e))
+      return
+    } finally {
+      stoppingRef.current = false
+    }
+    if (streamGenRef.current !== gen) return
+    // dropStream, not clearTurnElsewhere: the banner is done, and the
+    // generation bump discards a turn-status check still in flight for it,
+    // whose pre-stop snapshot would otherwise re-arm the banner the stop just
+    // retired.
+    dropStream()
+    await loadHistory(session)
+  }
+
   async function sendMessage() {
     const el = inputEl.current
     if (!el) return
@@ -737,6 +847,10 @@ export default function ChatView() {
       if (streamGenRef.current !== genAtSend) return
       if (!stopped) return
     }
+    // This view is about to drive its own turn: the without-a-stream banner
+    // describes the turn being left behind, and would otherwise reappear when
+    // the new stream ends.
+    clearTurnElsewhere()
     const nextBubbles = [
       ...bubblesRef.current,
       { kind: 'user' as const, text, tools: [], thinking: false },
@@ -1309,6 +1423,28 @@ export default function ChatView() {
         </div>
 
         <div className="composer">
+          {/* A turn with no stream attached to this view (another tab, or a
+              reload). It sits above the input, and is hidden while this view
+              streams its own turn: the composer's Stop is the control for that
+              one. */}
+          {(runningElsewhere || turnCheckFailed) && !streaming && (
+            <div className="turn-banner">
+              {runningElsewhere && <span className="spin" />}
+              <span>
+                {runningElsewhere
+                  ? 'Still running…'
+                  : 'Could not check whether this chat is still running.'}
+              </span>
+              {turnCheckFailed && (
+                <button className="btn sm ghost" onClick={retryTurnCheck}>
+                  Retry
+                </button>
+              )}
+              <button className="btn sm" onClick={stopElsewhere}>
+                Stop
+              </button>
+            </div>
+          )}
           <div className="composer-inner">
             <textarea
               ref={inputEl}

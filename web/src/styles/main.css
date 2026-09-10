@@ -210,6 +210,10 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .confirm-cmd{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--fg);overflow-x:auto;white-space:nowrap}
 .confirm-note{font-size:12px;color:var(--muted)}
 .confirm-actions{display:flex;gap:8px}
+/* a turn running with no stream of this view's own (another tab, or a reload) */
+.turn-banner{display:flex;align-items:center;gap:9px;max-width:760px;margin:0 auto 10px;padding:7px 12px;border:1px solid var(--border);border-radius:10px;background:var(--accent-soft);font-size:12.5px;color:var(--accent-ink)}
+.turn-banner .btn{margin-left:auto}
+.turn-banner .btn + .btn{margin-left:0}
 /* input bar */
 .composer{border-top:1px solid var(--border);padding:12px 24px 16px;background:var(--surface)}
 .composer-inner{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
