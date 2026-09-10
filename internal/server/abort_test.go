@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -369,6 +370,111 @@ func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
 
 	if gw.lastAbortSession != abortTestKey {
 		t.Fatalf("abort session = %q, want the canonical key %q", gw.lastAbortSession, abortTestKey)
+	}
+}
+
+// The reload-takeover path has no stream, so /turn must answer from the gateway
+// and must not be cached: it is per-session liveness, not a shareable resource.
+func TestHandleTurnStatus(t *testing.T) {
+	gw := &fakeAbortGateway{busy: true}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(NewHub(), m)
+
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Active {
+		t.Fatal("active = false, want true")
+	}
+}
+
+// The endpoint's input guards. A Server with no HITL channel is not an error
+// here as it is for /abort: "no channel" is a state the handler can answer
+// truthfully -- nothing can be running that we would have a channel for -- and
+// the caller gets the same idle answer it would get from an idle gateway.
+func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		hitl   bool
+		want   int
+	}{
+		{name: "method", method: http.MethodPost, path: "/api/sessions/conv-1/turn", hitl: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodGet, path: "/api/sessions//turn", hitl: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodGet, path: "/api/sessions/agent:main:/turn", hitl: true, want: http.StatusBadRequest},
+		{name: "no hitl", method: http.MethodGet, path: "/api/sessions/conv-1/turn", hitl: false, want: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m *hitlManager
+			if tc.hitl {
+				m = &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
+			}
+			s := newAbortTestServer(NewHub(), m)
+
+			rec := httptest.NewRecorder()
+			s.handleTurnStatus(rec, httptest.NewRequest(tc.method, tc.path, nil))
+
+			if rec.Code != tc.want {
+				t.Fatalf("code = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+}
+
+// "Cannot determine" is not "not busy", for the same reason it is not in
+// /abort: answering idle here would hide a running turn and remove the Stop the
+// UI is supposed to offer. The caller gets an error it can report instead.
+func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
+	gw := &fakeAbortGateway{busyErr: errors.New("no live gateway channel")}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(NewHub(), m)
+
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: an undeterminable busy state must not read as idle", rec.Code)
+	}
+}
+
+// A correct handler the switch never reaches is no feature at all: /turn would
+// fall through to the mux's 404 and a reloaded Portal would have no way to
+// learn the run is still going. This drives the real Handler chain. The server
+// has no HITL channel, which is the truthful answer for "no channel, nothing
+// running" -- and it keeps the assertion on routing, not on the gateway.
+func TestTurnRouteIsWired(t *testing.T) {
+	srv := New(config.Config{DefaultUser: "alice"}, nil, nil, nil, nil)
+
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/turn", "alice", nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: /turn is not wired into handleSessionSubresource", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Active {
+		t.Fatal("active = true, want false with no HITL channel")
 	}
 }
 

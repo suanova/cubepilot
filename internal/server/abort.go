@@ -106,6 +106,40 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleTurnStatus serves GET /api/sessions/{key}/turn -- whether the session
+// still has a run in flight, so a Portal that reloaded (and therefore has no
+// stream) can say so and offer Stop.
+//
+// The answer comes from the gateway, not the SSE hub: the hub only knows
+// whether a browser is attached, which is false after a reload while the run is
+// still going.
+func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
+	// Per-session liveness: never cache.
+	w.Header().Set("Cache-Control", "no-store")
+
+	user := s.userOf(r)
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/turn"))
+	if sessionKey == "" || sessionKey == "agent:main:" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
+		return
+	}
+	if s.hitl == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	busy, err := s.hitl.SessionBusy(r.Context(), user, sessionKey)
+	if err != nil {
+		s.logf("turn status %s/%s: %v", user, sessionKey, err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"active": busy})
+}
+
 // waitSessionIdle waits for BOTH signals, because they cover different paths:
 // the hub check is what stops the follow-up send from racing hub.Open into a
 // 409, and the gateway check is the only one that means anything on the

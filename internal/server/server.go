@@ -208,6 +208,8 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 		s.handleQuestion(w, r)
 	case strings.HasSuffix(r.URL.Path, "/abort"):
 		s.handleAbort(w, r)
+	case strings.HasSuffix(r.URL.Path, "/turn"):
+		s.handleTurnStatus(w, r)
 	default:
 		http.NotFound(w, r)
 	}
