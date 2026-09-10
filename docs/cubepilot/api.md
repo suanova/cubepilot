@@ -153,6 +153,7 @@ X-CubePilot-User: <用户名>
 | --- | --- |
 | `GET /api/v1/sessions/{key}/messages` | 运行时历史文档，原样转发，不重新编码 |
 | `POST /api/v1/messages` | SSE 流，不是 JSON |
+| `GET /api/v1/sessions/{key}/stream` | SSE 流，不是 JSON（观察别人发起的回合） |
 | `GET /internal/gateway/config/{user}` | 原样转发 `openclaw.json` |
 | `GET /internal/skills/{name}/tar` | 原始 gzip |
 
@@ -375,6 +376,25 @@ GET /api/v1/sessions/{key}/turn   → {"active":true|false}
 状态来自网关（不是本地 hub），响应带 `Cache-Control: no-store`。
 可用于页面加载时判断「刷新前那轮还在跑吗」。
 
+## 4.6 重连到已暂停的回合（re-attach）
+
+```ts
+GET /api/v1/sessions/{key}/stream   → SSE 流
+```
+
+页面刷新、关标签或连接断开会让 `POST /api/v1/messages` 那条流消失，但**网关侧的回合还在跑**。
+若它正停在一个人工决定上，卡片可以从 pending 端点恢复——可恢复出来的卡片答完之后，
+续写的输出已经没有流可以送达（写回答的那个标签页只会看到卡片被 settle）。
+这个端点补上那一段：它观察一个**不是自己发起**的回合，把续写送到回答卡片的那一页。
+
+- **门禁**：会话必须停在一个人工决定上（有待回答的问题，或有待处理的审批），否则
+  `404 {"error":"no parked turn for this session"}`。这同时保证重连不漏事件：回合正在等人，
+  它不产出任何东西。
+- **一个会话只有一条流**：已有流时 `409`——持流的那一页本来就收得到全部事件，重连的这页应当让开。
+- 未配置 HITL → `503 {"error":"question channel unavailable"}`。
+- 以 `message_done` 结束：回合到终态、客户端断开、或达到 1 小时上限。
+- 不加热实例。
+
 ---
 
 # 5. 人机协同（HITL）
@@ -503,6 +523,7 @@ GET /api/v1/sessions/{key}/question/pending
 | GET | `/api/v1/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
 | POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
 | GET | `/api/v1/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
+| GET | `/api/v1/sessions/{key}/stream` | — | **SSE 流**（观察别人发起的、停在人工决定上的回合） | 否 |
 
 ## 6.2 Agent 配置与实例
 

@@ -356,6 +356,20 @@ func (f *fakeGatewayClient) sentMessages() []string {
 	return append([]string(nil), f.sends...)
 }
 
+// subscribedSessions returns a copy of the recorded SubscribeSessionMessages keys.
+func (f *fakeGatewayClient) subscribedSessions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.subscribes...)
+}
+
+// unsubscribedSessions returns a copy of the recorded UnsubscribeSessionMessages keys.
+func (f *fakeGatewayClient) unsubscribedSessions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.unsubscribes...)
+}
+
 // idempotencyKey returns the key the last send carried.
 func (f *fakeGatewayClient) idempotencyKey() string {
 	f.mu.Lock()

@@ -11,7 +11,7 @@ the same gap.
 
 The mechanism, reproduced on a local kind cluster:
 
-- A turn's events are written only to the SSE stream the `POST /api/messages` request
+- A turn's events are written only to the SSE stream the `POST /api/v1/messages` request
   opened (`handleMessages`' `emitLive` -> `Stream.Send`). Question and confirmation
   events are the exception -- they are injected into the session's **active stream** by
   `hub.PublishTo`.
@@ -47,7 +47,7 @@ why this change also adds the missing diagnostics.
 
 ## Design
 
-### 1. `GET /api/sessions/{key}/stream` -- re-attach to a parked turn
+### 1. `GET /api/v1/sessions/{key}/stream` -- re-attach to a parked turn
 
 A new session sub-resource (routed in `handleSessionSubresource` beside
 `/question/pending`) that opens an SSE stream observing a turn the caller did not
