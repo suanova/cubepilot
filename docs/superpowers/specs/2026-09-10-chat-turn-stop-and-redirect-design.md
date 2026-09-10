@@ -135,7 +135,25 @@ which is the whole failure being fixed. Add to `Hub`:
 func (h *Hub) WaitIdle(ctx context.Context, sessionKey string) error
 ```
 
-backed by the active `Stream`'s existing `closedCh`. `/abort` then:
+It must **not** simply wait on the active stream's `closedCh`. `Stream.Close`
+(`ssehub.go:146-158`) closes that channel *before* unregistering:
+
+```go
+s.closed = true
+close(s.closedCh)      // waiter wakes here
+s.mu.Unlock()
+s.hub.remove(s.key, s) // ...but the hub still lists it until here
+```
+
+so a waiter can wake, return "idle", and the client's very next `POST
+/api/messages` still sees the old stream and gets a 409 — the exact failure
+`WaitIdle` exists to prevent. `WaitIdle` must re-check membership under the hub
+mutex after waking, looping until the session is genuinely absent (or ctx
+expires). Reordering `Close` so the unregistration precedes the close would also
+work, but the recheck is robust either way and does not perturb existing
+teardown.
+
+`/abort` then:
 
 1. `AbortChat(ctx, sessionKey)` — idempotent; "nothing was running" is success,
    not an error.
@@ -158,7 +176,54 @@ distinguish the gateway's `stopReason`:
 - anything else (`"timeout"`, `"restart"`, `"auth-revoked"`, …) → still an
   error, as today.
 
-Carry that on the existing terminal event rather than adding a new one.
+**Propagation: the outcome needs its own channel.** The terminal event is emitted
+by the *handler*, not by the runtime adapter, and today the only thing crossing
+that boundary is an `error` (`handlers.go:207-215`):
+
+```go
+} else if err := runtimeAdapter.RunLiveTurn(...); err != nil {
+    _ = stream.Send(Event{Type: EventMessageDone, Error: err.Error()})
+} else {
+    _ = stream.Send(Event{Type: EventMessageDone})
+}
+```
+
+So teaching `chatTerminalErr` to return `nil` for a stop would produce
+`message_done{}` — indistinguishable from normal completion. A `stopped` field on
+`agentruntime.Event` is necessary but not sufficient; it also has to be emitted,
+and the manager does not emit the terminal.
+
+Change `LiveTurnRunner.RunLiveTurn` to return a typed outcome alongside the
+error:
+
+```go
+type TurnOutcome struct {
+    Stopped bool
+}
+type LiveTurnRunner interface {
+    RunLiveTurn(ctx context.Context, sessionKey string, params LiveTurnParams,
+        emit func(Event) error) (TurnOutcome, error)
+}
+```
+
+and let the handler discriminate:
+
+```go
+outcome, err := runtimeAdapter.RunLiveTurn(...)
+switch {
+case err != nil:   // message_done{error}
+case outcome.Stopped: // message_done{stopped:true}
+default:           // message_done{}
+}
+```
+
+The ripple is contained: one interface, one implementer
+(`openClawLiveRunner`, `hitl.go:65`) — `Compose` passes a single `LiveTurnRunner`
+— one call site, and test fakes. Do **not** have the manager emit the terminal
+through the sink instead: the handler owns the terminal, and letting both write
+it is how the single-terminal invariant gets broken.
+
+Carry the outcome on the existing terminal event rather than adding a new one.
 
 **Terminal contract.** `message_done` is the *only* terminal event and carries
 the outcome:
@@ -195,18 +260,43 @@ Text already streamed is kept: the bubble keeps its partial content and is
 marked stopped. Stopping is not a rollback.
 
 **Stopped turns must survive a reload.** The `stopped` flag alone only reaches a
-client that was attached to the stream. A user who reloads has no stream — they
-see history (and `/turn`), so a truncated answer would render as if it were a
-complete one. The gateway persists an aborted partial's assistant message into
-the transcript with `openclawAbort: { aborted: true, origin, runId }`
-(`src/gateway/server-methods/chat-transcript-inject.ts:137-143`), which is the
-signal history can render from. **Verify during implementation** that this field
-is present in the `/sessions/{key}/history` payload cubepilot reads — it is
-written into the transcript but the gateway itself never reads it back, so
-whether the history endpoint surfaces raw message bodies is unconfirmed. If it
-does not surface, the fallback is to mark the turn stopped only for a live
-stream and treat the reload marker as a follow-up; do not render a partial as a
-completed answer in the meantime.
+client attached to the stream. A user who reloads has no stream — they see
+history (and `/turn`) — so the stopped state has to be recoverable from history
+or it is simply lost.
+
+The gateway does persist an aborted partial into the transcript with
+`openclawAbort: { aborted: true, origin, runId }`
+(`src/gateway/server-methods/chat-transcript-inject.ts:137-143`). Its semantics
+are narrower than "every stopped turn is marked", and the design must state them
+rather than assume them:
+
+- A partial that is still buffered and not yet committed **is** persisted and
+  marked.
+- A reply the run **already committed** is deliberately left **unmarked** — the
+  gateway suppresses the late re-persist as a duplicate
+  (`chat.abort-persistence.test.ts:488`, *"does not duplicate a committed reply
+  when a late abort re-persists the buffered text"*, asserting `openclawAbort`
+  is undefined; `chat.abort-live-proof.test.ts:272` asserts the same against a
+  live gateway). That row is the run's complete reply, so leaving it unmarked is
+  correct — it is not a defect to work around.
+
+Two questions remain open and belong to the implementation-time spike:
+
+1. Does `/sessions/{key}/history`, which cubepilot reads, surface
+   `openclawAbort` at all? It is written into the transcript but nothing in the
+   gateway reads it back, so the history endpoint's projection of raw message
+   bodies is unconfirmed.
+2. Can a **mid-turn** committed row be truncated — commentary committed when a
+   tool ran, then superseded (cubepilot's `text_replace` exists for exactly that
+   rewrite)? If so, that row would be both committed and truncated, and would
+   fall in the unmarked case. That is the only scenario where a marked partial
+   is insufficient.
+
+If (1) or (2) turns out badly, the remedy is a **CubePilot-owned durable marker**
+(a per-session record written when `/abort` succeeds and consulted when
+rendering history). That is a scope increase, not something this evidence
+justifies on its own — settle the spike first. What the design does forbid is
+presenting a known-truncated reply as a finished one.
 
 **HITL cleanup.** If the agent is parked on a `confirm_pending` or
 `question_pending`, the abort settles it gateway-side, but cubepilot's
@@ -236,6 +326,23 @@ session's unresolved records settled/expired and publish the corresponding
 
 `web/src/api/sse.ts`: thread an optional `AbortSignal` into `RequestInit`, used
 **only** for unmount / session-switch cleanup — never for Stop.
+
+Adding a signal is not enough on its own, because today an abort is
+indistinguishable from a transport failure:
+
+- `reader.read()` throwing lands in the same catch that sets `streamError`
+  (`sse.ts:33-39`), and the missing-terminal fallback then synthesizes
+  `message_done{error}` (`sse.ts:60-62`). An *intentional* cancel would surface
+  as a user-visible failure. The signal must be checked on that path and the
+  synthetic error suppressed — an aborted stream is a clean, silent stop, not
+  an error.
+- `ChatView`'s event callback and its `catch` both mutate the captured bubble
+  and call `setBubbles([...bubblesRef.current])` (`ChatView.tsx:722-737`) with no
+  check that the bubble still belongs to the active session. In a session switch
+  the old stream's late events — or its abort — would mutate the newly selected
+  session's view. The callback must drop events for a session that is no longer
+  current (capture the session at send time and compare), and the `catch` must
+  not set `bubble.error` when the stream was intentionally cancelled.
 
 `web/src/api/types.ts`: `MessageDone` gains `stopped?: boolean`.
 
@@ -278,18 +385,31 @@ plain reload.
   `state:"aborted"` frame with `stopReason:"rpc"` produces
   `message_done{stopped:true}` with an empty error, while `"timeout"` still
   produces an error; `/turn` reflects `inFlightRun`.
+- **handler outcome plumbing**: a runtime returning `TurnOutcome{Stopped:true}`
+  with a nil error produces `message_done{stopped:true}` (not `{}`), and a
+  stopped outcome never sets `error`. This is the regression test for the gap
+  where a nil error means "completed".
+- **hub**: `WaitIdle` does not return while the session is still listed in
+  `h.active` — a stream closing and unregistering concurrently must not let a
+  waiter return early. Test the interleaving explicitly (close, then observe),
+  not just the already-idle case.
 - **web**: switching the composer to Stop while streaming; Stop renders a
   stopped (not failed) bubble and preserves partial text; send-while-streaming
   awaits the abort before posting; mount-time `/turn` shows the running banner
   and Stop; a stopped turn loaded from history renders as stopped, not as a
-  completed answer.
+  completed answer; an intentional `AbortSignal` cancel produces **no** error
+  bubble; an event arriving for a session that is no longer current does not
+  mutate the active session's bubbles.
 - **e2e**: with a live agent, start a turn, press Stop, assert the turn ends
   promptly and the session is idle; then send a second message mid-turn and
   assert the first turn is stopped and the second runs. Also reload after a Stop
   and assert the partial is marked stopped.
-- **verification spike (before implementation)**: confirm against a live gateway
-  whether `openclawAbort` appears in the `/sessions/{key}/history` payload. This
-  decides whether the reload marker is in scope or a follow-up.
+- **verification spike (before implementation)**: against a live gateway, settle
+  the two open questions in "Stopped turns must survive a reload" — (1) does
+  `/sessions/{key}/history` surface `openclawAbort` at all, and (2) can a
+  mid-turn committed row be truncated (probe by aborting during a turn that has
+  already had commentary committed and superseded). Either answer coming back
+  badly promotes the CubePilot-owned durable marker into scope.
 
 ## Rollout
 
