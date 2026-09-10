@@ -39,6 +39,19 @@ func TestRender(t *testing.T) {
 				Mode   string `json:"mode"`
 			} `json:"providers"`
 		} `json:"secrets"`
+		Memory struct {
+			Search struct {
+				Enabled bool `json:"enabled"`
+				Store   struct {
+					FTS struct {
+						Tokenizer string `json:"tokenizer"`
+					} `json:"fts"`
+					Vector struct {
+						Enabled *bool `json:"enabled"`
+					} `json:"vector"`
+				} `json:"store"`
+			} `json:"search"`
+		} `json:"memory"`
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -66,6 +79,17 @@ func TestRender(t *testing.T) {
 	sp := cfg.Secrets.Providers["cubepilot-keys"]
 	if sp.Source != "file" || sp.Path != "/mnt/cubepilot-keys/keys.json" || sp.Mode != "json" {
 		t.Errorf("secrets.providers.cubepilot-keys wrong: %+v", sp)
+	}
+	// Memory is keyword-only (issue #163): semantic vector search is off (no
+	// embedding provider), FTS5 keeps keyword search with the CJK tokenizer.
+	if !cfg.Memory.Search.Enabled {
+		t.Error("memory.search.enabled should be true (keyword search stays on)")
+	}
+	if cfg.Memory.Search.Store.Vector.Enabled == nil || *cfg.Memory.Search.Store.Vector.Enabled {
+		t.Errorf("memory.search.store.vector.enabled should be false, got %v", cfg.Memory.Search.Store.Vector.Enabled)
+	}
+	if cfg.Memory.Search.Store.FTS.Tokenizer != "trigram" {
+		t.Errorf("memory.search.store.fts.tokenizer = %q, want trigram", cfg.Memory.Search.Store.FTS.Tokenizer)
 	}
 	// model = {primary} and the allowlist lives at agents.defaults.models
 	// (siblings) -- this is the OpenClaw schema the old jq produced.

@@ -71,6 +71,22 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			"exec":     map[string]any{"security": "full", "ask": "off"},
 			"sessions": map[string]any{"visibility": "all"},
 		},
+		// Memory runs FTS5 keyword search only (issue #163): with no embedding
+		// provider configured, OpenClaw's default vector search resolves
+		// embeddings to an unavailable "openai" adapter, so the vector index was
+		// never built and the gateway logged degraded-recall warnings on every
+		// start. Disable the semantic index until an embedding model exists; the
+		// trigram tokenizer is what makes keyword search work for CJK text (the
+		// default unicode61 does not segment it).
+		"memory": map[string]any{
+			"search": map[string]any{
+				"enabled": true,
+				"store": map[string]any{
+					"vector": map[string]any{"enabled": false},
+					"fts":    map[string]any{"tokenizer": "trigram"},
+				},
+			},
+		},
 		// The file-secret provider that resolves the per-model apiKey refs from
 		// the keys.json the supervisor writes into the emptyDir.
 		"secrets": map[string]any{
