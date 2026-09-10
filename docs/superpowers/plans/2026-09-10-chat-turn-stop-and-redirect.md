@@ -1215,7 +1215,12 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
-	busy, err := s.hitl.SessionBusy(r.Context(), user, sessionKey)
+	// Bounded like its sibling's gateway steps: Client.Call blocks on the
+	// connection's write mutex before it selects on the context, and the HTTP
+	// server sets no timeouts, so an unbounded read can park this handler.
+	ctx, cancel := context.WithTimeout(r.Context(), abortRPCDeadline)
+	defer cancel()
+	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 	if err != nil {
 		s.logf("turn status %s/%s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
