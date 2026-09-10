@@ -844,6 +844,23 @@ Assisted-by: Claude Code"
 - Consumes: Task 2's `hitlManager.Abort` / `LiveRunID` / `SessionBusy`; Task 3's `Hub.WaitIdle`; Task 4's `settlePendingForSession`.
 - Produces: `(*Server).handleAbort(w, r)`.
 
+> **Implemented — `internal/server/abort.go` is authoritative.** The code block in
+> Step 3 below is the original sketch; review changed four things in the shipped
+> version, each because a mutation showed the sketch's behaviour was untested or
+> wrong. Read the file, not the block:
+> - `abortSettleTimeout` is a `var`, not a `const`, so a test can shorten it and
+>   removing the bound fails a test (`hitlPairRetryDelay` in hitl.go is the same
+>   idiom).
+> - The gateway-busy check's *value* is load-bearing: a mutation that consults
+>   `SessionBusy` but ignores the answer passed the whole suite before a test
+>   pinned it. It is the only guard when the hub is idle but the run is not.
+> - `hubIdle` is re-checked against `s.hub.Active` before the final 200; a
+>   one-shot latch missed a stream opened after the gateway read.
+> - The abort RPC and the settle run on a client-independent, bounded context
+>   (`context.WithoutCancel`). On the request context a client disconnect could
+>   silently skip the settle, and a delivered abort RPC could be reported as a
+>   failure — `ws.Client.Call` writes the frame before it selects on the context.
+
 - [ ] **Step 1: Write the failing test**
 
 Create `internal/server/abort_test.go`:
@@ -856,7 +873,7 @@ Create `internal/server/abort_test.go`:
 func TestHandleAbortWaitsForIdle(t *testing.T) {
 	h := NewHub()
 	w := httptest.NewRecorder()
-	stream, err := h.Open("conv-1", w, w)
+	stream, err := h.Open(abortTestKey, w, w)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
