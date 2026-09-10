@@ -131,7 +131,18 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
-	busy, err := s.hitl.SessionBusy(r.Context(), user, sessionKey)
+	// Bound the read with the same abortRPCDeadline /abort's RPC uses, and for
+	// the same reason: ws.Client.Call takes the connection's write mutex and
+	// writes the frame before it ever selects on the context, and the HTTP
+	// server sets no timeouts at all, so a half-open gateway connection would
+	// park this handler forever -- one leaked blocked request per Portal
+	// refresh. It stays on the request context, unlike /abort's detached
+	// commands: a read is only meaningful to the caller still holding the
+	// request. Expiry surfaces as the error below (502), never as (false, nil),
+	// because "cannot determine" must not be rendered as "not busy".
+	ctx, cancel := context.WithTimeout(r.Context(), abortRPCDeadline)
+	defer cancel()
+	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 	if err != nil {
 		s.logf("turn status %s/%s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})

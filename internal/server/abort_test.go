@@ -398,6 +398,69 @@ func TestHandleTurnStatus(t *testing.T) {
 	if !body.Active {
 		t.Fatal("active = false, want true")
 	}
+	// The gateway matches on the canonical key. A handler that skipped
+	// canonicalSessionKey would query with the raw segment, match no in-flight
+	// run, and answer a 200 false idle -- hiding the Stop control on a turn that
+	// is actually running, which is the one answer this endpoint must never give.
+	if gw.lastBusySession != abortTestKey {
+		t.Fatalf("busy session = %q, want the canonical key %q", gw.lastBusySession, abortTestKey)
+	}
+}
+
+// The gateway read is bounded, exactly as /abort's RPC is. Nothing else bounds
+// it: ws.Client.Call takes the connection's write mutex and writes the frame
+// before it selects on the context, and the HTTP server sets no timeouts, so a
+// half-open gateway connection would park this handler forever and leak one
+// blocked request per Portal refresh. The fake reports the context it was
+// handed, which is the bound's only observable (an unbounded read simply never
+// returns, so no fast test can wait for it).
+func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
+	gw := &fakeAbortGateway{busy: true}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(NewHub(), m)
+
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if !gw.busyCtxHasDeadline {
+		t.Fatal("the busy read ran on a context with no deadline: a wedged gateway would hold this handler open indefinitely")
+	}
+	// The slack is for the moment between this test's clock and the handler
+	// setting its bound. It is small on purpose: the point is that the bound is
+	// abortRPCDeadline's, not some longer one invented for /turn.
+	if d := time.Until(gw.busyCtxDeadline); d <= 0 || d > abortRPCDeadline+time.Second {
+		t.Fatalf("busy read deadline = now+%v, want (0, %v]", d, abortRPCDeadline)
+	}
+}
+
+// A read whose bound runs out is an error, never an idle. "Cannot determine" is
+// not "not busy": a 200 {"active": false} here would hide a running turn and
+// remove the Stop the endpoint exists to offer. The fake behaves like a wedged
+// ws.Client.Call -- it waits for the context and reports what it saw instead of
+// returning a value it never received.
+func TestHandleTurnStatusDeadlineIsErrorNotIdle(t *testing.T) {
+	gw := &fakeAbortGateway{busyFunc: func(ctx context.Context) (bool, error) {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(NewHub(), m)
+
+	// A request context whose deadline has already passed is the state the
+	// handler's own bound is in the instant it expires.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil).WithContext(expired))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: an expired busy read must not be answered as idle", rec.Code)
+	}
+	assertNoActiveClaim(t, rec.Body.Bytes())
 }
 
 // The endpoint's input guards. A Server with no HITL channel is not an error
@@ -405,17 +468,22 @@ func TestHandleTurnStatus(t *testing.T) {
 // truthfully -- nothing can be running that we would have a channel for -- and
 // the caller gets the same idle answer it would get from an idle gateway.
 func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
+	// The nil-HITL answer is a determination, not just a status code: with no
+	// channel there is nothing that could be running, so the body must say idle.
+	// A status-only assertion would accept a handler answering active=true here.
+	activeFalse := false
 	cases := []struct {
-		name   string
-		method string
-		path   string
-		hitl   bool
-		want   int
+		name       string
+		method     string
+		path       string
+		hitl       bool
+		want       int
+		wantActive *bool
 	}{
 		{name: "method", method: http.MethodPost, path: "/api/sessions/conv-1/turn", hitl: true, want: http.StatusMethodNotAllowed},
 		{name: "empty key", method: http.MethodGet, path: "/api/sessions//turn", hitl: true, want: http.StatusBadRequest},
 		{name: "main key", method: http.MethodGet, path: "/api/sessions/agent:main:/turn", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodGet, path: "/api/sessions/conv-1/turn", hitl: false, want: http.StatusOK},
+		{name: "no hitl", method: http.MethodGet, path: "/api/sessions/conv-1/turn", hitl: false, want: http.StatusOK, wantActive: &activeFalse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -430,6 +498,17 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 
 			if rec.Code != tc.want {
 				t.Fatalf("code = %d, want %d", rec.Code, tc.want)
+			}
+			if tc.wantActive != nil {
+				var body struct {
+					Active bool `json:"active"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if body.Active != *tc.wantActive {
+					t.Fatalf("active = %v, want %v: no HITL channel is an idle answer, not a hidden running turn", body.Active, *tc.wantActive)
+				}
 			}
 		})
 	}
@@ -449,6 +528,7 @@ func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: an undeterminable busy state must not read as idle", rec.Code)
 	}
+	assertNoActiveClaim(t, rec.Body.Bytes())
 }
 
 // A correct handler the switch never reaches is no feature at all: /turn would
@@ -490,6 +570,15 @@ type fakeAbortGateway struct {
 	abortCtxErr      error
 	lastAbortSession string
 	lastAbortRunID   string
+	// lastBusySession records the key the busy read was made with. The gateway
+	// matches on the canonical form, so a handler passing the raw URL segment
+	// gets no in-flight run back -- a false idle that hides the Stop control.
+	// This is the /turn counterpart of lastAbortSession.
+	lastBusySession string
+	// busyCtxDeadline and busyCtxHasDeadline record the context the busy read
+	// was handed, which is how the bound on that read is observed.
+	busyCtxDeadline    time.Time
+	busyCtxHasDeadline bool
 	// listed and listCtxErr record the context the settle step handed to
 	// question.list, which is how the settle's detachment is observed.
 	listed     bool
@@ -502,7 +591,9 @@ func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID stri
 	return f.abortErr
 }
 
-func (f *fakeAbortGateway) SessionBusy(ctx context.Context, _ string) (bool, error) {
+func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
+	f.lastBusySession = sessionKey
+	f.busyCtxDeadline, f.busyCtxHasDeadline = ctx.Deadline()
 	if f.busyFunc != nil {
 		return f.busyFunc(ctx)
 	}
@@ -521,6 +612,22 @@ func (f *fakeAbortGateway) ListQuestions(ctx context.Context) ([]ws.QuestionReco
 	f.listed = true
 	f.listCtxErr = ctx.Err()
 	return nil, nil
+}
+
+// assertNoActiveClaim pins that a failure response carries no `active` field at
+// all. The status code says "cannot determine"; a body that also carried
+// {"active": false} would give a client reading the payload defensively a
+// determination to fall back on, and the only determination available there is
+// the false idle this endpoint must never produce.
+func assertNoActiveClaim(t *testing.T, body []byte) {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if active, ok := decoded["active"]; ok {
+		t.Fatalf("body %s claims active=%v, want no active field: an undeterminable busy state must not look like a determination", body, active)
+	}
 }
 
 // shortenAbortSettleTimeout replaces the settle bound for one test. The 504
