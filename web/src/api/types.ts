@@ -164,6 +164,10 @@ export interface SSEMessageDone {
   type: 'message_done'
   session_id: string
   error?: string
+  // The user stopped this turn (chat.abort or /stop). Mutually exclusive with
+  // error: a stopped turn is neither a failure nor a normal completion, and its
+  // partial text must not be presented as a finished answer.
+  stopped?: boolean
 }
 // HITL (issue #20): a matched write paused for the human. call_id is the gateway
 // approval id; name/command/level/message describe the gated operation.

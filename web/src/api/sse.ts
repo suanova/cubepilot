@@ -14,8 +14,9 @@ export async function streamSSE(
   url: string,
   opts: RequestInit,
   onEvent: (name: string, ev: SSEEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const resp = await fetch(url, opts)
+  const resp = await fetch(url, { ...opts, signal })
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
     emitDone(onEvent, `HTTP ${resp.status} ${text}`)
@@ -35,6 +36,9 @@ export async function streamSSE(
     try {
       r = await reader.read()
     } catch (e) {
+      // An intentional cancel (unmount, session switch) is a clean stop, not a
+      // transport failure: do not synthesize an error the user would see.
+      if (signal?.aborted) return
       streamError = String(e)
       break
     }
@@ -57,7 +61,7 @@ export async function streamSSE(
   }
   // Terminal event missing (connection dropped / server died mid-stream):
   // synthesize one so the caller can reset its state.
-  if (!sawDone) {
+  if (!sawDone && !signal?.aborted) {
     emitDone(onEvent, streamError || 'connection closed before the turn finished')
   }
 }
