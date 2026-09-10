@@ -327,11 +327,11 @@ Two questions remain open and belong to the implementation-time spike:
    fall in the unmarked case. That is the only scenario where a marked partial
    is insufficient.
 
-If (1) or (2) turns out badly, the remedy is a **CubePilot-owned durable marker**
-(a per-session record written when `/abort` succeeds and consulted when
-rendering history). That is a scope increase, not something this evidence
-justifies on its own — settle the spike first. What the design does forbid is
-presenting a known-truncated reply as a finished one.
+A **CubePilot-owned durable marker** (a per-session record written when `/abort`
+succeeds and consulted when rendering history) is **explicitly out of scope** —
+it was considered and declined. If the spike comes back badly, the correct
+response is to drop the reload marker, not to grow this feature. What the design
+does forbid is presenting a reply known to be truncated as a finished one.
 
 **HITL cleanup.** If the agent is parked on a `confirm_pending` or
 `question_pending`, the abort settles it gateway-side, but cubepilot's
@@ -342,6 +342,13 @@ while the stream is still open — mark the session's unresolved records
 settled/expired and publish the corresponding `confirm_resolved` /
 `question_resolved` event so any attached stream agrees. Doing this after the
 idle wait is too late: the stream is gone by then.
+
+Settling *and publishing* is deliberate, against the two cheaper alternatives:
+leaving the records to expire keeps a dead card on screen for the question
+timeout (~900s), and deleting them silently leaves an attached view showing a
+live-looking card until it happens to refetch. This is not new machinery — it is
+the same operation the `ask_user` card's own Dismiss already performs, applied to
+every pending record for the session at once.
 
 ### Layer 3 — web
 
@@ -452,9 +459,9 @@ plain reload.
   already had commentary committed and superseded).
 
   This is a **gate on the reload-marker part of the feature**, not a background
-  note. If either answer comes back badly, the CubePilot-owned durable marker is
-  required before that part ships — not optional follow-up work. The rest of the
-  feature (Stop, redirect, live `stopped`) does not depend on it and can proceed
+  note. If either answer comes back badly, the reload marker is **dropped** —
+  the CubePilot-owned durable marker is out of scope (see above). The rest of the
+  feature (Stop, redirect, live `stopped`) does not depend on it and proceeds
   either way.
 
 ## Rollout
