@@ -587,10 +587,15 @@ Assisted-by: Claude Code"
 Append to `internal/server/ssehub_test.go`:
 
 ```go
-// Close signals closedCh before it unregisters, so a waiter that trusts the
-// channel alone can return while the hub still lists the stream. WaitIdle must
-// re-check membership and only report idle once the session is really gone.
-func TestHubWaitIdleWaitsForUnregistration(t *testing.T) {
+// Close signals closedCh BEFORE it unregisters, so a waiter that trusts the
+// channel alone returns while the hub still lists the stream -- and the client's
+// very next POST /api/messages then races hub.Open into a 409.
+//
+// The interleaving is constructed directly (closedCh closed, still registered)
+// rather than by holding h.mu from the test: WaitIdle takes that same lock, so
+// holding it would park the waiter in Lock() and never exercise the channel
+// path at all -- the test would pass for the wrong reason.
+func TestHubWaitIdleRechecksMembership(t *testing.T) {
 	h := NewHub()
 	w := httptest.NewRecorder()
 	s, err := h.Open("conv-1", w, w)
@@ -598,33 +603,25 @@ func TestHubWaitIdleWaitsForUnregistration(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 
-	// Hold the stream between its closedCh close and its hub removal by taking
-	// the hub lock, then closing from another goroutine.
-	h.mu.Lock()
-	go s.Close()
+	// Exactly the window inside Stream.Close between close(closedCh) and
+	// hub.remove: the channel is closed, the stream is still listed.
+	s.mu.Lock()
+	s.closed = true
+	close(s.closedCh)
+	s.mu.Unlock()
 
-	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		done <- h.WaitIdle(ctx, "conv-1")
-	}()
-
-	select {
-	case err := <-done:
-		t.Fatalf("WaitIdle returned %v while the session was still registered", err)
-	case <-time.After(50 * time.Millisecond):
-		// Still blocked: correct.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := h.WaitIdle(ctx, "conv-1"); err == nil {
+		t.Fatal("WaitIdle returned nil while the stream was still registered")
 	}
 
-	h.mu.Unlock()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("WaitIdle after unregistration: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("WaitIdle did not return after unregistration")
+	h.remove("conv-1", s)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if err := h.WaitIdle(ctx2, "conv-1"); err != nil {
+		t.Fatalf("WaitIdle after removal: %v", err)
 	}
 }
 
@@ -1014,26 +1011,35 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 // reload-takeover path, where no stream exists at all and a follow-up send
 // could otherwise be steered into the dying run and swallowed.
 func (s *Server) waitSessionIdle(ctx context.Context, user, sessionKey string) error {
-	hubCtx, cancelHub := context.WithCancel(ctx)
-	defer cancelHub()
 	hubErr := make(chan error, 1)
-	go func() { hubErr <- s.hub.WaitIdle(hubCtx, sessionKey) }()
+	go func() { hubErr <- s.hub.WaitIdle(ctx, sessionKey) }()
 
+	// hubIdle latches: hubErr is delivered once, and re-selecting on a drained
+	// channel would block until ctx expires even though the hub is already idle.
+	hubIdle := false
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
-		if err != nil {
-			return err
+		if !hubIdle {
+			select {
+			case err := <-hubErr:
+				if err != nil {
+					return err
+				}
+				hubIdle = true
+			default:
+			}
 		}
-		if !busy {
-			return <-hubErr
-		}
-		select {
-		case err := <-hubErr:
+		if hubIdle {
+			busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 			if err != nil {
 				return err
 			}
+			if !busy {
+				return nil
+			}
+		}
+		select {
 		case <-ticker.C:
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1301,17 +1307,26 @@ Near the other state declarations in `ChatView`:
 
 ```tsx
   const [streaming, setStreaming] = useState(false)
-  // The session this component is currently showing. A stream started for an
-  // earlier session must not write into the new one's bubbles.
-  const activeSessionRef = useRef<string>('')
+  // Monotonic stream generation: a stream opened for an earlier session (or
+  // before a session switch) must not write into the current view.
+  //
+  // The session id cannot be the guard. A brand-new chat has no id at send
+  // time -- the server mints one and reports it in message_start -- so guarding
+  // on the id would invalidate a just-started stream as soon as its own first
+  // event arrived, and nothing would ever render.
+  const streamGenRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
 ```
 
-Set `activeSessionRef.current = id` wherever `currentSessionId` changes (same places `loadHistory` is called). In `sendMessage`, capture `const sentFor = currentSessionId` before the await and drop events when it no longer matches:
+In `sendMessage`, take a generation before opening the stream and drop events once it is superseded:
 
 ```tsx
-  const stale = () => activeSessionRef.current !== sentFor
+    const gen = ++streamGenRef.current
+    const stale = () => streamGenRef.current !== gen
 ```
+
+On a session switch (the same places `loadHistory` is triggered), bump
+`streamGenRef.current++` and call `abortRef.current?.abort()`.
 
 Wrap the `onEvent` callback body: at the top, `if (stale()) return`. In the `catch`, only set the error when the abort was not intentional:
 
@@ -1427,9 +1442,10 @@ Assisted-by: Claude Code"
 In the mount effect, after `loadHistory(id)` resolves and `activeSessionRef.current = id` is set:
 
 ```tsx
+      const gen = streamGenRef.current
       try {
         const { active } = await api.sessionTurn(id)
-        if (active && activeSessionRef.current === id) setRunningElsewhere(true)
+        if (active && streamGenRef.current === gen) setRunningElsewhere(true)
       } catch {
         // Best-effort: a failure here must not block the chat from loading.
       }
