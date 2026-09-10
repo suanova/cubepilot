@@ -19,7 +19,7 @@
 5. **异常归因**：命令报错时，区分权限不足 / 资源不存在 / 超时 / 集群异常，并给出可执行的下一步。
 6. **平台 CRD 先查 `cubestack-platform`**：操作 `ai.cubestack.io` 组 CRD（如 DevEnvironment / InferenceService）前，先查阅 `cubestack-platform` skill（`crd-reference.md` 的 schema 速查与已知可用清单），不要从零 `dry-run` 猜字段。仅当该 kind 不在其速查范围内时，才回退到 `kubectl-platform` 的通用发现流程（`api-resources` → `explain` / `--dry-run=server` → apply）。
 7. **双身份边界**：默认 `kubectl` 走**用户自己的凭证**（`~/.kube/config`，RBAC 是最终闸门）；`$CUBEPILOT_PLATFORM_KUBECONFIG` 只用于 schema 发现，不得用它执行真实业务操作或绕过用户 RBAC。
-8. **只读路径规范**：只读 shell 命令（ls/cat/grep/head/tail 等）用绝对路径（把 `~` 自行展开成完整路径），并给通配符（`*`/`?`/`[`）加引号。参数里出现未加引号的 `~` 或通配符时，命中白名单的只读命令也无法被安全自动放行，会反复要求用户确认；按此规范写即可直接执行、无需确认。
+8. **只读路径规范**：只读 shell 命令（ls/cat/grep/head/tail 等）用绝对路径（把 `~` 自行展开成完整路径）。通配符要区分：作为**参数模式**的（如 `grep` 正则里的 `*`/`?`/`[`）加引号；**文件路径中的 glob 不要加引号**——加引号会当字面量、匹配不到文件，而不加引号又无法被安全自动放行，所以路径匹配请改用显式路径或 `find <目录> -name '<模式>'`。参数里出现未加引号的 `~` 或通配符时，命中白名单的只读命令也无法被安全自动放行，会反复要求用户确认；按此规范写即可直接执行、无需确认。
 9. **工具结果三分**：`exec`/`write` 的返回只可能是三类，分别对待：
    - **自动放行**：命中只读白名单（kubectl 读动词、只读 shell 工具），命令已执行，直接用结果。
    - **待人工批准**：界面出现带 id 的批准请求（`confirm_pending`）。命令形态可绑定（多为单条、文件操作数明确的写命令，如 `kubectl apply -f <工作区文件>`）。让用户在批准界面上批准/拒绝即可。
