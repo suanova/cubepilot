@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -108,7 +109,12 @@ func (h *Hub) WaitIdle(ctx context.Context, sessionKey string) error {
 		}
 		select {
 		case <-s.closedCh:
-			// Woken, but unregistration may not have happened yet: loop.
+			// Woken, but unregistration may not have happened yet: loop. The
+			// channel stays closed, so the re-check above cannot block on it --
+			// yield rather than spin on the closed channel until Close's remove
+			// (two adjacent statements away) lands. The membership re-check above
+			// is still the only thing that decides the return.
+			runtime.Gosched()
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -125,9 +131,15 @@ type Stream struct {
 	mu        sync.Mutex
 	lastWrite time.Time
 	closed    bool
-	closedCh  chan struct{}
-	hbStop    chan struct{}
-	hbOnce    sync.Once
+	// closedCh is created once by Hub.Open and never reassigned. That invariant
+	// is what makes the unlocked reads safe: the field is written before the
+	// stream is published under h.mu, and WaitIdle and heartbeat both reach the
+	// stream through h.mu, so the read is ordered by that lock even though they
+	// select on the channel without holding s.mu. Reassigning closedCh would
+	// break this and force those reads under s.mu.
+	closedCh chan struct{}
+	hbStop   chan struct{}
+	hbOnce   sync.Once
 }
 
 // Start begins the idle heartbeat goroutine (idempotent).
