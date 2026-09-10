@@ -431,6 +431,14 @@ export default function ChatView() {
   // event arrived, and nothing would ever render.
   const streamGenRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  // One submission at a time. The guard matters for a redirect: the textarea
+  // keeps the typed text for the whole abort round trip, so without it a second
+  // Enter in that window passes `if (!text) return` and `if (streaming)` both
+  // and starts a second send -- two POSTs for one redirect, the loser refused by
+  // the server's one-stream-per-session guard, and the winner superseded before
+  // its answer arrives. The same window opens when the settling old stream
+  // clears `streaming` mid-redirect and the composer offers Send again.
+  const sendingRef = useRef(false)
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -648,16 +656,21 @@ export default function ChatView() {
   }
 
   // stopTurn asks the server to stop the session's running turn. It resolves
-  // true once the turn has settled (or when there is no session to stop yet)
-  // and false when the stop was attempted and refused -- the caller must then
-  // treat the turn as still running. An ApiError here is an expected outcome,
-  // not a crash: 504 means the turn did not settle in time and 502 that the
-  // gateway channel was unavailable, so it is surfaced as a toast and the stop
-  // control stays available rather than the page being painted as broken.
+  // true once the turn has settled and false when the stop did not take -- the
+  // caller must then treat the turn as still running and say so. An ApiError
+  // here is an expected outcome, not a crash: 504 means the turn did not settle
+  // in time and 502 that the gateway channel was unavailable, so it is surfaced
+  // as a toast and the stop control stays available rather than the page being
+  // painted as broken.
   async function stopTurn(): Promise<boolean> {
     // No session id yet: the request is still in flight and the server has not
-    // reported the id it minted, so there is nothing we can address.
-    if (!currentSessionId) return true
+    // reported the id it minted, so there is no turn we can address. This is a
+    // refusal, not a success -- a POST with an empty `session_id` does not
+    // conflict with the running turn, the server mints a *new* session for it
+    // and the conversation forks, leaving the original turn running invisibly.
+    // So the caller keeps the text and the Stop control, exactly as for a stop
+    // the server refused.
+    if (!currentSessionId) return false
     try {
       await api.abortSession(currentSessionId)
     } catch (e) {
@@ -672,6 +685,7 @@ export default function ChatView() {
   async function sendMessage() {
     const el = inputEl.current
     if (!el) return
+    if (sendingRef.current) return
     const text = el.value.trim()
     if (!text) return
     if (streaming) {
@@ -680,7 +694,19 @@ export default function ChatView() {
       // stop did not take, the send is abandoned -- issuing it would be refused
       // as a concurrent turn and would leave the running turn with no Stop
       // control, so the user keeps their text and the Stop button instead.
-      if (!(await stopTurn())) return
+      //
+      // The guard is held for the whole stop-then-send sequence and released on
+      // both exits: the abandoned redirect below, and the send that follows. The
+      // release cannot be observed by a second submission: from it to the
+      // textarea being cleared there is no await, so both happen in one turn.
+      sendingRef.current = true
+      let stopped = false
+      try {
+        stopped = await stopTurn()
+      } finally {
+        sendingRef.current = false
+      }
+      if (!stopped) return
     }
     const nextBubbles = [
       ...bubblesRef.current,
@@ -710,14 +736,26 @@ export default function ChatView() {
         (_evName, ev) => {
           if (stale()) {
             // A superseded stream paints nothing into the current view -- with
-            // one exception. Its own terminal event only settles the bubble that
-            // stream owns, and a redirect keeps that bubble on screen: dropping
-            // it would leave the stopped turn spinning "Running..." forever.
-            // Every other event carries fresh content that belongs to a turn the
-            // view has moved on from (redirect) or to a session it left (switch),
-            // and the switch path aborts the fetch -- an aborted stream emits
-            // nothing at all, so it cannot reach here.
-            if (ev.type !== 'message_done') return
+            // one exception. A redirect leaves the stopped turn's bubble on
+            // screen, and the events that close that turn out address that
+            // bubble, not a turn the view has moved on from. They are:
+            //   - its own `message_done`, else the bubble spins "Running..."
+            //     forever;
+            //   - the `confirm_resolved` / `question_resolved` the abort
+            //     publishes alongside it, else its write card keeps live
+            //     Approve/Reject buttons that POST to a record the settle
+            //     already deleted (and its question card keeps offering an
+            //     answer, to the same effect).
+            // Those are state transitions on a bubble the user is still looking
+            // at, and they happen to be the only way it can leave the "live"
+            // rendering. Turn *output* is different and stays dropped: deltas,
+            // tool calls and fresh pending cards carry content from the superseded
+            // turn's own conversation, which is exactly what the user redirected
+            // away from. The session-switch path aborts the fetch instead, so an
+            // aborted stream emits nothing at all and cannot reach here.
+            const settlesSupersededTurn =
+              ev.type === 'message_done' || ev.type === 'confirm_resolved' || ev.type === 'question_resolved'
+            if (!settlesSupersededTurn) return
           }
           if (ev.type === 'message_start') {
             if (ev.session_id) {
@@ -1082,6 +1120,12 @@ export default function ChatView() {
                           <span className="tool-cmd">{t.name}</span>
                           {!t.done && b.phase !== 'done' ? (
                             <span className="pill accent">Running...</span>
+                          ) : !t.done ? (
+                            // The turn was stopped while this tool was still in
+                            // flight: `message_done{stopped}` freezes the phase
+                            // to done, so the neutral "Done" pill would claim
+                            // completion for work that was interrupted.
+                            <span className="pill neutral">Stopped</span>
                           ) : (
                             <span className="pill neutral">Done</span>
                           )}
