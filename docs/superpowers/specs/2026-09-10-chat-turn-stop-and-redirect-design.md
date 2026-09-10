@@ -158,22 +158,55 @@ distinguish the gateway's `stopReason`:
 - anything else (`"timeout"`, `"restart"`, `"auth-revoked"`, …) → still an
   error, as today.
 
-Carry that on the existing terminal event rather than adding a new one:
+Carry that on the existing terminal event rather than adding a new one.
+
+**Terminal contract.** `message_done` is the *only* terminal event and carries
+the outcome:
 
 ```
+message_done { }                 ← completed
 message_done { stopped: true }   ← stopped by request
 message_done { error: "..." }    ← failed
-message_done { }                 ← completed
 ```
 
-`message_done` stays the single terminal event on purpose:
-`sse.ts`'s `sawDone` keys on `ev.type === 'message_done'` and synthesizes an
-error terminal when it is missing, so a second terminal type would produce
-spurious failures. `agentruntime.Event` (`internal/runtime/contracts.go:54-70`)
-gains a `stopped` field (omitempty).
+Invariant: `stopped` and `error` are mutually exclusive, and `stopped: true`
+always means an empty `error`.
+
+Why not a separate `message_aborted` event type:
+
+- `message_done` is already an outcome-carrying terminal — it has carried `error`
+  since the beginning, so `stopped` is a third outcome of an existing concept,
+  not a new concept. Splitting one discriminated event into two types would be
+  less consistent with what is already there.
+- A single terminal is a safety property, not just tidiness. `sse.ts`'s `sawDone`
+  keys on `ev.type === 'message_done'` and synthesizes an error terminal when it
+  is missing; with two terminal types, "did I miss the terminal?" becomes a
+  two-way question and any consumer that handles only one of them leaves the UI
+  spinning forever.
+- The gateway models the same fact as one chat event discriminated by `state`
+  (`status` / `delta` / `final` / `aborted` / `error`), so the projection layer
+  stays closest to its source by discriminating rather than multiplying types.
+- It extends cleanly if more outcomes appear (a timeout, a budget stop).
+
+`agentruntime.Event` (`internal/runtime/contracts.go:54-70`) gains a `stopped`
+field (omitempty).
 
 Text already streamed is kept: the bubble keeps its partial content and is
 marked stopped. Stopping is not a rollback.
+
+**Stopped turns must survive a reload.** The `stopped` flag alone only reaches a
+client that was attached to the stream. A user who reloads has no stream — they
+see history (and `/turn`), so a truncated answer would render as if it were a
+complete one. The gateway persists an aborted partial's assistant message into
+the transcript with `openclawAbort: { aborted: true, origin, runId }`
+(`src/gateway/server-methods/chat-transcript-inject.ts:137-143`), which is the
+signal history can render from. **Verify during implementation** that this field
+is present in the `/sessions/{key}/history` payload cubepilot reads — it is
+written into the transcript but the gateway itself never reads it back, so
+whether the history endpoint surfaces raw message bodies is unconfirmed. If it
+does not surface, the fallback is to mark the turn stopped only for a live
+stream and treat the reload marker as a follow-up; do not render a partial as a
+completed answer in the meantime.
 
 **HITL cleanup.** If the agent is parked on a `confirm_pending` or
 `question_pending`, the abort settles it gateway-side, but cubepilot's
@@ -211,6 +244,12 @@ session's unresolved records settled/expired and publish the corresponding
 a Stop button. There is no live stream in this state, so after Stop call
 `loadHistory()` to pick up the persisted partial and its stopped marker.
 
+**Rendering a stopped turn from history**: a persisted aborted partial must be
+marked as stopped rather than shown as a finished answer (see "Stopped turns must
+survive a reload" above for the source of that signal and its open verification
+question). This applies both to the post-Stop `loadHistory()` refresh and to a
+plain reload.
+
 ## Edge cases
 
 - **Abort races natural completion.** `chat.abort` on a settled session is a
@@ -242,10 +281,15 @@ a Stop button. There is no live stream in this state, so after Stop call
 - **web**: switching the composer to Stop while streaming; Stop renders a
   stopped (not failed) bubble and preserves partial text; send-while-streaming
   awaits the abort before posting; mount-time `/turn` shows the running banner
-  and Stop.
+  and Stop; a stopped turn loaded from history renders as stopped, not as a
+  completed answer.
 - **e2e**: with a live agent, start a turn, press Stop, assert the turn ends
   promptly and the session is idle; then send a second message mid-turn and
-  assert the first turn is stopped and the second runs.
+  assert the first turn is stopped and the second runs. Also reload after a Stop
+  and assert the partial is marked stopped.
+- **verification spike (before implementation)**: confirm against a live gateway
+  whether `openclawAbort` appears in the `/sessions/{key}/history` payload. This
+  decides whether the reload marker is in scope or a follow-up.
 
 ## Rollout
 
