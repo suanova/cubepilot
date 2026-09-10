@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -88,6 +89,30 @@ func (h *Hub) Active(sessionKey string) bool {
 	defer h.mu.Unlock()
 	_, ok := h.active[sessionKey]
 	return ok
+}
+
+// WaitIdle blocks until the session has no active stream, or ctx expires.
+//
+// It deliberately does NOT trust the active stream's closedCh alone: Close
+// closes that channel before it unregisters, so a waiter woken by it could
+// return while Open still sees the old stream and answers 409 -- the exact
+// conflict this exists to prevent. Membership is re-checked under the hub lock
+// after every wake.
+func (h *Hub) WaitIdle(ctx context.Context, sessionKey string) error {
+	for {
+		h.mu.Lock()
+		s, ok := h.active[sessionKey]
+		h.mu.Unlock()
+		if !ok {
+			return nil
+		}
+		select {
+		case <-s.closedCh:
+			// Woken, but unregistration may not have happened yet: loop.
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Stream is one open SSE response for a session.

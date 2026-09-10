@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suanova/cubepilot/internal/openclaw"
 )
@@ -67,5 +69,52 @@ func TestSSEHub_PublishToNoStream(t *testing.T) {
 	}
 	if h.PublishTo("conv-missing", openclaw.Event{Type: openclaw.EventConfirmPending}) {
 		t.Fatal("PublishTo on unknown session: expected false")
+	}
+}
+
+// Close signals closedCh BEFORE it unregisters, so a waiter that trusts the
+// channel alone returns while the hub still lists the stream -- and the client's
+// very next POST /api/messages then races hub.Open into a 409.
+//
+// The interleaving is constructed directly (closedCh closed, still registered)
+// rather than by holding h.mu from the test: WaitIdle takes that same lock, so
+// holding it would park the waiter in Lock() and never exercise the channel
+// path at all -- the test would pass for the wrong reason.
+func TestHubWaitIdleRechecksMembership(t *testing.T) {
+	h := NewHub()
+	w := httptest.NewRecorder()
+	s, err := h.Open("conv-1", w, w)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// Exactly the window inside Stream.Close between close(closedCh) and
+	// hub.remove: the channel is closed, the stream is still listed.
+	s.mu.Lock()
+	s.closed = true
+	close(s.closedCh)
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := h.WaitIdle(ctx, "conv-1"); err == nil {
+		t.Fatal("WaitIdle returned nil while the stream was still registered")
+	}
+
+	h.remove("conv-1", s)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if err := h.WaitIdle(ctx2, "conv-1"); err != nil {
+		t.Fatalf("WaitIdle after removal: %v", err)
+	}
+}
+
+func TestHubWaitIdleReturnsImmediatelyWhenIdle(t *testing.T) {
+	h := NewHub()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := h.WaitIdle(ctx, "conv-missing"); err != nil {
+		t.Fatalf("WaitIdle on an idle session: %v", err)
 	}
 }
