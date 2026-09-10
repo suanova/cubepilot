@@ -300,7 +300,9 @@ Assisted-by: Claude Code"
 - Modify: `internal/openclaw/ws/methods.go` (add after `CancelQuestion`)
 
 **Interfaces:**
-- Produces: `(*ws.Client).AbortChat(ctx, sessionKey, runID string) error`; `(*ws.Client).SessionBusy(ctx, sessionKey string) (bool, error)`; `hitlGateway` gains both; `(*hitlManager).Abort(ctx, user, sessionKey, runID string) error`; `(*hitlManager).SessionBusy(ctx, user, sessionKey string) (bool, error)`; `(*hitlManager).LiveRunID(sessionKey string) (string, bool)`.
+- Produces: `(*ws.Client).AbortChat(ctx, sessionKey, runID string) error`; `(*ws.Client).SessionBusy(ctx, sessionKey string) (bool, error)`; `hitlGateway` gains both; `(*hitlManager).Abort(ctx, user, sessionKey, runID string) error`; `(*hitlManager).SessionBusy(ctx, user, sessionKey string) (bool, error)`; `(*hitlManager).LiveRunID(user, sessionKey string) (string, bool)`.
+
+  `LiveRunID` takes the user because `m.live` is indexed by session key alone and session keys can be client-supplied, so without an ownership check one user's `/abort` could read another user's run id.
 - Consumes: Task 1's `hitlGateway` interface (unchanged by Task 1).
 
 - [ ] **Step 1: Write the failing ws test**
@@ -509,14 +511,19 @@ In `internal/server/hitl.go`, add to `hitlGateway`:
 Add to `hitlManager`, next to `ReleaseLive`-adjacent accessors:
 
 ```go
-// LiveRunID returns the run id of the session's active live turn, if any. The
-// browser never learns the run id; the server does, and passing it scopes an
+// LiveRunID returns the run id of the user's active live turn on this session.
+// The browser never learns the run id; the server does, and passing it scopes an
 // abort so it cannot kill a run promoted after this one settles.
-func (m *hitlManager) LiveRunID(sessionKey string) (string, bool) {
+//
+// The user is part of the key on purpose. m.live is indexed by session key
+// alone, and a session key can be client-supplied (handlers.go's body.SessionID),
+// so without the ownership check one user's /abort could pick up another user's
+// run id. routeLive checks the same thing when it routes; keep them together.
+func (m *hitlManager) LiveRunID(user, sessionKey string) (string, bool) {
 	m.liveMu.Lock()
 	t := m.live[sessionKey]
 	m.liveMu.Unlock()
-	if t == nil {
+	if t == nil || t.user != user {
 		return "", false
 	}
 	t.runMu.Lock()
@@ -971,7 +978,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runID := ""
-	if id, ok := s.hitl.LiveRunID(sessionKey); ok {
+	if id, ok := s.hitl.LiveRunID(user, sessionKey); ok {
 		runID = id
 	}
 
