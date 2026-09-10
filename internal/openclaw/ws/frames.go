@@ -34,10 +34,28 @@ type eventFrame struct {
 	Seq     int             `json:"seq"`
 }
 
-// rpcError is a failed method call surfaced to callers.
+// reason returns the structured detail.reason of a gateway error, or "" when
+// the frame carries no usable details.
+func (e *frameError) reason() string {
+	if len(e.Details) == 0 {
+		return ""
+	}
+	var d struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(e.Details, &d); err != nil {
+		return ""
+	}
+	return d.Reason
+}
+
+// rpcError is a failed method call surfaced to callers. Reason carries the
+// gateway's structured detail.reason when it sends one (e.g. QUESTION_NOT_FOUND
+// / QUESTION_ALREADY_TERMINAL), which callers map onto HTTP statuses.
 type rpcError struct {
 	Code    string
 	Message string
+	Reason  string
 }
 
 func (e *rpcError) Error() string {
@@ -177,6 +195,82 @@ type ApprovalResolved struct {
 type approvalResolveParams struct {
 	ID       string `json:"id"`
 	Decision string `json:"decision"`
+}
+
+// --- question.requested / resolved event payloads ---
+
+// QuestionOption is one selectable answer of a question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// Question is one question of a record. The variants this platform does not
+// project (isSecret / secretStore) are decoded rather than dropped so an
+// unsupported record can be filtered explicitly instead of silently losing the
+// fact that the question was not an ordinary choice prompt. isOther is decoded
+// for completeness but is never a reason to drop: ask_user sets it on every
+// question it emits, to declare that free text is offered alongside the options.
+type Question struct {
+	QuestionID  string           `json:"questionId"`
+	Header      string           `json:"header"`
+	Question    string           `json:"question"`
+	Options     []QuestionOption `json:"options"`
+	MultiSelect bool             `json:"multiSelect,omitempty"`
+	IsOther     bool             `json:"isOther,omitempty"`
+	IsSecret    bool             `json:"isSecret,omitempty"`
+	SecretStore json.RawMessage  `json:"secretStore,omitempty"`
+}
+
+// QuestionRecord is the question.requested broadcast payload and the payload
+// shape shared by question.get / question.list. Unlike the other consumers of
+// an approval-style record this one is routed by SessionKey, which the gateway
+// supplies here.
+type QuestionRecord struct {
+	ID          string     `json:"id"`
+	Questions   []Question `json:"questions"`
+	AgentID     string     `json:"agentId,omitempty"`
+	SessionKey  string     `json:"sessionKey,omitempty"`
+	RunID       string     `json:"runId,omitempty"`
+	CreatedAtMs int64      `json:"createdAtMs"`
+	ExpiresAtMs int64      `json:"expiresAtMs"`
+	Status      string     `json:"status"`
+}
+
+// QuestionResolved is the question.resolved broadcast payload. It is NOT a
+// QuestionRecord: the gateway's QuestionResolvedEventSchema is a closed union
+// of answered / cancelled / expired and carries no sessionKey, so the resolve
+// path routes through the platform's own id -> sessionKey table.
+type QuestionResolved struct {
+	ID     string `json:"id"`
+	Status string `json:"status"` // answered | cancelled | expired
+}
+
+// QuestionListResult is the question.list response payload.
+type QuestionListResult struct {
+	Questions []QuestionRecord `json:"questions"`
+}
+
+// questionGetResult is the question.get response payload.
+type questionGetResult struct {
+	Question QuestionRecord `json:"question"`
+}
+
+// --- question.resolve params ---
+
+// questionAnswers is the answer map keyed by questionId: {answers:{qid:[labels]}}.
+type questionAnswers struct {
+	Answers map[string][]string `json:"answers"`
+}
+
+// questionResolveParams answers a question. Cancel=true dismisses it instead;
+// the two shapes are distinct variants of the gateway schema, so only one is
+// ever populated.
+type questionResolveParams struct {
+	ID         string           `json:"id"`
+	Answers    *questionAnswers `json:"answers,omitempty"`
+	Cancel     bool             `json:"cancel,omitempty"`
+	ResolvedBy string           `json:"resolvedBy,omitempty"`
 }
 
 // --- device.pair.list / approve payloads ---

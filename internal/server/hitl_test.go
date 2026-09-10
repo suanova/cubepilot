@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +17,15 @@ import (
 )
 
 // fakeHitlGateway implements hitlGateway in memory.
+//
+// mu serialises the recorded state against the goroutine running the code under
+// test. Every method that records takes it. A test that inspects the fake while
+// a call is still in flight must go through an accessor (the receiver of a
+// channel the fake signals orders that read correctly); reading a field
+// directly is only valid once the call under test has returned, which is how
+// the sequential tests use it.
 type fakeHitlGateway struct {
+	mu           sync.Mutex
 	connected    bool
 	guarded      []string
 	policySets   []ws.ApprovalsFile
@@ -39,16 +49,38 @@ type fakeHitlGateway struct {
 	unguarded    []string // sessionKeys whose explicit permission mode was cleared
 	states       map[string]ws.SessionState
 	sendBlock    chan struct{}
+	// sendRecorded, when set, is signalled once a send has been recorded (just
+	// before sendBlock parks it). A test that drives a turn from another
+	// goroutine waits on it instead of polling the fake's fields: the receive
+	// is what orders that goroutine against the turn's.
+	sendRecorded chan struct{}
 	waits        []string // runIds passed to agent.wait
 	subscribeErr error
 	sendErr      error
 	waitErr      error
 	createErr    error
 	modelErr     error
+
+	// ask_user question channel (issue #161)
+	onQuestionRequested func(ws.QuestionRecord)
+	onQuestionResolved  func(ws.QuestionResolved)
+	questionResolves    []string // "id|resolvedBy|qid=label;qid2=a,b"
+	questionCancels     []string // "id|resolvedBy"
+	questionResolveErr  error
+	getQuestionErr      error
+	listQuestionsErr    error
+	questionRecords     map[string]ws.QuestionRecord
+	pendingQuestions    []ws.QuestionRecord
 }
 
-func (f *fakeHitlGateway) Connected() bool { return f.connected }
+func (f *fakeHitlGateway) Connected() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connected
+}
 func (f *fakeHitlGateway) Connect(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.connectSeq) > 0 {
 		err := f.connectSeq[0]
 		f.connectSeq = f.connectSeq[1:]
@@ -64,33 +96,63 @@ func (f *fakeHitlGateway) Connect(ctx context.Context) error {
 	f.connected = true
 	return nil
 }
-func (f *fakeHitlGateway) OnApprovalRequested(cb func(ws.ApprovalRequested)) { f.onRequested = cb }
-func (f *fakeHitlGateway) OnEvent(cb func(evName string, payload []byte))    { f.onEvent = cb }
+func (f *fakeHitlGateway) OnApprovalRequested(cb func(ws.ApprovalRequested)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onRequested = cb
+}
+func (f *fakeHitlGateway) OnEvent(cb func(evName string, payload []byte)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onEvent = cb
+}
 func (f *fakeHitlGateway) SubscribeSessionMessages(ctx context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.subscribes = append(f.subscribes, key)
 	return f.subscribeErr
 }
 func (f *fakeHitlGateway) UnsubscribeSessionMessages(ctx context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.unsubscribes = append(f.unsubscribes, key)
 	return nil
 }
 func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message, idempotencyKey string) (string, error) {
+	f.mu.Lock()
 	f.sends = append(f.sends, key+"|"+message)
 	f.lastIdem = idempotencyKey
-	if f.sendBlock != nil {
+	sendErr := f.sendErr
+	block := f.sendBlock
+	recorded := f.sendRecorded
+	// Release the lock before signalling or parking: a test inspecting the fake
+	// while the send is outstanding would otherwise block on mu.
+	f.mu.Unlock()
+
+	if recorded != nil {
 		select {
-		case <-f.sendBlock:
+		case recorded <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
 	}
-	return idempotencyKey, f.sendErr
+	return idempotencyKey, sendErr
 }
 func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.waits = append(f.waits, runID)
 	return f.waitErr
 }
 func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) (ws.SessionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.creates = append(f.creates, key)
 	if f.createErr != nil {
 		return ws.SessionState{}, f.createErr
@@ -106,6 +168,8 @@ func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) (ws.Ses
 	return state, nil
 }
 func (f *fakeHitlGateway) PatchSessionSettings(ctx context.Context, key string, patch ws.SessionSettingsPatch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.modelErr != nil {
 		return f.modelErr
 	}
@@ -129,6 +193,8 @@ func (f *fakeHitlGateway) PatchSessionSettings(ctx context.Context, key string, 
 	return nil
 }
 func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -144,6 +210,8 @@ func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.Approvals
 	}, nil
 }
 func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.setErr != nil {
 		return nil, f.setErr
 	}
@@ -151,10 +219,99 @@ func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.Approv
 	return &ws.ApprovalsSnapshot{}, nil
 }
 func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
 }
+func (f *fakeHitlGateway) OnQuestionRequested(cb func(ws.QuestionRecord)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onQuestionRequested = cb
+}
+func (f *fakeHitlGateway) OnQuestionResolved(cb func(ws.QuestionResolved)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onQuestionResolved = cb
+}
+func (f *fakeHitlGateway) ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.questionResolves = append(f.questionResolves, id+"|"+resolvedBy+"|"+flattenAnswers(answers))
+	return f.questionResolveErr
+}
+func (f *fakeHitlGateway) CancelQuestion(ctx context.Context, id, resolvedBy string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.questionCancels = append(f.questionCancels, id+"|"+resolvedBy)
+	return f.questionResolveErr
+}
+func (f *fakeHitlGateway) GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getQuestionErr != nil {
+		return nil, f.getQuestionErr
+	}
+	rec, ok := f.questionRecords[id]
+	if !ok {
+		return nil, fmt.Errorf("question %q not found", id)
+	}
+	return &rec, nil
+}
+func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listQuestionsErr != nil {
+		return nil, f.listQuestionsErr
+	}
+	return f.pendingQuestions, nil
+}
 func (f *fakeHitlGateway) Close() {}
+
+// --- accessors for tests that observe the fake while a call is in flight ---
+
+// sentMessages returns a copy of the recorded sends ("sessionKey|message").
+func (f *fakeHitlGateway) sentMessages() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sends...)
+}
+
+// idempotencyKey returns the key the last send carried.
+func (f *fakeHitlGateway) idempotencyKey() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastIdem
+}
+
+// eventSink returns the live-stream router the connection registered, or nil
+// before one is installed.
+func (f *fakeHitlGateway) eventSink() func(string, []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.onEvent
+}
+
+// setConnected flips the connection state, for tests that fake the handshake.
+func (f *fakeHitlGateway) setConnected(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connected = v
+}
+
+// flattenAnswers renders an answer map deterministically ("where=workspace,home").
+func flattenAnswers(answers map[string][]string) string {
+	keys := make([]string, 0, len(answers))
+	for k := range answers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+strings.Join(answers[k], ","))
+	}
+	return strings.Join(parts, ";")
+}
 
 // newTestHitl returns a manager whose gateway is a fresh fake per connect and
 // whose policy resolution is fixed. With no explicit allowlist, Allowlist
@@ -424,7 +581,7 @@ func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
-	gw := &fakeHitlGateway{sendBlock: make(chan struct{})}
+	gw := &fakeHitlGateway{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
 
 	var got []openclaw.Event
@@ -440,31 +597,34 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 		})
 	}()
 
-	// Wait until the send is outstanding (subscribe has happened and the conn
-	// event router is installed), then stream a live run: tool start/output and
-	// a visible-text delta.
-	for i := 0; i < 200 && len(gw.sends) == 0; i++ {
-		time.Sleep(time.Millisecond)
+	// Wait for the fake to report the send rather than polling its fields: the
+	// receive orders this goroutine against everything the turn did before the
+	// send (the subscribe and the OnEvent registration included).
+	select {
+	case <-gw.sendRecorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sessions.send was never called")
 	}
-	if len(gw.sends) != 1 || gw.sends[0] != "conv-1|hi" {
-		t.Fatalf("sends = %v, want [conv-1|hi]", gw.sends)
+	if sent := gw.sentMessages(); len(sent) != 1 || sent[0] != "conv-1|hi" {
+		t.Fatalf("sends = %v, want [conv-1|hi]", sent)
 	}
-	if gw.onEvent == nil {
+	onEvent := gw.eventSink()
+	if onEvent == nil {
 		t.Fatal("conn did not register an OnEvent router")
 	}
-	if gw.lastIdem == "" {
+	run := gw.idempotencyKey()
+	if run == "" {
 		t.Fatal("sessions.send did not carry an idempotencyKey")
 	}
-	run := gw.lastIdem
 
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","title":"exec kubectl get pods","meta":"kubectl get pods","toolCallId":"c1"}}`))
-	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"delta","deltaText":"正在查询…"}`))
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"command_output","data":{"phase":"end","toolCallId":"c1","output":"ok","exitCode":0}}`))
+	onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","title":"exec kubectl get pods","meta":"kubectl get pods","toolCallId":"c1"}}`))
+	onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"delta","deltaText":"正在查询…"}`))
+	onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"command_output","data":{"phase":"end","toolCallId":"c1","output":"ok","exitCode":0}}`))
 	// A foreign run must not leak through.
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"foreign","stream":"item","data":{"kind":"tool","phase":"start","toolCallId":"x"}}`))
-	gw.onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"lifecycle","data":{"phase":"end"}}`))
+	onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"foreign","stream":"item","data":{"kind":"tool","phase":"start","toolCallId":"x"}}`))
+	onEvent("agent", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","stream":"lifecycle","data":{"phase":"end"}}`))
 	// The projector's terminal frame (chat final) closes the turn.
-	gw.onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"final","deltaText":"ok"}`))
+	onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`","state":"final","deltaText":"ok"}`))
 
 	// Release the send; the run is terminal, so RunLiveTurn should return.
 	close(gw.sendBlock)

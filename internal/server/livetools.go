@@ -35,7 +35,12 @@ type liveCall struct {
 	started   bool
 	name      string // real tool name, preserved into the tool_result (audit/ledger)
 	sawOutput bool   // output-carrying events seen for this call
-	output    strings.Builder
+	// suppressed marks a call that must produce no chat card at all (ask_user:
+	// its own interactive question card is the surface, and the tool blocks on a
+	// human answer, so a generic card would sit on "Running..." for the whole
+	// wait -- see isQuestionTool).
+	suppressed bool
+	output     strings.Builder
 	// pendingResult is the stream="tool" result candidate. It is deferred, not
 	// emitted, because for exec-style tools the richer command_output arrives
 	// afterwards and should win; non-exec tools finalize it at their item end.
@@ -136,6 +141,10 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 				}
 				call.started = true
 				call.name = it.Name
+				if isQuestionTool(it.Name) {
+					call.suppressed = true
+					return nil, false
+				}
 				args := it.Meta
 				if args == "" {
 					args = it.Title
@@ -169,7 +178,7 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 			case o.Output != "":
 				call.append(o.Output)
 			}
-			if o.Phase == "end" && !call.resultOut {
+			if o.Phase == "end" && !call.resultOut && !call.suppressed {
 				call.resultOut = true
 				out := call.output.String()
 				if out == "" {
@@ -251,7 +260,7 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 	// gateway's sequence (audit/ledger order stays deterministic).
 	for _, id := range p.order {
 		call, ok := p.calls[id]
-		if !ok || !call.started || call.resultOut {
+		if !ok || !call.started || call.resultOut || call.suppressed {
 			continue
 		}
 		call.resultOut = true
@@ -281,6 +290,10 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 		call.started = true
 		call.sawOutput = false
 		call.name = t.Name
+		if isQuestionTool(t.Name) {
+			call.suppressed = true
+			return nil
+		}
 		args := ""
 		if len(t.Args) > 0 && string(t.Args) != "null" {
 			args = string(t.Args) // keep JSON so the frontend renders arguments
@@ -298,7 +311,7 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 		// partialResult progress -- no SSE equivalent yet; ignore.
 		return nil
 	case "result":
-		if call.resultOut {
+		if call.resultOut || call.suppressed {
 			return nil
 		}
 		// Only exec/bash-style tools defer to their later command_output (the
@@ -325,6 +338,15 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 // isCommandTool reports whether a tool streams its output through a separate
 // command_output event (exec/bash family), whose terminal frame is the complete
 // output. read/search/... carry their full result in stream="tool" phase=result.
+// isQuestionTool reports whether a tool call is the ask_user question tool
+// (issue #161). Its card is suppressed from the chat projection because the
+// interactive question card is the surface for it: ask_user's arguments fully
+// overlap that card, and the tool blocks on a human answer, so a generic card
+// would stay on "Running..." for the whole wait.
+func isQuestionTool(name string) bool {
+	return name == "ask_user"
+}
+
 func isCommandTool(name string) bool {
 	if name == "" {
 		return false

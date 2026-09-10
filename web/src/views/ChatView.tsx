@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import { api } from '@/api'
+import { ApiError } from '@/api/client'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
-import type { HistoryContentBlock, HistoryMessage, PendingConfirm, SessionInfo } from '@/api/types'
+import type { HistoryContentBlock, HistoryMessage, PendingConfirm, QuestionItem, SessionInfo } from '@/api/types'
 import { shortSession } from '@/utils/format'
 
 const user = getCurrentUser()
@@ -42,6 +43,22 @@ interface BubbleConfirm {
   error?: string
 }
 
+// A question the agent is blocked on until a human answers (issue #161).
+interface BubbleQuestion {
+  sessionId: string
+  questionId: string // gateway question id the answer is submitted with
+  items: QuestionItem[]
+  // Local deadline derived from the event's remaining seconds. Working from a
+  // remainder keeps the countdown immune to clock skew between this browser and
+  // the API, and lets the shared 1s ticker drive it.
+  deadline?: number
+  picked: Record<string, string[]> // questionId -> selected option labels
+  resolved?: boolean
+  outcome?: string // answered | cancelled | expired
+  busy?: boolean
+  error?: string
+}
+
 interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
@@ -51,6 +68,29 @@ interface BubbleMsg {
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
   confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
+  // Every question this turn has asked, in order. The agent can ask several in
+  // one turn (a blocked ask_user resumes, then another follows), so they are
+  // kept as a collection rather than one slot that a later question replaces --
+  // that would drop an answered card's record and, on the recovery path, the
+  // other open questions.
+  questions?: BubbleQuestion[]
+}
+
+// newBubbleQuestion builds the card state for one question event or recovery
+// entry.
+function newBubbleQuestion(sessionId: string, questionId: string, items: QuestionItem[], timeoutSeconds?: number): BubbleQuestion {
+  return {
+    sessionId,
+    questionId,
+    items,
+    deadline: timeoutSeconds ? Date.now() + timeoutSeconds * 1000 : undefined,
+    picked: {},
+  }
+}
+
+// questionAnswered reports whether every question in the card has a selection.
+function questionAnswered(q: BubbleQuestion): boolean {
+  return q.items.every((it) => (q.picked[it.questionId] || []).length > 0)
 }
 
 // attachToolResult pairs a tool's output with the tool call that produced it:
@@ -71,6 +111,158 @@ function ChatBubbleIcon() {
     <svg className="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
     </svg>
+  )
+}
+
+// QuestionCard renders an ask_user question (issue #161): one block per
+// question with its options as selectable buttons, plus Submit and Dismiss.
+// The countdown is presentation only -- the gateway's resolve response is what
+// settles the card, and the server relays its expiry as question_resolved.
+function QuestionCard({
+  question,
+  onPick,
+  onSubmit,
+  onDismiss,
+}: {
+  question: BubbleQuestion
+  onPick: (q: BubbleQuestion, item: QuestionItem, label: string) => void
+  onSubmit: (q: BubbleQuestion) => void
+  onDismiss: (q: BubbleQuestion) => void
+}) {
+  const remaining = question.deadline ? Math.max(0, Math.round((question.deadline - Date.now()) / 1000)) : undefined
+  const settled = question.resolved
+  // The local countdown has run out but the gateway has not settled the
+  // question yet: it is about to (or already has). Stop offering the controls
+  // rather than let the user click into a 409, but do not claim "Expired"
+  // ourselves -- that is the gateway's call, and only it can say so.
+  const expiring = !settled && remaining === 0
+  const locked = settled || expiring
+  const outcomeLabel: Record<string, string> = {
+    answered: 'Answered',
+    cancelled: 'Dismissed',
+    expired: 'Expired',
+  }
+  return (
+    <div className="tool-card" style={{ borderColor: 'rgba(59,130,246,.45)' }}>
+      <div className="tool-head">
+        <ToolIcon />
+        <span className="tool-cmd">Question from the agent</span>
+        {settled ? (
+          <span
+            style={{
+              fontSize: 12,
+              borderRadius: 999,
+              padding: '2px 10px',
+              background: question.outcome === 'answered' ? 'rgba(34,197,94,.15)' : 'rgba(0,0,0,.07)',
+              color: question.outcome === 'answered' ? '#15803d' : 'rgba(0,0,0,.55)',
+            }}
+          >
+            {outcomeLabel[question.outcome || ''] || 'Closed'}
+          </span>
+        ) : (
+          <span
+            style={{
+              fontSize: 12,
+              borderRadius: 999,
+              padding: '2px 10px',
+              background: 'rgba(59,130,246,.15)',
+              color: '#1d4ed8',
+            }}
+          >
+            {expiring ? 'Expiring…' : `Awaiting your answer${remaining !== undefined ? ` · ${remaining}s` : ''}`}
+          </span>
+        )}
+      </div>
+      {question.items.map((item) => {
+        const picked = question.picked[item.questionId] || []
+        return (
+          <div key={item.questionId} style={{ padding: '10px 12px', borderTop: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              {item.header && (
+                <span style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted, rgba(0,0,0,.55))' }}>
+                  {item.header}
+                </span>
+              )}
+              {item.multiSelect && (
+                <span style={{ fontSize: 11, color: 'var(--muted, rgba(0,0,0,.55))' }}>select one or more</span>
+              )}
+            </div>
+            <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>{item.question}</div>
+            {/* role=group + aria-label give the options an accessible group and
+                name; the selected state itself is exposed by aria-pressed on
+                each button rather than by colour alone. */}
+            <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {item.options.map((o) => {
+                const active = picked.includes(o.label)
+                return (
+                  <button
+                    key={o.label}
+                    onClick={() => onPick(question, item, o.label)}
+                    disabled={locked || !!question.busy}
+                    aria-pressed={active}
+                    title={o.description}
+                    style={{
+                      background: active ? 'var(--accent, #3b82f6)' : 'none',
+                      border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
+                      color: active ? '#fff' : 'inherit',
+                      borderRadius: 6,
+                      padding: '6px 14px',
+                      cursor: settled ? 'default' : 'pointer',
+                      fontSize: 13,
+                      textAlign: 'left',
+                    }}
+                  >
+                    {o.label}
+                    {o.description && (
+                      <span style={{ display: 'block', fontSize: 11.5, opacity: 0.8, marginTop: 2 }}>{o.description}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+      {!settled && (
+        <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
+          <button
+            onClick={() => onDismiss(question)}
+            disabled={locked || !!question.busy}
+            title="Dismiss the question and let the agent continue without an answer"
+            style={{
+              background: 'none',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '6px 14px',
+              cursor: locked ? 'default' : 'pointer',
+              opacity: locked ? 0.5 : 1,
+              fontSize: 13,
+            }}
+          >
+            Dismiss
+          </button>
+          <button
+            onClick={() => onSubmit(question)}
+            disabled={locked || !!question.busy || !questionAnswered(question)}
+            style={{
+              background: 'var(--accent, #3b82f6)',
+              border: 'none',
+              color: '#fff',
+              borderRadius: 6,
+              padding: '6px 14px',
+              cursor: !locked && questionAnswered(question) ? 'pointer' : 'default',
+              opacity: locked || !questionAnswered(question) ? 0.5 : 1,
+              fontSize: 13,
+            }}
+          >
+            {question.busy ? 'Sending…' : 'Submit'}
+          </button>
+        </div>
+      )}
+      {question.error && (
+        <div style={{ fontSize: 12.5, color: 'var(--danger)', padding: '0 12px 12px' }}>{question.error}</div>
+      )}
+    </div>
   )
 }
 
@@ -282,6 +474,42 @@ export default function ChatView() {
   // restores its confirmation card from the pending endpoint (issue #20). The
   // result is discarded if the user switched sessions while it was in flight.
   async function recoverPending(id: string) {
+    // Questions first: a parked ask_user turn is the more recent state, and a
+    // session can hold several open questions (one card per record).
+    try {
+      const pending = await api.pendingQuestions(id)
+      if (activeSessionRef.current !== id) return // stale: a different session is now active
+      if (pending.length > 0) {
+        setBubbles((prev) => [
+          ...prev,
+          {
+            kind: 'assistant' as const,
+            tools: [],
+            thinking: false,
+            phase: 'done' as const,
+            questions: pending.map((p) => newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds)),
+          },
+        ])
+        requestAnimationFrame(scrollThread)
+      }
+    } catch (e) {
+      // 404 is the ordinary "nothing pending for this session" answer. Anything
+      // else (a gateway failure, a dropped channel) means we could not tell: a
+      // parked turn would then look like an idle one, with no card and no way
+      // to send another message, so say so instead of staying silent.
+      if (!(e instanceof ApiError && e.status === 404) && activeSessionRef.current === id) {
+        setBubbles((prev) => [
+          ...prev,
+          {
+            kind: 'assistant' as const,
+            tools: [],
+            thinking: false,
+            phase: 'done' as const,
+            error: `Could not check for a pending question: ${String(e)}`,
+          },
+        ])
+      }
+    }
     let p: PendingConfirm
     try {
       p = await api.pendingConfirm(id)
@@ -450,6 +678,38 @@ export default function ChatView() {
             }
             return
           }
+          if (ev.type === 'question_pending') {
+            // The agent's ask_user tool is parked on a human answer (issue
+            // #161). Show the question card immediately; its tool card is
+            // suppressed server-side so this is the only surface for it.
+            if (ev.question && ev.question.questions?.length) {
+              setPhase(bubble, 'tools')
+              bubble.questions = [
+                ...(bubble.questions || []),
+                newBubbleQuestion(
+                  ev.session_id || currentSessionId || '',
+                  ev.call_id || '',
+                  ev.question.questions,
+                  ev.question.timeoutSeconds,
+                ),
+              ]
+              setBubbles([...bubblesRef.current])
+              requestAnimationFrame(scrollThread)
+            }
+            return
+          }
+          if (ev.type === 'question_resolved') {
+            // Settle only the matching card: another question of this turn may
+            // still be open.
+            const q = (bubble.questions || []).find((x) => !ev.call_id || x.questionId === ev.call_id)
+            if (q) {
+              q.resolved = true
+              q.outcome = ev.message || 'answered'
+              q.busy = false
+              setBubbles([...bubblesRef.current])
+            }
+            return
+          }
           if (ev.type === 'message_delta') {
             setPhase(bubble, 'streaming')
             bubble.text = (bubble.text || '') + (ev.delta || '')
@@ -505,6 +765,102 @@ export default function ChatView() {
     }
   }
 
+  // pick toggles an option of a question. A multiSelect question keeps every
+  // choice; a single-select one replaces it, matching how the gateway reads the
+  // answer back (one label per question).
+  function pick(q: BubbleQuestion, item: QuestionItem, label: string) {
+    const cur = q.picked[item.questionId] || []
+    if (item.multiSelect) {
+      q.picked[item.questionId] = cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]
+    } else {
+      q.picked[item.questionId] = cur.length === 1 && cur[0] === label ? [] : [label]
+    }
+    q.error = ''
+    setBubbles([...bubblesRef.current])
+  }
+
+  // submitQuestion sends the human's answer. The gateway's resolve response is
+  // authoritative: if it reports the question is already gone (expired between
+  // the card being painted and the click) the card is re-synced from the
+  // pending endpoint rather than left claiming to be answerable.
+  async function submitQuestion(q: BubbleQuestion) {
+    const session = q.sessionId || currentSessionId
+    if (!session) {
+      q.error = 'no session'
+      return
+    }
+    q.busy = true
+    q.error = ''
+    setBubbles([...bubblesRef.current])
+    try {
+      await api.postQuestion(session, q.questionId, q.picked)
+      q.resolved = true
+      q.outcome = 'answered'
+    } catch (e) {
+      await resyncQuestion(q, session, e)
+    } finally {
+      q.busy = false
+      setBubbles([...bubblesRef.current])
+      requestAnimationFrame(scrollThread)
+    }
+  }
+
+  // dismissQuestion cancels the question so the agent continues its turn
+  // instead of waiting out its own (long) timeout.
+  async function dismissQuestion(q: BubbleQuestion) {
+    const session = q.sessionId || currentSessionId
+    if (!session) {
+      q.error = 'no session'
+      return
+    }
+    q.busy = true
+    q.error = ''
+    setBubbles([...bubblesRef.current])
+    try {
+      await api.postQuestionCancel(session, q.questionId)
+      q.resolved = true
+      q.outcome = 'cancelled'
+    } catch (e) {
+      await resyncQuestion(q, session, e)
+    } finally {
+      q.busy = false
+      setBubbles([...bubblesRef.current])
+      requestAnimationFrame(scrollThread)
+    }
+  }
+
+  // resyncQuestion reconciles a card whose answer the server refused. A 404/409
+  // means the gateway no longer holds the question open, so the card is settled
+  // from the pending list instead of guessing at its state.
+  async function resyncQuestion(q: BubbleQuestion, session: string, err: unknown) {
+    const stale = err instanceof ApiError && (err.status === 404 || err.status === 409)
+    if (!stale) {
+      q.error = String(err)
+      return
+    }
+    try {
+      const pending = await api.pendingQuestions(session)
+      const live = pending.find((p) => p.id === q.questionId)
+      if (!live) {
+        q.resolved = true
+        q.outcome = 'expired'
+        return
+      }
+      q.deadline = live.timeoutSeconds ? Date.now() + live.timeoutSeconds * 1000 : undefined
+      q.error = 'That answer was not accepted; the question is still open.'
+    } catch (e2) {
+      // Only a confirmed "gone" settles the card. A transient failure would
+      // otherwise hide the controls while the agent is still parked, leaving
+      // the user unable to answer until a reload.
+      if (e2 instanceof ApiError && e2.status === 404) {
+        q.resolved = true
+        q.outcome = 'expired'
+        return
+      }
+      q.error = 'Could not refresh the question. Try again.'
+    }
+  }
+
   useEffect(() => {
     loadSessions()
   }, [])
@@ -512,6 +868,7 @@ export default function ChatView() {
   function statusLine(b: BubbleMsg): string {
     if (b.kind === 'user' || !b.phase) return ''
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
+    if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
     switch (b.phase) {
       case 'thinking':
@@ -699,6 +1056,11 @@ export default function ChatView() {
                         )}
                       </div>
                     )}
+                    {/* Questions the agent is blocked on until answered, one
+                        card each (issue #161). */}
+                    {(b.questions || []).map((q) => (
+                      <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+                    ))}
                     {/* When an assistant reply ran tools, its closing text is the
                         takeaway: render it as a highlighted panel so it stands out
                         from the tool log. Assistant text renders as Markdown; user

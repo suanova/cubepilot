@@ -32,6 +32,8 @@ type hitlGateway interface {
 	Connected() bool
 	Connect(ctx context.Context) error
 	OnApprovalRequested(f func(ws.ApprovalRequested))
+	OnQuestionRequested(f func(ws.QuestionRecord))
+	OnQuestionResolved(f func(ws.QuestionResolved))
 	OnEvent(f func(evName string, payload []byte))
 	SubscribeSessionMessages(ctx context.Context, sessionKey string) error
 	UnsubscribeSessionMessages(ctx context.Context, sessionKey string) error
@@ -42,6 +44,10 @@ type hitlGateway interface {
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
 	ResolveApproval(ctx context.Context, id, decision string) error
+	ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error
+	CancelQuestion(ctx context.Context, id, resolvedBy string) error
+	GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error)
+	ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error)
 	Close()
 }
 
@@ -80,6 +86,11 @@ type hitlManager struct {
 	// bridge is set by the server so a gateway approval can reach the
 	// ApprovalService (which resolves Portal decisions and injects SSE).
 	bridge func(user string, ev ws.ApprovalRequested)
+
+	// questionRequested / questionResolved are set by the server so gateway
+	// question broadcasts reach the parked turn's SSE stream (issue #161).
+	questionRequested func(user string, rec ws.QuestionRecord)
+	questionResolved  func(user string, res ws.QuestionResolved)
 
 	// resolved returns the user's confirm policy, effective allowlist and
 	// config revision. Overridable in tests; the default reads the resolved
@@ -267,6 +278,20 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 			m.bridge(user, ev)
 		}
 	})
+	// Asker questions (issue #161): a question the agent is blocked on is
+	// relayed to its session's SSE stream. This is deliberately separate from
+	// the live-turn projector below -- a question is addressed by its own
+	// session key and must reach the browser even though it is not run content.
+	gw.OnQuestionRequested(func(rec ws.QuestionRecord) {
+		if m.questionRequested != nil {
+			m.questionRequested(user, rec)
+		}
+	})
+	gw.OnQuestionResolved(func(res ws.QuestionResolved) {
+		if m.questionResolved != nil {
+			m.questionResolved(user, res)
+		}
+	})
 	// Live tool stream (issue #130): every session-message event this
 	// connection receives is routed to the active live turn for its session
 	// (one per chat turn, see AttachLive). The gateway fans these only to
@@ -440,20 +465,75 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 	return out
 }
 
+// liveConn returns the user's established gateway connection without dialing a
+// new one. Resolution and pending-state reads must not open a connection (and
+// trigger a device pairing) as a side effect of a status request.
+//
+// The connection is registered before its handshake completes (conn stores it
+// up front so the pairing retry loop can hold the per-user lock), so a stored
+// gateway is not necessarily a usable one: without the Connected check a call
+// made mid-pairing would fail inside Client.Call with "not connected" and
+// surface as a gateway error instead of the unavailable-channel status.
+func (m *hitlManager) liveConn(user string) (hitlGateway, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.conns[user]
+	if !ok || c == nil || c.gw == nil || !c.gw.Connected() {
+		return nil, false
+	}
+	return c.gw, true
+}
+
+// GetQuestion reads one question record from the user's gateway (question.get).
+func (m *hitlManager) GetQuestion(ctx context.Context, user, id string) (*ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.GetQuestion(ctx, id)
+}
+
+// ListQuestions returns the user's gateway's pending questions (question.list).
+func (m *hitlManager) ListQuestions(ctx context.Context, user string) ([]ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.ListQuestions(ctx)
+}
+
+// ResolveQuestion answers a pending question on the user's gateway connection.
+// answers maps each question id to the selected option labels.
+func (m *hitlManager) ResolveQuestion(ctx context.Context, user, id string, answers map[string][]string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.ResolveQuestion(ctx, id, answers, user)
+}
+
+// CancelQuestion dismisses a pending question so the agent continues instead of
+// waiting out its own timeout.
+func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.CancelQuestion(ctx, id, user)
+}
+
 // ResolveApproval implements ApprovalResolver: the Portal decision is applied
 // to the user's gateway connection.
 func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, decision string) error {
-	m.mu.Lock()
-	c, ok := m.conns[user]
-	m.mu.Unlock()
-	if !ok || c == nil || c.gw == nil {
+	gw, ok := m.liveConn(user)
+	if !ok {
 		return fmt.Errorf("no approval connection for %s", user)
 	}
 	gwDecision := "deny"
 	if decision == "approve" {
 		gwDecision = "allow-once"
 	}
-	return c.gw.ResolveApproval(ctx, approvalID, gwDecision)
+	return gw.ResolveApproval(ctx, approvalID, gwDecision)
 }
 
 // wsRunTail is how long RunLiveTurn waits after agent.wait for a terminal chat
