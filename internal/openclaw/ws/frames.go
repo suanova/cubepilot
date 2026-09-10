@@ -206,9 +206,11 @@ type QuestionOption struct {
 }
 
 // Question is one question of a record. The variants this platform does not
-// project (isOther / isSecret / secretStore) are decoded rather than dropped so
-// an unsupported record can be filtered explicitly instead of silently losing
-// the fact that the question was not an ordinary choice prompt.
+// project (isSecret / secretStore) are decoded rather than dropped so an
+// unsupported record can be filtered explicitly instead of silently losing the
+// fact that the question was not an ordinary choice prompt. isOther is decoded
+// for completeness but is never a reason to drop: ask_user sets it on every
+// question it emits, to declare that free text is offered alongside the options.
 type Question struct {
 	QuestionID  string           `json:"questionId"`
 	Header      string           `json:"header"`

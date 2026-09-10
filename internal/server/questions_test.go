@@ -104,6 +104,29 @@ func TestQuestionRelayProjectsPending(t *testing.T) {
 	}
 }
 
+// TestQuestionRelayProjectsRealAskUserRecord guards against a filter that
+// rejects the very records the feature exists for. The ask_user tool's
+// normalizer stamps isOther:true on every question it emits (that flag declares
+// that free text is offered alongside the options -- see
+// ask-user-tool-normalization.ts), so a record copy is not a representative
+// fixture: this one carries the flags the tool actually sets.
+func TestQuestionRelayProjectsRealAskUserRecord(t *testing.T) {
+	req := questionRecord("ask_1", questionTestSession)
+	req.Questions[0].IsOther = true
+
+	gw := &fakeHitlGateway{}
+	s, rec := questionTestServer(t, gw, questionTestSession)
+	s.relayQuestionRequested(req)
+
+	ev := eventOfType(sseEvents(t, rec.Body.String()), "question_pending")
+	if ev == nil {
+		t.Fatalf("a real ask_user record (isOther set) was not projected: %q", rec.Body.String())
+	}
+	if ev["call_id"] != "ask_1" {
+		t.Errorf("event = %+v, want call_id ask_1", ev)
+	}
+}
+
 // TestQuestionRelayDropsUnsupportedVariant: the admin connection sees every
 // question.* event on the gateway, so a record from another producer (a secret
 // prompt) must not be rendered as an ordinary choice card.
@@ -113,9 +136,11 @@ func TestQuestionRelayDropsUnsupportedVariant(t *testing.T) {
 		mutate func(*ws.QuestionRecord)
 	}{
 		{"isSecret", func(r *ws.QuestionRecord) { r.Questions[0].IsSecret = true }},
-		{"isOther", func(r *ws.QuestionRecord) { r.Questions[0].IsOther = true }},
 		{"secretStore", func(r *ws.QuestionRecord) { r.Questions[0].SecretStore = json.RawMessage(`{"name":"TOKEN"}`) }},
+		// A free-text-only question (no options) has nothing to render as
+		// buttons, and this version offers no text input.
 		{"no options", func(r *ws.QuestionRecord) { r.Questions[0].Options = nil }},
+		{"no questions", func(r *ws.QuestionRecord) { r.Questions = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gw := &fakeHitlGateway{}

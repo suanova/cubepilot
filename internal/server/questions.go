@@ -61,21 +61,37 @@ func (r *questionRoutes) take(id string) (string, bool) {
 	return key, ok
 }
 
-// projectableQuestion reports whether a question record is one the Portal can
-// answer. The admin device connection receives every question.* event on the
-// gateway, not only the ones ask_user produced, so a record from another
-// producer (the secrets tool asks for secret values) must be filtered out
-// rather than rendered as an ordinary choice prompt.
-func projectableQuestion(rec ws.QuestionRecord) bool {
+// unsupportedQuestionReason returns "" when the Portal can render a question
+// record as a choice card, or a short reason when it cannot. Callers log the
+// reason, so a silently dropped question is diagnosable.
+//
+// The admin device connection receives every question.* event on the gateway,
+// not only the ones ask_user produced, so a record from another producer must
+// be filtered out rather than rendered as an ordinary choice prompt.
+//
+// Note what is NOT a reason to drop a record: isOther. It reads like "the human
+// may answer something else", which sounds like an unsupported variant, but
+// ask_user's own normalizer stamps isOther:true on every question it emits
+// (ask-user-tool-normalization.ts) -- it is how the tool declares that free
+// text is offered alongside the options, so treating it as unsupported rejects
+// the entire feature.
+func unsupportedQuestionReason(rec ws.QuestionRecord) string {
 	if len(rec.Questions) == 0 {
-		return false
+		return "record carries no questions"
 	}
 	for _, q := range rec.Questions {
-		if q.IsOther || q.IsSecret || len(q.SecretStore) > 0 || len(q.Options) == 0 {
-			return false
+		switch {
+		case q.IsSecret:
+			return "secret question"
+		case len(q.SecretStore) > 0:
+			return "secret-store question"
+		case len(q.Options) == 0:
+			// Free text only: nothing to render as buttons, and this version
+			// offers no text input.
+			return "free-text-only question"
 		}
 	}
-	return true
+	return ""
 }
 
 // questionExpired reports whether the gateway's deadline has passed. The
@@ -130,8 +146,8 @@ func (s *Server) relayQuestionRequested(rec ws.QuestionRecord) {
 		s.logf("question %s: dropped: record carries no session key", rec.ID)
 		return
 	}
-	if !projectableQuestion(rec) {
-		s.logf("question %s: not projected: unsupported question variant (session %s)", rec.ID, rec.SessionKey)
+	if reason := unsupportedQuestionReason(rec); reason != "" {
+		s.logf("question %s: not projected: %s (session %s)", rec.ID, reason, rec.SessionKey)
 		return
 	}
 	s.qroutes.put(rec.ID, rec.SessionKey)
@@ -278,7 +294,7 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 	out := []questionEntry{}
 	for _, rec := range list {
 		if canonicalSessionKey(rec.SessionKey) != sessionKey || rec.Status != "pending" ||
-			questionExpired(rec) || !projectableQuestion(rec) {
+			questionExpired(rec) || unsupportedQuestionReason(rec) != "" {
 			continue
 		}
 		// Recovery is also how this process learns the id -> session route for a

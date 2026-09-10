@@ -23,9 +23,11 @@ same shape, so this design reuses that structure rather than inventing one.
   `{questions:[{id,header,question,options:[{label,description?}],multiSelect?}],
   timeoutSeconds?}`. They do **not** carry the gateway question id, so the
   `question.requested` push is the only way to learn it. `options` is required
-  (2-4 entries); `multiSelect` is optional. `isOther` / `isSecret` /
-  `secretStore` are not produced by `ask_user` -- they exist only on the
-  `question.request` RPC used by other producers (e.g. the secrets tool).
+  (2-4 entries); `multiSelect` is optional. The tool's normalizer stamps
+  `isOther: true` on every question it emits (free text is offered alongside the
+  options). `isSecret` / `secretStore` are *not* produced by `ask_user` -- they
+  exist only on the `question.request` RPC used by other producers (e.g. the
+  secrets tool).
 - Gateway RPCs: `question.resolve` (`{id, answers:{answers:{qid:[labels]}},
   resolvedBy?}` or `{id, cancel:true, resolvedBy?}`), `question.get`
   (`{question: QuestionRecord}`), `question.list` (`{questions:[...]}`).
@@ -64,9 +66,10 @@ type QuestionOption struct {
     Label       string `json:"label"`
     Description string `json:"description,omitempty"`
 }
-// Question keeps the variants we do not project (isOther/isSecret/secretStore)
-// so an unsupported record is filtered explicitly rather than silently decoded
-// into a lossy shape.
+// Question keeps the variants we do not project (isSecret/secretStore) so an
+// unsupported record is filtered explicitly rather than silently decoded into a
+// lossy shape. isOther is decoded for completeness but is never a reason to
+// drop: ask_user sets it on every question.
 type Question struct {
     QuestionID  string           `json:"questionId"`
     Header      string           `json:"header"`
@@ -149,12 +152,21 @@ browser.
 `call_id` is the gateway question id, exactly as `confirm_pending` uses it for
 the approval id.
 
-**Projectable predicate.** One `projectableQuestion(record)` gates both the live
-relay and reload recovery: every question in the record must have no `isOther`,
-no `isSecret`, no `secretStore`, and at least one option. This is not defensive
-coding -- the admin connection receives *every* `question.*` event on that
-gateway, so a `question.request` from another producer reaches this bridge too.
-A non-projectable record is not projected and is logged.
+**Projectable predicate.** One `unsupportedQuestionReason(record)` gates both the
+live relay and reload recovery. This is not defensive coding -- the admin
+connection receives *every* `question.*` event on that gateway, so a
+`question.request` from another producer reaches this bridge too.
+
+A record is dropped when it has no questions, or any question is `isSecret`,
+carries a `secretStore` binding, or has no options (free text only, which this
+version cannot render). The reason is logged, so a dropped question is
+diagnosable rather than silent.
+
+`isOther` is deliberately **not** a reason to drop: it reads like "the human may
+answer something else", but `ask_user`'s normalizer stamps `isOther: true` on
+every question it emits (it declares that free text is offered alongside the
+options). Treating it as unsupported rejects the entire feature -- which is
+exactly what happened when it was first written this way.
 
 **Relay and routing.** In `hitl.go`'s `conn()`, `OnEvent` routes
 `question.requested` / `question.resolved` to a new `questionBridge` (symmetric
@@ -247,13 +259,19 @@ arguments fully overlap the question card, and the card would otherwise sit on
   event on the right session with the remaining seconds, and routes
   `question.resolved` via the index; handler tests for resolve / cancel /
   pending; status mapping per failure. Negative tests: session mismatch,
-  non-projectable `isSecret` / `isOther` record, expired record on recovery, and
-  multiple pending records for one session.
+  non-projectable `isSecret` / `secretStore` / no-option record, expired record
+  on recovery, and multiple pending records for one session. One positive test
+  uses a record carrying the flags `ask_user` actually emits (`isOther: true`),
+  because a copy of an unset record does not catch a filter that rejects the
+  real thing.
 - `livetools`: an `ask_user` `tool_call` / `tool_result` pair produces no tool
   card, while other tools are unaffected.
 
 ## Out of scope
 
-- `isOther` / `isSecret` / `secretStore` questions: not produced by `ask_user`,
-  and not projected when they arrive from another producer.
+- `isSecret` / `secretStore` questions: not produced by `ask_user`, and not
+  projected when they arrive from another producer.
+- Free-text answers. `isOther` questions are projected and their options are
+  answerable, but this version renders no text input, so a free-text-only
+  question (no options) is dropped rather than shown unanswerable.
 - Any change on the OpenClaw side.
