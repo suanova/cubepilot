@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -893,8 +894,16 @@ func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
 }
 
 // TestHitl_LiveRunID tracks the run id the server believes is live for a
-// session: absent before a turn registers, the send ACK's run id once it does,
-// and absent again for a turn whose ACK has not arrived yet (nothing to scope).
+// session: absent while no turn is registered, then present from the moment the
+// turn registers.
+//
+// The id is installed *before* RunLiveTurn subscribes and sends (hitl.go:693-694
+// calls setRunID right after registerLive), and the gateway's client run id is
+// the send's idempotency key. So the id-less window is those two statements
+// wide, with no I/O between them -- it is not a pre-ACK window stretching across
+// the subscribe/send round trip. An empty LiveRunID therefore means no turn is
+// registered at all, and that is the only condition the session-scoped abort
+// fallback can observe.
 func TestHitl_LiveRunID(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
 	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
@@ -903,7 +912,7 @@ func TestHitl_LiveRunID(t *testing.T) {
 
 	turn := m.registerLive("alice", "conv-1", nil)
 	if id, ok := m.LiveRunID("conv-1"); ok || id != "" {
-		t.Fatalf("LiveRunID before the send ACK = (%q, %v), want empty", id, ok)
+		t.Fatalf("LiveRunID in the registerLive..setRunID gap = (%q, %v), want empty", id, ok)
 	}
 	turn.setRunID("run-7")
 	if id, ok := m.LiveRunID("conv-1"); !ok || id != "run-7" {
@@ -938,6 +947,42 @@ func TestHitl_AbortRequiresAChannel(t *testing.T) {
 	}
 }
 
+// TestHitl_AbortRejectsUnconnectedChannel: liveConn reports ok=false for two
+// distinct reasons -- there is no entry, and there is an entry whose gateway is
+// not connected. Only the first is covered by TestHitl_AbortRequiresAChannel.
+// A connection registered before its handshake completes must fail here rather
+// than be handed to the gateway, which would surface as a confusing
+// "ws: not connected" from inside Client.Call.
+func TestHitl_AbortRejectsUnconnectedChannel(t *testing.T) {
+	gw := &fakeHitlGateway{} // connected defaults to false
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil {
+		t.Fatal("Abort with a stored but unconnected gateway must fail")
+	}
+	if len(gw.aborts) != 0 {
+		t.Fatalf("aborts = %v, want the gateway untouched", gw.aborts)
+	}
+}
+
+// TestHitl_AbortPropagatesGatewayError: an error from the gateway means the
+// abort's fate is unknown. It must reach the caller rather than be swallowed
+// into a nil success.
+func TestHitl_AbortPropagatesGatewayError(t *testing.T) {
+	wantErr := errors.New("gateway down")
+	gw := &fakeHitlGateway{connected: true, abortErr: wantErr}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); !errors.Is(err, wantErr) {
+		t.Fatalf("Abort error = %v, want %v", err, wantErr)
+	}
+	if len(gw.aborts) != 1 {
+		t.Fatalf("aborts = %v, want the call attempted once", gw.aborts)
+	}
+}
+
 // TestHitl_SessionBusyDelegatesToGateway: the manager must report the gateway's
 // answer untouched, since it is the only busy signal that survives a reload.
 func TestHitl_SessionBusyDelegatesToGateway(t *testing.T) {
@@ -961,5 +1006,39 @@ func TestHitl_SessionBusyRequiresAChannel(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
 	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
 		t.Fatal("SessionBusy without a live gateway channel must fail")
+	}
+}
+
+// TestHitl_SessionBusyRejectsUnconnectedChannel covers the second reason
+// liveConn returns ok=false: an entry exists but its gateway has not finished
+// connecting. The gateway must not be probed.
+func TestHitl_SessionBusyRejectsUnconnectedChannel(t *testing.T) {
+	gw := &fakeHitlGateway{} // connected defaults to false
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusy with a stored but unconnected gateway must fail")
+	}
+	if len(gw.sessionBuses) != 0 {
+		t.Fatalf("sessionBuses = %v, want the gateway untouched", gw.sessionBuses)
+	}
+}
+
+// TestHitl_SessionBusyDoesNotSwallowError pins the contract the reload-takeover
+// path depends on: a failed probe means "cannot determine", never "not busy". A
+// (false, nil) here would strand a turn that is still running.
+func TestHitl_SessionBusyDoesNotSwallowError(t *testing.T) {
+	wantErr := errors.New("chat.history failed")
+	gw := &fakeHitlGateway{connected: true, sessionBusyErr: wantErr}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("SessionBusy error = %v, want %v", err, wantErr)
+	}
+	if busy {
+		t.Fatal("SessionBusy = true alongside an error")
 	}
 }

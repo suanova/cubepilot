@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -92,5 +93,25 @@ func TestSessionBusyReadsInFlightRun(t *testing.T) {
 				t.Fatalf("SessionBusy = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSessionBusyPropagatesCallError: a failed chat.history means the busy state
+// cannot be determined. Returning (false, nil) would read as "not busy" and let
+// a caller strand a run that is still going.
+func TestSessionBusyPropagatesCallError(t *testing.T) {
+	wantErr := errors.New("ws: not connected")
+	c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		if method != "chat.history" {
+			t.Fatalf("method = %q, want chat.history", method)
+		}
+		return nil, wantErr
+	})
+	busy, err := c.SessionBusy(context.Background(), "session-a")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("SessionBusy error = %v, want %v", err, wantErr)
+	}
+	if busy {
+		t.Fatal("SessionBusy = true alongside an error")
 	}
 }
