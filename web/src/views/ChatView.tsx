@@ -131,6 +131,12 @@ function QuestionCard({
 }) {
   const remaining = question.deadline ? Math.max(0, Math.round((question.deadline - Date.now()) / 1000)) : undefined
   const settled = question.resolved
+  // The local countdown has run out but the gateway has not settled the
+  // question yet: it is about to (or already has). Stop offering the controls
+  // rather than let the user click into a 409, but do not claim "Expired"
+  // ourselves -- that is the gateway's call, and only it can say so.
+  const expiring = !settled && remaining === 0
+  const locked = settled || expiring
   const outcomeLabel: Record<string, string> = {
     answered: 'Answered',
     cancelled: 'Dismissed',
@@ -163,7 +169,7 @@ function QuestionCard({
               color: '#1d4ed8',
             }}
           >
-            Awaiting your answer{remaining !== undefined ? ` · ${remaining}s` : ''}
+            {expiring ? 'Expiring…' : `Awaiting your answer${remaining !== undefined ? ` · ${remaining}s` : ''}`}
           </span>
         )}
       </div>
@@ -192,7 +198,7 @@ function QuestionCard({
                   <button
                     key={o.label}
                     onClick={() => onPick(question, item, o.label)}
-                    disabled={settled || !!question.busy}
+                    disabled={locked || !!question.busy}
                     aria-pressed={active}
                     title={o.description}
                     style={{
@@ -221,23 +227,31 @@ function QuestionCard({
         <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
           <button
             onClick={() => onDismiss(question)}
-            disabled={!!question.busy}
+            disabled={locked || !!question.busy}
             title="Dismiss the question and let the agent continue without an answer"
-            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+            style={{
+              background: 'none',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '6px 14px',
+              cursor: locked ? 'default' : 'pointer',
+              opacity: locked ? 0.5 : 1,
+              fontSize: 13,
+            }}
           >
             Dismiss
           </button>
           <button
             onClick={() => onSubmit(question)}
-            disabled={!!question.busy || !questionAnswered(question)}
+            disabled={locked || !!question.busy || !questionAnswered(question)}
             style={{
               background: 'var(--accent, #3b82f6)',
               border: 'none',
               color: '#fff',
               borderRadius: 6,
               padding: '6px 14px',
-              cursor: questionAnswered(question) ? 'pointer' : 'default',
-              opacity: questionAnswered(question) ? 1 : 0.5,
+              cursor: !locked && questionAnswered(question) ? 'pointer' : 'default',
+              opacity: locked || !questionAnswered(question) ? 0.5 : 1,
               fontSize: 13,
             }}
           >
