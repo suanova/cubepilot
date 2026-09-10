@@ -204,12 +204,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if runErr != nil {
 		streamErr = runErr
 		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: runErr.Error()})
-	} else if err := runtimeAdapter.RunLiveTurn(r.Context(), sessionKey, agentruntime.LiveTurnParams{
+	} else if outcome, err := runtimeAdapter.RunLiveTurn(r.Context(), sessionKey, agentruntime.LiveTurnParams{
 		Message: body.Content,
 		Model:   selectedModel,
 	}, emitLive); err != nil {
 		streamErr = err
 		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: err.Error()})
+	} else if outcome.Stopped {
+		// The user stopped the turn: terminal, but not a failure, and not a
+		// normal completion -- the browser must not present the partial text as
+		// a finished answer.
+		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Stopped: true})
 	} else {
 		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey})
 	}

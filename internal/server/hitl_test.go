@@ -588,13 +588,14 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	done := make(chan error, 1)
 	runner := &openClawLiveRunner{manager: m, user: "alice"}
 	go func() {
-		done <- runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
+		_, err := runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
 			Message: "hi",
 			Model:   "provider/model",
 		}, func(ev openclaw.Event) error {
 			got = append(got, ev)
 			return nil
 		})
+		done <- err
 	}()
 
 	// Wait for the fake to report the send rather than polling its fields: the
@@ -668,7 +669,7 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
+	if _, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
 		t.Fatal("RunLiveTurn returned nil, want the send error")
 	}
 	if len(gw.subscribes) != 1 {
@@ -691,7 +692,7 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
 	gw := &fakeHitlGateway{modelErr: fmt.Errorf("model unavailable")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "model unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want model patch failure", err)
 	}
@@ -703,7 +704,7 @@ func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
 func TestHitl_RunLiveTurnSurfacesSessionCreateError(t *testing.T) {
 	gw := &fakeHitlGateway{createErr: fmt.Errorf("session store unavailable")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
-	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
+	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "session store unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want session creation failure", err)
 	}
@@ -721,7 +722,7 @@ func TestHitl_RunLiveTurnClearsStaleGuardForNonePolicy(t *testing.T) {
 	}
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
 	runner := &openClawLiveRunner{manager: m, user: "alice"}
-	_ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
+	_, _ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
 	if len(gw.unguarded) != 1 || gw.unguarded[0] != "conv-1" {
 		t.Fatalf("stale guarded state was not cleared: %v", gw.unguarded)
 	}
@@ -735,9 +736,35 @@ func TestHitl_RunLiveTurnSkipsUnchangedSessionSettings(t *testing.T) {
 		},
 	}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	_ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	_, _ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if len(gw.models) != 0 || len(gw.guarded) != 0 || len(gw.unguarded) != 0 {
 		t.Fatalf("unchanged session settings were patched: models=%v guarded=%v unguarded=%v", gw.models, gw.guarded, gw.unguarded)
+	}
+}
+
+func TestChatTerminalOutcome(t *testing.T) {
+	cases := []struct {
+		name        string
+		payload     string
+		wantErr     string
+		wantStopped bool
+	}{
+		{"rpc stop is an outcome", `{"state":"aborted","stopReason":"rpc"}`, "", true},
+		{"slash stop is an outcome", `{"state":"aborted","stopReason":"stop"}`, "", true},
+		{"stop keeps no error text", `{"state":"error","stopReason":"rpc","errorMessage":"ignored"}`, "", true},
+		{"timeout abort stays an error", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user", false},
+		{"error state stays an error", `{"state":"error","errorMessage":"provider boom"}`, "provider boom", false},
+		{"non-terminal state is ignored", `{"state":"final"}`, "", false},
+	}
+	for _, c := range cases {
+		err, stopped := chatTerminalOutcome([]byte(c.payload))
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != c.wantErr || stopped != c.wantStopped {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.name, got, stopped, c.wantErr, c.wantStopped)
+		}
 	}
 }
 

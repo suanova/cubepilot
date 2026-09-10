@@ -62,13 +62,13 @@ type openClawLiveRunner struct {
 
 var _ agentruntime.LiveTurnRunner = (*openClawLiveRunner)(nil)
 
-func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string, params agentruntime.LiveTurnParams, emit func(agentruntime.Event) error) error {
+func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string, params agentruntime.LiveTurnParams, emit func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
 	if r.manager == nil {
-		return fmt.Errorf("live chat unavailable: runtime live channel is not configured")
+		return agentruntime.TurnOutcome{}, fmt.Errorf("live chat unavailable: runtime live channel is not configured")
 	}
 	guarded, err := r.manager.PreTurn(ctx, r.user)
 	if err != nil {
-		return fmt.Errorf("confirmation gating failed: %w", err)
+		return agentruntime.TurnOutcome{}, fmt.Errorf("confirmation gating failed: %w", err)
 	}
 	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, guarded, emit)
 }
@@ -125,6 +125,10 @@ type liveTurn struct {
 	done    chan struct{}
 	once    sync.Once
 	doneErr error
+	// doneStopped is written inside once.Do and read only through outcome(),
+	// which is mutex-guarded so the agent.wait tail path cannot race it.
+	resMu       sync.Mutex
+	doneStopped bool
 }
 
 // setRunID records the run this turn is projecting (from sessions.send's ACK).
@@ -148,12 +152,29 @@ func (t *liveTurn) acceptRun(id string) bool {
 	return t.runID == "" || (id != "" && t.runID == id)
 }
 
-// finish marks the turn terminal (idempotent).
+// finish marks the turn terminal as neither stopped nor failed (idempotent).
 func (t *liveTurn) finish(err error) {
+	t.finishWith(err, false)
+}
+
+// finishWith marks the turn terminal with its outcome (idempotent). stopped
+// records that the terminal frame was a request-initiated abort.
+func (t *liveTurn) finishWith(err error, stopped bool) {
 	t.once.Do(func() {
+		t.resMu.Lock()
 		t.doneErr = err
+		t.doneStopped = stopped
+		t.resMu.Unlock()
 		close(t.done)
 	})
+}
+
+// outcome reports how the turn ended. Safe to call after terminal and from the
+// agent.wait tail path where t.done did not close.
+func (t *liveTurn) outcome() agentruntime.TurnOutcome {
+	t.resMu.Lock()
+	defer t.resMu.Unlock()
+	return agentruntime.TurnOutcome{Stopped: t.doneStopped}
 }
 
 type userHitlConn struct {
@@ -582,11 +603,11 @@ func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
 // the run is terminal and is the authoritative completion signal, so the turn
 // stays subscribed long enough to receive everything (fix: a previous version
 // returned on the start ACK and unsubscribed ~3s in, before the first token).
-func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, guarded bool, sink func(agentruntime.Event) error) error {
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, guarded bool, sink func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	// sessions.send only auto-creates the agent's main session, not arbitrary
 	// conversation keys (the OpenAI-compat HTTP surface created those on the
@@ -595,7 +616,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	state, err := gw.CreateSession(ctx, sessionKey)
 	if err != nil {
 		m.sayf("chat %s: %s: ensure session: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	// sessions.send has no model or permission fields. Reconcile both through
 	// one typed sessions.patch so a failed update cannot leave only half of the
@@ -615,7 +636,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	if patch.Model.Set || patch.PermissionMode.Set {
 		if err := gw.PatchSessionSettings(ctx, sessionKey, patch); err != nil {
 			m.sayf("chat %s: %s: apply session settings: %v", user, sessionKey, err)
-			return err
+			return agentruntime.TurnOutcome{}, err
 		}
 	}
 	t := m.registerLive(user, sessionKey, sink)
@@ -630,11 +651,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 
 	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
 		m.sayf("chat %s: %s: subscribe: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	runID, err := gw.SendSessionMessage(ctx, sessionKey, message, idem)
 	if err != nil {
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	if runID != "" && runID != idem {
 		t.setRunID(runID)
@@ -655,11 +676,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}()
 	select {
 	case <-t.done:
-		return t.doneErr
+		return t.outcome(), t.doneErr
 	case err := <-waitDone:
 		if err != nil {
 			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
-			return err
+			return agentruntime.TurnOutcome{}, err
 		}
 		// agent.wait returned ok; settle a moment for any trailing terminal frame
 		// already queued before returning.
@@ -667,11 +688,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 		case <-t.done:
 		case <-time.After(wsRunTail):
 		case <-ctx.Done():
-			return ctx.Err()
+			return agentruntime.TurnOutcome{}, ctx.Err()
 		}
-		return t.doneErr
+		return t.outcome(), t.doneErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return agentruntime.TurnOutcome{}, ctx.Err()
 	}
 }
 
@@ -702,28 +723,38 @@ func (m *hitlManager) routeLive(user, evName string, payload []byte) {
 		}
 	}
 	if terminal {
-		// A chat "error"/"aborted" frame is a terminal failure; surface its text
-		// so the caller emits message_done with an error instead of a plain done.
-		var err error
+		// A chat "error"/"aborted" frame is terminal. A request-initiated abort
+		// is not a failure, so it is reported as an outcome rather than an error.
+		var (
+			err     error
+			stopped bool
+		)
 		if evName == "chat" {
-			err = chatTerminalErr(payload)
+			err, stopped = chatTerminalOutcome(payload)
 		}
-		t.finish(err)
+		t.finishWith(err, stopped)
 	}
 }
 
-// chatTerminalErr extracts the diagnostic message from a terminal chat frame
-// (state "error"/"aborted"). OpenClaw carries the message under errorMessage
-// (and sometimes error / errorKind / stopReason); returning nil for any other
-// state means the caller treats the frame as a plain terminal.
-func chatTerminalErr(payload []byte) error {
+// chatTerminalOutcome classifies a terminal chat frame (state "error"/"aborted").
+// OpenClaw carries the diagnostic under errorMessage (and sometimes error) and
+// the cancel origin under stopReason. A request-initiated stop -- stopReason
+// "rpc" for the chat.abort RPC, "stop" for the /stop command path -- is an
+// outcome, not a failure: it returns a nil error and stopped=true, so the
+// caller emits message_done{stopped:true} instead of message_done{error}.
+// Any other abort (timeout, restart, auth-revoked) stays an error.
+func chatTerminalOutcome(payload []byte) (error, bool) {
 	var st struct {
 		State        string `json:"state"`
 		Error        string `json:"error"`
 		ErrorMessage string `json:"errorMessage"`
+		StopReason   string `json:"stopReason"`
 	}
 	if json.Unmarshal(payload, &st) != nil || (st.State != "error" && st.State != "aborted") {
-		return nil
+		return nil, false
+	}
+	if st.StopReason == "rpc" || st.StopReason == "stop" {
+		return nil, true
 	}
 	msg := st.ErrorMessage
 	if msg == "" {
@@ -732,5 +763,13 @@ func chatTerminalErr(payload []byte) error {
 	if msg == "" {
 		msg = "agent run " + st.State
 	}
-	return fmt.Errorf("%s", msg)
+	return fmt.Errorf("%s", msg), false
+}
+
+// chatTerminalErr is the diagnostic-only projection of chatTerminalOutcome, for
+// callers that do not care whether the terminal frame was a requested stop. It
+// returns nil for a request-initiated stop because that is not a failure.
+func chatTerminalErr(payload []byte) error {
+	err, _ := chatTerminalOutcome(payload)
+	return err
 }
