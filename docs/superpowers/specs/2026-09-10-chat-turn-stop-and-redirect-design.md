@@ -55,9 +55,19 @@ All three already exist upstream; cubepilot has not wired them up.
 
 `chat.abort` is defined at
 `packages/gateway-protocol/src/schema/logs-chat.ts:255-260` as
-`{ sessionKey, agentId?, runId?, preserveSideRuns? }`. Omitting `runId` is
-session-scoped and does **not** cascade to child agents — which is exactly the
-stop semantics wanted, and necessary because the browser never learns the run id.
+`{ sessionKey, agentId?, runId?, preserveSideRuns? }`. Passing `runId` scopes the
+abort to that run; omitting it is session-scoped and does **not** cascade to
+child agents.
+
+**Pass `runId` whenever one is known.** The browser never learns the run id, but
+the server does: `hitlManager` holds it on the session's live turn
+(`liveTurn.runID`, `hitl.go:123-135`). A session-scoped abort is not race-free —
+if the current run settles and another is promoted before the RPC is processed
+(a queued follow-up draining, or a message from a second tab), the session-scoped
+abort terminates the **newer** run. Session-scoped is the fallback only for the
+reload-takeover path, where no live turn exists to read a run id from; there,
+serialize against send or accept the narrow race knowingly, but do not describe
+it as settled.
 
 `chat.history`'s delta result carries `inFlightRun`
 (`logs-chat.ts:106`). `Hub.Active()` is **not** a usable substitute: it tracks
@@ -93,10 +103,11 @@ at that point `queueMode: "interrupt"` becomes a natural fit and only the
 `internal/openclaw/ws/methods.go`, next to `CancelQuestion`:
 
 ```go
-// AbortChat cancels the session's active run. No run id is passed: the Portal
-// never learns it, and the session-scoped form does not cascade to children.
-func (c *Client) AbortChat(ctx context.Context, sessionKey string) error
-// → Call(ctx, "chat.abort", map[string]any{"sessionKey": sessionKey})
+// AbortChat cancels a run. runID scopes the abort to that run and is what the
+// live-turn path passes; the empty string aborts the session's active run and
+// is the fallback only when no run id is known (reload takeover).
+func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) error
+// → Call(ctx, "chat.abort", {sessionKey, ...(runID ? {runId: runID} : {})})
 ```
 
 Plus a reader for the busy signal, also in `internal/openclaw/ws/methods.go`:
@@ -126,6 +137,18 @@ POST /api/sessions/{key}/abort   → {ok: true}
 GET  /api/sessions/{key}/turn    → {active: bool}
 ```
 
+`/turn` reports per-session liveness, so it must not be cached: send
+`Cache-Control: no-store` on the response. The existing JSON routes do not set
+cache headers, so this is not a new class of problem — but the right header on
+the new route costs nothing.
+
+**Authorization.** Both routes inherit the phase-one trust model: the caller is
+identified by the `X-CubePilot-User` header with no authentication, exactly like
+`/api/messages` and `/confirm` today, so they add no new trust boundary — a
+caller who can already send a message as any user does not gain anything by also
+being able to stop one. Binding streams and routes to a real identity is tracked
+separately and is out of scope here.
+
 **`/abort` must wait for the stream to be gone before returning.** Otherwise the
 client's follow-up `POST /api/messages` races `hub.Open` and still gets a 409,
 which is the whole failure being fixed. Add to `Hub`:
@@ -153,17 +176,29 @@ expires). Reordering `Close` so the unregistration precedes the close would also
 work, but the recheck is robust either way and does not perturb existing
 teardown.
 
-`/abort` then:
+`/abort` then, in this order:
 
-1. `AbortChat(ctx, sessionKey)` — idempotent; "nothing was running" is success,
-   not an error.
-2. `hub.WaitIdle(ctx, sessionKey)` with a 5s deadline. On timeout return **504**
-   rather than a success: the follow-up send would otherwise land on a still-busy
-   session and could be steered into the dying run and swallowed. The UI keeps the
-   turn and the Stop button so the user can retry, instead of failing silently.
-3. Settle the session's local pending HITL records (below).
+1. Resolve the session's live turn and take its `runID` if there is one, then
+   `AbortChat(ctx, sessionKey, runID)` under a **bounded context** (the same
+   per-RPC deadline style the manager already uses, e.g. 5s). Without a bound a
+   wedged WS `Call` holds the HTTP request open until the client gives up.
+   Idempotent: "nothing was running" is success, not an error.
+2. **Settle the session's local pending HITL records immediately** (below) — not
+   after the wait. They must be resolved while the stream is still open, or the
+   `confirm_resolved` / `question_resolved` events have nowhere to go and the
+   attached UI keeps showing a card for a run that is already dead.
+3. Wait for the session to actually be idle before returning, bounded at 5s,
+   satisfied by **both** of:
+   - the gateway reporting not-busy (`SessionBusy` false), and
+   - `hub.WaitIdle` for the session's SSE stream, when one exists.
 
-If no stream is active (the reload-takeover path), step 2 returns immediately.
+   Both are needed. The hub check is what stops the follow-up `POST /api/messages`
+   from racing `hub.Open` into a 409; the gateway check is the only one that means
+   anything on the reload-takeover path, where there is no stream at all and a
+   follow-up send could otherwise be steered into the dying run and swallowed.
+   On timeout return **504** rather than success, so the UI keeps the turn and the
+   Stop button and the user can retry instead of failing silently. Step 2 has
+   already run by then, so a timed-out abort leaves no dead cards behind.
 
 **Terminal state.** On abort the gateway emits chat `state:"aborted"`
 (`internal/server/livetools.go:245-248` already treats it as terminal), but
@@ -302,9 +337,11 @@ presenting a known-truncated reply as a finished one.
 `question_pending`, the abort settles it gateway-side, but cubepilot's
 `ApprovalService.bySession` (`internal/server/approvals.go`) and `questionRoutes`
 (`internal/server/questions.go`) keep the record. Without cleanup, a reload
-resurfaces a card that errors when acted on. On a successful abort, mark the
-session's unresolved records settled/expired and publish the corresponding
-`confirm_resolved` / `question_resolved` event so any attached stream agrees.
+resurfaces a card that errors when acted on. On a successful abort — as step 2,
+while the stream is still open — mark the session's unresolved records
+settled/expired and publish the corresponding `confirm_resolved` /
+`question_resolved` event so any attached stream agrees. Doing this after the
+idle wait is too late: the stream is gone by then.
 
 ### Layer 3 — web
 
@@ -380,11 +417,15 @@ plain reload.
 
 - **ws**: `AbortChat` sends `chat.abort` with the session key and no run id;
   `SessionBusy` decodes `inFlightRun` present/absent and the `reset` branch.
-- **server**: `/abort` calls `AbortChat` and then `WaitIdle`; returns success
-  when idle; settles pending confirm/question records for the session; a
-  `state:"aborted"` frame with `stopReason:"rpc"` produces
-  `message_done{stopped:true}` with an empty error, while `"timeout"` still
-  produces an error; `/turn` reflects `inFlightRun`.
+- **server**: `/abort` calls `AbortChat` with the live turn's `runID`, and with
+  no run id when there is no live turn; the abort RPC carries a deadline; it
+  waits for gateway-idle as well as `WaitIdle`, including on the takeover path
+  where no stream exists; it returns 504 on timeout; it settles pending
+  confirm/question records *before* the idle wait, so the resolution events are
+  emitted while the stream is still open; a `state:"aborted"` frame with
+  `stopReason:"rpc"` produces `message_done{stopped:true}` with an empty error,
+  while `"timeout"` still produces an error; `/turn` reflects `inFlightRun` and
+  sets `Cache-Control: no-store`.
 - **handler outcome plumbing**: a runtime returning `TurnOutcome{Stopped:true}`
   with a nil error produces `message_done{stopped:true}` (not `{}`), and a
   stopped outcome never sets `error`. This is the regression test for the gap
@@ -408,10 +449,23 @@ plain reload.
   the two open questions in "Stopped turns must survive a reload" — (1) does
   `/sessions/{key}/history` surface `openclawAbort` at all, and (2) can a
   mid-turn committed row be truncated (probe by aborting during a turn that has
-  already had commentary committed and superseded). Either answer coming back
-  badly promotes the CubePilot-owned durable marker into scope.
+  already had commentary committed and superseded).
+
+  This is a **gate on the reload-marker part of the feature**, not a background
+  note. If either answer comes back badly, the CubePilot-owned durable marker is
+  required before that part ships — not optional follow-up work. The rest of the
+  feature (Stop, redirect, live `stopped`) does not depend on it and can proceed
+  either way.
 
 ## Rollout
 
-No migration. Both new routes are additive; `message_done{stopped}` is an
-optional field, so an older client ignores it and simply sees a completed turn.
+No migration — both routes are additive and `message_done{stopped}` is an
+optional field on the wire.
+
+It is **not** behaviorally backward-compatible, though, and the rollout must not
+pretend otherwise: a client that does not understand `stopped` renders a stopped
+turn as a *completed* one, which is precisely the "truncated reply shown as
+finished" failure this design exists to prevent. The web bundle and the API ship
+from the same Helm chart, so they roll together; the requirement is simply that
+they are not deployed separately, and that a stale cached web bundle is treated
+as a bug rather than tolerated.
