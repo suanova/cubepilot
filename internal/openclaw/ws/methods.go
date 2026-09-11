@@ -82,17 +82,43 @@ type chatAbortParams struct {
 	RunID      string `json:"runId,omitempty"`
 }
 
+// chatAbortResult is chat.abort's success payload. `aborted` is the field that
+// says whether the RPC actually stopped anything, and it must not be discarded:
+// the gateway answers ok=true with aborted=false and an empty runIds when the
+// run id matched no abortable run, which is a real answer, not a stop. A run
+// whose gateway snapshot carries sessionAbortable:true is cancellable only
+// through the session-owned path, and a run promoted between the caller's
+// in-flight read and this RPC yields the same payload. Reading the ok as "the
+// run stopped" is how a caller ends up settling a session whose run is still
+// going.
+type chatAbortResult struct {
+	Aborted bool `json:"aborted"`
+}
+
 // AbortChat cancels a run (chat.abort). runID scopes the abort to that run and
 // is what the live-turn path passes; an empty runID aborts the session's active
 // run and is the fallback only when no run id is known (reload takeover).
-func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) error {
+//
+// It reports whether the gateway actually aborted a run. A nil error with
+// aborted=false is a successful RPC that stopped nothing: the run id matched no
+// abortable run. The caller must reconcile that against the session's liveness
+// before treating the stop as done. An undecodable payload is reported as an
+// error rather than as aborted=false, because "the gateway said something this
+// client cannot read" is not the gateway saying it stopped nothing -- the caller
+// treats a returned error conservatively either way.
+func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) (bool, error) {
 	if sessionKey == "" {
-		return fmt.Errorf("chat.abort: empty session key")
+		return false, fmt.Errorf("chat.abort: empty session key")
 	}
-	if _, err := c.Call(ctx, "chat.abort", chatAbortParams{SessionKey: sessionKey, RunID: runID}); err != nil {
-		return fmt.Errorf("chat.abort %q: %w", sessionKey, err)
+	raw, err := c.Call(ctx, "chat.abort", chatAbortParams{SessionKey: sessionKey, RunID: runID})
+	if err != nil {
+		return false, fmt.Errorf("chat.abort %q: %w", sessionKey, err)
 	}
-	return nil
+	var out chatAbortResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, fmt.Errorf("decode chat.abort %q: %w", sessionKey, err)
+	}
+	return out.Aborted, nil
 }
 
 type chatHistoryParams struct {

@@ -46,7 +46,10 @@ func TestCallWriteIsBoundedByContext(t *testing.T) {
 	defer cancelShort()
 	done := make(chan error, 1)
 	start := time.Now()
-	go func() { done <- cli.AbortChat(short, "session-a", "run-1") }()
+	go func() {
+		_, err := cli.AbortChat(short, "session-a", "run-1")
+		done <- err
+	}()
 
 	select {
 	case err := <-done:
@@ -65,6 +68,34 @@ func TestCallWriteIsBoundedByContext(t *testing.T) {
 		t.Fatal("Call blocked on the write token past its deadline: write acquisition is not context-aware")
 	}
 	<-cli.writeToken
+}
+
+// The write token has to come back on every path out of the write, including
+// one that panics. A leaked token is permanent, not transient: it is a one-slot
+// channel and Connected() stays true, so nothing replaces this client and every
+// later Call on it parks in acquireWrite until its own deadline expires.
+//
+// The panic is provoked with a zero-value websocket.Conn: its write path
+// dereferences per-connection state that a live connection always has, and a
+// zero value does not. The recovered panic is what the deferred check runs on --
+// the token's state after the unwinding is the whole assertion.
+func TestCallReleasesWriteTokenOnWritePanic(t *testing.T) {
+	c := &Client{
+		conn:       &websocket.Conn{},
+		pending:    map[string]chan responseFrame{},
+		done:       make(chan struct{}),
+		writeToken: make(chan struct{}, 1),
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("the write did not panic: this test no longer reaches the path it guards")
+			return
+		}
+		if n := len(c.writeToken); n != 0 {
+			t.Errorf("write token held after the panic (len = %d): every later Call on this client blocks until its own deadline", n)
+		}
+	}()
+	_, _ = c.Call(context.Background(), "chat.abort", struct{}{})
 }
 
 // mockGateway implements just enough of the server side of the protocol

@@ -479,13 +479,25 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("ws write %s: %w", method, werr)
 	}
-	err = conn.Write(ctx, websocket.MessageText, out)
-	c.releaseWrite()
-	if err != nil {
+	// Released by defer, on every path out of the write -- including a panic
+	// unwinding through conn.Write. A plain statement after the write leaks the
+	// token for good on that path: Connected() stays true, so this client is
+	// never replaced, and every later Call on it blocks on acquireWrite until
+	// its own deadline expires.
+	//
+	// The defer lives in a scope that ends with the write rather than with Call,
+	// so the token is not held for the whole RPC wait -- that would serialise
+	// every call on the connection behind the first one's response, which can
+	// take up to its own deadline.
+	werr := func() error {
+		defer c.releaseWrite()
+		return conn.Write(ctx, websocket.MessageText, out)
+	}()
+	if werr != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return nil, fmt.Errorf("ws write %s: %w", method, err)
+		return nil, fmt.Errorf("ws write %s: %w", method, werr)
 	}
 
 	select {

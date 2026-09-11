@@ -69,7 +69,7 @@ type hitlGateway interface {
 	CancelQuestion(ctx context.Context, id, resolvedBy string) error
 	GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error)
 	ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error)
-	AbortChat(ctx context.Context, sessionKey, runID string) error
+	AbortChat(ctx context.Context, sessionKey, runID string) (bool, error)
 	SessionBusy(ctx context.Context, sessionKey string) (bool, error)
 	SessionInFlightRun(ctx context.Context, sessionKey string) (string, error)
 	Close()
@@ -655,10 +655,17 @@ func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error
 // runID scopes the abort to the run the server believes is live so it cannot
 // kill a run promoted after that one settles; an empty runID falls back to the
 // session-scoped abort.
-func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string) error {
+//
+// It reports whether the gateway actually aborted a run. A nil error with
+// aborted=false is an RPC that succeeded and stopped nothing -- the run id
+// matched no abortable run -- so the caller must not read it as a stop. It gets
+// no channel of its own: an abort issued over a connection this process had to
+// dial would be a stop racing its own lookup, and the caller treats the failure
+// as it does any other.
+func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string) (bool, error) {
 	gw, ok := m.liveConn(user)
 	if !ok {
-		return fmt.Errorf("abort %q: %w", sessionKey, errNoGatewayChannel)
+		return false, fmt.Errorf("abort %q: %w", sessionKey, errNoGatewayChannel)
 	}
 	return gw.AbortChat(ctx, sessionKey, runID)
 }

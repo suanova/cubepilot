@@ -76,6 +76,11 @@ type fakeHitlGateway struct {
 	// chat.abort / chat.history (issue #166)
 	aborts         []string // "sessionKey|runID"; empty runID means the session-scoped form
 	abortErr       error
+	// abortAborted is what chat.abort's success payload reports: false is a
+	// successful RPC that stopped nothing (the run id matched no abortable run).
+	// Zero value is true, so a fixture that does not set it keeps meaning "the
+	// RPC stopped the run".
+	abortAborted   *bool
 	sessionBuses   []string // sessionKeys passed to chat.history
 	sessionBusy    bool
 	sessionBusyErr error
@@ -284,11 +289,21 @@ func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecor
 	}
 	return f.pendingQuestions, nil
 }
-func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) error {
+func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborts = append(f.aborts, key+"|"+runID)
-	return f.abortErr
+	// A failed RPC carries no payload, so there is no abort to report -- the real
+	// client answers (false, err) there. A fixture that does not set abortAborted
+	// means "the RPC aborted the run", so the existing callers keep exercising
+	// the aborted=true path.
+	if f.abortErr != nil {
+		return false, f.abortErr
+	}
+	if f.abortAborted != nil {
+		return *f.abortAborted, nil
+	}
+	return true, nil
 }
 func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, error) {
 	f.mu.Lock()
@@ -959,11 +974,11 @@ func TestHitl_AbortDelegatesToGateway(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
 	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
 
-	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err != nil {
-		t.Fatalf("Abort: %v", err)
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err != nil || !aborted {
+		t.Fatalf("Abort = (%v, %v), want (true, nil)", aborted, err)
 	}
-	if err := m.Abort(context.Background(), "alice", "conv-1", ""); err != nil {
-		t.Fatalf("Abort without a run id: %v", err)
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", ""); err != nil || !aborted {
+		t.Fatalf("Abort without a run id = (%v, %v), want (true, nil)", aborted, err)
 	}
 	want := []string{"conv-1|run-7", "conv-1|"}
 	if len(gw.aborts) != 2 || gw.aborts[0] != want[0] || gw.aborts[1] != want[1] {
@@ -971,10 +986,29 @@ func TestHitl_AbortDelegatesToGateway(t *testing.T) {
 	}
 }
 
+// TestHitl_AbortReportsAnAbortThatStoppedNothing: the gateway can answer ok with
+// aborted=false -- the run id matched no abortable run. That must reach the
+// caller as aborted=false, because it is the one thing /abort cannot read as a
+// stop: settling on it deletes the records of a run that is still going.
+func TestHitl_AbortReportsAnAbortThatStoppedNothing(t *testing.T) {
+	no := false
+	gw := &fakeHitlGateway{connected: true, abortAborted: &no}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7")
+	if err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if aborted {
+		t.Fatal("Abort reported a stop for a gateway that answered aborted=false")
+	}
+}
+
 func TestHitl_AbortRequiresAChannel(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
-	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil {
-		t.Fatal("Abort without a live gateway channel must fail")
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
+		t.Fatal("Abort without a live gateway channel must fail, and must not claim a stop")
 	}
 }
 
@@ -989,8 +1023,8 @@ func TestHitl_AbortRejectsUnconnectedChannel(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
 	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
 
-	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil {
-		t.Fatal("Abort with a stored but unconnected gateway must fail")
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
+		t.Fatal("Abort with a stored but unconnected gateway must fail, and must not claim a stop")
 	}
 	if len(gw.aborts) != 0 {
 		t.Fatalf("aborts = %v, want the gateway untouched", gw.aborts)
@@ -1006,8 +1040,8 @@ func TestHitl_AbortPropagatesGatewayError(t *testing.T) {
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
 	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
 
-	if err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); !errors.Is(err, wantErr) {
-		t.Fatalf("Abort error = %v, want %v", err, wantErr)
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); !errors.Is(err, wantErr) || aborted {
+		t.Fatalf("Abort = (%v, %v), want (false, %v)", aborted, err, wantErr)
 	}
 	if len(gw.aborts) != 1 {
 		t.Fatalf("aborts = %v, want the call attempted once", gw.aborts)

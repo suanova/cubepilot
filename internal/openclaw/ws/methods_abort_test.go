@@ -36,8 +36,10 @@ func TestAbortChatOmitsEmptyRunID(t *testing.T) {
 		return json.RawMessage(`{"aborted":true}`), nil
 	})
 
-	if err := c.AbortChat(context.Background(), "session-a", ""); err != nil {
+	if aborted, err := c.AbortChat(context.Background(), "session-a", ""); err != nil {
 		t.Fatalf("AbortChat: %v", err)
+	} else if !aborted {
+		t.Fatal("AbortChat reported no abort for a payload that says aborted=true")
 	}
 	var got map[string]any
 	if err := json.Unmarshal((*calls)[0], &got); err != nil {
@@ -62,8 +64,10 @@ func TestAbortChatSendsRunID(t *testing.T) {
 		}
 		return json.RawMessage(`{"aborted":true}`), nil
 	})
-	if err := c.AbortChat(context.Background(), "session-a", "run-7"); err != nil {
+	if aborted, err := c.AbortChat(context.Background(), "session-a", "run-7"); err != nil {
 		t.Fatalf("AbortChat: %v", err)
+	} else if !aborted {
+		t.Fatal("AbortChat reported no abort for a payload that says aborted=true")
 	}
 	var got map[string]any
 	if err := json.Unmarshal((*calls)[0], &got); err != nil {
@@ -71,6 +75,62 @@ func TestAbortChatSendsRunID(t *testing.T) {
 	}
 	if got["runId"] != "run-7" {
 		t.Fatalf("runId = %v, want run-7", got["runId"])
+	}
+}
+
+// TestAbortChatReportsAnAbortThatStoppedNothing: the gateway answers a
+// *success* with {ok:true, aborted:false, runIds:[]} when the run id matched no
+// abortable run. Discarding that flag is what lets a caller treat a stop that
+// never happened as done, settle the session's HITL records for a live run, and
+// answer its follow-up send with a 200 -- so it has to reach the caller.
+func TestAbortChatReportsAnAbortThatStoppedNothing(t *testing.T) {
+	c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		if method != "chat.abort" {
+			t.Fatalf("method = %q, want chat.abort", method)
+		}
+		return json.RawMessage(`{"ok":true,"aborted":false,"runIds":[]}`), nil
+	})
+
+	aborted, err := c.AbortChat(context.Background(), "session-a", "run-7")
+	if err != nil {
+		t.Fatalf("AbortChat: %v", err)
+	}
+	if aborted {
+		t.Fatal("AbortChat reported a stop for a payload that says aborted=false")
+	}
+}
+
+// The other direction, so the flag is not simply always false: runIds filled in
+// with aborted true is the ordinary successful stop.
+func TestAbortChatReportsAStop(t *testing.T) {
+	c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":true,"aborted":true,"runIds":["run-7"]}`), nil
+	})
+
+	aborted, err := c.AbortChat(context.Background(), "session-a", "run-7")
+	if err != nil {
+		t.Fatalf("AbortChat: %v", err)
+	}
+	if !aborted {
+		t.Fatal("AbortChat reported no stop for a payload that says aborted=true")
+	}
+}
+
+// A payload this client cannot read is a failure, not an aborted=false: "the
+// gateway said something unreadable" and "the gateway said it stopped nothing"
+// are different answers, and the caller treats the returned error
+// conservatively (reconcile before settling) rather than as a stop.
+func TestAbortChatRejectsAnUndecodablePayload(t *testing.T) {
+	c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`not json`), nil
+	})
+
+	aborted, err := c.AbortChat(context.Background(), "session-a", "run-7")
+	if err == nil {
+		t.Fatal("AbortChat accepted an undecodable payload as a result")
+	}
+	if aborted {
+		t.Fatal("AbortChat reported a stop alongside a decode failure")
 	}
 }
 

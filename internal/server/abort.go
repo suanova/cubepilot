@@ -57,6 +57,15 @@ const abortReconcileTimeout = 2 * time.Second
 //
 // Step 1's failure is reconciled rather than trusted, and steps 2 and 3 run on
 // its outcome: see the comment on the abort call below.
+//
+// Invariant: never settle a session whose run is still in flight. Step 2 is
+// destructive -- it closes the records and drops the cards -- so running it
+// against a live run deletes the only controls that run's parked confirmation or
+// question had, for a turn the user asked to stop and which did not stop. Every
+// path through step 1 therefore has to establish that the run is gone before
+// step 2 runs: aborted=true is that proof, and both other outcomes (an RPC
+// error, and a successful RPC that aborted nothing) reconcile against the
+// gateway and settle only on a positive "not busy".
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -84,7 +93,9 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 
 	rpcCtx, cancelRPC := context.WithTimeout(context.WithoutCancel(r.Context()), abortRPCDeadline)
 	defer cancelRPC()
-	if abortErr := s.hitl.Abort(rpcCtx, user, sessionKey, runID); abortErr != nil {
+	aborted, abortErr := s.hitl.Abort(rpcCtx, user, sessionKey, runID)
+	switch {
+	case abortErr != nil:
 		// A failed RPC does not prove the stop did not happen. The frame is
 		// written before the response is waited for, so an abort that errors on
 		// its deadline can still have been delivered and honoured; treating that
@@ -105,6 +116,30 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logf("abort %s/%s: %v (the run is no longer in flight: the stop landed)", user, sessionKey, abortErr)
+	case !aborted:
+		// The RPC succeeded and stopped nothing: the gateway answered
+		// {aborted:false, runIds:[]} because the run id matched no abortable run,
+		// which a run that is session-abortable-only, or one promoted between the
+		// in-flight read above and the RPC, both produce. "Nothing was aborted"
+		// is not "the run is gone", so the same invariant applies as on the error
+		// branch: reconcile, and settle only once the gateway says the session has
+		// no run in flight. A run still in flight is a stop that did not happen --
+		// answer it as a failure and leave the records pending, or the next card
+		// the user needs is deleted for a run that is still going, and the 200
+		// tells the Portal to send its follow-up into a busy session.
+		//
+		// The cost of reconciling before settling is one extra round trip, and the
+		// stream may close inside it: the `*_resolved` publishes below then land on
+		// a stream that is gone, so a card can linger on screen until a reload. A
+		// stale card is strictly better than a card deleted for a live run.
+		if !s.abortLanded(r.Context(), user, sessionKey) {
+			s.logf("abort %s/%s: chat.abort stopped nothing and the session is not provably idle: not settling", user, sessionKey)
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": "the gateway did not stop a run for this session; it is still in flight",
+			})
+			return
+		}
+		s.logf("abort %s/%s: chat.abort stopped nothing, but no run is in flight: the session is idle", user, sessionKey)
 	}
 
 	// Before the wait: the stream is still attached and can deliver the

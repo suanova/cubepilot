@@ -155,6 +155,62 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	}
 }
 
+// A chat.abort that answers *success* with aborted=false stopped nothing: the
+// run id matched no abortable run, which a session-abortable-only run or one
+// promoted between the in-flight read and the RPC both produce. The RPC's ok is
+// not proof the run is gone, so the session must not be settled -- settling
+// deletes the live run's cards and the 200 tells the Portal its follow-up send
+// can go into a session that is still busy. The reconcile read is what tells the
+// two apart, and here it confirms the worst one.
+func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
+	no := false
+	h := NewHub()
+	gw := &fakeAbortGateway{abortAborted: &no, busy: true}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: the gateway aborted nothing and the session is still busy", rec.Code)
+	}
+	if gw.lastBusySession != abortTestKey {
+		t.Fatalf("reconcile read key = %q, want %q: an abort that stopped nothing must be reconciled", gw.lastBusySession, abortTestKey)
+	}
+	if gw.listed {
+		t.Fatal("settle ran against a run that is still in flight: the live run's cards are gone")
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
+		t.Fatal("the records were settled for a run that is still going: a card the user still needs was deleted")
+	}
+}
+
+// The aborted=false case that is benign, and the reason the reconcile is a read
+// rather than a refusal: chat.abort stopped nothing because there was nothing
+// left to stop -- the run settled naturally in the window. The session is
+// provably idle, so the ordinary path applies and the records are settled
+// exactly as for an aborted=true.
+func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
+	no := false
+	h := NewHub()
+	gw := &fakeAbortGateway{abortAborted: &no}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: nothing was aborted because nothing was running", rec.Code)
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
+		t.Fatal("the session is idle but its pending confirmation survived: a reload resurrects a card for a dead run")
+	}
+}
+
 // The reload-takeover path has no live turn -- releaseLive removed it when the
 // request driving the turn ended -- so a run id has to come from the gateway.
 // Without it the abort is session-scoped, and a run promoted between the RPC
@@ -775,6 +831,11 @@ type fakeAbortGateway struct {
 	abortCtxErr      error
 	lastAbortSession string
 	lastAbortRunID   string
+	// abortAborted is chat.abort's success payload flag. nil means "the RPC
+	// aborted the run"; a pointer to false models the gateway's
+	// {ok:true, aborted:false, runIds:[]} answer, which is a successful RPC that
+	// stopped nothing.
+	abortAborted *bool
 	// lastBusySession records the key the busy read was made with. The gateway
 	// matches on the canonical form, so a handler passing the raw URL segment
 	// gets no in-flight run back -- a false idle that hides the Stop control.
@@ -797,10 +858,21 @@ type fakeAbortGateway struct {
 	inFlightSession string
 }
 
-func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID string) error {
+// AbortChat models the gateway's chat.abort. abortAborted is the success
+// payload's `aborted` flag; a fixture that leaves it nil means the RPC stopped
+// the run, which is what the abort tests written before this flag existed
+// assume.
+func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID string) (bool, error) {
 	f.lastAbortSession, f.lastAbortRunID = sessionKey, runID
 	f.abortCtxErr = ctx.Err()
-	return f.abortErr
+	// A failed RPC carries no payload, so there is no abort to report.
+	if f.abortErr != nil {
+		return false, f.abortErr
+	}
+	if f.abortAborted != nil {
+		return *f.abortAborted, nil
+	}
+	return true, nil
 }
 
 func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
