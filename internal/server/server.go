@@ -192,14 +192,17 @@ func (s *Server) Handler() http.Handler {
 
 // handleSessionSubresource routes the per-session subresources under
 // /api/sessions/{key}/: the conversation itself (messages), the
-// human-in-the-loop endpoints (confirm, question), and the turn controls
-// (abort, turn). History (messages) is served from the live runtime session --
-// the runtime is the only source of truth for conversation content (design
-// §3.6), so reading it requires the instance to be warm.
+// human-in-the-loop endpoints (confirm, question), the turn controls
+// (abort, turn), and the observation stream (stream). History (messages) is
+// served from the live runtime session -- the runtime is the only source of
+// truth for conversation content (design §3.6), so reading it requires the
+// instance to be warm.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
 		s.handleHistory(w, r)
+	case strings.HasSuffix(r.URL.Path, "/stream"):
+		s.handleSessionStream(w, r)
 	case strings.HasSuffix(r.URL.Path, "/confirm/pending"):
 		s.handlePendingConfirm(w, r)
 	case strings.HasSuffix(r.URL.Path, "/confirm"):
