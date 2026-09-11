@@ -1,536 +1,627 @@
-# CubePilot 前端 API 文档（k8s API server 直连版 · 按设计整理）
+# CubePilot API 文档（HTTP / SSE）
 
-> 依据 [cubepilot-design.md](./cubepilot-design.md)（简化设计）整理。
+> **读者**：任何要对接 `cubepilot-api` 的客户端——内置 Portal、CubeStack 统一 UI、
+> 或第三方集成。启动内置 Portal 之外的 UI 时用 `--set web.enabled=false` 关掉 Portal。
 >
-> 架构原则（项目负责人确认）：**有 CRD 的资源，前端直接访问 Kubernetes API server；
-> 没有 CRD、走不了 k8s API server 的能力，仍走 cubepilot-api（`/api/*`）。**
-> 不单独为 CRD 资源再开一层 REST facade。
+> **来源**：本文以 `internal/server/` 的实现为准（路由表见 `internal/server/server.go`
+> 的 `Handler()`）。字段级参考不在此重复：CRD 字段见 `config/crd/bases/`，
+> 客户端类型见 `web/src/api/types.ts`。
 >
-> 本文档 = 前端需要对接的**全部** API，分两大部分：
-> - [第 2~3 章](#2-k8s-api-server-访问通用约定)：CRD 资源 → k8s API server；
-> - [第 4 章](#4-仍在-cubepilot-api-的接口非-crd)：非 CRD 能力 → cubepilot-api。
->
-> **字段来源标注**：
-> - 📘 **设计原文** —— 直接来自设计文档（group、kind、spec/status 字段、事件名）。
-> - 🛠 **拟定契约** —— 设计给出意图但未定形（REST 路径、k8s 常规行为、手动触发机制等），实现前需冻结。
+> **维护**：`internal/server/apidoc_test.go` 会在路由表与本文不一致时失败。
+> 新增或删除端点必须同步更新本文，否则 CI 报错。
 
 ---
 
 ## 目录
 
-1. [总览与快速对照](#1-总览与快速对照)
-2. [k8s API server 访问通用约定](#2-k8s-api-server-访问通用约定)
-3. [各 CRD 资源操作](#3-各-crd-资源操作)
-4. [仍在 cubepilot-api 的接口（非 CRD）](#4-仍在-cubepilot-api-的接口非-crd)
-5. [前端页面 ↔ 接口映射](#5-前端页面--接口映射)
-6. [附录](#6-附录)
+1. [架构与接入](#1-架构与接入)
+2. [通用约定](#2-通用约定)
+3. [调用顺序](#3-调用顺序)
+4. [对话流程](#4-对话流程)
+5. [人机协同（HITL）](#5-人机协同hitl)
+6. [端点参考](#6-端点参考)
+7. [SSE 事件参考](#7-sse-事件参考)
+8. [客户端易错点](#8-客户端易错点)
 
 ---
 
-# 1. 总览与快速对照
-
-## 1.1 架构
+# 1. 架构与接入
 
 ```text
-Portal / Web (前端)
-   │
-   ├── CRD 资源 ────────► Kubernetes API server
-   │                     （/apis/ai.cubestack.io/v1alpha1/...）
-   │                      鉴权：RBAC / OIDC 令牌，owner 由平台授权层兜底
-   │
-   └── 非 CRD 能力 ──────► cubepilot-api（/api/*）
-                         （对话 SSE、会话历史、技能发布上传）
+浏览器 / 客户端
+     │  HTTP + SSE   /api/*
+     ▼
+反向代理（生产 nginx / 开发 vite dev server）
+     │
+     ▼
+cubepilot-api:8080  ──WebSocket──▶  每用户一个 OpenClaw 实例（Pod）
+                                              │
+                                            exec → kubectl → 集群
 ```
 
-## 1.2 快速对照
+客户端**只需要访问 `/api/*`**，不需要、也拿不到 Kubernetes API server 的访问权限。
+CRD 资源的读写全部由 `cubepilot-api` 代理。
 
-| 前端要做什么 | 走哪 |
-|---|---|
-| Agent 模板（含模型清单，只读） | k8s API server · `agenttemplates` |
-| 开通 / 查看 / 改自己的实例 | k8s API server · `agentinstances` |
-| 技能市场浏览 / 安装 | k8s API server · `skills` + `agentinstances` |
-| 任务模板（创建向导，只读） | k8s API server · `tasktemplates` |
-| 任务 CRUD / 暂停恢复 / 手动触发 | k8s API server · `tasks` |
-| 巡检报告（只读） | k8s API server · `taskruns` |
-| 对话（浮窗 / 独立 tab，SSE） | cubepilot-api · `POST /api/messages` |
-| 会话历史 / 确认决策 | cubepilot-api · `/api/sessions/*` |
-| 技能发布（上传 tar 写技能仓库） | cubepilot-api · `/api/skills*` |
+## 反向代理的硬性要求
 
-## 1.3 CRD 资源清单（k8s API server）
+SSE（`POST /api/messages`）必须**关闭代理缓冲**，否则事件会被攒着一起吐，失去流式效果。
+参考 `web/nginx.conf`：
 
-group/version：**`ai.cubestack.io/v1alpha1`**（📘，见设计全部 YAML）。对象不落在任何 namespace（📘 未声明 namespace，以 `owner` 字段区分归属）。
-
-| kind（📘） | REST 路径尾段（🛠 常规复数） | 前端读写 | 状态字段写方 | 前端用途 |
-|---|---|---|---|---|
-| `AgentTemplate` | `agenttemplates` | 只读 | — | 平台内置模板（阶段一仅 `cubepilot`），配置页数据源 |
-| `AgentInstance` | `agentinstances` | 读 + 建 + 改 | 控制器 | 「Agent 配置」页：开通 / 选模型 / 启技能 / 用户指令 |
-| `Skill` | `skills` | 读；安装=改实例 | 控制器 | 技能市场：浏览 / 详情 / 安装 |
-| `TaskTemplate` | `tasktemplates` | 只读 | — | 任务创建向导 |
-| `Task` | `tasks` | 读 + 建 + 改 + 删 | Scheduler | 任务列表、暂停/恢复、手动触发 |
-| `TaskRun` | `taskruns` | 只读 | Scheduler | 巡检报告、证据链、P0/P1/P2 |
-
-> 📘 **不存在的 CRD**：`Model`（模型内联在 AgentTemplate.models，设计 §3.3）、`Agent`（模板即 `AgentTemplate`，§3.1）；`Capability` 已重命名为 `Skill`（设计 §3.4）。
+```nginx
+location /api/ {
+    proxy_pass         http://cubepilot-api:8080;
+    proxy_http_version 1.1;
+    proxy_buffering    off;      # SSE 必需
+    proxy_read_timeout 3600s;    # 长回合
+    proxy_set_header   Connection "";
+}
+```
 
 ---
 
-# 2. k8s API server 访问通用约定
+# 2. 通用约定
 
-## 2.1 入口与认证 🛠（部署相关）
+## 2.1 身份
 
-- REST 路径统一为：`/apis/ai.cubestack.io/v1alpha1/<plural>[/<name>][/status|/watch]`
-- 前端到达 k8s API server 的两种方式：
-  - **Web 网关反向代理**：把 `/apis/...` 转发到集群 API server（推荐，前端用相对路径）；
-  - 或 k8s API server 直接暴露（Ingress/Route），前端携带 OIDC 令牌（`Authorization: Bearer <token>`）。
-- 认证：OIDC（📘 设计 §6）。平台为每个登录用户签发**最小权限 RBAC**，前端只携带自己的身份令牌，不注入他人身份。
+每个请求都带：
 
-## 2.2 标准动词与路径模板
-
-| 操作 | 方法与路径 | 说明 |
-|---|---|---|
-| 列表 | `GET` `/apis/…/v1alpha1/{plural}` | 返回 `{apiVersion, kind: "…List", metadata, items[]}` |
-| 单个 | `GET` `…/{plural}/{name}` | 返回单个对象 |
-| 创建 | `POST` `…/{plural}` | body = 完整对象（含 `apiVersion`/`kind`/`metadata.name`/`spec`） |
-| 整体更新 | `PUT` `…/{plural}/{name}` | body = 完整对象，`metadata.resourceVersion` 必须带 |
-| 部分更新 | `PATCH` `…/{plural}/{name}` | body = JSON Patch 或 Merge Patch（见 §2.4） |
-| 删除 | `DELETE` `…/{plural}/{name}` | 可带 `?propagationPolicy=Background` |
-| 状态 | `PUT` `…/{plural}/{name}/status` | **前端只读状态，不写**（控制器/Scheduler 独占） |
-| 监听 | `GET` `…/{plural}?watch=true` | 实时变化推送，见 §2.5 |
-
-## 2.3 对象格式
-
-所有 CRD 对象是标准 k8s 对象：
-
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "AgentInstance",
-  "metadata": { "name": "zhang-wei-cubepilot", "annotations": {}, "resourceVersion": "12345" },
-  "spec": { … },
-  "status": { … }
-}
+```http
+X-CubePilot-User: <用户名>
 ```
 
-- `spec` 由前端提供；`status` 由控制器/Scheduler 维护，**前端绝不提交/修改 status**。
-- 列表项在 `items[]` 里，每项即一个完整对象。
+- 取不到该头时，后端回退到配置的默认用户（环境变量 `CUBEPILOT_DEFAULT_USER`，默认 `admin`）。
+- **当前没有认证**。这个头是可伪造的，身份由调用方自报；多租户隔离靠后端按此值过滤，
+  RBAC 是最终闸门。生产接入前需要在此之上补认证。
 
-## 2.4 部分更新（PATCH）🛠
+## 2.2 响应信封（**不统一，重点**）
 
-CRD **不支持** strategic-merge-patch（对 CRD 无效），用：
+多数端点用具名 key 包裹返回值，但**有一批是裸对象或无包裹的原始字节**：
 
-- JSON Patch（`application/json-patch+json`）：`[{ "op": "replace", "path": "/spec/state", "value": "Paused" }]`
-- Merge Patch（`application/merge-patch+json`）：`{ "spec": { "state": "Paused" } }`
+| 有包裹 | 包裹 key |
+| --- | --- |
+| `/api/sessions` | `sessions` |
+| `/api/audit` | `entries` |
+| `/api/agent/config` | `config` |
+| `/api/agenttemplates` · `/api/agenttemplates/{name}` | `agentTemplates` · `agentTemplate` |
+| `/api/instances` POST | `instance` |
+| `/api/instances` GET | `instances` |
+| `/api/llms` · `/api/llms/{name}` | `model` · `model`（DELETE 用 `removed`） |
+| `/api/skills` | `skills` |
+| `/api/skills/{name}/install` · `uninstall` | `enabledSkills` |
+| `/api/tasks` GET · POST · `/toggle` · `/run` | `tasks` · `task` · `task` · `{started, task}` |
+| `/api/tasks/{id}/reports` | `reports` |
+| `/api/tasktemplates` | `taskTemplates` |
+| `/api/taskruns` · `/api/taskruns/{name}` | `taskruns` · `taskrun` |
+| `/api/kinds` | `kinds` |
+| `/api/sessions/{key}/question/pending` | `questions` |
 
-示例——暂停任务：
+| **无包裹（裸对象 / 原始字节）** | 说明 |
+| --- | --- |
+| `GET /api/agent/status` | 裸 `AgentStatus` |
+| `GET /api/agent/confirm` · `PUT /api/agent/confirm` | 裸 `confirmView` |
+| `GET /api/sessions/{key}/confirm/pending` | 裸 `PendingConfirm` |
+| `GET /api/sessions/{key}/messages` | **原始 JSON 透传**（运行时历史文档），不重新编码 |
+| `POST /api/skills/{name}/publish` | 裸 `Skill` CR |
+| `POST /api/messages` | SSE 流，不是 JSON |
+| 全部 `/internal/*` | 集群内部端点，见 §6.5 |
+
+## 2.3 错误与状态码语义
+
+错误体统一为：
 
 ```json
-PATCH /apis/ai.cubestack.io/v1alpha1/tasks/zhang-wei-daily-inspection
-Content-Type: application/merge-patch+json
-
-{ "spec": { "state": "Paused" } }
+{ "error": "人类可读的原因" }
 ```
 
-## 2.5 列表过滤与分页
+以下状态码**有特定语义**，客户端必须区别处理：
 
-- **labelSelector**：`?labelSelector=cubepilot/owner=zhang.wei` —— 推荐用于「只拉自己的」列表（见 §2.8）。
-- **fieldSelector**：仅支持索引字段（`metadata.name` 等）；`spec.owner` **不可**用 fieldSelector 过滤。
-- **分页**：列表响应 `metadata.continue` 非空时，加 `?continue=<值>` 取下一页（配合 `?limit=`）。
-- **resourceVersion**：更新冲突时返回 `409`，前端重拉后重试。
+| 码 | 含义 | 客户端应当 |
+| --- | --- | --- |
+| **503** | `instance warming failed: ...` —— 实例正在冷启动（Pod 未就绪 / 网关未监听） | **等待并重试**，提示「正在启动实例」。这不是故障 |
+| **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
+| **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
+| **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
+| **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
+| **504** | `the run did not settle in time; try again`（仅 `/abort`） | 重试 |
+| **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
+| **202** | 仅 `POST /api/tasks/{id}/run`，表示已登记手动触发 | 正常成功 |
+| **201** | 仅 `POST /api/instances`（新建）；已存在时返回 200 + `alreadyExists: true` | 正常成功 |
 
-## 2.6 watch 实时状态（可选）🛠
+**注意**：`404` 有两种形态——JSON 的 `{"error": ...}`（业务意义上的「没有」），
+和 Go `http.NotFound` 的**纯文本** `404 page not found`（路径写错、路径段为空、
+通配路由带尾斜杠）。客户端解析 404 体前要容错。
 
-`GET /apis/…/{plural}?watch=true`（配合 `&fieldSelector=metadata.name=…` 可只看单个对象）。响应逐帧：
+## 2.4 方法检查不一致
 
-```json
-{"type":"ADDED","object":{ … }}
-{"type":"MODIFIED","object":{ … }}
-{"type":"DELETED","object":{ … }}
-```
+绝大多数端点对错误方法返回 `405` + JSON `{"error": "..."}`，但**这四个端点不检查方法**，
+任何 method 都按正常流程返回 200：
 
-前端用途：实例 `status.phase`、TaskRun `status.phase`（Running→Completed）、Task 状态实时刷新。不想引入 watch 就降级为轮询。
+- `GET/POST/... /api/sessions`
+- `/api/sessions/{key}/messages`
+- `/api/agent/status`
+- `GET /internal/agents/{user}/config`
 
-## 2.7 资源名（metadata.name）约束 🛠
+## 2.5 路径细节
 
-- CR name 必须满足 **DNS-1123**：小写字母数字，可含 `-` `.`。
-- 中文等人类可读名放 **字段/annotation**，不放 CR name：AgentTemplate/Skill/TaskTemplate 有 `displayName` 字段；Task 的显示名放 `cubepilot/display-name` annotation（🛠 拟定，见 §3.5）。
-- 用户输入的中文/空格/特殊字符，前端生成 CR name 前必须 **sanitize**。
-
-## 2.8 隔离与授权（最重要的一条）⚠️
-
-> 直连 k8s API server 后，原 facade 不再替前端做「owner=请求者」的强制与列表过滤。
-> **安全边界整体移交平台侧 RBAC / 授权层**，前端必须遵守以下规则，否则就是越权通道：
-
-- **写（create/update/delete）**：`spec.owner` 字段**只能填当前登录用户**。平台必须用 RBAC + 授权（validating admission / 授权 webhook）强制「谁创建 owner 就必须是自己」，前端只是客户端、不承担安全责任。
-- **读（list）**：k8s list 无法按 `spec.owner` 过滤，平台**应为对象打 `cubepilot/owner=<user>` 标签**（🛠 拟定约定），前端列表一律带 `?labelSelector=cubepilot/owner=<当前用户>`。若平台暂未提供该标签，列表请求必须被平台授权层拦截为「只返回调用者自己的对象」——前端**不要**依赖「拉全量再前端过滤」来达成隔离。
-- **状态**：`status` 字段只读，由控制器/Scheduler 写入，前端不提交。
-- **二次校验**：展示、编辑、删除前都校验 `spec.owner === 当前用户`，不符即不展示（双重保险，不依赖它做安全）。
+- `sessionKey` 含冒号（形如 `agent:main:conv-<uuid>`），**必须 URL 编码**。
+- 会话子资源靠**后缀**匹配，所以 `/api/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
+- 通配路由带尾斜杠会落到 mux 的 404（如 `/api/llms/`），不会匹配 `{name}`。
 
 ---
 
-# 3. 各 CRD 资源操作
+# 3. 调用顺序
 
-## 3.1 `agenttemplates` —— Agent 模板（只读）
+## 3.1 关键前提：只有 4 个端点会「加热」实例
 
-阶段一只有平台内置 `cubepilot`（📘 设计 §3.1），前端只读。
+CubePilot 的 agent 实例是**常驻**的（起来后不回收），但第一次访问要**冷启动**一个 Pod，
+可能耗时数十秒。只有下面 4 个端点会触发这个过程（它们调用 `mgr.Ensure`）：
 
-- `GET /apis/ai.cubestack.io/v1alpha1/agenttemplates`
-- `GET /apis/ai.cubestack.io/v1alpha1/agenttemplates/cubepilot`
+| 会加热（可能慢、可能 503） |
+| --- |
+| `GET /api/sessions` |
+| `GET /api/sessions/{key}/messages` |
+| `POST /api/messages` |
+| `POST /api/inspect` |
 
-对象（📘 字段来自设计 §3.1 YAML）：
+**其余所有端点都不加热**——它们直接读 CR 或网关，永远快。
+调用顺序就建立在这条分界上。
 
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "AgentTemplate",
-  "metadata": { "name": "cubepilot" },
-  "spec": {
-    "runtime": "OpenClaw",
-    "displayName": "平台管理助手",
-    "defaultModel": "deepseek-v4-flash",
-    "models": [
-      { "name": "deepseek-v4-flash", "endpoint": "https://api.deepseek.com", "credentialRef": { "name": "cubepilot-llm" } }
-    ],
-    "instructions": "你是 CubeStack 平台管理助手。……",
-    "skills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"],
-    "confirmPolicy": "ConfirmWrites"
-  }
+## 3.2 推荐的启动序列
+
+```ts
+// ── 阶段 0：并行发出，不碰实例，首屏立刻可渲染 ──────────────
+const [status, config, confirm] = await Promise.all([
+  api.agentStatus(),     // 实例存在吗？phase 是什么？
+  api.agentConfig(),     // 我选的模型 / 提示词
+  api.agentConfirm(),    // 我的确认策略
+])
+
+if (!status.exists) {
+  // 还没实例 → 引导用户去「Agent 配置」页，调 POST /api/instances
+  // 此时不要调 /api/sessions，只会 503
+  return showOnboarding()
+}
+
+// ── 阶段 1：会加热，必须容忍 503 ─────────────────────────────
+try {
+  const sessions = await api.listSessions()
+} catch (e) {
+  if (e.status === 503) showStartingUp("正在启动实例…")
+  else throw e
 }
 ```
 
-前端用途（Agent 配置页）：
+**为什么是这个顺序**：`agentStatus` 不加热，能立刻回答「有没有实例」，
+这是决定 UI 形态的第一问。没有实例时调 `listSessions` 只会白等并失败。
 
-- `spec.models[].name` → 「切换模型」下拉选项（`selectedModel` 只允许从中选）。
-- `spec.skills` → 可启用技能清单（实例子集 = `enabledSkills`）。
-- `spec.confirmPolicy` → 决定对话中是否会出现 `confirm_pending`（`ConfirmWrites` 时写操作暂停确认）。
+## 3.3 首次使用（尚无实例）
 
-> 📘 模型**没有独立 CRD**：模型清单（`name` + `endpoint` + 可选 `credentialRef`）内联在模板的 `models` 列表（设计 §3.3）。`name` 同时是选择 key、网关 provider key 与后端模型名。
-
-### 添加 LLM（cubepilot-api · `POST /api/llms`）
-
-平台管理员追加一个 OpenAI 兼容模型到内置 `cubepilot` 模板；operator 将其渲染进网关配置。非 public 模型会创建一个 `llm-<name>` 凭据 Secret（只存 apiKey）。
-
-```json
-{ "name": "qwen2.5-72b", "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
+```text
+GET  /api/agenttemplates          → 挑模板（默认 cubepilot）
+POST /api/instances               → 创建实例（201；已存在则 200 + alreadyExists）
+       ↑ 此后 /api/sessions 等端点才可用
 ```
 
-`apiKey` 与 `public: true` 二选一：需要凭据的端点给 `apiKey`；端点确实不需要鉴权时给 `"public": true`（不建 Secret）。两个都不给返回 400，两个都给也返回 400。这个校验是有意为之的——无凭据的模型若被静默存下，每一轮对话都会以 "No API key resolved" 失败。
+创建后实例仍需控制器调度，`GET /api/agent/status` 的 `phase` 会经历
+`Creating` → `Ready`。`phase` 为 `not provisioned (resident policy)` 表示实例不存在。
 
-`endpoint` 写的是 **API root**：OpenAI SDK 会自己追加 `/chat/completions`，所以若传入完整请求 URL（结尾 `/chat/completions`），服务端会剥掉该后缀，不会再加 `/v1`（有些 provider 的 root 本就不带 `/v1`）。
+---
 
-返回创建的模型条目，`endpoint` 为归一化后的值。Portal「LLM 配置」页面封装此调用。
+# 4. 对话流程
 
-### 编辑 LLM（cubepilot-api · `PUT /api/llms/{name}`）
+## 4.1 发送一条消息（SSE）
 
-修改一个已存在模型的 endpoint、apiKey 或 public 标记。`{name}` 是已 sanitize 的模型名，**不可改**：它同时是选择 key、网关 provider key、后端模型名与凭据 Secret 名，改名等价于删除后重新添加。
-
-```json
-{ "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
-```
-
-- `apiKey` 省略或为空 → **保留**原凭据（Portal 从不回传 key，所以「只改 endpoint」不该清掉它）。模型原本就是 public 时，必须显式给 `"public": true`，否则 400。
-- `apiKey` 非空 → 覆盖凭据；public 模型由此变成 keyed。
-- `"public": true` 且不带 `apiKey` → 清空 `credentialRef` 并删除凭据 Secret；keyed 模型由此变成 public。
-
-返回 `{"model": ...}`；删除 Secret 失败时模型改动已生效，此时附带 `warning` 字段而非报错。
-
-### 删除 LLM（cubepilot-api · `DELETE /api/llms/{name}`）
-
-从模板移除模型并删除其凭据 Secret。只删本 API 为该模型命名的那个（`llm-<name>`）：`credentialRef` 若指向别的 Secret（手工改过 CR、多个模型共用一个凭据），该 Secret 会被保留并在响应的 `warning` 里说明——否则会连带删掉另一个模型仍在用的凭据。若模板的 `defaultModel` 指向该模型，一并清空（渲染器回退到剩下的第一个 provider）。
-
-若某个 `AgentInstance` 的 `spec.selectedModel` 正选中该模型，返回 **409**，body 的 `instances` 列出阻塞的实例（`{name, owner}`），`error` 中也会点名——选择是 fail-closed 的，删掉会让该用户每一轮对话报错，所以由调用方先把选择切走。允许删掉最后一个模型，模板模型列表可以为空。
-
-## 3.2 `agentinstances` —— 实例（开通 / 配置）
-
-每用户一个实例（📘 设计 §3.2）。用户自服务开通，owner 必填 = 当前用户。
-
-**列表**：`GET /apis/ai.cubestack.io/v1alpha1/agentinstances?labelSelector=cubepilot/owner=<user>`
-
-**开通**：`POST /apis/ai.cubestack.io/v1alpha1/agentinstances`
-
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "AgentInstance",
-  "metadata": { "name": "zhang-wei-cubepilot" },
-  "spec": {
-    "owner": "zhang.wei",
-    "templateRef": "cubepilot",
-    "selectedModel": "deepseek-v4-flash",
-    "enabledSkills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"],
-    "userInstructions": "回答尽量简洁，使用中文。",
-    "dataVolume": { "pvc": "pvc-zhang-wei-cubepilot" },
-    "identity": { "mode": "user", "principalRef": { "userRef": "zhang.wei" } }
-  }
-}
-```
-
-前端注意：
-
-- `metadata.name` = `{sanitize(owner)}-{templateRef}`（如 `zhang-wei-cubepilot`），前端按此规则生成，保证幂等（重复创建同 name → 409，前端视为「已存在」）。
-- **`spec.owner` 与 `spec.identity.principalRef.userRef` 必须 = 当前登录用户**（§2.8）。
-- `selectedModel` 只允许从 §3.1 模板的 `models` 里选（📘）；`enabledSkills` 是启用的技能子集（📘）。
-- 开通后 `status.phase` 由控制器从创建 → `Ready`（可用 watch 刷新）；`status.podName` 只读展示。
-
-**更新**：`PATCH /apis/ai.cubestack.io/v1alpha1/agentinstances/{name}`
-
-```json
-{ "spec": { "selectedModel": "qwen2.5-72b", "enabledSkills": ["kubectl-platform", "cluster-inspection", "cubestack-platform"], "userInstructions": "…" } }
-```
-
-只允许改这三个字段（📘 设计 §3.2 可覆盖字段）：模型切换重新解析注入；技能变更热加载；提示词变更不支持热加载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。
-
-## 3.3 `skills` —— 技能市场
-
-📘 设计 §3.4：skill = 一个多文件目录（`SKILL.md` + 可选 `scripts/`、`references/`），内容在技能仓库（共享文件卷），`Skill` CRD 只登记「有什么、在哪、什么版本、谁可见」。
-
-**列表（浏览）**：`GET /apis/ai.cubestack.io/v1alpha1/skills`
-
-**详情**：`GET /apis/ai.cubestack.io/v1alpha1/skills/{name}`
-
-对象（📘 字段来自设计 §3.4 YAML）：
-
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "Skill",
-  "metadata": { "name": "harbor" },
-  "spec": {
-    "displayName": "镜像管理",
-    "description": "查询 / 清理 Harbor 镜像",
-    "visibility": "Platform",
-    "source": { "type": "Path", "path": "skills/harbor/v1.tar.gz", "sha256": "…" }
+```ts
+const resp = await fetch('/api/messages', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-CubePilot-User': user,
   },
-  "status": { "phase": "Available" }
-}
+  body: JSON.stringify({
+    session_id: currentSessionId,  // 新会话传 null / '' / 省略
+    content: text,                 // 必填，空白会被拒
+  }),
+})
 ```
 
-前端要点：
+请求体：
 
-- `spec.visibility` 枚举 `Platform | Tenant | User`（📘）；阶段一只有平台级技能（`User` 私有技能阶段二放开）。
-- `spec.source.type` 判别字段 `Path | S3`（📘）：阶段一只支持 `Path`（共享文件卷内路径，含版本号，不可变）；`source.sha256` 为内容校验指纹（手动 apply 可留空）。
-- `status.phase`: `Available | Unreachable`（📘）。
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `content` | 是 | 用户消息。空或纯空白 → `400 {"error":"content required"}` |
+| `session_id` | 否 | 省略或空 → 后端生成 `conv-<uuid>` |
 
-**安装**（🛠 无独立端点）：把技能名加进自己的实例 `spec.enabledSkills`（§3.2 PATCH）→ injector 从技能仓库读取解压 → OpenClaw 文件监听热加载。前端判断「已安装」= 技能名 ∈ 我的实例 `enabledSkills`。
+**新会话不要自己编 key。** 后端会生成并**规范化**为 `agent:main:<key>`，
+然后通过第一个事件告知：
 
-**发布**：⚠️ 上传 skill 目录要**写技能仓库共享文件卷**，不是 CRD 操作，走平台服务（§4.3，后端打包写卷 + 建 Skill CR）。
+```text
+event: message_start
+data: {"type":"message_start","session_id":"agent:main:conv-9f3a..."}
+```
 
-## 3.4 `tasktemplates` —— 任务模板（只读）
+**必须保存这个 `session_id`**，后续所有请求都用它（它就是 `{key}`）。
 
-`GET /apis/ai.cubestack.io/v1alpha1/tasktemplates` —— 任务创建向导用。
+响应头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`。
+空闲 15 秒会收到注释行 `: ping` 保活（客户端应忽略非 `data:` 行）。
 
-对象（📘 字段来自设计 §3.5 YAML）：
+**请求阶段的失败不走 HTTP 状态码**（流已经打开了），而是以 SSE 事件返回：
 
 ```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "TaskTemplate",
-  "metadata": { "name": "daily-inspection" },
-  "spec": {
-    "displayName": "每日集群巡检",
-    "instruction": "以只读方式巡检集群……巡检范围：{{scope}}。",
-    "paramsSchema": [ { "name": "scope", "default": "All", "enum": ["All", "NodePool", "Project"] } ],
-    "requiredPermissions": { "level": "ClusterRead" },
-    "skills": ["cluster-inspection"],
-    "defaultCron": "0 2 * * *"
-  }
-}
+{"type":"message_done","session_id":"...","error":"instance warming failed: ..."}
 ```
 
-前端用途：向导按 `spec.paramsSchema` 渲染参数输入（下拉/输入框），`defaultCron` 作调度默认值提示。
+## 4.2 SSE 帧格式
 
-## 3.5 `tasks` —— 任务（CRUD + 暂停恢复 + 手动触发）
+每帧一个 `event:` 行加一个 `data:` 行，空行结束：
 
-**列表**：`GET /apis/ai.cubestack.io/v1alpha1/tasks?labelSelector=cubepilot/owner=<user>`
+```text
+event: message_delta
+data: {"type":"message_delta","session_id":"agent:main:conv-x","delta":"集群里有"}
 
-**创建**：`POST /apis/ai.cubestack.io/v1alpha1/tasks`
-
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "Task",
-  "metadata": {
-    "name": "zhang-wei-daily-inspection",
-    "annotations": { "cubepilot/display-name": "每日集群巡检" }
-  },
-  "spec": {
-    "owner": "zhang.wei",
-    "templateRef": "daily-inspection",
-    "params": { "scope": "all" },
-    "trigger": "Cron",
-    "cron": "0 2 * * *",
-    "state": "Enabled"
-  }
-}
 ```
 
-前端注意：
+`event:` 名与 `data` 里的 `type` 字段始终一致。全部字段见 §7。
 
-- `metadata.name` 前端生成 `{sanitize(owner)}-{模板或随机名}`；人类可读名放 `cubepilot/display-name` annotation（🛠 拟定；**中文名必须放 annotation，否则 DNS-1123 校验失败**）。
-- `spec.owner` = 当前用户（§2.8）；`templateRef` 引用 §3.4 模板；`params` 只允许覆盖模板 `paramsSchema` 允许的参数（📘）。
-- `trigger` 枚举 `Cron | Manual`（📘）；`state` 枚举 `Enabled | Paused`（📘 字符串枚举，不用 bool）。
+**客户端解析要求**：
+- `EventSource` 只支持 GET，此处是 POST，**必须用 `fetch` + `response.body.getReader()` 手写解析**。
+- 流可能在 `message_done` 之前断掉（网络抖动、服务重启）。
+  **此时要合成一个终止事件**让 UI 复位，否则界面永久卡在「进行中」。
 
-**暂停 / 恢复**：`PATCH` `…/tasks/{name}`，`{ "spec": { "state": "Paused" } }` / `{ "spec": { "state": "Enabled" } }`。
+参考实现：`web/src/api/sse.ts`。
 
-**手动触发** 🛠（契约拟定）：PATCH 写 run 请求 annotation，Scheduler 监听触发一次后自动清除（时间戳即幂等键）：
+## 4.3 会话列表与历史
 
-```json
-{ "metadata": { "annotations": { "cubepilot/manual-run": "2026-08-25T10:00:00Z" } } }
+```ts
+GET /api/sessions                        → {"sessions":[{"sessionKey","title"}]}
+GET /api/sessions/{encodeURIComponent(key)}/messages
+                                         → {"items":[HistoryMessage]}   // 原始透传
 ```
 
-> 📘 设计 §3.5/§7：每次执行前 Scheduler 重新校验用户与授权，以平台身份写 TaskRun；前端不直接创建 TaskRun。上面 annotation 名/值格式是 🛠 拟定，需与 Scheduler 约定后冻结。
+两者**都要求实例是热的**——平台不存消息副本，会话内容的唯一真相源是实例自身的运行时。
+实例不可达时**读不到历史**（是失败，不是「读到旧数据」）。
 
-**更新**：`PUT`（整体，带 `resourceVersion`）或 `PATCH`（改 `params`/`cron`/`state`）。
-**删除**：`DELETE` `…/tasks/{name}`（历史 TaskRun 保留）。
+**历史消息的 `content` 有两种形状**，必须归一化：
 
-**列表展示最近执行情况**：关联查 §3.6 `taskruns`（按 task 过滤）。（📘 设计 §3.5 未给 Task 定义 status 字段，前端不从 Task 状态取运行结果。）
+| `role` | `content` 形状 |
+| --- | --- |
+| `user` | **字符串** |
+| `assistant` / `toolResult` | **内容块数组**：`[{"type":"text"\|"toolCall","text"?,"name"?,"id"?,"arguments"?}]` |
 
-## 3.6 `taskruns` —— 运行记录 / 巡检报告（只读）
+把字符串当数组遍历会逐字符拆开，用户消息会整条消失。参考 `web/src/views/ChatView.tsx` 的 `blocks()`。
 
-Scheduler 以平台身份创建，前端只读（📘 设计 §3.5/§7）。
+## 4.4 停止进行中的回合
 
-**列表**：`GET /apis/ai.cubestack.io/v1alpha1/taskruns?labelSelector=cubepilot/owner=<user>`
-（单个任务的报告：叠加 `?labelSelector=cubepilot/task=<taskName>`，🛠 标签名待定）
-
-**单个**：`GET /apis/ai.cubestack.io/v1alpha1/taskruns/{name}`
-
-对象（📘 字段来自设计 §3.5 YAML）：
-
-```json
-{
-  "apiVersion": "ai.cubestack.io/v1alpha1",
-  "kind": "TaskRun",
-  "metadata": { "name": "zhang-wei-daily-inspection-20260820-020001" },
-  "spec": {
-    "creatorTaskRef": { "name": "zhang-wei-daily-inspection", "uid": "…" },
-    "trigger": "Cron"
-  },
-  "status": {
-    "phase": "Completed",
-    "startedAt": "2026-08-20T02:00:01Z",
-    "finishedAt": "2026-08-20T02:02:30Z",
-    "templateRevision": 7,
-    "skillRevision": 4,
-    "summary": { "p0": 0, "p1": 1, "p2": 3 },
-    "content": "巡检报告全文……（异常附证据链）",
-    "error": ""
-  }
-}
+```ts
+POST /api/sessions/{key}/abort   → {"ok":true}
 ```
 
-前端要点：
+- **幂等**：没有运行中的回合时直接返回 200，不发任何网关 RPC。
+- 最长等待约 5 秒让回合落定；超时 → `504 {"error":"the run did not settle in time; try again"}`。
+- 不加热实例。
+- 被停止的回合以 `message_done` + `"stopped": true` 结束（注意：`stopped` 与 `error` 互斥）。
 
-- `status.phase`：`Pending → Running → Completed / Failed`（📘），报告页用 watch 或轮询刷新。
-- 报告渲染：`status.content`（全文）+ `status.summary`（P0/P1/P2 计数）+ `status.error`（失败原因）。
-- `status.templateRevision` / `skillRevision` 展示「本次实际用到的版本」（📘 审计）。
+## 4.5 查询回合状态
+
+```ts
+GET /api/sessions/{key}/turn   → {"active":true|false}
+```
+
+状态来自网关（不是本地 hub），响应带 `Cache-Control: no-store`。
+可用于页面加载时判断「刷新前那轮还在跑吗」。
 
 ---
 
-# 4. 仍在 cubepilot-api 的接口（非 CRD）
+# 5. 人机协同（HITL）
 
-> 以下能力**没有 CRD**（或内容不落在 CRD 上），走不了 k8s API server，仍走平台服务（`/api/*`）。
-> 认证：OIDC（📘 设计 §6）。**路径为 🛠 拟定契约**（设计 §4 只定义了对话经平台服务转发、事件契约，未定 REST 路径）。
+两条独立的通道，都复用**同一条对话 SSE 流**：审批（写操作确认）和问答（`ask_user`）。
+共同模式是「事件弹出 → 用户决定 → POST 回答 → 收到 resolved 事件」。
 
-## 4.1 对话与会话
+## 5.1 写操作确认
 
-| 接口（🛠 路径拟定） | 方法 | 说明 |
-|---|---|---|
-| `POST /api/messages` | 发送消息 | 响应为 **SSE 流**（事件契约见 §4.2） |
-| `GET /api/sessions/{sessionId}/messages` | 会话历史 | 渲染 / 刷新后恢复 |
-| `POST /api/sessions/{sessionId}/confirm` | 确认决策 | 写操作 HITL（收到 `confirm_pending` 后调用） |
+当 agent 要执行被策略拦截的写操作时，回合在网关侧暂停：
 
-请求体（发送消息）：
-
-```json
-{ "session_id": "conv-xxx", "content": "帮我创建一个 DevEnvironment" }
+```text
+event: confirm_pending
+data: {"type":"confirm_pending","session_id":"...","call_id":"<approval id>",
+       "name":"exec","command":"kubectl delete pod x","level":"write","message":"..."}
 ```
 
-> - `session_id` 缺省时服务端新建，经 `message_start` 事件返回；前端持久化后复用。
-> - 📘 设计 §1.1：session **全局统一**（浮窗与独立 tab 共用同一会话，不按模块区分）——前端维护一个 sessionId 即可。
-> - 📘 设计 §3.6：会话与消息真源在实例 PVC（Agent 私有数据），历史经平台服务代取，前端不感知存储位置。
-> - 实现传输：浏览器到 cubepilot-api 是 HTTP/SSE；cubepilot-api 通过 OpenClaw gateway protocol WS 发起交互回合并订阅文本、工具、确认和终态。session 列表/历史仍是 HTTP 只读查询。
+用户决定后提交：
 
-## 4.2 SSE 事件契约（对话）📘
+```ts
+POST /api/sessions/{encodeURIComponent(key)}/confirm
+body: {"decision": "approve" | "reject" | "allow-always"}
+```
 
-设计 §4 的**统一事件**（字段为当前实现）：
+| decision | 效果 |
+| --- | --- |
+| `approve` | 本次放行，回合继续 |
+| `reject` | 拒绝，写操作不执行 |
+| `allow-always` | 本次放行，**并把该命令记入实例 allowlist**，此后自动通过 |
 
-| 事件（📘） | 数据字段（🛠） | 前端行为 |
-|---|---|---|
-| `message_start` | `session_id` | 记录 session id，进入「回答中」 |
-| `agent_thinking` | `session_id` | 通用思考中状态 |
-| `message_delta` | `session_id`, `delta` | 追加助手文本 |
-| `text_replace` | `session_id`, `delta` | 用完整快照替换当前助手文本 |
-| `tool_call` | `session_id`, `name`, `call_id`, `arguments`(JSON 字符串) | 展示工具调用（可折叠） |
-| `tool_result` | `session_id`, `name`, `call_id`, `output` | 展示结果摘要 |
-| `confirm_pending` | `session_id`, `call_id`, `name`(=tool), `command`, `level`(read/write), `message` | 写操作命中确认规则，弹确认框 |
-| `confirm_resolved` | `session_id`, `call_id`, `approved` | 决策已提交，继续 |
-| `message_done` | `session_id`, `error`(空=成功) | 唯一终态，清除「回答中」 |
+响应：`{"approved":bool,"decision":"...","approval_id":"...","allowlisted"?:bool}`
 
-- 写操作 HITL 时序（📘 设计 §5，issue #20 已实现）：`… → confirm_pending →（前端 POST /api/sessions/{key}/confirm，body {decision:"approve"|"reject"}）→ confirm_resolved → tool_result → … → message_done`。
-- **实现语义（2026-09-04）**：仅**交互回合**启用——ConfirmWrites 用户回合开头把会话置 `permissionMode=guarded`（OpenClaw ask:on-miss），并把**只读 argv allowlist**（kubectl 读动词 + 只读安全命令）合并进 per-agent exec-approvals policy；读命中直放，写 miss 由 gateway 原生 exec 审批暂停。批准 → `allow-once` 同回合继续；拒绝 → `deny`，写不执行。cron / 一次性回合不 guard，维持现状。恢复：刷新后 `GET /api/sessions/{key}/confirm/pending` 取回未决确认。
-- 🛠 前端应忽略未知事件类型（实现可能补充事件）。
+随后同一流上收到：
 
-## 4.3 技能发布（上传）🛠
+```text
+event: confirm_resolved
+data: {"type":"confirm_resolved","session_id":"...","call_id":"...","approved":true}
+```
 
-📘 设计 §3.4：发布 = **上传 skill 目录**（`SKILL.md` + 可选 `scripts/`、`references/`）→ 后端打包写入技能仓库共享文件卷（先写临时文件再原子 rename）+ 建 `Skill` CRD。
+**刷新后恢复卡片**（必需，不是可选）：
 
-- 走 `cubepilot-api`（如 `POST /api/skills`，multipart 上传，🛠 端点待定）——因为「写共享文件卷」不是 CRD 操作，走不了 k8s API server。
-- 上传完成后 Skill CR（§3.3）由后端创建；前端可在列表里刷新看到新技能。
-- 反之：技能**浏览 / 安装**（改自己实例的 `enabledSkills`）走 k8s API server（§3.3）。
+```ts
+GET /api/sessions/{key}/confirm/pending
+// 404 {"error":"no pending approval"} → 静默忽略
+// 200 裸对象：{"session_id","approval_id","tool","command","level","message"}
+```
+
+**失败关闭语义**：确认策略要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。
+因此 `503 {"error":"approval channel unavailable"}` 表示该回合被拒——不要重试成「跳过确认」。
+
+## 5.2 `ask_user` 问答
+
+agent 调用 `ask_user` 工具时，回合同样暂停：
+
+```text
+event: question_pending
+data: {"type":"question_pending","session_id":"...","call_id":"<question id>",
+       "question":{"questions":[{"questionId","header","question",
+                                 "options":[{"label","description"?}],"multiSelect"?}],
+                   "timeoutSeconds":n}}
+```
+
+**注意 `call_id` 是问答会话的 id，`question.questions[].questionId` 是每个问题的 id**，
+提交答案时用的是后者。
+
+```ts
+// 回答
+POST /api/sessions/{encodeURIComponent(key)}/question
+body: {"id": "<call_id>", "answers": {"<questionId>": ["选项 label"]}}
+
+// 或取消（让 agent 继续而不是等到超时）
+POST /api/sessions/{encodeURIComponent(key)}/question
+body: {"id": "<call_id>", "cancel": true}
+```
+
+`answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400 {"error":"send either answers or cancel"}`。
+
+响应：`{"question_id":"...","cancelled":bool}`
+
+```text
+event: question_resolved
+data: {"type":"question_resolved","session_id":"...","call_id":"...",
+       "message":"answered" | "cancelled" | "expired"}
+```
+
+**刷新后恢复**：
+
+```ts
+GET /api/sessions/{key}/question/pending
+// 404 {"error":"no pending question"} → 静默忽略
+// 200 {"questions":[{"id","questions":[QuestionItem],"timeoutSeconds"?}]}
+```
+
+`timeoutSeconds` 是事件产生时的**剩余时间**，不是绝对截止时刻——倒计时不要依赖客户端时钟与
+服务端一致。
+
+**可能的错误**（`POST .../question`）：
+
+| 状态 | `error` | 含义 |
+| --- | --- | --- |
+| 404 | `no such pending question for this session` | 该 id 不属于这个会话 |
+| 404 | `QUESTION_NOT_FOUND` | 网关侧已无此问题 |
+| 409 | `question is no longer pending` | 已过期或已回答 |
+| 409 | `QUESTION_ALREADY_TERMINAL` | 同上（网关侧表述） |
+| 400 | `QUESTION_INVALID_ANSWER` | 答案不符合选项定义 |
+| 503 | `question channel unavailable` | 问答通道不可用 |
+| 502 | 其他 | 网关往返失败 |
+
+收到 404 / 409 时应**清掉本地卡片**——问题已不可回答。
 
 ---
 
-# 5. 前端页面 ↔ 接口映射
+# 6. 端点参考
 
-| 页面 / 入口 | 数据来源 | 走 |
-|---|---|---|
-| 全局对话浮窗 / cubepilot 独立 tab | 历史、发消息（SSE）、确认 | cubepilot-api |
-| Agent 配置页 | 模板（`agenttemplates`）· 实例（`agentinstances`） | k8s API server |
-| 技能市场（浏览 / 安装） | `skills` 列表 · 我的实例 `enabledSkills` | k8s API server |
-| 技能管理（发布上传） | `POST /api/skills`（multipart） | cubepilot-api |
-| 任务列表 / 创建向导 | `tasktemplates` · `tasks`（CRUD） | k8s API server |
-| 手动触发 / 暂停恢复 | `tasks`（PATCH annotation / state） | k8s API server |
-| 巡检报告页 | `taskruns`（列表 / 详情） | k8s API server |
+## 6.1 对话与会话
+
+| 方法 | 路径 | 请求 | 响应 | 加热 |
+| --- | --- | --- | --- | --- |
+| ANY | `/api/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
+| ANY | `/api/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
+| POST | `/api/messages` | `{"session_id"?,"content"}` | **SSE 流** | 是 |
+| POST | `/api/inspect` | — | `{"report":"<自然语言文本>"}` | 是 |
+| POST | `/api/sessions/{key}/confirm` | `{"decision"}` | `{"approved","decision","approval_id","allowlisted"?}` | 否 |
+| GET | `/api/sessions/{key}/confirm/pending` | — | 裸 `{"session_id","approval_id","tool","command","level","message"}` | 否 |
+| POST | `/api/sessions/{key}/question` | `{"id","answers"\|"cancel"}` | `{"question_id","cancelled"}` | 否 |
+| GET | `/api/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
+| POST | `/api/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
+| GET | `/api/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
+
+## 6.2 Agent 配置与实例
+
+| 方法 | 路径 | 请求 | 响应 | 加热 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/agent/config` | — | `{"config":{"exists","model","systemPrompt"}}` | 否 |
+| PUT | `/api/agent/config` | `{"config":{"model","systemPrompt"}}` | 同上 | 否 |
+| GET | `/api/agent/status` | — | **裸** `{"user","id","exists","phase","gatewayImage","gatewayPort",...}` | 否 |
+| GET | `/api/agent/confirm` | — | **裸** `confirmView`，见下 | 否 |
+| PUT | `/api/agent/confirm` | `{"confirmPolicy","allowlist":[...]}` | **裸** `confirmView` | 否 |
+| GET | `/api/instances` | — | `{"instances":[...]}` | 否 |
+| POST | `/api/instances` | `{"templateRef","selectedModel","enabledSkills","userInstructions"}` | `201 {"instance":{...}}` | 否 |
+| GET | `/api/agenttemplates` | — | `{"agentTemplates":[...]}` | 否 |
+| GET | `/api/agenttemplates/{name}` | — | `{"agentTemplate":{...}}` | 否 |
+
+`PUT /api/agent/config` 的 body **外面多包一层 `config`**——全 API 只有它这么干。
+
+`confirmView`（裸对象）：
+
+```json
+{
+  "exists": true,
+  "confirmPolicy": "None | Allowlist | AlwaysAsk | \"\"",
+  "override": "",                       // 实例自身设定，"" = 继承模板
+  "templatePolicy": "Allowlist",
+  "allowlist":     [{"pattern","argPattern?","label"?}],
+  "allowlistOwned":[...],
+  "channel": "up | pairing | down | unconfigured | \"\""
+}
+```
+
+- `confirmPolicy` 只接受 `""` / `None` / `Allowlist` / `AlwaysAsk`，其他值 → 400。
+- `label` **只在**规则精确匹配平台内置只读规则时出现；用户自己加的规则没有 `label`，
+  界面上不要把它当作只读展示。
+- `channel` 为 `""` 表示策略是 `None` 或实例不存在；`unconfigured` 表示策略要求拦截但
+  HITL 通道未配置（此时拦截会失败关闭）。
+- `allowlist` / `allowlistOwned` 为空时字段**缺省**（不是 `[]`）。
+
+**Agent 配置的常见错误**：
+
+- `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
+  —— 模型没进模板的 `spec.models`；空 model 永远允许。
+- `409 no agent instance yet — provision it on the Agent Config page first`
+  —— 实例不存在，先去创建。
+
+## 6.3 模型目录（LLM）
+
+| 方法 | 路径 | 请求 | 响应 |
+| --- | --- | --- | --- |
+| POST | `/api/llms` | `{"name","endpoint","apiKey"?,"public"?}` | `200 {"model":{...}}` |
+| PUT | `/api/llms/{name}` | 同上（`apiKey` 省略 = 保留原凭证） | `200 {"model":{...},"warning"?}` |
+| DELETE | `/api/llms/{name}` | — | `200 {"removed":"<name>","warning"?}` |
+
+- `apiKey` 与 `public` **互斥**：公开模型不能带凭证；非公开模型必须给 key。
+- `name` 不可变——改名要删了重建。
+- `PUT` 时省略 `apiKey` = 保留已存凭证；`public:true` 会清掉凭证。
+- `DELETE` 若该模型正被实例选用 → `409`，错误体会**额外带一个 `instances` 数组**：
+
+```json
+{"error":"model \"x\" is selected by alice, bob; select another model there first",
+ "instances":[{"name":"...","owner":"alice"}]}
+```
+
+这是**唯一**要求客户端解析结构化错误体的地方（Portal 会把它渲染成可点击的实例列表）。
+
+## 6.4 任务与技能
+
+| 方法 | 路径 | 请求 | 响应 |
+| --- | --- | --- | --- |
+| GET | `/api/tasks` | — | `{"tasks":[taskDTO]}` |
+| POST | `/api/tasks` | `{"name","prompt"?,"schedule"?,"templateRef"?,"params"?,"state"?}` | `{"task":taskDTO}` |
+| DELETE | `/api/tasks/{id}` | — | `{"deleted":"<id>"}` |
+| POST | `/api/tasks/{id}/run` | — | **202** `{"started":true,"task":taskDTO}` |
+| POST | `/api/tasks/{id}/toggle` | — | `{"task":taskDTO}` |
+| GET | `/api/tasks/{id}/reports` | — | `{"reports":[reportDTO]}` |
+| GET | `/api/tasktemplates` | — | `{"taskTemplates":[...]}` |
+| GET | `/api/taskruns` | `?task=<name>` 可选 | `{"taskruns":[...]}` |
+| GET | `/api/taskruns/{name}` | — | `{"taskrun":{...}}` |
+| GET | `/api/audit` | `?limit=`（默认 400） | `{"entries":[...]}` |
+| GET | `/api/kinds` | — | `{"kinds":[...]}` |
+| GET | `/api/skills` | — | `{"skills":[...]}` |
+| POST | `/api/skills/{name}/publish` | query `displayName`（必填）、`description`；body = gzip tar | 裸 `Skill` CR |
+| POST | `/api/skills/{name}/install` | — | `{"enabledSkills":[...]}` |
+| POST | `/api/skills/{name}/uninstall` | — | `{"enabledSkills":[...]}` |
+
+`POST /api/tasks` 的字段规则：
+
+- `name` 必填；`prompt` 与 `templateRef` **至少一个**。
+- `schedule` 是**指针语义**：省略 ⇒ 用模板的 `defaultCron`（或 Manual）；显式 `""` ⇒ Manual；
+  给值 ⇒ 按 5 字段 cron 解析（按 UTC 求值，非法 → 400）。
+- `params` 必须配合 `templateRef`，否则 400。
+- `state` 为 `Enabled` / `Paused`。
+
+`taskDTO` 字段：`id`（CR 名）、`name`（显示名）、`prompt`、`schedule`、`templateRef?`、
+`state`、`enabled`、`creator`、`createdAt`、`lastRunAt?`、`lastStatus?`、`nextRunAt?`。
+
+`reportDTO` 字段：`id`、`taskId`、`taskName`、`trigger`（`Manual|Cron`）、
+`status`（`success|failed|running`）、`startedAt`、`finishedAt`、`content`、`p0`、`p1`、`p2`。
+`running` 包含「已入队但未开始」的状态。
+
+`AuditEntry` 字段：`id`、`ts`、`user`、`sessionId`、`tool`、`command`、
+`level`（`L0` 只读 / `L1` 写）、`status`（`executed|approved|rejected|failed`）、`detail?`。
+
+**技能发布**：`displayName` 走 **query 参数**（不是 body），body 是**原始 gzip tar 字节**
+（`Content-Type: application/gzip`）。tar 上限 10 MiB → 超出 `413`。
+当前只支持 `visibility=Platform`，其他值 → 400。
+
+## 6.5 集群内部端点（`/internal/*`）
+
+**客户端不应调用。** 这些是 agent Pod 内的 supervisor 向 API 拉配置用的，
+不经过 Portal，也不做用户身份校验：
+
+| 路径 | 用途 |
+| --- | --- |
+| `GET /internal/agents/{user}/config` | supervisor 拉解析后的 agent 配置 |
+| `GET /internal/gateway/config/{user}` | supervisor 拉渲染好的 `openclaw.json` |
+| `GET /internal/skills/{name}/tar` | supervisor 拉技能包 |
 
 ---
 
-# 6. 附录
+# 7. SSE 事件参考
 
-## 6.1 k8s API server 错误格式
+`POST /api/messages` 的全部事件（`event:` 名与 `data.type` 一致）。
+除 `type` 外所有字段都是 `omitempty`——**不出现即缺席**。
 
-非 2xx 返回 k8s `Status` 对象：
+| `type` | 载荷字段 | 含义 |
+| --- | --- | --- |
+| `message_start` | `session_id` | 回合开始，**保存 `session_id`** |
+| `agent_thinking` | `session_id` | agent 正在思考 |
+| `message_delta` | `session_id`,`delta` | 追加正文（增量） |
+| `text_replace` | `session_id`,`delta` | **替换**正文（不是追加） |
+| `tool_call` | `session_id`,`name`,`call_id`,`arguments` | 一次工具调用开始 |
+| `tool_result` | `session_id`,`name`,`call_id`,`output` | 该工具的输出 |
+| `confirm_pending` | `session_id`,`call_id`,`name`,`command`,`level`,`message` | 写操作待确认 |
+| `confirm_resolved` | `session_id`,`call_id`,`approved` | 确认已提交 |
+| `question_pending` | `session_id`,`call_id`,`question` | 问答待回答（结构见 §5.2） |
+| `question_resolved` | `session_id`,`call_id`,`message` | `answered`/`cancelled`/`expired` |
+| `message_done` | `session_id`,`error?`,`stopped?` | **唯一的终止事件** |
 
-```json
-{ "kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "…", "reason": "NotFound", "code": 404 }
-```
+要点：
 
-常用 `code`：`400`(非法请求) · `403`(RBAC 拒绝) · `404`(不存在) · `409`(resourceVersion 冲突/重名) · `422`(校验失败)。
+- **`message_done` 是唯一终止信号**，且**必须处理**：流可能提前断开，
+  客户端要自行合成一个 `message_done` 复位 UI。`error` 与 `stopped:true` 互斥。
+- **`text_replace` 必须替换而非追加**。网关会在工具执行后重写先前的解说文本，
+  当成 `message_delta` 追加会出现重复内容。
+- `tool_result` 与 `tool_call` 通过 `call_id` 配对；没有 `call_id` 时按**到达顺序**
+  与最旧的未完成调用配对（`web/src/views/ChatView.tsx` 的 `attachToolResult`）。
+- 事件可能来自**其他连接**（审批/问答由网关侧广播注入），
+  所以「收到 `confirm_pending` 时不一定正好在你自己那次请求的处理路径上」。
+- 空闲 15 秒会有注释行 `: ping`，不是事件。
 
-## 6.2 时间格式
+---
 
-k8s 时间字段为 RFC3339 UTC（`2026-08-20T02:00:01Z`）。
+# 8. 客户端易错点
 
-## 6.3 对象名生成规则速查
+按踩坑代价排序：
 
-| 资源 | CR name 规则（🛠） |
-|---|---|
-| AgentInstance | `{sanitize(owner)}-{templateRef}` |
-| Task | `{sanitize(owner)}-{模板或随机名}`（显示名放 annotation） |
-| Skill / TaskTemplate / AgentTemplate | 简短英文名（DNS-1123） |
+1. **503 是「正在冷启动」，不是故障** —— 要等待并重试，并给用户明确反馈。
+2. **409 不要重试** —— 同一会话同时只有一个回合；应提示等待或调 `/abort`。
+3. **`text_replace` 是替换不是追加** —— 否则正文重复。
+4. **历史消息的 `content` 有字符串/数组两种形状** —— 必须归一化，否则用户消息消失。
+5. **SSE 必须手写解析**（`EventSource` 不支持 POST），且要处理流提前断开。
+6. **`sessionKey` 必须 URL 编码**（含冒号）。
+7. **信封不统一** —— 见 §2.2 的裸对象清单，不要假设都有包裹 key。
+8. **新会话不要自己编 `session_id`** —— 用 `message_start` 返回的那个。
+9. **`PUT /api/agent/config` 的 body 多一层 `config`**。
+10. **404 可能是纯文本**（Go 的 `404 page not found`），解析前要容错。
+11. **`/api/sessions` 与历史都要求实例是热的** —— 实例不可达时读不到历史，
+    不要靠本地缓存假装可用。
+12. **`ask_user` 的 `call_id` 与 `questions[].questionId` 不是一回事**。
 
-## 6.4 隔离与安全清单（对照 §2.8）
+---
 
-- [ ] 前端所有写请求 `spec.owner` = 当前登录用户；
-- [ ] 列表一律带 `labelSelector=cubepilot/owner=<user>`（平台提供该标签的前提下，🛠 需平台落地）；
-- [ ] 平台侧：RBAC 最小权限 + 授权层强制 owner（**前置条件，未落地前前端直连存在越权风险**）；
-- [ ] `status` 字段前端只读，绝不提交；
-- [ ] 展示前二次校验 `spec.owner === 当前用户`。
+# 附：相关实现位置
 
-## 6.5 与设计文档的对应
-
-| 本文档章节 | 设计章节 |
-|---|---|
-| §3.1 `agenttemplates` | §3.1（AgentTemplate）、§3.3（模型内联） |
-| §3.2 `agentinstances` | §3.2 |
-| §3.3 `skills` | §3.4 |
-| §3.4 `tasktemplates`、§3.5 `tasks`、§3.6 `taskruns` | §3.5、§7 |
-| §4.1/§4.2 对话与会话 | §1.1、§4、§5 |
-| §2.8 隔离与授权 | §6、附录 B |
+| 主题 | 位置 |
+| --- | --- |
+| 路由表 | `internal/server/server.go` (`Handler()`) |
+| 对话与历史 | `internal/server/handlers.go` |
+| 审批 | `internal/server/approvals.go` |
+| 问答 | `internal/server/questions.go` |
+| 停止 / 回合状态 | `internal/server/abort.go` |
+| 任务 | `internal/server/handlers_tasks.go` |
+| 平台对象 | `internal/server/handlers_platform.go` |
+| 模型目录 | `internal/server/handlers_llms.go` |
+| SSE 事件契约 | `internal/runtime/contracts.go` |
+| 参考客户端 | `web/src/api/` |
