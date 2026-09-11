@@ -452,6 +452,47 @@ func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 	}
 }
 
+// The reconciliation read is post-abort cleanup like the abort RPC and the
+// settle around it, not a reply to the caller. On the request context a client
+// that gave up mid-abort turns it into a failed read, abortLanded reports
+// "unknown", and the handler answers 502 without ever running the settle --
+// leaving the pending records of a run that DID stop to resurface as stale cards
+// on reload. The last-existing test for the disconnect path does not cover this:
+// its fake aborts successfully, so the reconcile branch never runs.
+//
+// The fake's read behaves like a real one on a dead context (ws.Client.Call
+// waits on the caller's context), which is the only way a cancelled request
+// context is visible here at all.
+func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{
+		abortErr: errors.New("ws write chat.abort: context deadline exceeded"),
+		busyFunc: func(ctx context.Context) (bool, error) {
+			// A read handed a cancelled context cannot answer, so the run's fate
+			// is unknown and the records would have to stay pending.
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			return false, nil
+		},
+	}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
+
+	if !gw.listed {
+		t.Fatal("the settle never ran: a disconnected client's landed stop left the session's records pending for a reload to resurrect")
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
+		t.Fatal("the run is gone but its pending confirmation survived the disconnect: a reload resurrects a card for a dead run")
+	}
+}
+
 // "Idle" is an observation about an instant, not a latch: a second tab can open
 // a stream for the same session right after the hub reports idle, and answering
 // 200 with that stream open is the 409 this endpoint exists to remove. The fake

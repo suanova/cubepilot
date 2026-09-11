@@ -1812,10 +1812,18 @@ export default function ChatView() {
             <div className="turn-banner">
               {runningElsewhere && <span className="spin" />}
               <span>
-                {runningElsewhere
-                  ? 'Still running…'
-                  : stoppingElsewhere
-                    ? 'Stopping…'
+                {/* The stop in flight wins the headline. A confirmed turn is
+                    still running while its abort waits, so testing that first
+                    would show "Still running…" for the whole wait and mask the
+                    only feedback the wait has. The branch stays (rather than
+                    being dropped as redundant) because `stoppingElsewhere` is
+                    not a subset of `runningElsewhere`: it is also true on the
+                    cannot-check banner, whose Stop-less wait is driven by the
+                    composer's send. */}
+                {stoppingElsewhere
+                  ? 'Stopping…'
+                  : runningElsewhere
+                    ? 'Still running…'
                     : 'Could not check whether this chat is still running.'}
               </span>
               {turnCheckFailed && (

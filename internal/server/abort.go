@@ -48,12 +48,15 @@ const abortReconcileTimeout = 2 * time.Second
 //  3. wait for the session to be genuinely idle before returning, so the
 //     client's follow-up send cannot race hub.Open into a 409.
 //
-// Both gateway steps (1 and 2) run on contexts detached from the request. A
-// Stop is a command, not a read: it must not become a no-op because the client
-// that issued it went away, and a client that disconnects between (1) and (2)
-// would otherwise leave behind the very pending record (2) exists to clear,
-// which resurfaces as a stale card on reload. Each detached step keeps its own
-// bound, and the response is simply undeliverable once the client is gone.
+// Every gateway call up to and including step 2 runs on a context detached from
+// the request: the RPC, the reconciliation read that may stand in for its
+// failure, and the settle. A Stop is a command, not a read: it must not become a
+// no-op because the client that issued it went away, and a client that
+// disconnects between (1) and (2) would otherwise leave behind the very pending
+// record (2) exists to clear -- or, on the reconcile path, turn a read that
+// cannot be answered into a 502 that settles nothing, which resurfaces as a
+// stale card on reload. Each detached step keeps its own bound, and the response
+// is simply undeliverable once the client is gone.
 //
 // Step 1's failure is reconciled rather than trusted, and steps 2 and 3 run on
 // its outcome: see the comment on the abort call below.
@@ -94,6 +97,16 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	rpcCtx, cancelRPC := context.WithTimeout(context.WithoutCancel(r.Context()), abortRPCDeadline)
 	defer cancelRPC()
 	aborted, abortErr := s.hitl.Abort(rpcCtx, user, sessionKey, runID)
+
+	// The reconciliation below is post-abort cleanup, like the RPC above and the
+	// settle below, not a reply to the caller: it decides whether the session may
+	// be settled at all. On the request context a client that disconnects after
+	// pressing Stop makes the read fail, which reads as "unknown", and the
+	// handler then answers 502 without ever settling -- leaving the pending
+	// records of a run that DID stop to resurface as stale cards on reload.
+	// Detached for the same reason as its siblings; abortLanded applies its own
+	// short bound, and an unanswerable read still reports false.
+	reconcileCtx := context.WithoutCancel(r.Context())
 	switch {
 	case abortErr != nil:
 		// A failed RPC does not prove the stop did not happen. The frame is
@@ -110,7 +123,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		// reconciliation is unknown, and settling on an unknown result would
 		// delete a live, answerable card for a run that never stopped, which is
 		// worse than a stale one. Both keep the records pending and answer 502.
-		if !s.abortLanded(r.Context(), user, sessionKey) {
+		if !s.abortLanded(reconcileCtx, user, sessionKey) {
 			s.logf("abort %s/%s: %v", user, sessionKey, abortErr)
 			writeJSON(w, http.StatusBadGateway, map[string]any{"error": abortErr.Error()})
 			return
@@ -132,7 +145,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		// stream may close inside it: the `*_resolved` publishes below then land on
 		// a stream that is gone, so a card can linger on screen until a reload. A
 		// stale card is strictly better than a card deleted for a live run.
-		if !s.abortLanded(r.Context(), user, sessionKey) {
+		if !s.abortLanded(reconcileCtx, user, sessionKey) {
 			s.logf("abort %s/%s: chat.abort stopped nothing and the session is not provably idle: not settling", user, sessionKey)
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": "the gateway did not stop a run for this session; it is still in flight",

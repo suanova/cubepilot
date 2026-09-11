@@ -135,6 +135,61 @@ func TestSettlePendingForSessionBeatsReservedResolve(t *testing.T) {
 	}
 }
 
+// A settle must mark the in-flight reservation even when it also claims a record
+// from the pending maps, because both states can hold for one session at once:
+// Resolve reserves approval A, the gateway raises approval B, and Begin puts B
+// into the maps. The previous shape returned as soon as it claimed B, so A's
+// reservation went unmarked; A's failed gateway call then restored A -- and with
+// bySession just deleted it also re-pointed the session at A -- so a reload
+// showed a card for a turn the user had stopped.
+//
+// The gateway resolve for A is held open so the coexistence is forced rather
+// than raced for.
+func TestSettleSessionAlsoMarksReservedRecord(t *testing.T) {
+	h := NewHub()
+	svc := NewApprovalService(h, nil, tLogf)
+	res := &blockingResolver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     errors.New("gateway gone"),
+	}
+	svc.SetResolver(res)
+	svc.Begin("admin", pendingApproval{ApprovalID: "ap-a", SessionKey: "conv-1", User: "admin", Tool: "exec"})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Resolve(context.Background(), "admin", "conv-1", "approve")
+		done <- err
+	}()
+	<-res.entered // A is reserved: out of the maps, its decision in flight
+
+	// The gateway raises a second approval for the same session in that window.
+	svc.Begin("admin", pendingApproval{ApprovalID: "ap-b", SessionKey: "conv-1", User: "admin", Tool: "exec"})
+
+	// The Stop claims B from the maps. It must also mark A's reservation settled.
+	p, ok := svc.settleSession("admin", "conv-1")
+	if !ok || p.ApprovalID != "ap-b" {
+		t.Fatalf("settleSession = %+v (claimed %v), want the record the maps held (ap-b)", p, ok)
+	}
+
+	close(res.release)
+	if err := <-done; err == nil {
+		t.Fatal("fixture: the resolve must fail for A's restore path to be exercised")
+	}
+
+	// A's restore must honour the marker: its turn is gone, so no card may come
+	// back -- neither as a record nor as the session's current one.
+	if _, ok := svc.byID["ap-a"]; ok {
+		t.Error("the failed resolve restored A: a reload resurrects a card for the turn the user stopped")
+	}
+	if id, ok := svc.bySession["conv-1"]; ok {
+		t.Fatalf("bySession still maps conv-1 to %q: a reload resurrects a card for the turn the user stopped", id)
+	}
+	if n := len(svc.inflight); n != 0 {
+		t.Fatalf("inflight entries = %d, want 0 once the decision finished", n)
+	}
+}
+
 // A settle must not clear another user's pending approval for the same session
 // key, even though the session key is client-supplied and can collide.
 func TestSettleSessionIsOwnerScoped(t *testing.T) {

@@ -239,11 +239,39 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 // whose turn was stopped. Under one lock the reservation is found instead, and
 // the outcome it returns is what restore honours.
 //
+// The reservation scan runs on every call, including the one that also claims a
+// record from the maps: a claim from the maps says nothing about the reservations
+// in flight for the same session, and one that is left unmarked is restored by
+// its own failed resolve.
+//
 // A record is claimed only for its owner; another user's pending approval for
 // the same session key is not this caller's to clear.
 func (s *ApprovalService) settleSession(user, sessionKey string) (pendingApproval, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Mark every in-flight reservation for this session settled, on every call --
+	// not only when the maps held nothing. Both states can hold for one session at
+	// once: a Resolve reserves approval A, the gateway raises approval B, and
+	// Begin puts B into the maps. Claiming B and returning would leave A's
+	// reservation unmarked, so A's failed gateway call would restore it -- and,
+	// with bySession just deleted, re-point the session at A -- putting a card
+	// back on screen for a turn the user stopped. Marking all of them (rather
+	// than the first) is the conservative choice: each belongs to a session whose
+	// turn is gone, and the marker is only ever honoured by that reservation's
+	// own restore.
+	var reserved pendingApproval
+	haveReserved := false
+	for _, res := range s.inflight {
+		if res.pending.SessionKey == sessionKey && res.pending.User == user {
+			res.settled = true
+			if !haveReserved {
+				reserved, haveReserved = res.pending, true
+			}
+		}
+	}
+
+	// Whatever the maps still hold for this session is claimed and returned.
 	if id, ok := s.bySession[sessionKey]; ok {
 		if p, ok := s.byID[id]; ok && p.User == user {
 			if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
@@ -253,14 +281,11 @@ func (s *ApprovalService) settleSession(user, sessionKey string) (pendingApprova
 			return p, true
 		}
 	}
-	// Nothing pending, but a decision for this session may be mid-flight: the
-	// record is out of the maps because Resolve reserved it. Marking the
-	// reservation settled is what stops its restore from bringing the card back.
-	for _, res := range s.inflight {
-		if res.pending.SessionKey == sessionKey && res.pending.User == user {
-			res.settled = true
-			return res.pending, true
-		}
+	// Nothing in the maps, but a decision for this session may be mid-flight: the
+	// record is out of them because Resolve reserved it. Reporting it lets the
+	// caller publish the resolved event that drops the card.
+	if haveReserved {
+		return reserved, true
 	}
 	return pendingApproval{}, false
 }
