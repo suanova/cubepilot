@@ -114,11 +114,30 @@ func stringArg(call *ast.CallExpr, funcName string, i int) string {
 // (e.g. "/api/sessions/" is documented as "/api/sessions/{key}/messages"), so
 // the trimmed base counts as a mention.
 func docMentions(doc, route string) bool {
-	if strings.Contains(doc, route) {
+	if hasToken(doc, route) {
 		return true
 	}
 	if base := strings.TrimSuffix(route, "/"); base != route {
-		return strings.Contains(doc, base)
+		return hasToken(doc, base)
 	}
 	return false
+}
+
+// hasToken reports whether doc contains route as a complete token -- that is,
+// not immediately followed by "/". Without this, a route that is merely the
+// prefix of a longer documented route would count as documented: "/api/llms"
+// is a prefix of "/api/llms/{name}", so a plain strings.Contains would pass
+// even after the bare "/api/llms" entry was deleted.
+func hasToken(doc, route string) bool {
+	for i := 0; ; {
+		j := strings.Index(doc[i:], route)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(route)
+		if end >= len(doc) || doc[end] != '/' {
+			return true
+		}
+		i = end
+	}
 }

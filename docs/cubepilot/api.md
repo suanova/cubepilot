@@ -406,8 +406,19 @@ GET /api/sessions/{key}/question/pending
 `timeoutSeconds` 是事件产生时的**剩余时间**，不是绝对截止时刻——倒计时不要依赖客户端时钟与
 服务端一致。
 
-**可能的错误**（`POST .../question`）：`404 QUESTION_NOT_FOUND`、
-`409 QUESTION_ALREADY_TERMINAL`、`400 QUESTION_INVALID_ANSWER`、其余 `502`。
+**可能的错误**（`POST .../question`）：
+
+| 状态 | `error` | 含义 |
+| --- | --- | --- |
+| 404 | `no such pending question for this session` | 该 id 不属于这个会话 |
+| 404 | `QUESTION_NOT_FOUND` | 网关侧已无此问题 |
+| 409 | `question is no longer pending` | 已过期或已回答 |
+| 409 | `QUESTION_ALREADY_TERMINAL` | 同上（网关侧表述） |
+| 400 | `QUESTION_INVALID_ANSWER` | 答案不符合选项定义 |
+| 503 | `question channel unavailable` | 问答通道不可用 |
+| 502 | 其他 | 网关往返失败 |
+
+收到 404 / 409 时应**清掉本地卡片**——问题已不可回答。
 
 ---
 
