@@ -255,8 +255,13 @@ var _ = Describe("Stop ends a chat turn (SSE)", Label("chat"), func() {
 		Expect(err).NotTo(HaveOccurred(),
 			"the redirecting send must be accepted once Stop has settled the session")
 		secondEvents := stopEventNames(second)
+		// The terminal carries the reason when the second turn produced no
+		// output at all, so surface it in the failure rather than leaving a bare
+		// "no message_delta" to interpret.
+		secondTerminal, secondHasTerminal := stopTerminalOf(second)
 		Expect(secondEvents).To(ContainElement(openclaw.EventMessageDelta),
-			"the second turn should stream its own output")
+			"the second turn should stream its own output (terminal=%+v hasTerminal=%v events=%v)",
+			secondTerminal, secondHasTerminal, secondEvents)
 		Expect(secondEvents).To(ContainElement(openclaw.EventMessageDone),
 			"the second turn should complete")
 
