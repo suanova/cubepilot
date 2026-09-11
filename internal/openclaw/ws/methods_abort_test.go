@@ -103,6 +103,59 @@ func TestSessionBusyReadsInFlightRun(t *testing.T) {
 	}
 }
 
+// SessionInFlightRun is the id an abort on the reload-takeover path is scoped
+// to, so it has to decode the run descriptor the gateway reports -- a payload
+// this client's schema does not model, read for its runId alone.
+func TestSessionInFlightRunReadsRunID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"absent", `{"kind":"delta","messages":[]}`, ""},
+		{"null", `{"kind":"delta","inFlightRun":null}`, ""},
+		{"present", `{"kind":"delta","inFlightRun":{"runId":"r1","startedAtMs":7}}`, "r1"},
+		// A descriptor without a run id is still a run: the busy read must see it
+		// even though there is nothing here to scope an abort to.
+		{"no runId", `{"kind":"delta","inFlightRun":{"status":"running"}}`, ""},
+		{"reset", `{"kind":"reset"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+				if method != "chat.history" {
+					t.Fatalf("method = %q, want chat.history", method)
+				}
+				return json.RawMessage(tc.body), nil
+			})
+			got, err := c.SessionInFlightRun(context.Background(), "session-a")
+			if err != nil {
+				t.Fatalf("SessionInFlightRun: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("SessionInFlightRun = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSessionInFlightRunPropagatesCallError: an unanswered read leaves the
+// caller with no run id, and it must be able to tell that apart from a read that
+// answered "nothing in flight" -- one falls back to a session-scoped abort, the
+// other is the idempotent no-op case.
+func TestSessionInFlightRunPropagatesCallError(t *testing.T) {
+	wantErr := errors.New("ws: not connected")
+	c, _ := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, wantErr
+	})
+	id, err := c.SessionInFlightRun(context.Background(), "session-a")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("SessionInFlightRun error = %v, want %v", err, wantErr)
+	}
+	if id != "" {
+		t.Fatalf("SessionInFlightRun = %q alongside an error, want empty", id)
+	}
+}
+
 // TestSessionBusyPropagatesCallError: a failed chat.history means the busy state
 // cannot be determined. Returning (false, nil) would read as "not busy" and let
 // a caller strand a run that is still going.

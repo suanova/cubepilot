@@ -107,21 +107,64 @@ type chatHistoryResult struct {
 	InFlightRun json.RawMessage `json:"inFlightRun"`
 }
 
+// sessionHistory reads the session's history projection (chat.history).
+func (c *Client) sessionHistory(ctx context.Context, sessionKey string) (chatHistoryResult, error) {
+	raw, err := c.Call(ctx, "chat.history", chatHistoryParams{SessionKey: sessionKey})
+	if err != nil {
+		return chatHistoryResult{}, fmt.Errorf("chat.history %q: %w", sessionKey, err)
+	}
+	var out chatHistoryResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return chatHistoryResult{}, fmt.Errorf("decode chat.history: %w", err)
+	}
+	return out, nil
+}
+
+// hasInFlightRun reports whether chat.history described a run at all: the field
+// is absent (or explicitly null) when the session is idle.
+func hasInFlightRun(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
 // SessionBusy reports whether the gateway has an in-flight run for the session.
 // It is the authoritative "is this session busy" signal: the SSE hub only knows
 // whether a browser is attached, which is false after a reload while the run is
 // still going.
 func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
-	raw, err := c.Call(ctx, "chat.history", chatHistoryParams{SessionKey: sessionKey})
+	out, err := c.sessionHistory(ctx, sessionKey)
 	if err != nil {
-		return false, fmt.Errorf("chat.history %q: %w", sessionKey, err)
+		return false, err
 	}
-	var out chatHistoryResult
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, fmt.Errorf("decode chat.history: %w", err)
+	return hasInFlightRun(out.InFlightRun), nil
+}
+
+// SessionInFlightRun returns the run id of the gateway's in-flight run for the
+// session, or "" when the session is idle.
+//
+// The id is what scopes an abort (chat.abort runId) so it cannot terminate a run
+// promoted after the one the caller meant. The browser never learns it, but on
+// the reload-takeover path the server has lost its own copy too -- releaseLive
+// dropped the local turn when the request driving it ended, while the run it
+// started can still be executing -- and chat.history is then the only place the
+// id exists. The inFlightRun payload is the gateway's own run descriptor and so
+// opaque to this schema; only its runId is read. A descriptor that carries none
+// yields "" (the caller falls back to a session-scoped abort).
+func (c *Client) SessionInFlightRun(ctx context.Context, sessionKey string) (string, error) {
+	out, err := c.sessionHistory(ctx, sessionKey)
+	if err != nil {
+		return "", err
 	}
-	trimmed := strings.TrimSpace(string(out.InFlightRun))
-	return trimmed != "" && trimmed != "null", nil
+	if !hasInFlightRun(out.InFlightRun) {
+		return "", nil
+	}
+	var run struct {
+		RunID string `json:"runId"`
+	}
+	if err := json.Unmarshal(out.InFlightRun, &run); err != nil {
+		return "", fmt.Errorf("decode chat.history inFlightRun: %w", err)
+	}
+	return run.RunID, nil
 }
 
 // GetQuestion reads one question record (question.get). The gateway keeps a

@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,59 @@ import (
 
 	"github.com/coder/websocket"
 )
+
+// The connection's write serialisation must be context-aware. A writer parked
+// inside conn.Write (a half-open socket stalls there) holds the token; the next
+// writer has to be able to give up at its own deadline. With a sync.Mutex the
+// wait could not be interrupted at all, so no per-call deadline rescued it --
+// /abort's abortRPCDeadline never fired and Stop hung indefinitely instead of
+// reporting a stop it could not complete.
+//
+// The token starts held, exactly as an in-flight write would leave it. The
+// watchdog is the assertion: an acquisition that ignores the context simply
+// never returns, so there is no fast failing value to compare against.
+func TestCallWriteIsBoundedByContext(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := newMockGateway(t)
+	defer ts.Close()
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cli.Close()
+
+	cli.writeToken <- struct{}{}
+
+	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelShort()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- cli.AbortChat(short, "session-a", "run-1") }()
+
+	select {
+	case err := <-done:
+		// The caller can still tell its deadline from a transport failure, and
+		// nothing was written: the frame is built only after the token is held.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("AbortChat error = %v, want context.DeadlineExceeded", err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("the write waited %v past its deadline", d)
+		}
+		if n := len(cli.pending); n != 0 {
+			t.Fatalf("pending RPCs = %d, want 0: a call that never wrote must not leak its entry", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Call blocked on the write token past its deadline: write acquisition is not context-aware")
+	}
+	<-cli.writeToken
+}
 
 // mockGateway implements just enough of the server side of the protocol
 // (v2026.8.2) to exercise the client: challenge → connect → method responses,
