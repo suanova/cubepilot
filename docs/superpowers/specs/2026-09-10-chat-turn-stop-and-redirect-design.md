@@ -329,9 +329,26 @@ Two questions remain open and belong to the implementation-time spike:
 
 A **CubePilot-owned durable marker** (a per-session record written when `/abort`
 succeeds and consulted when rendering history) is **explicitly out of scope** —
-it was considered and declined. If the spike comes back badly, the correct
-response is to drop the reload marker, not to grow this feature. What the design
-does forbid is presenting a reply known to be truncated as a finished one.
+it was considered and declined. If either open question comes back badly, the
+correct response is to drop the reload marker, not to grow this feature.
+
+**Decision (v1): the reload marker is dropped.** The spike above was not run
+before v1, so this is recorded as an accepted limitation rather than left to
+look like an oversight:
+
+- A turn stopped while the tab is attached is marked correctly, because the
+  `stopped` flag arrives on the stream.
+- A **plain reload** afterwards cannot recover it. The persisted partial comes
+  back as an ordinary assistant message, so a stopped turn reads as a completed
+  one. This is the accepted gap, and closing it needs either the spike plus
+  `openclawAbort` being surfaced, or the declined CubePilot-owned marker.
+- The one case that is both reachable and worth fixing without either is
+  **"the user just stopped it themselves"**: the client already knows it issued
+  the stop, so it marks that turn locally on the refresh it triggers, rather than
+  asking the server to tell it something the server cannot.
+
+The spike remains the gate for revisiting this. What the design still forbids,
+and the local marker upholds, is presenting a *known*-stopped turn as finished.
 
 **HITL cleanup.** If the agent is parked on a `confirm_pending` or
 `question_pending`, the abort settles it gateway-side, but cubepilot's
