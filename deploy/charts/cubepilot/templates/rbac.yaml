@@ -208,8 +208,13 @@ subjects:
     name: {{ .Values.serviceAccounts.api }}
     namespace: {{ .Release.Namespace }}
 
-# --- API: namespaced credential Secret creation (POST /api/llms writes the
-# apiKey Secret; the model entry itself lives on the builtin AgentTemplate) ---
+# --- API: namespaced credential Secret lifecycle. The model entry itself lives
+# on the builtin AgentTemplate, but its apiKey Secret is owned here: POST
+# /api/llms creates it, PUT /api/llms/{name} updates it (key rotation, and a
+# keyless model becoming keyed) or deletes it (demoted to public), and DELETE
+# /api/llms/{name} deletes it with the model. Granting only `create` leaves a
+# rotation failing with 403 and a removed model's live key behind in the
+# namespace. ---
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -219,7 +224,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create"]
+    verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
