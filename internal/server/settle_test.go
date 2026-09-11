@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
@@ -62,6 +64,107 @@ func TestSettlePendingForSessionClearsConfirm(t *testing.T) {
 	if _, ok := svc.Pending("admin", "conv-2"); !ok {
 		t.Error("the other session lost its pending confirmation")
 	}
+}
+
+// Settling races Resolve's reservation, and losing that race resurrects the
+// card.
+//
+// Resolve takes the approval out of byID/bySession before its gateway round
+// trip, so a settle that runs while the decision is in flight finds nothing in
+// the pending maps. If the gateway call then fails, Resolve.restore puts the
+// record back -- and /confirm/pending hands a card back to a session whose turn
+// was stopped, which is exactly what the settle exists to prevent. The claim
+// and the removal therefore share one lock acquisition, and a claim that lands
+// on a reservation marks it so the restore drops it.
+//
+// The gateway resolve is held open so the interleaving is forced, not raced for.
+func TestSettlePendingForSessionBeatsReservedResolve(t *testing.T) {
+	srv := New(config.Config{DefaultUser: "admin"}, nil, nil, nil, nil)
+	res := &blockingResolver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     errors.New("gateway gone"),
+	}
+	srv.approvals.SetResolver(res)
+	srv.approvals.Begin("admin", pendingApproval{
+		ApprovalID: "ap-1",
+		SessionKey: "conv-1",
+		User:       "admin",
+		Tool:       "exec",
+		Command:    "kubectl delete pod x",
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := srv.approvals.Resolve(context.Background(), "admin", "conv-1", "approve")
+		done <- err
+	}()
+	<-res.entered
+	// The reservation is the state the settle has to cope with: the approval is
+	// no longer pending, but it is not decided either.
+	if _, ok := srv.approvals.Pending("admin", "conv-1"); ok {
+		t.Fatal("fixture: the reservation must have taken the approval out of the pending maps")
+	}
+
+	// The user's Stop lands while the decision is in flight.
+	srv.settlePendingForSession(context.Background(), "admin", "conv-1")
+
+	close(res.release)
+	// The gateway call fails, so the restore path runs -- the path that used to
+	// bring the approval back.
+	if err := <-done; err == nil {
+		t.Fatal("fixture: the resolve must fail for the restore path to be exercised")
+	}
+
+	// Recovery is the surface that matters: /confirm/pending is what a reload
+	// asks, and it must not hand back a card for the stopped turn.
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/confirm/pending", "admin", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("recovery after the settle returned %d, want 404: the failed resolve restored the card", rec.Code)
+	}
+	if id, ok := srv.approvals.bySession["conv-1"]; ok {
+		t.Fatalf("bySession still maps conv-1 to %q: the next reload resurrects the card", id)
+	}
+	if _, ok := srv.approvals.byID["ap-1"]; ok {
+		t.Error("byID still holds the restored approval")
+	}
+	// The settled marker is consumed with the reservation it covers, so nothing
+	// accumulates: no decision is in flight any more, and the map is empty.
+	if n := len(srv.approvals.inflight); n != 0 {
+		t.Fatalf("inflight entries = %d, want 0 once the decision finished", n)
+	}
+}
+
+// A settle must not clear another user's pending approval for the same session
+// key, even though the session key is client-supplied and can collide.
+func TestSettleSessionIsOwnerScoped(t *testing.T) {
+	h := NewHub()
+	svc := NewApprovalService(h, nil, tLogf)
+	svc.Begin("alice", pendingApproval{ApprovalID: "ap-1", SessionKey: "conv-1", User: "alice"})
+
+	s := &Server{hub: h, approvals: svc}
+	s.settlePendingForSession(context.Background(), "bob", "conv-1")
+
+	if _, ok := svc.Pending("alice", "conv-1"); !ok {
+		t.Fatal("a non-owner's settle cleared the approval")
+	}
+	if _, ok := svc.settleSession("bob", "conv-1"); ok {
+		t.Fatal("settleSession claimed a record for a non-owner")
+	}
+}
+
+// blockingResolver parks ResolveApproval until the test releases it, holding
+// open the window between the reservation and the gateway reply.
+type blockingResolver struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (r *blockingResolver) ResolveApproval(_ context.Context, _, _, _ string) error {
+	close(r.entered)
+	<-r.release
+	return r.err
 }
 
 // A server built without an approval service must not panic. That is the shape

@@ -23,12 +23,15 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 	// abort handler's own fixture) leaves it unset. The question half below is
 	// guarded the same way.
 	if s.approvals != nil {
-		if p, ok := s.approvals.Pending(user, sessionKey); ok {
-			s.approvals.settle(p)
+		// One atomic claim, not a Pending-then-settle pair: a Resolve that
+		// reserves the approval between the two would leave nothing for the
+		// settle to find, and the failed resolve would then restore a card for a
+		// session whose turn was stopped (see ApprovalService.settleSession).
+		if p, ok := s.approvals.settleSession(user, sessionKey); ok {
 			// The record's own key addresses the stream, exactly as
-			// ApprovalService.Resolve does -- Pending only ever returns a record
-			// this session claimed, but a publish that follows the record rather
-			// than the caller cannot drift from it.
+			// ApprovalService.Resolve does -- the claim only ever returns a
+			// record this session owned, but a publish that follows the record
+			// rather than the caller cannot drift from it.
 			s.hub.PublishTo(p.SessionKey, agentruntime.Event{
 				Type:      agentruntime.EventConfirmResolved,
 				SessionID: p.SessionKey,
