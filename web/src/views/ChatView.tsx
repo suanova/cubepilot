@@ -638,6 +638,17 @@ export default function ChatView() {
     void checkTurnElsewhere(currentSessionId, streamGenRef.current)
   }
 
+  // dismissTurnCheck withdraws the "could not check" banner on request. Retry is
+  // the way back to an answer, but it is not a way *out*: for a channel this
+  // process cannot use, every retry fails the same way, and a reload fails the
+  // check again, so the banner would sit over a conversation that is otherwise
+  // perfectly usable with no control that removes it. Dismissing claims nothing
+  // -- the next reload, session switch or Retry asks again, and a send is
+  // unaffected -- it only stops the alarm from being permanent.
+  function dismissTurnCheck() {
+    clearTurnElsewhere()
+  }
+
   // syncAllowAlways refreshes whether a durable "Always allow" is meaningful
   // for the effective confirmation policy (Allowlist only). Called when a
   // confirmation card appears.
@@ -938,6 +949,11 @@ export default function ChatView() {
     try {
       await api.abortSession(session)
     } catch (e) {
+      // Refused: the turn is still running, so nothing was stopped and any
+      // record of an *earlier* stop of this session no longer describes its
+      // newest turn. Dropping it here is what keeps a later history render from
+      // stamping this turn's row with a stop that never happened.
+      markStoppedTurn(session, null)
       showToast(String(e))
       return false
     } finally {
@@ -979,6 +995,11 @@ export default function ChatView() {
     try {
       await api.abortSession(session)
     } catch (e) {
+      // Refused: the turn is still running. The record of an earlier stop of
+      // this session must go with it -- the evidence would otherwise outlive
+      // the turn it described and mark a later one's row on the next history
+      // render (see stopTurn for the same clearing).
+      markStoppedTurn(session, null)
       showToast(String(e))
       return
     } finally {
@@ -1028,10 +1049,10 @@ export default function ChatView() {
     // may well be running, and an abort is a no-op when none is.)
     if (streaming || bannerUp) {
       // Redirect: stop the running turn first. The server only answers once the
-      // turn has settled, so the send below cannot hit the 409 guard. If the
-      // stop did not take, the send is abandoned -- issuing it would be refused
-      // as a concurrent turn and would leave the running turn with no Stop
-      // control, so the user keeps their text and the Stop button instead.
+      // turn has settled, so the send below cannot hit the 409 guard. What
+      // happens when the stop does not take is decided below, per banner: a
+      // confirmed turn keeps the text and the Stop button, the un-checkable one
+      // sends anyway.
       //
       // The guard is held for the whole stop-then-send sequence -- including the
       // banner's history reload -- and released on every exit path: the
@@ -1070,8 +1091,34 @@ export default function ChatView() {
       try {
         stopped = await stopTurn()
         if (streamGenRef.current !== genAtSend) return
-        if (!stopped) return
-        if (bannerUp) {
+        if (!stopped) {
+          // The stop did not take. For a turn the view or the server has
+          // *confirmed* -- a stream of this view's own, or `runningElsewhere` --
+          // the send is abandoned, and deliberately: the Stop control is on
+          // screen, it is the control that ends that turn, and it is worth
+          // another try. Putting the message in flight against a session that is
+          // still running is the 409-or-silent-steer outcome the stop-then-send
+          // route exists to prevent.
+          //
+          // The "could not check" banner is the exception, and it is the state
+          // that would otherwise be a dead end. Nothing there confirmed a turn,
+          // and the stop is refused for the same reason the check failed -- a
+          // gateway channel this process cannot use -- so the banner's Stop
+          // provably cannot work either. The send is then the only request left
+          // that re-dials the channel (it is the turn path that calls `conn`,
+          // see the API's PreTurn), and refusing it leaves no in-page recovery
+          // at all: the user retries, reloads, and lands on the same banner,
+          // because the next /turn check fails the same way. So it falls through
+          // to the ordinary send below.
+          //
+          // What that trades away, exactly: if the channel was merely down for
+          // the *API* while the gateway run was still alive, the abandoned stop
+          // means the follow-up send can be steered into that run and swallowed
+          // -- the case the stop-then-send route was built for. It is taken
+          // knowingly, and only here: a confirmed turn never falls through, and
+          // the alternative is a state whose only exit is "New chat".
+          if (!turnCheckFailed) return
+        } else if (bannerUp) {
           // The banner's turn had no stream in this view, so nothing in it ever
           // carried that turn's stopped marker: the only record of what happened
           // is the history the abort has just persisted. Re-render it -- with
@@ -1699,6 +1746,17 @@ export default function ChatView() {
               {turnCheckFailed && (
                 <button className="btn sm ghost" onClick={retryTurnCheck}>
                   Retry
+                </button>
+              )}
+              {/* The way out of an alarm that cannot resolve itself: a check
+                  that keeps failing would otherwise sit over a usable
+                  conversation forever. Disabled for the same window the Stop
+                  is: while the abort is in flight the banner is the wait's only
+                  feedback, and dropping it would make the composer's disabled
+                  Send look unexplained. */}
+              {turnCheckFailed && (
+                <button className="btn sm ghost" onClick={dismissTurnCheck} disabled={stoppingElsewhere}>
+                  Dismiss
                 </button>
               )}
               {/* Still on screen while the abort is in flight, unlike the
