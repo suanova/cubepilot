@@ -48,6 +48,28 @@ const (
 	KubeconfigRevisionAnnotation = "cubepilot.io/kubeconfig-rev"
 )
 
+// Platform API endpoint the agent Pod's supervisor pulls its resolved config
+// from (issue #172). The URL must be namespace-relative: the chart installs
+// into ANY namespace, so the Pod derives it from its OWN namespace via the
+// downward API rather than assuming one (a hardcoded `cubepilot` left every
+// install elsewhere dialing a namespace it does not own, and the agent Pod
+// never became Ready).
+const (
+	// APIServiceName is the in-namespace Service exposing the platform API --
+	// the chart's api.name and the default api service name; web/nginx.conf
+	// already pins the same name. Keep the three in sync.
+	APIServiceName = "cubepilot-api"
+	// APIServicePort is the port that Service exposes.
+	APIServicePort = 8080
+	// PodNamespaceEnv carries the Pod's own namespace into the supervisor
+	// (downward API).
+	PodNamespaceEnv = "POD_NAMESPACE"
+	// APIURLEnv names the platform internal API base URL for the supervisor.
+	// The value references $(POD_NAMESPACE), so the kubelet expands it into the
+	// install's real namespace; POD_NAMESPACE must therefore be declared first.
+	APIURLEnv = "CUBEPILOT_API_URL"
+)
+
 // UserKubeconfigSecretFor returns the per-user kubeconfig Secret name (key
 // "config"). Provisioned per user (e.g. by Helm/setup) as part of the
 // dual-kubeconfig model; when it does not exist the operator falls back to the
