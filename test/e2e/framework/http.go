@@ -125,9 +125,12 @@ func (f *Framework) AbortSession(ctx context.Context, user, sessionKey string) (
 // SessionTurnActive reads GET /api/sessions/{key}/turn -- whether the session
 // still has a run in flight -- and returns the active flag with the status code.
 //
-// The API answers 502 when it cannot determine the answer (no live gateway
-// connection, or a timed-out gateway call) rather than reporting "not busy", so
-// callers must check the status: an unreadable status is not an idle session.
+// The API answers 502 when it cannot determine the answer (a gateway read that
+// failed on a live connection, or one that timed out) rather than reporting "not
+// busy", so callers must check the status: an unreadable status is not an idle
+// session. A user with no gateway connection at all is a different case and
+// answers an idle 200, because with no channel nothing can be running that this
+// process could stop.
 func (f *Framework) SessionTurnActive(ctx context.Context, user, sessionKey string) (bool, int, error) {
 	data, code, err := f.GetJSON(ctx,
 		f.PortalBase+"/api/sessions/"+url.PathEscape(sessionKey)+"/turn",

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"time"
@@ -95,9 +96,9 @@ func stopTurnObservedLive(ctx context.Context, user, sessionID string, turn *sto
 		if live || turn.finished() {
 			return true
 		}
-		// The turn endpoint answers 502 until the user's gateway connection
-		// exists (the first turn is what dials it), so an unreadable status
-		// only means "not yet" here.
+		// The first turn is what dials the user's gateway connection, and an
+		// idle session answers a plain 200 {active:false} either way, so an
+		// unreadable status only means "not yet" here.
 		active, code, err := fw.SessionTurnActive(ctx, user, sessionID)
 		if err != nil || code != http.StatusOK {
 			return false
@@ -116,6 +117,57 @@ func stopEventNames(events []framework.SSEEvent) []string {
 		names = append(names, ev.Event)
 	}
 	return names
+}
+
+// stopTerminal is the terminal chat frame as the Portal reads it. A stopped turn
+// is a third outcome of message_done: not a failure, not a normal completion.
+type stopTerminal struct {
+	Stopped bool   `json:"stopped"`
+	Error   string `json:"error"`
+}
+
+// stopTerminalOf returns the message_done payload of a turn, and whether the
+// stream carried one at all. The payload is read raw, not through the event's
+// type: the fields are what the wire contract is, and the type would only
+// restate them.
+func stopTerminalOf(events []framework.SSEEvent) (stopTerminal, bool) {
+	for _, ev := range events {
+		if ev.Event != openclaw.EventMessageDone {
+			continue
+		}
+		var terminal stopTerminal
+		if err := json.Unmarshal(ev.Data, &terminal); err != nil {
+			GinkgoWriter.Printf("stop e2e: undecodable message_done payload %s: %v\n", ev.Data, err)
+			return stopTerminal{}, false
+		}
+		return terminal, true
+	}
+	return stopTerminal{}, false
+}
+
+// assertStoppedTerminal asserts the turn ended as a request-initiated stop.
+//
+// This is the feature's central wire claim, and the one thing the other
+// assertions here cannot see: a 200 from Stop plus an accepted follow-up send
+// would also hold if the gateway's aborted frame were classified as a *failure*,
+// in which case pressing Stop would paint the user a red failed turn and throw
+// away the partial reply's standing as a stopped (not finished) answer.
+//
+// Only meaningful when the abort was observed to land while the turn was still
+// running. A turn that completed on its own before Stop arrived ends as an
+// ordinary completion -- correctly -- so asserting a stopped terminal for it
+// would be asserting on a race the specs deliberately do not run.
+func assertStoppedTerminal(events []framework.SSEEvent, observedLive bool) {
+	if !observedLive {
+		GinkgoWriter.Printf("stop e2e: the turn had already ended when Stop landed; not asserting the stopped terminal\n")
+		return
+	}
+	terminal, ok := stopTerminalOf(events)
+	Expect(ok).To(BeTrue(), "the stopped turn's stream carried no message_done terminal")
+	Expect(terminal.Stopped).To(BeTrue(),
+		"a turn stopped by request must end as message_done{stopped:true}, not as a failure: %+v", terminal)
+	Expect(terminal.Error).To(BeEmpty(),
+		"stopped and error are mutually exclusive; a stopped turn must not carry a failure: %+v", terminal)
 }
 
 var _ = Describe("Stop ends a chat turn (SSE)", Label("chat"), func() {
@@ -167,6 +219,9 @@ var _ = Describe("Stop ends a chat turn (SSE)", Label("chat"), func() {
 		Eventually(turn.finished, stopTurnFinishTimeout, time.Second).Should(BeTrue(),
 			"the stopped turn's stream should end")
 
+		By("asserting the stopped turn ends as a stop, not as a failure")
+		assertStoppedTerminal(turn.res.events, observedLive)
+
 		GinkgoWriter.Printf("stop e2e: turn was still live when Stop was posted: %v\n", observedLive)
 	})
 
@@ -212,6 +267,11 @@ var _ = Describe("Stop ends a chat turn (SSE)", Label("chat"), func() {
 		By("asserting the first turn's stream ended")
 		Eventually(first.finished, stopTurnFinishTimeout, time.Second).Should(BeTrue(),
 			"the first turn's stream should end after the redirect")
+
+		// The redirect is the same stop: the first turn must not come back to a
+		// waiting client as a failed (or a completed) turn.
+		By("asserting the redirected turn ends as a stop, not as a failure")
+		assertStoppedTerminal(first.res.events, observedLive)
 
 		By("asserting the session is idle again once the second turn completes")
 		Eventually(func() bool {
