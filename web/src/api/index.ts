@@ -115,12 +115,27 @@ export const api = {
 
   // Platform objects (read-only CRD views)
   listAgentTemplates: () => apiFetch<{ agentTemplates: PlatformObject[] }>('/api/agenttemplates').then((d) => d.agentTemplates),
-  addLLM: (body: { name: string; endpoint: string; apiKey?: string }) =>
+  // The catalog: add a model, or edit/remove one that already exists. The name
+  // is the model's identity everywhere downstream (provider key, model id,
+  // credential Secret), so it is immutable and there is no rename -- a rename
+  // is a delete plus an add. A model with no credential must say so explicitly
+  // (public), or the server rejects it: a keyless provider fails every turn.
+  addLLM: (body: { name: string; endpoint: string; apiKey?: string; public?: boolean }) =>
     apiFetch<{ model: PlatformObject }>('/api/llms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((d) => d.model),
+  updateLLM: (name: string, body: { endpoint: string; apiKey?: string; public?: boolean }) =>
+    apiFetch<{ model: PlatformObject; warning?: string }>(`/api/llms/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteLLM: (name: string) =>
+    apiFetch<{ removed: string; warning?: string }>(`/api/llms/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
   listInstances: () =>
     apiFetch<{ instances: PlatformObject[] }>('/api/instances').then((d) => d.instances),
   createInstance: (body: { templateRef?: string; selectedModel?: string; enabledSkills?: string[]; userInstructions?: string }) =>

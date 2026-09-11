@@ -71,9 +71,16 @@ func TestRender(t *testing.T) {
 		keyRef.ID != "/CUBEPILOT_LLM_DEEPSEEK_V4_FLASH" || d.Models[0].ID != "deepseek-v4-flash" {
 		t.Errorf("deepseek provider wrong: %+v (apiKey=%s)", d, d.APIKey)
 	}
+	// A credential-less model still needs a resolvable apiKey: OpenClaw fails
+	// every turn with "No API key resolved" for a provider whose credential it
+	// cannot resolve. The rendered value is a placeholder, never a secret.
 	q := cfg.Models.Providers["qwen"]
-	if len(q.APIKey) != 0 || q.Models[0].ID != "qwen2.5-72b" {
-		t.Errorf("public provider should be keyless: %+v", q)
+	var qKey string
+	if err := json.Unmarshal(q.APIKey, &qKey); err != nil {
+		t.Fatalf("public provider apiKey should be a literal string: %s", q.APIKey)
+	}
+	if qKey != "cubepilot-no-auth" || q.Models[0].ID != "qwen2.5-72b" {
+		t.Errorf("public provider should carry the no-auth placeholder: %+v", q)
 	}
 	// The file-secret provider must point at the emptyDir keys.json.
 	sp := cfg.Secrets.Providers["cubepilot-keys"]
@@ -101,6 +108,37 @@ func TestRender(t *testing.T) {
 	}
 	if _, ok := cfg.Agents.Defaults.Models["qwen/qwen2.5-72b"]; !ok {
 		t.Error("allowlist missing public ref")
+	}
+}
+
+// TestRenderPublicModelRemoteEndpoint covers the reported failure: a model with
+// no credential at a non-local endpoint. OpenClaw synthesizes a no-auth
+// placeholder only for local base URLs, so a keyless provider anywhere else
+// resolves no credential at all and every turn fails before a request is sent.
+// The renderer must give such a provider a value it can resolve.
+func TestRenderPublicModelRemoteEndpoint(t *testing.T) {
+	b, err := Render("tok", "pub/pub", []Provider{
+		{Key: "pub", BaseURL: "http://106.75.230.113:15910/v1", Model: "pub"},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Models struct {
+			Providers map[string]struct {
+				APIKey json.RawMessage `json:"apiKey"`
+			} `json:"providers"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var key string
+	if err := json.Unmarshal(cfg.Models.Providers["pub"].APIKey, &key); err != nil {
+		t.Fatalf("public provider apiKey should be a literal string: %s", cfg.Models.Providers["pub"].APIKey)
+	}
+	if key != "cubepilot-no-auth" {
+		t.Errorf("apiKey = %q, want the no-auth placeholder", key)
 	}
 }
 

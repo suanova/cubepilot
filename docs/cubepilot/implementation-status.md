@@ -8,7 +8,7 @@
 
 - **AgentTemplate 与实例分离**：AgentTemplate（`cubepilot` 内置）+ AgentInstance（每用户）分离；实例引用模板名（`templateRef`，不钉版）；内置实例由 operator 启动时按 bootstrap 名单自动创建（设计 §3.1/§3.2）。**已对齐设计：Agent→AgentTemplate 重命名完成。**
 - **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.models`（每项 name + endpoint + credentialRef），`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/models` 已删除；`provider`/`modelId` 字段已删除。**
-- **声明式网关配置**：`OpenClawConfigReconciler` 从 AgentTemplate models + 凭据 Secret 渲染 `openclaw-config`（providers + allowlist + primary），网关 token 由 cubepilot 生成一次并持久化；`CUBEPILOT_MODEL_PROVIDERS` 与 `deploy/openclaw-config.jq` 退役。`POST /api/llms` + Portal「LLM 配置」可追加模型（name + endpoint + 可选 apiKey），operator 自动接入网关。
+- **声明式网关配置**：`OpenClawConfigReconciler` 从 AgentTemplate models + 凭据 Secret 渲染 `openclaw-config`（providers + allowlist + primary），网关 token 由 cubepilot 生成一次并持久化；`CUBEPILOT_MODEL_PROVIDERS` 与 `deploy/openclaw-config.jq` 退役。`POST /api/llms` + Portal「LLM 配置」可追加模型（name + endpoint，凭据二选一：apiKey 或 `public: true`），`PUT`/`DELETE /api/llms/{name}` 可编辑与删除（endpoint 归一化为 API root，删除同步清理凭据 Secret），operator 自动接入网关。
 - **实例自服务**：`POST /api/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel -> template.defaultModel -> template.models 内联清单`，selectedModel 不在 models 列表即报错，绝不静默回退；Portal WS 交互回合在 `sessions.send` 前通过 `sessions.patch {model}` 设置 session override（Runtime Default 显式发 `null` 清除旧 override），HTTP one-shot 回合通过 `x-openclaw-model` 头热生效。
 - **实例能力 / 指令子集**：`AgentInstance.spec.enabledSkills` 限定 skill 子集（**已对齐设计字段名**），`spec.userInstructions` 追加到指令之后；resolver 合并进 `ResolvedAgentConfig`（设计 §3.2 组合顺序）。

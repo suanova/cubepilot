@@ -55,6 +55,41 @@ func (f *Framework) GetJSON(ctx context.Context, url string, headers map[string]
 	return out, resp.StatusCode, nil
 }
 
+// SendJSON performs a request with a JSON body and decodes the JSON response
+// (nil for an empty body). A non-2xx status is returned to the caller rather
+// than raised: these specs assert on the code.
+func (f *Framework) SendJSON(ctx context.Context, method, url string, body any, headers map[string]string) (map[string]any, int, error) {
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		reader = bytes.NewReader(b)
+	}
+	h := map[string]string{"Content-Type": "application/json"}
+	for k, v := range headers {
+		h[k] = v
+	}
+	resp, err := f.do(ctx, method, url, reader, h)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if len(raw) == 0 {
+		return nil, resp.StatusCode, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("decode %q: %w", string(raw), err)
+	}
+	return out, resp.StatusCode, nil
+}
+
 // SSEEvent is one parsed Server-Sent Event from the chat stream.
 type SSEEvent struct {
 	Event string          // the event: type

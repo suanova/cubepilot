@@ -18,10 +18,25 @@ type Provider struct {
 	// file SecretRef ({source:"file", provider:cubepilot-keys, id:"/<name>"})
 	// into the emptyDir JSON file the supervisor writes. The literal key never
 	// lands in the config file, the PVC, or the network response. Empty for
-	// public models (no apiKey in the rendered config).
+	// public models: those render PublicModelAPIKey instead.
 	APIKey string
 	Model  string // model name = backend id
 }
+
+// PublicModelAPIKey is the apiKey rendered for a model that has no credential
+// (a "public" model). OpenClaw fails every turn with "No API key resolved" for
+// a provider it cannot resolve a credential for, and the OpenAI SDK will not
+// construct a client without one -- so a keyless provider is not an option.
+// OpenClaw synthesizes its own no-auth placeholder, but only for a base URL on
+// a loopback/private network (isLocalProviderBaseUrl); rendering ours
+// unconditionally keeps a single rule -- every provider in the config has a
+// resolvable apiKey -- instead of mirroring OpenClaw's locality check here.
+// The value is never a real secret, and an endpoint that needs no
+// authentication ignores the Authorization header it produces. It must not
+// collide with an OpenClaw marker (custom-local, ollama-local,
+// secretref-managed, ...), which are recognized and routed down paths that
+// would resolve nothing again.
+const PublicModelAPIKey = "cubepilot-no-auth"
 
 // Render builds the openclaw.json bytes for the given providers. Static
 // scaffolding (workspace, sandbox, gateway port/auth, tools, sessions) mirrors
@@ -44,6 +59,8 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 				"provider": k8s.CredProviderName,
 				"id":       "/" + p.APIKey,
 			}
+		} else {
+			pv["apiKey"] = PublicModelAPIKey
 		}
 		providersOut[p.Key] = pv
 		modelsOut[p.Key+"/"+p.Model] = map[string]any{"alias": p.Model}

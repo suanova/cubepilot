@@ -169,6 +169,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
 	mux.HandleFunc("/api/instances", s.handleInstances)
 	mux.HandleFunc("/api/llms", s.handleAddLLM)
+	// /api/llms/{name} edits or removes a model the platform admin already
+	// added; the name is immutable, so every mutation is a PUT or a DELETE on
+	// an existing model (issue #170).
+	mux.HandleFunc("/api/llms/{name}", s.handleLLMByName)
 	mux.HandleFunc("/api/skills", s.handleSkills)
 	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
 	mux.HandleFunc("/api/skills/{name}/install", s.handleInstallSkill)
