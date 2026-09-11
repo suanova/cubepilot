@@ -60,6 +60,26 @@ interface BubbleQuestion {
   error?: string
 }
 
+// StopEvidence is what this view knows about a turn it stopped, and the only
+// thing a later history render may use to recognise that turn's row.
+//
+// The transcript the server hands back carries no stopped field (the design's
+// v1 decision), and a stopped turn that produced no text leaves no row at all:
+// the gateway captures an aborted partial only when the run's text buffer has
+// content. "The session's newest assistant bubble" is therefore not the stopped
+// turn unless something says it is, and marking the wrong bubble paints a
+// *completed* answer "Stopped". A stop has one of two ways to say so, depending
+// on whether this view held a stream for the turn; see `stopEvidence`.
+type StopEvidence =
+  // A stop over a stream this view held: the partial it watched the turn
+  // produce. Only a bubble carrying exactly that text may be relabelled, so a
+  // newer turn another tab started cannot be relabelled by this one.
+  | { text: string }
+  // A stop with no stream of this view's own (the banner): the transcript this
+  // view had already rendered, as `transcriptShape`. See `applyStoppedTurn` for
+  // what the reload has to look like.
+  | { users: string[]; lastText: string }
+
 interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
@@ -498,15 +518,16 @@ export default function ChatView() {
   // if the gateway rejects the second one. Held across the request and released
   // on every exit path: a missed release would leave Stop permanently inert.
   const stoppingRef = useRef(false)
-  // Sessions whose newest turn this tab stopped. A stop this view issued is the
-  // one stopped state the server cannot be asked about later -- the design's v1
-  // decision records that a plain reload loses it -- so it is remembered here
-  // and applied whenever that session's history is rendered, which is the
-  // refresh the stop itself triggers. It is dropped as soon as this view sends a
-  // new message for the session, because the stopped turn is not the newest one
-  // any more then. Never persisted: a real reload has no local memory left, and
-  // the design declined a server-side marker.
-  const stoppedTurnsRef = useRef<Set<string>>(new Set())
+  // Sessions whose newest turn this tab stopped, and what this tab knows that
+  // lets a history render recognise that turn's row (see StopEvidence). A stop
+  // this view issued is the one stopped state the server cannot be asked about
+  // later -- the design's v1 decision records that a plain reload loses it -- so
+  // it is remembered here and applied whenever that session's history is
+  // rendered, which is the refresh the stop itself triggers. It is dropped as
+  // soon as this view sends a new message for the session, because the stopped
+  // turn is not the newest one any more then. Never persisted: a real reload has
+  // no local memory left, and the design declined a server-side marker.
+  const stoppedTurnsRef = useRef<Map<string, StopEvidence>>(new Map())
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -702,28 +723,95 @@ export default function ChatView() {
   const blocks = (c: HistoryMessage['content']): HistoryContentBlock[] =>
     typeof c === 'string' ? [{ type: 'text', text: c }] : c
 
-  // markStoppedTurn records that this tab stopped the session's newest turn. It
-  // is what lets renderHistory show that turn as stopped on the refresh the stop
-  // triggers: the server has no field to ask for, and the stopped flag on the
-  // wire only ever reaches a client still attached to the stream.
-  function markStoppedTurn(session: string | null) {
-    if (session) stoppedTurnsRef.current.add(session)
+  // markStoppedTurn records that this tab stopped the session's newest turn,
+  // together with the evidence that identifies that turn's row. It is what lets
+  // renderHistory show that turn as stopped on the refresh the stop triggers:
+  // the server has no field to ask for, and the stopped flag on the wire only
+  // ever reaches a client still attached to the stream. `null` evidence is
+  // knowledge too -- a turn stopped before it produced any text leaves no row
+  // behind -- and drops the record rather than keeping the previous one, so no
+  // stale evidence can relabel some other turn's answer.
+  function markStoppedTurn(session: string | null, evidence: StopEvidence | null) {
+    if (!session) return
+    if (!evidence) {
+      stoppedTurnsRef.current.delete(session)
+      return
+    }
+    stoppedTurnsRef.current.set(session, evidence)
   }
 
-  // applyStoppedTurn marks the newest assistant bubble of a freshly rendered
-  // session as stopped, when this tab is the one that stopped that turn. It is
-  // applied to the history a reload or a session switch renders -- the two places
-  // a stopped turn would otherwise come back as a finished answer. A turn that
-  // ends while a stream is attached needs none of this: message_done{stopped}
-  // carries the marker itself.
-  function applyStoppedTurn(list: BubbleMsg[], session: string | null): BubbleMsg[] {
-    if (!session || !stoppedTurnsRef.current.has(session)) return list
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].kind === 'assistant') {
-        list[i].stopped = true
-        break
-      }
+  // transcriptShape is the part of a rendered list that identifies its turns:
+  // the prompts in order, and the newest assistant text. A list that carries a
+  // prompt this shape does not have belongs to a newer turn, and a list whose
+  // newest assistant text has not moved carries nothing the stop persisted.
+  function transcriptShape(list: BubbleMsg[]): { users: string[]; lastText: string } {
+    const users: string[] = []
+    let lastText = ''
+    for (const b of list) {
+      if (b.kind === 'user') users.push(b.text || '')
+      else if (b.text) lastText = b.text
     }
+    return { users, lastText }
+  }
+
+  // stopEvidence captures what this view knows about the turn it is about to
+  // stop, before the round trip. A stream of this view's own identifies the turn
+  // outright: its bubble is the newest assistant bubble and the text it has
+  // produced is the partial the abort will persist -- and a turn stopped before
+  // it produced any text persists no row at all (the gateway captures an aborted
+  // partial only when the run's text buffer has content), so there is nothing to
+  // mark and no evidence to record. With no stream -- the banner -- the only
+  // thing this view can recognise the row by later is the transcript it has
+  // already rendered.
+  function stopEvidence(): StopEvidence | null {
+    const list = bubblesRef.current
+    if (!streaming) return transcriptShape(list)
+    const last = list[list.length - 1]
+    const text = last && last.kind === 'assistant' ? last.text : undefined
+    return text ? { text } : null
+  }
+
+  // applyStoppedTurn marks a freshly rendered bubble list as stopped, when this
+  // tab stopped a turn and the list is consistent with what that stop left
+  // behind. It is applied to the history a reload or a session switch renders --
+  // the two places a stopped turn would otherwise come back as a finished
+  // answer. A turn that ends while a stream is attached needs none of this:
+  // message_done{stopped} carries the marker itself.
+  //
+  // Nothing is ever marked on the strength of position alone: see StopEvidence
+  // for why "the newest assistant bubble" is a different turn's answer whenever
+  // the stopped turn persisted no text.
+  function applyStoppedTurn(list: BubbleMsg[], session: string | null): BubbleMsg[] {
+    const evidence = session ? stoppedTurnsRef.current.get(session) : undefined
+    if (!evidence) return list
+    if ('text' in evidence) {
+      // The stopped turn's own row, by the exact partial this view watched it
+      // produce. Searched from the end so the newest match wins when the same
+      // partial was produced twice, and a row that does not carry that text is
+      // never touched: another turn's answer -- a newer one any tab started
+      // included -- cannot be relabelled by this.
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].kind === 'assistant' && list[i].text === evidence.text) {
+          list[i].stopped = true
+          break
+        }
+      }
+      return list
+    }
+    // With no stream of this view's own there is no partial to recognise, so the
+    // marker may only fall on the newest bubble, and only when the reload is the
+    // transcript this view had rendered *plus* assistant content it had not
+    // seen. A prompt the shape does not have means a newer turn -- possibly
+    // another tab's -- owns that bubble; an unchanged newest text means this
+    // stop left no row here, i.e. it stopped a turn that had produced nothing.
+    // Either way the bubble on screen belongs to another turn, and relabelling
+    // it is the bug this evidence exists to prevent.
+    const last = list[list.length - 1]
+    if (!last || last.kind !== 'assistant') return list
+    const shape = transcriptShape(list)
+    if (shape.users.length !== evidence.users.length || shape.users.some((u, i) => u !== evidence.users[i])) return list
+    if (shape.lastText === evidence.lastText) return list
+    last.stopped = true
     return list
   }
 
@@ -842,16 +930,20 @@ export default function ChatView() {
     // caller treats a refusal as "the turn is still running", which is exactly
     // what is true while the first abort settles.
     if (stoppingRef.current) return false
+    const session = currentSessionId
+    // Captured before the round trip, and about the session the abort is issued
+    // for, not whatever the view shows when it answers.
+    const evidence = stopEvidence()
     stoppingRef.current = true
     try {
-      await api.abortSession(currentSessionId)
+      await api.abortSession(session)
     } catch (e) {
       showToast(String(e))
       return false
     } finally {
       stoppingRef.current = false
     }
-    markStoppedTurn(currentSessionId)
+    markStoppedTurn(session, evidence)
     // The stream closes with message_done{stopped:true}; nothing more to do
     // here -- do NOT abort the local fetch, the server's terminal is cleaner.
     return true
@@ -879,6 +971,9 @@ export default function ChatView() {
     // before the await and re-checked after it, is what stops this from
     // reloading the stopped session's history into the view they moved to.
     const gen = streamGenRef.current
+    // With no stream of this view's own, the transcript it has rendered is the
+    // only thing that can identify the stopped turn's row once the reload lands.
+    const evidence = stopEvidence()
     stoppingRef.current = true
     setStoppingSession(session)
     try {
@@ -892,7 +987,7 @@ export default function ChatView() {
     }
     // The stop landed, whatever the view does next: the session's newest turn is
     // stopped, and only this tab knows it (see stoppedTurnsRef).
-    markStoppedTurn(session)
+    markStoppedTurn(session, evidence)
     if (streamGenRef.current !== gen) return
     // dropStream, not clearTurnElsewhere: the banner is done, and the
     // generation bump discards a turn-status check still in flight for it,
