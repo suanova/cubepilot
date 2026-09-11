@@ -81,8 +81,8 @@ matching `handleAddLLM`. `{name}` is the sanitized model name.
 | `PUT /api/llms/{name}` | edit endpoint, apiKey, and public flag |
 | `DELETE /api/llms/{name}` | remove the model and its credential Secret |
 
-Registered as `/api/llms` plus `/api/llms/` with `r.PathValue("name")` and an
-in-handler method check, mirroring `/api/agenttemplates/`.
+Registered as `/api/llms` plus `/api/llms/{name}` with `r.PathValue("name")`
+and an in-handler method check, mirroring `/api/skills/{name}/publish`.
 
 ### The credential rule
 
@@ -160,7 +160,7 @@ what the user sees.
 // ("every rendered provider has a resolvable apiKey") instead of mirroring
 // OpenClaw's locality check here. The value is never a real secret, and an
 // endpoint that needs no authentication ignores the header it produces.
-pv["apiKey"] = publicModelPlaceholder // "cubepilot-no-auth"
+pv["apiKey"] = PublicModelAPIKey // "cubepilot-no-auth"
 ```
 
 The placeholder must not collide with any OpenClaw marker
