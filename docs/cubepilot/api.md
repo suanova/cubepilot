@@ -234,7 +234,7 @@ Content-Type: application/merge-patch+json
 
 ### 删除 LLM（cubepilot-api · `DELETE /api/llms/{name}`）
 
-从模板移除模型并删除其凭据 Secret。若模板的 `defaultModel` 指向该模型，一并清空（渲染器回退到剩下的第一个 provider）。
+从模板移除模型并删除其凭据 Secret。只删本 API 为该模型命名的那个（`llm-<name>`）：`credentialRef` 若指向别的 Secret（手工改过 CR、多个模型共用一个凭据），该 Secret 会被保留并在响应的 `warning` 里说明——否则会连带删掉另一个模型仍在用的凭据。若模板的 `defaultModel` 指向该模型，一并清空（渲染器回退到剩下的第一个 provider）。
 
 若某个 `AgentInstance` 的 `spec.selectedModel` 正选中该模型，返回 **409**，body 的 `instances` 列出阻塞的实例（`{name, owner}`），`error` 中也会点名——选择是 fail-closed 的，删掉会让该用户每一轮对话报错，所以由调用方先把选择切走。允许删掉最后一个模型，模板模型列表可以为空。
 
