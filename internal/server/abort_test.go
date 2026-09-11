@@ -39,8 +39,8 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 		newClient: func(string, *ws.Device) hitlGateway { return gw },
 		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
 	}
-	// A live turn is what supplies the run id; without one the handler falls
-	// back to the session-scoped abort.
+	// A live turn is what supplies the run id; without one the handler reads one
+	// from the gateway, and fails if it cannot.
 	live := m.registerLive("admin", abortTestKey, func(agentruntime.Event) error { return nil })
 	live.setRunID("run-9")
 	gw.busy = false
@@ -86,9 +86,13 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 // session that is still busy -- the 409 this endpoint exists to remove, plus a
 // turn the user believes they stopped. The reconciliation read is what tells the
 // two failed-RPC cases apart, and here it confirms the worst one.
+//
+// The in-flight read reports a run with an id, which is what makes this a Stop
+// the handler is allowed to send at all: without a name it answers 502 without
+// issuing anything.
 func TestHandleAbortReportsAbortFailure(t *testing.T) {
 	h := NewHub()
-	gw := &fakeAbortGateway{abortErr: errors.New("gateway gone"), busy: true}
+	gw := &fakeAbortGateway{abortErr: errors.New("gateway gone"), busy: true, inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
@@ -111,7 +115,7 @@ func TestHandleAbortReportsAbortFailure(t *testing.T) {
 // reconciliation read says the run is gone, the stop landed: settle, answer 200.
 func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 	h := NewHub()
-	gw := &fakeAbortGateway{abortErr: errors.New("ws write chat.abort: context deadline exceeded")}
+	gw := &fakeAbortGateway{abortErr: errors.New("ws write chat.abort: context deadline exceeded"), inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
@@ -136,9 +140,10 @@ func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{
-		abortErr: errors.New("ws write chat.abort: context deadline exceeded"),
-		busyErr:  errors.New("chat.history: connection closed"),
-		busy:     true,
+		abortErr:    errors.New("ws write chat.abort: context deadline exceeded"),
+		busyErr:     errors.New("chat.history: connection closed"),
+		busy:        true,
+		inFlightRun: "run-a",
 	}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
@@ -165,7 +170,7 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 	no := false
 	h := NewHub()
-	gw := &fakeAbortGateway{abortAborted: &no, busy: true}
+	gw := &fakeAbortGateway{abortAborted: &no, busy: true, inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
@@ -192,10 +197,15 @@ func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 // left to stop -- the run settled naturally in the window. The session is
 // provably idle, so the ordinary path applies and the records are settled
 // exactly as for an aborted=true.
+//
+// The run must still be in flight when the handler reads for this to be the
+// aborted=false path at all: with the read reporting idle, the handler sends no
+// RPC (a session-scoped abort is the form it refuses to issue) and settles
+// without ever consulting the gateway's aborted flag.
 func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 	no := false
 	h := NewHub()
-	gw := &fakeAbortGateway{abortAborted: &no}
+	gw := &fakeAbortGateway{abortAborted: &no, inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
@@ -213,8 +223,9 @@ func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 
 // The reload-takeover path has no live turn -- releaseLive removed it when the
 // request driving the turn ended -- so a run id has to come from the gateway.
-// Without it the abort is session-scoped, and a run promoted between the RPC
-// being processed and the run the user meant settling is the one it kills.
+// This is the path that keeps working: a run with an id is aborted, scoped to
+// that id, and a run promoted between the RPC being processed and the run the
+// user meant settling is therefore not the one it kills.
 func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{inFlightRun: "run-gateway"}
@@ -230,29 +241,103 @@ func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
 	if gw.inFlightSession != abortTestKey {
 		t.Fatalf("in-flight read key = %q, want the canonical %q", gw.inFlightSession, abortTestKey)
 	}
+	if gw.abortCalls != 1 {
+		t.Fatalf("chat.abort calls = %d, want 1", gw.abortCalls)
+	}
 	if gw.lastAbortRunID != "run-gateway" {
-		t.Fatalf("abort runID = %q, want the gateway's in-flight run: the session-scoped fallback can kill the next run", gw.lastAbortRunID)
+		t.Fatalf("abort runID = %q, want the gateway's in-flight run: an unscoped abort can kill the next run", gw.lastAbortRunID)
 	}
 }
 
-// The last resort, spelled out: when the in-flight lookup answers nothing, the
-// abort stays session-scoped rather than being refused. Nothing is in flight, so
-// this is the idempotent no-op case -- and the only remaining reason to reach
-// the session-scoped form besides an unanswered read.
-func TestHandleAbortFallsBackToSessionScope(t *testing.T) {
+// The branch that used to be the session-scoped fallback, and must never be one
+// again. The in-flight read answers "a run is in flight" with no run id -- the
+// gateway's descriptor is opaque to us, so this is a state we can observe and
+// cannot name -- and the handler must not abort anything in its place: the only
+// abort it could send is session-scoped, which terminates whatever the session
+// is running at that instant. A run promoted after the one the user meant (a
+// queued follow-up draining, a second tab's turn) is then killed, the gateway
+// answers aborted:true for it, and nothing downstream can tell the two apart --
+// so the settle below would also delete the cards of a run that never stopped.
+//
+// The answer is a failure with the records untouched: this Stop did not identify
+// a run, and a stop that did not happen must not be reported as one.
+func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 	h := NewHub()
-	gw := &fakeAbortGateway{} // no live turn, no in-flight run
+	gw := &fakeAbortGateway{inFlightActive: true} // in flight, but its snapshot carries no runId
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: a run is in flight that this Stop cannot name", rec.Code)
+	}
+	if gw.abortCalls != 0 {
+		t.Fatalf("chat.abort was sent %d times with runID %q: an unnamed run must not be stopped by a session-scoped abort, which can kill a different one", gw.abortCalls, gw.lastAbortRunID)
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
+		t.Fatal("the records were settled for a run that is still in flight: a card the user still needs was deleted")
+	}
+}
+
+// The same refusal when the read cannot answer at all: a failed chat.history
+// leaves the run's identity just as unknown as a descriptor with no id, and
+// "unknown" must not be resolved into "abort the session's active run". The
+// read is reported as its own state -- not folded into idle -- precisely so this
+// branch exists.
+func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{inFlightErr: errors.New("chat.history: connection closed")}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: the run's identity is unknown", rec.Code)
+	}
+	if gw.abortCalls != 0 {
+		t.Fatalf("chat.abort was sent %d times with runID %q: an unanswerable read must not fall back to a session-scoped abort, which can kill a different run", gw.abortCalls, gw.lastAbortRunID)
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
+		t.Fatal("the records were settled with the run's fate unknown: the card of a run that may still be going is gone")
+	}
+}
+
+// No run in flight is the idempotent no-op case, and it is answered without an
+// RPC: the only form available to the handler is session-scoped (nothing is
+// known to scope it to), and sending it is how a Stop with nothing to stop
+// becomes a Stop that kills the run another tab just started. The settle still
+// runs -- a run that ended on its own can leave records behind.
+func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{} // no live turn, no run in flight
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200", rec.Code)
+		t.Fatalf("code = %d, want 200: nothing is running, so the Stop is an idempotent success", rec.Code)
 	}
-	if gw.lastAbortRunID != "" {
-		t.Fatalf("abort runID = %q, want the empty (session-scoped) form when nothing is in flight", gw.lastAbortRunID)
+	// The answer has to come from the gateway read, not from skipping it: an
+	// implementation that never looked would answer 200 here too, and would
+	// answer it on an unnamed run as well -- the case above, where 200 is the
+	// failure this refuses to report.
+	if gw.inFlightSession != abortTestKey {
+		t.Fatalf("in-flight read key = %q, want the canonical %q: the idle answer must be read, not assumed", gw.inFlightSession, abortTestKey)
+	}
+	if gw.abortCalls != 0 {
+		t.Fatalf("chat.abort was sent %d times with runID %q: an idle session has nothing to abort, and the only form available is session-scoped", gw.abortCalls, gw.lastAbortRunID)
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
+		t.Fatal("the session is idle but its pending confirmation survived: a reload resurrects a card for a dead run")
 	}
 }
 
@@ -356,7 +441,7 @@ func TestHandleAbortBusyGatewayIsNotSuccess(t *testing.T) {
 			close(checked)
 		}
 		return true, nil // a run that never ends
-	}}
+	}, inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
@@ -432,7 +517,7 @@ func TestHandleAbortSettleTimeoutIsBounded(t *testing.T) {
 // The response cannot be delivered either way; doing the work is the point.
 func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 	h := NewHub()
-	gw := &fakeAbortGateway{}
+	gw := &fakeAbortGateway{inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
@@ -441,6 +526,13 @@ func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
 
+	// The lookup that decides what gets aborted is the first half of the same
+	// command, so it must outlive the client too: on the request context it would
+	// fail, and this Stop would answer "no run id" for a session with a run in
+	// flight -- which is now a refusal, not a session-scoped abort.
+	if gw.inFlightCtxErr != nil {
+		t.Fatalf("the in-flight lookup ran on a dead context (%v): a disconnected client would turn its Stop into a failure that stops nothing", gw.inFlightCtxErr)
+	}
 	if gw.abortCtxErr != nil {
 		t.Fatalf("the abort RPC ran on a dead context (%v): the frame is written before the context is consulted, so the stop happens and is then reported as failed", gw.abortCtxErr)
 	}
@@ -466,7 +558,8 @@ func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{
-		abortErr: errors.New("ws write chat.abort: context deadline exceeded"),
+		abortErr:    errors.New("ws write chat.abort: context deadline exceeded"),
+		inFlightRun: "run-a",
 		busyFunc: func(ctx context.Context) (bool, error) {
 			// A read handed a cancelled context cannot answer, so the run's fate
 			// is unknown and the records would have to stay pending.
@@ -516,7 +609,7 @@ func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
 			<-releaseFirst
 		}
 		return false, nil
-	}}
+	}, inFlightRun: "run-a"}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
@@ -872,6 +965,11 @@ type fakeAbortGateway struct {
 	abortCtxErr      error
 	lastAbortSession string
 	lastAbortRunID   string
+	// abortCalls counts chat.abort invocations. The handler's guarantee that it
+	// never issues a session-scoped abort is only observable as "the RPC was not
+	// sent at all": an empty lastAbortRunID alone cannot tell an unsent RPC from
+	// one sent without a run id, which is the whole distinction under test.
+	abortCalls int
 	// abortAborted is chat.abort's success payload flag. nil means "the RPC
 	// aborted the run"; a pointer to false models the gateway's
 	// {ok:true, aborted:false, runIds:[]} answer, which is a successful RPC that
@@ -894,9 +992,18 @@ type fakeAbortGateway struct {
 	// the gateway reports no run), and inFlightErr makes that read fail.
 	inFlightRun string
 	inFlightErr error
+	// inFlightActive is chat.history's other answer: whether a run is in flight
+	// at all. A non-empty inFlightRun implies it, so fixtures written before the
+	// two were separated keep working; setting it alone models a descriptor that
+	// carries no runId, which is a run that exists and cannot be named.
+	inFlightActive bool
 	// inFlightSession records the key the in-flight-run read was made with, so a
 	// test can tell the reload-takeover lookup apart from a local run id.
 	inFlightSession string
+	// inFlightCtxErr records the state of the context the lookup was handed. Like
+	// abortCtxErr it is how detachment from the request is observed: the read
+	// decides what a Stop will do, so a client that gave up must not cancel it.
+	inFlightCtxErr error
 }
 
 // AbortChat models the gateway's chat.abort. abortAborted is the success
@@ -905,6 +1012,7 @@ type fakeAbortGateway struct {
 // assume.
 func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID string) (bool, error) {
 	f.lastAbortSession, f.lastAbortRunID = sessionKey, runID
+	f.abortCalls++
 	f.abortCtxErr = ctx.Err()
 	// A failed RPC carries no payload, so there is no abort to report.
 	if f.abortErr != nil {
@@ -925,9 +1033,13 @@ func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (
 	return f.busy, f.busyErr
 }
 
-func (f *fakeAbortGateway) SessionInFlightRun(ctx context.Context, sessionKey string) (string, error) {
+func (f *fakeAbortGateway) SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error) {
 	f.inFlightSession = sessionKey
-	return f.inFlightRun, f.inFlightErr
+	f.inFlightCtxErr = ctx.Err()
+	if f.inFlightErr != nil {
+		return "", false, f.inFlightErr
+	}
+	return f.inFlightRun, f.inFlightActive || f.inFlightRun != "", nil
 }
 
 // Connected and ListQuestions are not incidental: the settle step reaches the

@@ -49,7 +49,7 @@ All three already exist upstream; cubepilot has not wired them up.
 
 | User action | Gateway call | Semantics |
 |---|---|---|
-| Press Stop | `chat.abort {sessionKey}` | Terminates the active run. No new instruction. |
+| Press Stop | `chat.abort {sessionKey, runId}` | Terminates the named run. No new instruction. |
 | Send while streaming | aborted, then a normal `chat.send` | Equivalent to `interrupt`: old run dies, new run starts with the new message. |
 | Reload takeover | `chat.history {sessionKey}` → `inFlightRun` | Authoritative "is this session busy". |
 
@@ -59,15 +59,39 @@ All three already exist upstream; cubepilot has not wired them up.
 abort to that run; omitting it is session-scoped and does **not** cascade to
 child agents.
 
-**Pass `runId` whenever one is known.** The browser never learns the run id, but
-the server does: `hitlManager` holds it on the session's live turn
-(`liveTurn.runID`, `hitl.go:123-135`). A session-scoped abort is not race-free —
-if the current run settles and another is promoted before the RPC is processed
-(a queued follow-up draining, or a message from a second tab), the session-scoped
-abort terminates the **newer** run. Session-scoped is the fallback only for the
-reload-takeover path, where no live turn exists to read a run id from; there,
-serialize against send or accept the narrow race knowingly, but do not describe
-it as settled.
+**Never pass an empty `runId`.** The browser never learns the run id, but the
+server does: `hitlManager` holds it on the session's live turn
+(`liveTurn.runID`, `hitl.go:123-135`), and on the reload-takeover path — where no
+live turn exists — `chat.history`'s `inFlightRun` carries it, read by
+`SessionInFlightRun`. `chat.abort` without a `runId` is session-scoped: it
+terminates whatever the session is running at the moment the RPC is processed.
+That is not a narrow race to accept knowingly; it is a wrong run killed, and
+silently. If the run the user meant settles and another is promoted before the
+RPC (a queued follow-up draining, a message from a second tab), the
+session-scoped abort terminates the **newer** run. The gateway answers
+`aborted:true` — it did abort something — and `aborted:true` carries nothing that
+names *which* run, so neither the caller nor any later reconciliation can tell
+the intended run from the one that died. `/abort` then reports a successful stop
+and settles the session, deleting the cards of a run that is still live.
+
+So an abort is issued only against a run that can be **named**, and the in-flight
+read answers with two facts — the run id, and whether a run is in flight at all —
+precisely so the three states can be told apart:
+
+- the read failed → **502**, records untouched: the run's identity is unknown, so
+  this Stop has nothing it can safely abort;
+- a run in flight **with** an id (or a local live turn) → abort scoped to it; this
+  is the ordinary path, including reload takeover;
+- a run in flight with **no** id → **502**, records untouched: a run exists that
+  we can see and cannot name, and the only abort still available is the
+  session-scoped one;
+- no run in flight → nothing is running, so the Stop is the idempotent success:
+  settle and answer 200, sending **no** RPC at all. The only form available there
+  is session-scoped, which is exactly the form this handler must never issue.
+
+The session-scoped form remains a capability of the ws and manager layers;
+`/abort` is the caller that must never use it, and comments on the handler and on
+`hitlManager.Abort` record that.
 
 `chat.history`'s delta result carries `inFlightRun`
 (`logs-chat.ts:106`). `Hub.Active()` is **not** a usable substitute: it tracks
@@ -103,19 +127,25 @@ at that point `queueMode: "interrupt"` becomes a natural fit and only the
 `internal/openclaw/ws/methods.go`, next to `CancelQuestion`:
 
 ```go
-// AbortChat cancels a run. runID scopes the abort to that run and is what the
-// live-turn path passes; the empty string aborts the session's active run and
-// is the fallback only when no run id is known (reload takeover).
+// AbortChat cancels a run. runID scopes the abort to that run; the empty string
+// aborts the session's active run (the session-scoped form), which is kept as a
+// protocol capability only -- /abort never passes it.
 func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) error
 // → Call(ctx, "chat.abort", {sessionKey, ...(runID ? {runId: runID} : {})})
 ```
 
-Plus a reader for the busy signal, also in `internal/openclaw/ws/methods.go`:
+Plus a reader for the busy signal and for the run id, both in
+`internal/openclaw/ws/methods.go`:
 
 ```go
 // SessionBusy reports whether the gateway has an in-flight run for the session.
 func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, error)
 // → Call(ctx, "chat.history", {sessionKey}); report result.inFlightRun != nil
+
+// SessionInFlightRun reports the run id and whether a run is in flight at all.
+// The two are separate: the inFlightRun descriptor is opaque, so a run with no
+// runId must not read as "no run".
+func (c *Client) SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error)
 ```
 
 `chat.history`'s delta has a 200-entry / byte budget and can return
@@ -178,11 +208,16 @@ teardown.
 
 `/abort` then, in this order:
 
-1. Resolve the session's live turn and take its `runID` if there is one, then
-   `AbortChat(ctx, sessionKey, runID)` under a **bounded context** (the same
-   per-RPC deadline style the manager already uses, e.g. 5s). Without a bound a
-   wedged WS `Call` holds the HTTP request open until the client gives up.
-   Idempotent: "nothing was running" is success, not an error.
+1. Resolve the session's live turn and take its `runID` if there is one; if
+   there is none, read the gateway's in-flight run under its own short bound.
+   `AbortChat(ctx, sessionKey, runID)` then runs under a **bounded context** (the
+   same per-RPC deadline style the manager already uses, e.g. 5s). Without a
+   bound a wedged WS `Call` holds the HTTP request open until the client gives
+   up. The run id is never empty: a failed read and a run whose snapshot carries
+   no id are both 502 with the records untouched (see "Never pass an empty
+   `runId`" above), and a session the read reports idle is settled without an RPC
+   at all. Idempotent for the caller: "nothing was running" is success, not an
+   error.
 2. **Settle the session's local pending HITL records immediately** (below) — not
    after the wait. They must be resolved while the stream is still open, or the
    `confirm_resolved` / `question_resolved` events have nowhere to go and the
@@ -433,6 +468,12 @@ plain reload.
 - **Abort races natural completion.** `chat.abort` on a settled session is a
   no-op; `/abort` still returns success and the follow-up send starts normally.
 - **Stop pressed with nothing running.** Same: success, no-op.
+- **The run cannot be named** — the in-flight read failed, or the gateway's
+  descriptor carries no `runId`. `/abort` answers 502 with the records untouched
+  rather than aborting session-wide: a wrong run stopped with `aborted:true` back
+  is indistinguishable from the run the user meant, so it cannot be reconciled
+  afterwards. The UI keeps the turn and the Stop button, and a retry may read a
+  nameable run.
 - **Agent parked on confirm/question.** Abort cancels the run; the local records
   are settled so no dead card survives a reload.
 - **Second tab.** A session still allows only one SSE stream, so a second tab's
@@ -449,10 +490,15 @@ plain reload.
 
 ## Testing
 
-- **ws**: `AbortChat` sends `chat.abort` with the session key and no run id;
-  `SessionBusy` decodes `inFlightRun` present/absent and the `reset` branch.
+- **ws**: `AbortChat` omits `runId` when it is empty; `SessionBusy` decodes
+  `inFlightRun` present/absent and the `reset` branch; `SessionInFlightRun`
+  reports a descriptor with no `runId` as active-with-no-id, distinct from both
+  idle and a failed read.
 - **server**: `/abort` calls `AbortChat` with the live turn's `runID`, and with
-  no run id when there is no live turn; the abort RPC carries a deadline; it
+  the run id read from `chat.history` when there is no live turn; it never sends
+  an abort with an empty run id — an idle session is settled with no RPC, and a
+  run it can see but cannot name is a 502 with the records untouched; the abort
+  RPC carries a deadline; it
   waits for gateway-idle as well as `WaitIdle`, including on the takeover path
   where no stream exists; it returns 504 on timeout; it settles pending
   confirm/question records *before* the idle wait, so the resolution events are

@@ -71,7 +71,7 @@ type hitlGateway interface {
 	ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error)
 	AbortChat(ctx context.Context, sessionKey, runID string) (bool, error)
 	SessionBusy(ctx context.Context, sessionKey string) (bool, error)
-	SessionInFlightRun(ctx context.Context, sessionKey string) (string, error)
+	SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error)
 	Close()
 }
 
@@ -654,7 +654,16 @@ func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error
 // Abort cancels the session's active run over the user's gateway connection.
 // runID scopes the abort to the run the server believes is live so it cannot
 // kill a run promoted after that one settles; an empty runID falls back to the
-// session-scoped abort.
+// session-scoped abort, which terminates whatever the session happens to be
+// running.
+//
+// The empty run id stays available here, but /abort -- its only caller -- never
+// passes one: a Stop that cannot name a run is answered as a failure instead of
+// being sent, because the session-scoped form can kill a run the user never
+// meant to stop and the gateway's aborted:true carries nothing that tells the
+// two apart (see handleAbort). Keep it that way: a caller that issues an
+// unscoped abort has to be able to prove the session holds nothing but the run
+// it wants gone, and no caller in this process can.
 //
 // It reports whether the gateway actually aborted a run. A nil error with
 // aborted=false is an RPC that succeeded and stopped nothing -- the run id
@@ -721,21 +730,28 @@ func (m *hitlManager) connEstablished(ctx context.Context, user string) (hitlGat
 	return m.conn(dialCtx, user)
 }
 
-// InFlightRunID returns the run id of the gateway's in-flight run for the
-// session, or "" when the gateway reports none. It is what an abort on the
-// reload-takeover path is scoped to when LiveRunID has nothing: the local turn
-// is gone (releaseLive removed it when the request driving it ended) while the
-// run it started can still be executing.
+// InFlightRunID returns the gateway's in-flight run for the session: its run id
+// when the snapshot carries one, and whether a run is in flight at all. It is
+// what an abort on the reload-takeover path is scoped to when LiveRunID has
+// nothing: the local turn is gone (releaseLive removed it when the request
+// driving it ended) while the run it started can still be executing.
+//
+// The two are separate answers because the caller responds to each differently:
+// no run at all makes the Stop an idempotent no-op, while a run with no id is a
+// run that cannot be scoped, which the caller must refuse rather than abort
+// session-wide. A bare id could not tell those apart -- both were "" -- which is
+// what let an unnamed run be stopped by whatever the session happened to be
+// running.
 //
 // It uses the established channel rather than establishing one, unlike /turn:
 // the abort RPC that follows is issued over the same channel and cannot run
 // without it either, so a dial here would only delay the failure. /turn is what
 // puts the channel in place on this path -- the Portal checks it on mount, and
 // the Stop that answer offers then has a channel to be issued over.
-func (m *hitlManager) InFlightRunID(ctx context.Context, user, sessionKey string) (string, error) {
+func (m *hitlManager) InFlightRunID(ctx context.Context, user, sessionKey string) (string, bool, error) {
 	gw, ok := m.liveConn(user)
 	if !ok {
-		return "", fmt.Errorf("in-flight run %q: %w", sessionKey, errNoGatewayChannel)
+		return "", false, fmt.Errorf("in-flight run %q: %w", sessionKey, errNoGatewayChannel)
 	}
 	return gw.SessionInFlightRun(ctx, sessionKey)
 }

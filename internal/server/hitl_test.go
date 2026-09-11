@@ -84,9 +84,12 @@ type fakeHitlGateway struct {
 	sessionBuses   []string // sessionKeys passed to chat.history
 	sessionBusy    bool
 	sessionBusyErr error
-	// inFlightRun is the runId chat.history reports as in flight; empty means
-	// the gateway reports no run.
+	// inFlightRun is the runId chat.history reports as in flight. inFlightActive
+	// is the separate "a run is in flight at all" answer: it is what a descriptor
+	// that carries no runId produces, and a fixture sets it to model a run that
+	// exists but cannot be named.
 	inFlightRun    string
+	inFlightActive bool
 	inFlightRunErr error
 	inFlightReads  []string // sessionKeys passed to the in-flight-run read
 	// connectCtxDeadline records the bound the last connect ran under, which is
@@ -311,11 +314,14 @@ func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, er
 	f.sessionBuses = append(f.sessionBuses, key)
 	return f.sessionBusy, f.sessionBusyErr
 }
-func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (string, error) {
+func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inFlightReads = append(f.inFlightReads, key)
-	return f.inFlightRun, f.inFlightRunErr
+	if f.inFlightRunErr != nil {
+		return "", false, f.inFlightRunErr
+	}
+	return f.inFlightRun, f.inFlightActive, nil
 }
 func (f *fakeHitlGateway) Close() {}
 
@@ -933,8 +939,8 @@ func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
 // the send's idempotency key. So the id-less window is those two statements
 // wide, with no I/O between them -- it is not a pre-ACK window stretching across
 // the subscribe/send round trip. An empty LiveRunID therefore means no turn is
-// registered at all, and that is the only condition the session-scoped abort
-// fallback can observe.
+// registered at all -- which is why /abort only treats it as a miss to be
+// resolved elsewhere, never as a reason to stop aborting.
 //
 // The lookup is scoped to the requesting user: m.live is indexed by session key
 // alone, and a session key can be client-supplied, so an unscoped read would let
@@ -1164,25 +1170,41 @@ func TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial(t *testing.T) {
 	<-first
 }
 
-// TestHitl_InFlightRunIDDelegatesAndRequiresAChannel: the id an abort is scoped
+// TestHitl_InFlightRunIDDelegatesAndRequiresAChannel: the run an abort is scoped
 // to comes from the gateway, and a missing channel must be an error rather than
-// an empty id -- "" means "nothing in flight, session-scoped is the same thing",
-// which is a different claim from "could not ask".
+// an empty id -- which is a different claim from "could not ask".
+//
+// active comes back as its own answer, and the three states are pinned here
+// because the caller branches on them: idle (no run at all) is an idempotent
+// no-op, a named run is aborted, and a run that is active but unnamed is a
+// failure. A fixture whose descriptor carries no run id is exactly that last
+// state, and it must not arrive as idle.
 func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
-	gw := &fakeHitlGateway{connected: true, inFlightRun: "run-7"}
+	gw := &fakeHitlGateway{connected: true, inFlightRun: "run-7", inFlightActive: true}
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
 	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
 
-	id, err := m.InFlightRunID(context.Background(), "alice", "conv-1")
+	id, active, err := m.InFlightRunID(context.Background(), "alice", "conv-1")
 	if err != nil {
 		t.Fatalf("InFlightRunID: %v", err)
 	}
-	if id != "run-7" {
-		t.Fatalf("InFlightRunID = %q, want run-7", id)
+	if id != "run-7" || !active {
+		t.Fatalf("InFlightRunID = (%q, %v), want (run-7, true)", id, active)
+	}
+
+	unnamed := &fakeHitlGateway{connected: true, inFlightActive: true}
+	unnamedM := newTestHitl(v1alpha1.ConfirmPolicyNone, "", unnamed)
+	unnamedM.conns["alice"] = &userHitlConn{user: "alice", gw: unnamed}
+	id, active, err = unnamedM.InFlightRunID(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("InFlightRunID on an unnamed run: %v", err)
+	}
+	if id != "" || !active {
+		t.Fatalf("InFlightRunID on an unnamed run = (%q, %v), want (\"\", true): a run with no id is running, not idle", id, active)
 	}
 
 	noChannel := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
-	if _, err := noChannel.InFlightRunID(context.Background(), "alice", "conv-1"); !errors.Is(err, errNoGatewayChannel) {
+	if _, _, err := noChannel.InFlightRunID(context.Background(), "alice", "conv-1"); !errors.Is(err, errNoGatewayChannel) {
 		t.Fatalf("InFlightRunID without a channel = %v, want errNoGatewayChannel", err)
 	}
 }

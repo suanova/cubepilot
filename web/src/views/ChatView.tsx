@@ -1075,9 +1075,10 @@ export default function ChatView() {
       // has visibly happened, the text is still in the box and Send is offered
       // again, so pressing Enter once more is the natural reaction. Without the
       // guard that second submission re-enters this whole sequence and issues a
-      // *second* `POST /abort` for the session, which is not harmless: a
-      // session-scoped abort is not race-free, and it terminates a newer run
-      // promoted in the window.
+      // *second* `POST /abort` for the session, which is not harmless: by then
+      // the redirect's own send has started a new run for the session, that run
+      // is the one the server's in-flight read finds, and a stop scoped to it is
+      // a stop of the turn the user just asked for.
       //
       // The generation is captured *before* the await and re-checked *after*
       // it, not just before the send. Everything below -- the bubbles, the POST
