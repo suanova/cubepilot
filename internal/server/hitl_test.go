@@ -74,8 +74,8 @@ type fakeHitlGateway struct {
 	pendingQuestions    []ws.QuestionRecord
 
 	// chat.abort / chat.history (issue #166)
-	aborts         []string // "sessionKey|runID"; empty runID means the session-scoped form
-	abortErr       error
+	aborts   []string // "sessionKey|runID"; empty runID means the session-scoped form
+	abortErr error
 	// abortAborted is what chat.abort's success payload reports: false is a
 	// successful RPC that stopped nothing (the run id matched no abortable run).
 	// Zero value is true, so a fixture that does not set it keeps meaning "the

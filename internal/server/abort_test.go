@@ -136,9 +136,9 @@ func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{
-		abortErr:  errors.New("ws write chat.abort: context deadline exceeded"),
-		busyErr:   errors.New("chat.history: connection closed"),
-		busy:      true,
+		abortErr: errors.New("ws write chat.abort: context deadline exceeded"),
+		busyErr:  errors.New("chat.history: connection closed"),
+		busy:     true,
 	}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
