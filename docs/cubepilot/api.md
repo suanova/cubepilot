@@ -212,7 +212,31 @@ Content-Type: application/merge-patch+json
 { "name": "qwen2.5-72b", "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
 ```
 
-省略 `apiKey` 表示 public 模型（不建 Secret）。返回创建的模型条目。Portal「LLM 配置」页面封装此调用。
+`apiKey` 与 `public: true` 二选一：需要凭据的端点给 `apiKey`；端点确实不需要鉴权时给 `"public": true`（不建 Secret）。两个都不给返回 400，两个都给也返回 400。这个校验是有意为之的——无凭据的模型若被静默存下，每一轮对话都会以 "No API key resolved" 失败。
+
+`endpoint` 写的是 **API root**：OpenAI SDK 会自己追加 `/chat/completions`，所以若传入完整请求 URL（结尾 `/chat/completions`），服务端会剥掉该后缀，不会再加 `/v1`（有些 provider 的 root 本就不带 `/v1`）。
+
+返回创建的模型条目，`endpoint` 为归一化后的值。Portal「LLM 配置」页面封装此调用。
+
+### 编辑 LLM（cubepilot-api · `PUT /api/llms/{name}`）
+
+修改一个已存在模型的 endpoint、apiKey 或 public 标记。`{name}` 是已 sanitize 的模型名，**不可改**：它同时是选择 key、网关 provider key、后端模型名与凭据 Secret 名，改名等价于删除后重新添加。
+
+```json
+{ "endpoint": "https://api.example.com/v1", "apiKey": "sk-..." }
+```
+
+- `apiKey` 省略或为空 → **保留**原凭据（Portal 从不回传 key，所以「只改 endpoint」不该清掉它）。模型原本就是 public 时，必须显式给 `"public": true`，否则 400。
+- `apiKey` 非空 → 覆盖凭据；public 模型由此变成 keyed。
+- `"public": true` 且不带 `apiKey` → 清空 `credentialRef` 并删除凭据 Secret；keyed 模型由此变成 public。
+
+返回 `{"model": ...}`；删除 Secret 失败时模型改动已生效，此时附带 `warning` 字段而非报错。
+
+### 删除 LLM（cubepilot-api · `DELETE /api/llms/{name}`）
+
+从模板移除模型并删除其凭据 Secret。若模板的 `defaultModel` 指向该模型，一并清空（渲染器回退到剩下的第一个 provider）。
+
+若某个 `AgentInstance` 的 `spec.selectedModel` 正选中该模型，返回 **409**，body 的 `instances` 列出阻塞的实例（`{name, owner}`），`error` 中也会点名——选择是 fail-closed 的，删掉会让该用户每一轮对话报错，所以由调用方先把选择切走。允许删掉最后一个模型，模板模型列表可以为空。
 
 ## 3.2 `agentinstances` —— 实例（开通 / 配置）
 

@@ -27,8 +27,11 @@ export default function AgentView() {
   const [provisioning, setProvisioning] = useState(false)
   const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
   const [defaultModel, setDefaultModel] = useState('')
-  const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '' })
-  const [adding, setAdding] = useState(false)
+  const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '', public: false })
+  const [llmBusy, setLLMBusy] = useState(false)
+  // The model the card form is currently editing; null means the form adds a
+  // new one. The form is shared, so only one of the two is ever in flight.
+  const [editingModel, setEditingModel] = useState<string | null>(null)
 
   // Confirmation posture (issue #116): confirmPolicy override + owned allowlist.
   const [confirm, setConfirm] = useState<AgentConfirmView | null>(null)
@@ -227,22 +230,78 @@ export default function AgentView() {
     }
   }
 
-  async function addLLM() {
-    if (adding) return
-    if (!llmForm.name.trim() || !llmForm.endpoint.trim()) {
-      showToast('Name and endpoint are required')
-      return
-    }
-    setAdding(true)
+  function resetLLMForm() {
+    setLLMForm({ name: '', endpoint: '', apiKey: '', public: false })
+    setEditingModel(null)
+  }
+
+  function startEditLLM(m: TemplateModel) {
+    // The stored key is never sent to the browser, so the field starts blank --
+    // and a blank key on edit means "keep the current credential".
+    setLLMForm({ name: m.name, endpoint: m.endpoint, apiKey: '', public: !m.credentialRef })
+    setEditingModel(m.name)
+  }
+
+  async function removeLLM(name: string) {
+    if (llmBusy) return
+    // window.confirm: the `confirm` state in this view is the confirmation
+    // posture, not the browser dialog.
+    if (!window.confirm(`Remove model "${name}"? Its credential is deleted too.`)) return
+    setLLMBusy(true)
     try {
-      await api.addLLM({ name: llmForm.name, endpoint: llmForm.endpoint, apiKey: llmForm.apiKey || undefined })
-      showToast('LLM added - the operator will wire it into the gateway')
-      setLLMForm({ name: '', endpoint: '', apiKey: '' })
+      const res = await api.deleteLLM(name)
+      showToast(res.warning || `Model "${name}" removed`)
+      if (editingModel === name) resetLLMForm()
       await loadTemplate()
     } catch (e) {
-      showToast('Add LLM failed: ' + e)
+      // A model an instance still selects is refused with the instances named.
+      showToast('Remove failed: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
-      setAdding(false)
+      setLLMBusy(false)
+    }
+  }
+
+  // Saves the card form: an add when no edit is in flight, otherwise a PUT.
+  // Only an add needs a name and a credential decision -- an edit keeps the
+  // stored name and, with a blank key, the stored credential.
+  async function submitLLM() {
+    if (llmBusy) return
+    if (!llmForm.endpoint.trim()) {
+      showToast('Endpoint is required')
+      return
+    }
+    if (!editingModel && !llmForm.name.trim()) {
+      showToast('Name is required')
+      return
+    }
+    if (!editingModel && !llmForm.apiKey && !llmForm.public) {
+      showToast('Enter the apiKey, or mark the endpoint public')
+      return
+    }
+    setLLMBusy(true)
+    try {
+      if (editingModel) {
+        const res = await api.updateLLM(editingModel, {
+          endpoint: llmForm.endpoint,
+          apiKey: llmForm.apiKey || undefined,
+          public: llmForm.public,
+        })
+        showToast(res.warning || 'LLM updated - the operator will re-render the gateway')
+      } else {
+        await api.addLLM({
+          name: llmForm.name,
+          endpoint: llmForm.endpoint,
+          apiKey: llmForm.apiKey || undefined,
+          public: llmForm.public,
+        })
+        showToast('LLM added - the operator will wire it into the gateway')
+      }
+      resetLLMForm()
+      await loadTemplate()
+    } catch (e) {
+      showToast((editingModel ? 'Update' : 'Add') + ' LLM failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setLLMBusy(false)
     }
   }
 
@@ -320,40 +379,70 @@ export default function AgentView() {
           <div className="card" style={{ order: 1 }}>
             <div className="card-head">
               <span className="card-title">LLM Config</span>
-              <span className="card-hint">Add an OpenAI-compatible model to the platform catalog</span>
+              <span className="card-hint">Add an OpenAI-compatible model to the platform catalog, or edit one already in it</span>
             </div>
             <div className="card-pad">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
                 {templateModels.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No models yet.</div>}
                 {templateModels.map((m) => (
-                  <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+                  <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 13 }}>
                     <span className="mono">{m.name}</span>
-                    <span className="pill neutral">{m.credentialRef ? 'keyed' : 'public'}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span className="pill neutral">{m.credentialRef ? 'keyed' : 'public'}</span>
+                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => startEditLLM(m)}>Edit</button>
+                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => removeLLM(m.name)}>Remove</button>
+                    </span>
                   </div>
                 ))}
               </div>
+              {/* One form serves both paths: the name is read-only while editing
+                  because it is the model's identity downstream (provider key,
+                  model id, credential name) -- renaming is Remove + Add. */}
+              {editingModel ? (
+                <div className="field" style={{ marginBottom: 8 }}>
+                  <label className="label">Editing {editingModel}</label>
+                </div>
+              ) : (
+                <input
+                  className="input"
+                  placeholder="Model name (sent to the endpoint)"
+                  value={llmForm.name}
+                  onChange={(e) => setLLMForm((f) => ({ ...f, name: e.target.value }))}
+                />
+              )}
               <input
                 className="input"
-                placeholder="Model name (sent to the endpoint)"
-                value={llmForm.name}
-                onChange={(e) => setLLMForm((f) => ({ ...f, name: e.target.value }))}
-              />
-              <input
-                className="input"
-                placeholder="Endpoint (OpenAI-compatible base URL)"
+                placeholder="Endpoint (API root, e.g. https://api.example.com/v1)"
                 value={llmForm.endpoint}
                 onChange={(e) => setLLMForm((f) => ({ ...f, endpoint: e.target.value }))}
               />
+              <div style={{ margin: '-6px 0 8px', fontSize: 12, color: 'var(--muted)' }}>
+                Use the API root -- do not include /chat/completions.
+              </div>
               <input
                 className="input"
                 type="password"
-                placeholder="apiKey (leave empty for public models)"
+                disabled={llmForm.public}
+                placeholder={editingModel ? 'apiKey (leave empty to keep the current one)' : 'apiKey'}
                 value={llmForm.apiKey}
                 onChange={(e) => setLLMForm((f) => ({ ...f, apiKey: e.target.value }))}
               />
-              <button className="btn primary" style={{ width: '100%' }} disabled={adding} onClick={addLLM}>
-                {adding ? 'Adding...' : 'Add LLM'}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={llmForm.public}
+                  onChange={(e) => setLLMForm((f) => ({ ...f, public: e.target.checked, apiKey: e.target.checked ? '' : f.apiKey }))}
+                />
+                Public endpoint -- requires no API key
+              </label>
+              <button className="btn primary" style={{ width: '100%' }} disabled={llmBusy} onClick={submitLLM}>
+                {llmBusy ? 'Saving...' : editingModel ? 'Save Changes' : 'Add LLM'}
               </button>
+              {editingModel && (
+                <button className="btn" style={{ width: '100%', marginTop: 6 }} disabled={llmBusy} onClick={resetLLMForm}>
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
         </div>
