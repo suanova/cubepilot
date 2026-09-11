@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"strconv"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -206,6 +207,46 @@ func assertKubeconfigVol(t *testing.T, pod *corev1.Pod, volName, wantSecret, wan
 	}
 	if !found {
 		t.Errorf("volume %q not mounted at %s (subPath config)", volName, wantPath)
+	}
+}
+
+// TestPodForNamespaceRelativeAPIURL pins issue #172: the supervisor's platform
+// API URL must be derived from the Pod's OWN namespace (downward API), never
+// from a hardcoded one. The chart is installable into any namespace, so a URL
+// that assumes `cubepilot` leaves every agent Pod unreachable (and therefore
+// never Ready) on every other install.
+func TestPodForNamespaceRelativeAPIURL(t *testing.T) {
+	pod := testAgentSpec().PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+	env := containerByName(t, pod, "supervisor").Env
+
+	nsIdx, urlIdx := -1, -1
+	for i, e := range env {
+		switch e.Name {
+		case PodNamespaceEnv:
+			nsIdx = i
+			fr := e.ValueFrom
+			if fr == nil || fr.FieldRef == nil || fr.FieldRef.FieldPath != "metadata.namespace" {
+				t.Errorf("env %s = %+v, want a downward-API fieldRef to metadata.namespace", e.Name, fr)
+			}
+		case APIURLEnv:
+			urlIdx = i
+			want := "http://" + APIServiceName + ".$(" + PodNamespaceEnv + ").svc:" + strconv.Itoa(APIServicePort)
+			if e.Value != want {
+				t.Errorf("env %s = %q, want %q", e.Name, e.Value, want)
+			}
+		}
+	}
+	if nsIdx < 0 {
+		t.Fatalf("supervisor container has no env %s", PodNamespaceEnv)
+	}
+	if urlIdx < 0 {
+		t.Fatalf("supervisor container has no env %s", APIURLEnv)
+	}
+	// The kubelet only expands $(VAR) references to env vars declared EARLIER in
+	// the list, so POD_NAMESPACE must precede CUBEPILOT_API_URL.
+	if nsIdx > urlIdx {
+		t.Errorf("env order: %s (index %d) must precede %s (index %d) for $(%s) to expand",
+			PodNamespaceEnv, nsIdx, APIURLEnv, urlIdx, PodNamespaceEnv)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/suanova/cubepilot/internal/instructions"
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
 )
@@ -294,6 +296,40 @@ func TestApplyGatewayConfig(t *testing.T) {
 	got, _ = os.ReadFile(path)
 	if string(got) != `{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}` {
 		t.Errorf("config = %q, want the new content", got)
+	}
+}
+
+// TestLoadFromEnvHasNoAmbientAPIURL pins issue #172: the supervisor must never
+// invent an API URL. Any built-in default is a namespace the supervisor cannot
+// know it belongs to -- the previous one named `cubepilot`, so every install
+// elsewhere dialed a namespace it did not own and hung indefinitely. The agent
+// Pod supplies the URL (k8s.APIURLEnv); with it unset the config stays empty
+// and Run fails loudly instead.
+func TestLoadFromEnvHasNoAmbientAPIURL(t *testing.T) {
+	t.Setenv(k8s.APIURLEnv, "")
+	if got := LoadFromEnv().APIURL; got != "" {
+		t.Errorf("LoadFromEnv APIURL = %q with %s unset, want no ambient default", got, k8s.APIURLEnv)
+	}
+}
+
+// TestRunRequiresAPIURL verifies a missing API URL fails fast with a
+// configuration error. The reported symptom (issue #172) was a Pod stuck 0/1
+// Ready forever because the supervisor retried an unreachable URL; a loud
+// failure at startup is diagnosable, an endless retry loop is not.
+func TestRunRequiresAPIURL(t *testing.T) {
+	s := New(Config{User: "alice"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := s.Run(ctx)
+	if err == nil {
+		t.Fatal("Run with no APIURL returned nil, want a configuration error")
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Fatalf("Run with no APIURL retried until the context expired (%v), want an immediate configuration error", err)
+	}
+	if !strings.Contains(err.Error(), k8s.APIURLEnv) {
+		t.Errorf("Run error = %v, want it to name %s", err, k8s.APIURLEnv)
 	}
 }
 

@@ -1,6 +1,8 @@
 package k8s
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -219,6 +221,18 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
 					{Name: "CUBEPILOT_WORKSPACE", Value: "/home/node/.openclaw/workspace"},
+					// The supervisor pulls its config from the platform API in its
+					// OWN namespace (issue #172). The chart installs into any
+					// namespace, so the URL is derived from the Pod's namespace via
+					// the downward API instead of a hardcoded one. POD_NAMESPACE
+					// MUST be declared BEFORE the URL that references it: the
+					// kubelet only expands $(VAR) for env vars defined earlier in
+					// this list.
+					{
+						Name:      PodNamespaceEnv,
+						ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}},
+					},
+					{Name: APIURLEnv, Value: fmt.Sprintf("http://%s.$(%s).svc:%d", APIServiceName, PodNamespaceEnv, APIServicePort)},
 					// Dual-kubeconfig paths (issue #19): user (default, ops) and
 					// platform (discovery). The discovery skill references the
 					// platform path via --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG.

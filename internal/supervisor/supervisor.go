@@ -46,9 +46,14 @@ import (
 
 // Config carries the supervisor's own configuration (from env).
 type Config struct {
-	// APIURL is the platform internal API base URL (e.g.
-	// http://cubepilot-api.cubepilot.svc:8080). The supervisor polls
+	// APIURL is the platform internal API base URL, e.g.
+	// http://cubepilot-api.<the Pod's namespace>.svc:8080. The supervisor polls
 	// {APIURL}/internal/agents/{User}/config for the resolved config.
+	//
+	// Required: it is supplied by the agent Pod (k8s.APIURLEnv, namespace-
+	// relative via k8s.PodNamespaceEnv) because the chart installs into any
+	// namespace. There is deliberately no built-in default -- a hardcoded one
+	// would point installs at a namespace they do not own (issue #172).
 	APIURL string
 	// User is the instance owner whose config this supervisor serves.
 	User string
@@ -72,7 +77,7 @@ type Config struct {
 // LoadFromEnv builds a Config from the environment with sane defaults.
 func LoadFromEnv() Config {
 	return Config{
-		APIURL:          getenv("CUBEPILOT_API_URL", "http://cubepilot-api.cubepilot.svc:8080"),
+		APIURL:          os.Getenv(k8s.APIURLEnv),
 		User:            os.Getenv("CUBEPILOT_AGENT_USER"),
 		Workspace:       getenv("CUBEPILOT_WORKSPACE", "/home/node/.openclaw/workspace"),
 		GatewayCmd:      []string{"node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"},
@@ -159,6 +164,12 @@ func New(cfg Config) *Supervisor {
 func (s *Supervisor) Run(ctx context.Context) error {
 	if s.cfg.User == "" {
 		return fmt.Errorf("CUBEPILOT_AGENT_USER is required")
+	}
+	// Fail fast rather than retry an URL-less poll forever: without this the
+	// Pod sits Running/0 Ready with only a repeating log line to show for it
+	// (issue #172).
+	if s.cfg.APIURL == "" {
+		return fmt.Errorf("%s is required (the agent Pod sets it from %s)", k8s.APIURLEnv, k8s.PodNamespaceEnv)
 	}
 	// The gateway refuses to boot without a valid openclaw.json
 	// (gateway.mode=local), so wait for the resolved config and the rendered
