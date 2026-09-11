@@ -27,6 +27,13 @@ import (
 // message -- there, a read that says "cannot determine" is a false alarm, and a
 // command (the abort) cannot succeed either way. A failure with a channel up is
 // the opposite: the answer really is unknown.
+//
+// The sentinel spans two states that a caller must not collapse either, and it
+// cannot tell them apart on its own: this process has never dialled for the user
+// at all, and an established connection that is down right now. They differ in
+// whether a turn this process started can still be running -- see
+// gatewayDialled, and handleTurnStatus for the one place the difference is
+// acted on.
 var errNoGatewayChannel = errors.New("no live gateway channel")
 
 // hitlPairRetryDelay is the pause between NOT_PAIRED connect retries while the
@@ -502,6 +509,22 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 		out = append(out, ws.AllowlistEntry{Pattern: r.Pattern, ArgPattern: r.ArgPattern})
 	}
 	return out
+}
+
+// gatewayDialled reports whether this process has ever started a gateway
+// connection for the user.
+//
+// conn registers the entry before the handshake completes (so the pairing retry
+// loop can hold the per-user lock) and nothing ever removes it, so a missing
+// entry is a fact about this process -- it has never dialled for that user --
+// and not a snapshot of a connection that came and went. That makes it the only
+// way to tell the two states liveConn collapses into the same error: no channel
+// at all (nothing this process ever started can still be running) versus a
+// channel that is down right now (a turn started here may well be).
+func (m *hitlManager) gatewayDialled(user string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conns[user] != nil
 }
 
 // liveConn returns the user's established gateway connection without dialing a

@@ -144,17 +144,24 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 	if err != nil {
-		// No gateway channel at all is not "cannot determine". The connection is
-		// dialled lazily on first use, so this is the ordinary state of a fresh
-		// API process and of any user who has not sent a message: with no channel
-		// this process cannot be driving a turn for that user, and Stop could not
-		// succeed either (it fails on the same missing channel), so claiming
-		// "cannot determine" buys nothing and costs every conversation open a
-		// false alarm plus a Stop button that provably cannot work. A SessionBusy
-		// that errored while a channel *does* exist is the opposite case: there
-		// the answer really is unknown and Retry is meaningful, so it stays an
-		// error.
-		if errors.Is(err, errNoGatewayChannel) {
+		// errNoGatewayChannel covers two states liveConn answers alike, and only
+		// one of them may be read as idle. The connection is dialled lazily on
+		// first use and the per-user entry is never removed, so *no entry* means
+		// this process has never even dialled for that user: it cannot be
+		// driving a turn for them, Stop could not succeed either (it fails on
+		// the same missing channel), and claiming "cannot determine" buys
+		// nothing while costing every conversation open a false alarm plus a
+		// Stop button that provably cannot work.
+		//
+		// An entry that exists while its connection is down is the opposite
+		// case: the break is in *observation*, not in the run -- the agent keeps
+		// working through a gateway restart or a pod roll -- so a turn this
+		// process started can still be in flight and the honest answer is that
+		// it could not be determined. Answering idle there would hide a running
+		// turn and offer no Stop, which is exactly what the check above this
+		// handler exists to prevent; the caller gets an error it reports as
+		// "could not check" with a Retry.
+		if errors.Is(err, errNoGatewayChannel) && !s.hitl.gatewayDialled(user) {
 			writeJSON(w, http.StatusOK, map[string]any{"active": false})
 			return
 		}

@@ -480,6 +480,34 @@ func TestHandleTurnStatusWithoutChannelIsIdle(t *testing.T) {
 	}
 }
 
+// A registered connection that is down is NOT the no-channel case, even though
+// hitlManager reports both through the same sentinel: this process has dialled
+// for the user, so a turn it started can still be running while the connection
+// is broken (a gateway restart or an API pod roll stops observation, not the
+// run). Reading this as idle would hide a running turn and take away its Stop
+// for exactly the user who needs it; "cannot determine" is the honest answer.
+//
+// The test drives SessionBusy *and* the handler, because the sentinel cannot
+// carry the distinction -- both states produce it -- and the classification is
+// the per-user map entry the handler has to consult.
+func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
+	gw := &downAbortGateway{}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+
+	if _, err := m.SessionBusy(context.Background(), "admin", abortTestKey); !errors.Is(err, errNoGatewayChannel) {
+		t.Fatalf("SessionBusy on a down connection = %v, want the same errNoGatewayChannel as the no-channel case", err)
+	}
+
+	s := newAbortTestServer(NewHub(), m)
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: a turn this process started may still be running", rec.Code)
+	}
+	assertNoActiveClaim(t, rec.Body.Bytes())
+}
+
 // A read whose bound runs out is an error, never an idle. "Cannot determine" is
 // not "not busy": a 200 {"active": false} here would hide a running turn and
 // remove the Stop the endpoint exists to offer. The fake behaves like a wedged
@@ -651,6 +679,14 @@ func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (
 // ListQuestions the settle would panic one call later. This session has no open
 // questions, which is the state the happy path settles in.
 func (f *fakeAbortGateway) Connected() bool { return true }
+
+// downAbortGateway is a per-user connection that is registered but not usable:
+// the state a dropped gateway link leaves behind, since m.conns entries are
+// never removed. It shares the fake's busy answer, which is unreachable -- a
+// down connection is dropped by liveConn before any RPC.
+type downAbortGateway struct{ fakeAbortGateway }
+
+func (f *downAbortGateway) Connected() bool { return false }
 
 func (f *fakeAbortGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
 	f.listed = true
