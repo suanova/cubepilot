@@ -146,22 +146,22 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// errNoGatewayChannel covers two states liveConn answers alike, and only
 		// one of them may be read as idle. The connection is dialled lazily on
-		// first use and the per-user entry is never removed, so *no entry* means
-		// this process has never even dialled for that user: it cannot be
-		// driving a turn for them, Stop could not succeed either (it fails on
-		// the same missing channel), and claiming "cannot determine" buys
-		// nothing while costing every conversation open a false alarm plus a
-		// Stop button that provably cannot work.
+		// first use, so a process with *no channel* for the user -- never
+		// dialled, or still handshaking, which the pairing retry can drag out
+		// for up to 30s -- cannot be driving a turn for them: Stop could not
+		// succeed either (it fails on the same missing channel), and claiming
+		// "cannot determine" buys nothing while costing every conversation open
+		// a false alarm plus a Stop button that provably cannot work.
 		//
-		// An entry that exists while its connection is down is the opposite
-		// case: the break is in *observation*, not in the run -- the agent keeps
+		// A channel that came up and has since gone down is the opposite case:
+		// the break is in *observation*, not in the run -- the agent keeps
 		// working through a gateway restart or a pod roll -- so a turn this
 		// process started can still be in flight and the honest answer is that
 		// it could not be determined. Answering idle there would hide a running
 		// turn and offer no Stop, which is exactly what the check above this
 		// handler exists to prevent; the caller gets an error it reports as
 		// "could not check" with a Retry.
-		if errors.Is(err, errNoGatewayChannel) && !s.hitl.gatewayDialled(user) {
+		if errors.Is(err, errNoGatewayChannel) && !s.hitl.gatewayConnected(user) {
 			writeJSON(w, http.StatusOK, map[string]any{"active": false})
 			return
 		}

@@ -1057,3 +1057,84 @@ func TestHitl_SessionBusyDoesNotSwallowError(t *testing.T) {
 		t.Fatal("SessionBusy = true alongside an error")
 	}
 }
+
+// blockingHitlGateway is a gateway whose handshake parks until the test releases
+// it, so the state in the middle of a dial can be observed. That window is the
+// one the Portal used to read as "cannot determine": conn registers the entry
+// before dialling, and the NOT_PAIRED pairing retry can hold it there for up to
+// 30 seconds.
+type blockingHitlGateway struct {
+	fakeHitlGateway
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingHitlGateway) Connect(ctx context.Context) error {
+	close(f.entered)
+	<-f.release
+	f.mu.Lock()
+	f.connected = true
+	f.mu.Unlock()
+	return nil
+}
+
+// TestHitlGatewayConnectedNeedsASuccessfulHandshake pins the flag /turn's
+// classification reads: it must be false for the whole of a dial that has not
+// finished -- an idle session then answers idle instead of raising the
+// cannot-check banner -- and true afterwards, including after the entry has been
+// replaced by a re-dial, because a turn started over the old connection can
+// still be running.
+func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
+	gw := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &gw.fakeHitlGateway)
+	m.newClient = func(url string, dev *ws.Device) hitlGateway { return gw }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.conn(context.Background(), "alice")
+		done <- err
+	}()
+
+	<-gw.entered
+	// The entry is registered (that is how the dial is tracked) and its gateway
+	// is not connected yet: registered must not read as a channel.
+	m.mu.Lock()
+	entry := m.conns["alice"]
+	m.mu.Unlock()
+	if entry == nil {
+		t.Fatal("no entry is registered during the dial; this test is not observing the state it claims to")
+	}
+	if m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = true while the handshake is still in flight: /turn would answer 502 and the Portal would flash its cannot-check banner over an idle session")
+	}
+
+	close(gw.release)
+	if err := <-done; err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	if !m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = false after a successful handshake")
+	}
+
+	// The connection then drops and is re-dialled: the replacement entry starts
+	// out unmarked, and must inherit the fact that this process once had a
+	// channel.
+	gw.mu.Lock()
+	gw.connected = false
+	gw.mu.Unlock()
+	gw.release = make(chan struct{})
+	gw.entered = make(chan struct{})
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := m.conn(context.Background(), "alice")
+		done2 <- err
+	}()
+	<-gw.entered
+	if !m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = false during a re-dial after a drop: a turn started over the old connection may still be running")
+	}
+	close(gw.release)
+	if err := <-done2; err != nil {
+		t.Fatalf("re-dial: %v", err)
+	}
+}

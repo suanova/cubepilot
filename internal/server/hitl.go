@@ -29,10 +29,10 @@ import (
 // the opposite: the answer really is unknown.
 //
 // The sentinel spans two states that a caller must not collapse either, and it
-// cannot tell them apart on its own: this process has never dialled for the user
-// at all, and an established connection that is down right now. They differ in
+// cannot tell them apart on its own: this process has no usable channel for the
+// user, and an established connection that is down right now. They differ in
 // whether a turn this process started can still be running -- see
-// gatewayDialled, and handleTurnStatus for the one place the difference is
+// gatewayConnected, and handleTurnStatus for the one place the difference is
 // acted on.
 var errNoGatewayChannel = errors.New("no live gateway channel")
 
@@ -205,6 +205,15 @@ func (t *liveTurn) outcome() (agentruntime.TurnOutcome, error) {
 type userHitlConn struct {
 	user string
 	gw   hitlGateway
+	// connected records that this entry's handshake has succeeded at least once.
+	// It is monotonic: a connection that comes and goes keeps it, and a re-dial
+	// carries it into the replacement entry. It is what gatewayConnected reads,
+	// and it must NOT be set when the entry is merely registered -- conn stores
+	// the entry up front and the pairing retry loop can hold it for up to 30s, so
+	// treating "registered" as "has a channel" made a /turn during a user's first
+	// connect answer 502 and flash the Portal's cannot-check banner at a session
+	// that was idle.
+	connected bool
 }
 
 // ConfiguredHITL builds the manager, or returns nil (HITL disabled) when no
@@ -347,7 +356,13 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	})
 
 	m.mu.Lock()
-	m.conns[user] = &userHitlConn{user: user, gw: gw}
+	// The entry is registered before the handshake, but it is NOT yet
+	// "connected": until a handshake succeeds there is no channel, which is what
+	// gatewayConnected reports. A re-dial replaces the entry and carries the
+	// earlier success forward, because a turn started over that connection can
+	// still be running through the break.
+	entry := &userHitlConn{user: user, gw: gw, connected: m.hasConnectedLocked(user)}
+	m.conns[user] = entry
 	m.mu.Unlock()
 
 	// First connect may be rejected NOT_PAIRED while the in-pod supervisor
@@ -365,6 +380,7 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 		err := gw.Connect(aCtx)
 		cancel()
 		if err == nil {
+			m.markConnected(user)
 			return gw, nil
 		}
 		connectErr = err
@@ -511,20 +527,46 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 	return out
 }
 
-// gatewayDialled reports whether this process has ever started a gateway
-// connection for the user.
+// gatewayConnected reports whether this process has a gateway channel for the
+// user: one that is usable now, or one it opened and has since lost.
 //
-// conn registers the entry before the handshake completes (so the pairing retry
-// loop can hold the per-user lock) and nothing ever removes it, so a missing
-// entry is a fact about this process -- it has never dialled for that user --
-// and not a snapshot of a connection that came and went. That makes it the only
-// way to tell the two states liveConn collapses into the same error: no channel
-// at all (nothing this process ever started can still be running) versus a
-// channel that is down right now (a turn started here may well be).
-func (m *hitlManager) gatewayDialled(user string) bool {
+// It is deliberately NOT "an entry exists in m.conns". conn registers the entry
+// before the handshake -- there is no earlier moment at which a second conn()
+// could be told to wait on the first -- and the NOT_PAIRED pairing retry can
+// hold that state for up to 30 seconds. Reading a registration as a channel made
+// a /turn issued during a user's first connect answer "cannot determine" and
+// raise the Portal's cannot-check banner over a session that was in fact idle;
+// the state that matters is a *successful* connect, so the flag is set when a
+// handshake returns. It is monotonic: a connection that drops does not un-dial
+// the process, and a turn started over it can still be running, which is exactly
+// the distinction handleTurnStatus needs. See the sentinel's comment for the two
+// states liveConn collapses into one error.
+func (m *hitlManager) gatewayConnected(user string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.conns[user] != nil
+	return m.hasConnectedLocked(user)
+}
+
+// hasConnectedLocked is gatewayConnected's body, for callers already holding
+// m.mu (conn carries the flag into a replacement entry while it has the lock).
+func (m *hitlManager) hasConnectedLocked(user string) bool {
+	c := m.conns[user]
+	if c == nil {
+		return false
+	}
+	// A usable connection is a successful connect by definition -- this covers
+	// the instant between Connect returning and the flag being set -- and the
+	// flag covers the channel that has since gone down.
+	return c.connected || (c.gw != nil && c.gw.Connected())
+}
+
+// markConnected records that the user's handshake succeeded.
+func (m *hitlManager) markConnected(user string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c := m.conns[user]; c != nil {
+		c.connected = true
+	}
 }
 
 // liveConn returns the user's established gateway connection without dialing a

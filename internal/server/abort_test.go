@@ -480,19 +480,20 @@ func TestHandleTurnStatusWithoutChannelIsIdle(t *testing.T) {
 	}
 }
 
-// A registered connection that is down is NOT the no-channel case, even though
-// hitlManager reports both through the same sentinel: this process has dialled
-// for the user, so a turn it started can still be running while the connection
-// is broken (a gateway restart or an API pod roll stops observation, not the
-// run). Reading this as idle would hide a running turn and take away its Stop
-// for exactly the user who needs it; "cannot determine" is the honest answer.
+// An established connection that is down is NOT the no-channel case, even
+// though hitlManager reports both through the same sentinel: this process had a
+// channel for the user, so a turn it started can still be running while the
+// connection is broken (a gateway restart or an API pod roll stops observation,
+// not the run). Reading this as idle would hide a running turn and take away its
+// Stop for exactly the user who needs it; "cannot determine" is the honest
+// answer.
 //
 // The test drives SessionBusy *and* the handler, because the sentinel cannot
 // carry the distinction -- both states produce it -- and the classification is
-// the per-user map entry the handler has to consult.
+// the entry's `connected` flag, which the handler has to consult.
 func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 	gw := &downAbortGateway{}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw, connected: true}}}
 
 	if _, err := m.SessionBusy(context.Background(), "admin", abortTestKey); !errors.Is(err, errNoGatewayChannel) {
 		t.Fatalf("SessionBusy on a down connection = %v, want the same errNoGatewayChannel as the no-channel case", err)
@@ -506,6 +507,41 @@ func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 		t.Fatalf("code = %d, want 502: a turn this process started may still be running", rec.Code)
 	}
 	assertNoActiveClaim(t, rec.Body.Bytes())
+}
+
+// The other half of the same map lookup, and the state the flag exists for: an
+// entry that is present but has never carried a successful handshake.
+//
+// conn registers the entry *before* dialling -- and the NOT_PAIRED pairing retry
+// can hold it that way for up to 30 seconds -- so reading registration as "has a
+// channel" made every /turn issued during a user's first connect answer "cannot
+// determine": the Portal raised its cannot-check banner, and the banner's Stop
+// failed on the same unusable channel. Nothing can be running for that user yet
+// (the dial has not completed), so idle is the truthful answer and the alarm is
+// noise the user cannot act on.
+//
+// It is the same fake as the test above, with the opposite `connected` flag,
+// which is what makes the pair a check of the flag rather than of Connected().
+func TestHandleTurnStatusMidDialIsIdle(t *testing.T) {
+	gw := &downAbortGateway{}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(NewHub(), m)
+
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: an entry whose handshake has not finished has no channel to hide a turn behind", rec.Code)
+	}
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Active {
+		t.Fatal("active = true, want false: a dial still in flight cannot be driving a turn")
+	}
 }
 
 // A read whose bound runs out is an error, never an idle. "Cannot determine" is
@@ -680,10 +716,15 @@ func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (
 // questions, which is the state the happy path settles in.
 func (f *fakeAbortGateway) Connected() bool { return true }
 
-// downAbortGateway is a per-user connection that is registered but not usable:
-// the state a dropped gateway link leaves behind, since m.conns entries are
-// never removed. It shares the fake's busy answer, which is unreachable -- a
-// down connection is dropped by liveConn before any RPC.
+// downAbortGateway is a per-user connection that is not usable right now. It
+// shares the fake's busy answer, which is unreachable -- a down connection is
+// dropped by liveConn before any RPC.
+//
+// On its own it models either of the two states the sentinel collapses: a dial
+// still handshaking, and an established channel that has gone down. Which one it
+// is depends solely on the `connected` flag of the entry it is stored in, and
+// the two tests below pin that the handler reads the flag rather than the mere
+// presence of the entry.
 type downAbortGateway struct{ fakeAbortGateway }
 
 func (f *downAbortGateway) Connected() bool { return false }
