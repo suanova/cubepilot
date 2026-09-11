@@ -198,7 +198,17 @@ teardown.
    follow-up send could otherwise be steered into the dying run and swallowed.
    On timeout return **504** rather than success, so the UI keeps the turn and the
    Stop button and the user can retry instead of failing silently. Step 2 has
-   already run by then, so a timed-out abort leaves no dead cards behind.
+   already run on this path, so a *wait* timeout leaves no dead cards behind.
+
+   That scoping matters, because the other failure path is deliberately the
+   opposite. If the abort RPC itself fails, the handler answers 502 **before**
+   step 2 and leaves the session's records pending. That is not an oversight:
+   the RPC failing means the run's fate is unknown, and a run that is still
+   alive still has a live, answerable card. Settling on an unknown result would
+   delete a card for a run that never stopped — a worse failure than a stale one,
+   and the reverse of what step 2 is for. The records are cleared on the next
+   successful abort, and a card whose record is already gone answers 404, which
+   the client renders as gone rather than as an error.
 
 **Terminal state.** On abort the gateway emits chat `state:"aborted"`
 (`internal/server/livetools.go:245-248` already treats it as terminal), but

@@ -52,7 +52,14 @@ func TestAbortChatOmitsEmptyRunID(t *testing.T) {
 }
 
 func TestAbortChatSendsRunID(t *testing.T) {
-	c, calls := newTestClient(t, func(string, json.RawMessage) (json.RawMessage, error) {
+	c, calls := newTestClient(t, func(method string, _ json.RawMessage) (json.RawMessage, error) {
+		// Pin the method here too, not only in the empty-runId case: a
+		// regression that dropped the run id from a *correctly named* call and
+		// a regression that sent it under the wrong method are different bugs,
+		// and each test should catch its own.
+		if method != "chat.abort" {
+			t.Fatalf("method = %q, want chat.abort", method)
+		}
 		return json.RawMessage(`{"aborted":true}`), nil
 	})
 	if err := c.AbortChat(context.Background(), "session-a", "run-7"); err != nil {
