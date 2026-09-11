@@ -1033,10 +1033,17 @@ export default function ChatView() {
       // as a concurrent turn and would leave the running turn with no Stop
       // control, so the user keeps their text and the Stop button instead.
       //
-      // The guard is held for the whole stop-then-send sequence and released on
-      // both exits: the abandoned redirect below, and the send that follows. The
-      // release cannot be observed by a second submission: from it to the
-      // textarea being cleared there is no await, so both happen in one turn.
+      // The guard is held for the whole stop-then-send sequence -- including the
+      // banner's history reload -- and released on every exit path: the
+      // abandoned redirect below, the throw out of the stop, and the send that
+      // follows. It has to span the reload too. The stop settling to the
+      // textarea being cleared is where the composer looks most idle: nothing
+      // has visibly happened, the text is still in the box and Send is offered
+      // again, so pressing Enter once more is the natural reaction. Without the
+      // guard that second submission re-enters this whole sequence and issues a
+      // *second* `POST /abort` for the session, which is not harmless: a
+      // session-scoped abort is not race-free, and it terminates a newer run
+      // promoted in the window.
       //
       // The generation is captured *before* the await and re-checked *after*
       // it, not just before the send. Everything below -- the bubbles, the POST
@@ -1050,25 +1057,34 @@ export default function ChatView() {
       // switched to. The re-check is what makes the switch win; a check only
       // before the send cannot see a switch that has not happened yet.
       const genAtSend = streamGenRef.current
+      // The banner's own Stop control is on screen with nothing to show for the
+      // wait, so the round trip is made visible the same way the banner's Stop
+      // makes it visible: the composer's Send is disabled and the banner reads
+      // "Stopping…" for the whole sequence, reload included. Held here rather
+      // than left to `stopTurn`/`stopElsewhere`, which release it as soon as the
+      // abort answers -- before the reload that is the rest of the wait.
+      const holdVisibleStop = bannerUp && !!currentSessionId
+      if (holdVisibleStop) setStoppingSession(currentSessionId)
       sendingRef.current = true
       let stopped = false
       try {
         stopped = await stopTurn()
+        if (streamGenRef.current !== genAtSend) return
+        if (!stopped) return
+        if (bannerUp) {
+          // The banner's turn had no stream in this view, so nothing in it ever
+          // carried that turn's stopped marker: the only record of what happened
+          // is the history the abort has just persisted. Re-render it -- with
+          // `stoppedTurnsRef` marking its own row -- before the new turn's
+          // bubbles are appended below, or the turn the user just stopped comes
+          // back looking like a finished answer.
+          if (!currentSessionId) return
+          await loadHistory(currentSessionId)
+          if (streamGenRef.current !== genAtSend) return
+        }
       } finally {
         sendingRef.current = false
-      }
-      if (streamGenRef.current !== genAtSend) return
-      if (!stopped) return
-      if (bannerUp) {
-        // The banner's turn had no stream in this view, so nothing in it ever
-        // carried that turn's stopped marker: the only record of what happened
-        // is the history the abort has just persisted. Re-render it -- with
-        // `stoppedTurnsRef` marking its newest assistant turn -- before the new
-        // turn's bubbles are appended below, or the turn the user just stopped
-        // comes back looking like a finished answer.
-        if (!currentSessionId) return
-        await loadHistory(currentSessionId)
-        if (streamGenRef.current !== genAtSend) return
+        if (holdVisibleStop) setStoppingSession(null)
       }
     }
     // The newest turn of this session is about to be the one this send starts,
