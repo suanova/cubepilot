@@ -259,11 +259,9 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		}
 	case body.Public && current.CredentialRef != nil:
 		// Demoted to public: the credential must not outlive the model's
-		// reference to it. The model is already gone from the template, so a
-		// failure here is reported as a warning rather than an error that would
-		// read as "the edit failed".
-		if err := deleteLLMCredential(r.Context(), s, current.CredentialRef.Name); err != nil {
-			warning = fmt.Sprintf("model updated, but its credential Secret could not be removed: %v", err)
+		// reference to it.
+		if w := removeModelCredential(r.Context(), s, name, current.CredentialRef); w != "" {
+			warning = "model updated, but its " + w
 		}
 	}
 	resp := map[string]any{"model": model}
@@ -279,8 +277,32 @@ func llmCredentialName(modelName string) string {
 	return "llm-" + modelName
 }
 
-// deleteLLMCredential removes a model's credential Secret. A missing Secret is
-// success: the goal is that it does not exist.
+// removeModelCredential deletes the credential Secret a model owns, and returns
+// a warning for the response ("" when there is nothing to report). It is called
+// after the model change is already committed, so a failure is reported rather
+// than raised -- an error response would read as "the change failed" when it
+// did not.
+//
+// Only the Secret this API names after the model (llm-<name>) is removed. A CR
+// hand-edited to point a model at a Secret it shares with another model (the
+// builtin's cubepilot-llm, say) must not lose that Secret when this model goes:
+// the other model would silently lose its credential.
+func removeModelCredential(ctx context.Context, s *Server, modelName string, ref *corev1.LocalObjectReference) string {
+	if ref == nil || ref.Name == "" {
+		return ""
+	}
+	owned := llmCredentialName(modelName)
+	if ref.Name != owned {
+		return fmt.Sprintf("credential Secret %q is not the platform-managed %q and was left in place", ref.Name, owned)
+	}
+	if err := deleteLLMCredential(ctx, s, ref.Name); err != nil {
+		return fmt.Sprintf("credential Secret %q could not be deleted: %v", ref.Name, err)
+	}
+	return ""
+}
+
+// deleteLLMCredential removes a credential Secret. A missing Secret is success:
+// the goal is that it does not exist.
 func deleteLLMCredential(ctx context.Context, s *Server, secretName string) error {
 	if secretName == "" {
 		return nil
@@ -377,12 +399,8 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	warning := ""
-	if model.CredentialRef != nil {
-		// The model is already gone from the template; a failure here is a
-		// warning, not an error -- reporting "the delete failed" would be a lie.
-		if err := deleteLLMCredential(r.Context(), s, model.CredentialRef.Name); err != nil {
-			warning = fmt.Sprintf("model removed, but its credential Secret could not be deleted: %v", err)
-		}
+	if w := removeModelCredential(r.Context(), s, name, model.CredentialRef); w != "" {
+		warning = "model removed, but its " + w
 	}
 	resp := map[string]any{"removed": name}
 	if warning != "" {

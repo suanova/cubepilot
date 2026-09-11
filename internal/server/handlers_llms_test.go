@@ -509,3 +509,61 @@ func TestLLMRoutesAreWired(t *testing.T) {
 		t.Fatalf("DELETE /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+// shareCredentialWith points one of the template's models at an existing
+// credential Secret instead of the one this API would have named for it -- the
+// state a hand-edited CR can be in.
+func shareCredentialWith(t *testing.T, s *Server, model, secret string) {
+	t.Helper()
+	tmpl := builtinTemplate(t, s)
+	for i := range tmpl.Spec.Models {
+		if tmpl.Spec.Models[i].Name == model {
+			tmpl.Spec.Models[i].CredentialRef = &corev1.LocalObjectReference{Name: secret}
+		}
+	}
+	if err := s.cr.Update(context.Background(), &tmpl); err != nil {
+		t.Fatalf("update template: %v", err)
+	}
+}
+
+// TestHandleDeleteLLMKeepsSharedCredential: a credentialRef that is not the
+// Secret this API names after the model may be shared with another model (the
+// builtin's cubepilot-llm is), so deleting the model must not take it along --
+// the other model would silently lose its credential.
+func TestHandleDeleteLLMKeepsSharedCredential(t *testing.T) {
+	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
+	shareCredentialWith(t, s, "my-qwen", "cubepilot-llm")
+	if err := upsertLLMCredential(context.Background(), s, "cubepilot-llm", "sk-shared"); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	w := deleteLLM(t, s, "my-qwen")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "cubepilot-llm"}, &corev1.Secret{}); err != nil {
+		t.Errorf("a Secret this model does not own must be left in place: %v", err)
+	}
+	// The model is gone either way; the leftover is reported, not silently kept.
+	if !strings.Contains(w.Body.String(), "cubepilot-llm") {
+		t.Errorf("the response should say the shared Secret was left: %s", w.Body.String())
+	}
+}
+
+// TestHandleUpdateLLMKeepsSharedCredential is the same guard on the demote
+// path: clearing a hand-set credentialRef must not delete the Secret it names.
+func TestHandleUpdateLLMKeepsSharedCredential(t *testing.T) {
+	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
+	shareCredentialWith(t, s, "my-qwen", "cubepilot-llm")
+	if err := upsertLLMCredential(context.Background(), s, "cubepilot-llm", "sk-shared"); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","public":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "cubepilot-llm"}, &corev1.Secret{}); err != nil {
+		t.Errorf("a Secret this model does not own must be left in place: %v", err)
+	}
+}
