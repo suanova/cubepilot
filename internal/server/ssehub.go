@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -90,6 +92,35 @@ func (h *Hub) Active(sessionKey string) bool {
 	return ok
 }
 
+// WaitIdle blocks until the session has no active stream, or ctx expires.
+//
+// It deliberately does NOT trust the active stream's closedCh alone: Close
+// closes that channel before it unregisters, so a waiter woken by it could
+// return while Open still sees the old stream and answers 409 -- the exact
+// conflict this exists to prevent. Membership is re-checked under the hub lock
+// after every wake.
+func (h *Hub) WaitIdle(ctx context.Context, sessionKey string) error {
+	for {
+		h.mu.Lock()
+		s, ok := h.active[sessionKey]
+		h.mu.Unlock()
+		if !ok {
+			return nil
+		}
+		select {
+		case <-s.closedCh:
+			// Woken, but unregistration may not have happened yet: loop. The
+			// channel stays closed, so the re-check above cannot block on it --
+			// yield rather than spin on the closed channel until Close's remove
+			// (two adjacent statements away) lands. The membership re-check above
+			// is still the only thing that decides the return.
+			runtime.Gosched()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // Stream is one open SSE response for a session.
 type Stream struct {
 	key     string
@@ -100,9 +131,15 @@ type Stream struct {
 	mu        sync.Mutex
 	lastWrite time.Time
 	closed    bool
-	closedCh  chan struct{}
-	hbStop    chan struct{}
-	hbOnce    sync.Once
+	// closedCh is created once by Hub.Open and never reassigned. That invariant
+	// is what makes the unlocked reads safe: the field is written before the
+	// stream is published under h.mu, and WaitIdle and heartbeat both reach the
+	// stream through h.mu, so the read is ordered by that lock even though they
+	// select on the channel without holding s.mu. Reassigning closedCh would
+	// break this and force those reads under s.mu.
+	closedCh chan struct{}
+	hbStop   chan struct{}
+	hbOnce   sync.Once
 }
 
 // Start begins the idle heartbeat goroutine (idempotent).

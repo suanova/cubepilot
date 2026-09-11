@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -71,6 +72,134 @@ func (c *Client) CancelQuestion(ctx context.Context, id, resolvedBy string) erro
 		return fmt.Errorf("question.resolve cancel %q: %w", id, err)
 	}
 	return nil
+}
+
+// chatAbortParams is the chat.abort request body. runId is omitted entirely when
+// empty: the gateway's schema rejects an empty string, and omitting it is what
+// selects the session-scoped abort.
+type chatAbortParams struct {
+	SessionKey string `json:"sessionKey"`
+	RunID      string `json:"runId,omitempty"`
+}
+
+// chatAbortResult is chat.abort's success payload. `aborted` is the field that
+// says whether the RPC actually stopped anything, and it must not be discarded:
+// the gateway answers ok=true with aborted=false and an empty runIds when the
+// run id matched no abortable run, which is a real answer, not a stop. A run
+// whose gateway snapshot carries sessionAbortable:true is cancellable only
+// through the session-owned path, and a run promoted between the caller's
+// in-flight read and this RPC yields the same payload. Reading the ok as "the
+// run stopped" is how a caller ends up settling a session whose run is still
+// going.
+type chatAbortResult struct {
+	Aborted bool `json:"aborted"`
+}
+
+// AbortChat cancels a run (chat.abort). runID scopes the abort to that run and
+// is what every caller passes; an empty runID aborts the session's active run
+// instead, which is the session-scoped form. That form is kept here as a
+// capability of the protocol but /abort never uses it: a Stop that cannot name
+// a run is answered rather than sent, because the session-scoped abort
+// terminates whatever the session is running at that moment and the gateway's
+// aborted:true carries nothing that distinguishes it from the run the user
+// meant to stop (see server.handleAbort).
+//
+// It reports whether the gateway actually aborted a run. A nil error with
+// aborted=false is a successful RPC that stopped nothing: the run id matched no
+// abortable run. The caller must reconcile that against the session's liveness
+// before treating the stop as done. An undecodable payload is reported as an
+// error rather than as aborted=false, because "the gateway said something this
+// client cannot read" is not the gateway saying it stopped nothing -- the caller
+// treats a returned error conservatively either way.
+func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) (bool, error) {
+	if sessionKey == "" {
+		return false, fmt.Errorf("chat.abort: empty session key")
+	}
+	raw, err := c.Call(ctx, "chat.abort", chatAbortParams{SessionKey: sessionKey, RunID: runID})
+	if err != nil {
+		return false, fmt.Errorf("chat.abort %q: %w", sessionKey, err)
+	}
+	var out chatAbortResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, fmt.Errorf("decode chat.abort %q: %w", sessionKey, err)
+	}
+	return out.Aborted, nil
+}
+
+type chatHistoryParams struct {
+	SessionKey string `json:"sessionKey"`
+}
+
+// chatHistoryResult is the subset of chat.history's delta result this client
+// reads. The delta payload also carries messages and a deltaCursor that a future
+// stream re-attach would use; nothing here consumes them, and the gateway's
+// "reset" shape simply has no inFlightRun.
+type chatHistoryResult struct {
+	InFlightRun json.RawMessage `json:"inFlightRun"`
+}
+
+// sessionHistory reads the session's history projection (chat.history).
+func (c *Client) sessionHistory(ctx context.Context, sessionKey string) (chatHistoryResult, error) {
+	raw, err := c.Call(ctx, "chat.history", chatHistoryParams{SessionKey: sessionKey})
+	if err != nil {
+		return chatHistoryResult{}, fmt.Errorf("chat.history %q: %w", sessionKey, err)
+	}
+	var out chatHistoryResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return chatHistoryResult{}, fmt.Errorf("decode chat.history: %w", err)
+	}
+	return out, nil
+}
+
+// hasInFlightRun reports whether chat.history described a run at all: the field
+// is absent (or explicitly null) when the session is idle.
+func hasInFlightRun(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+// SessionBusy reports whether the gateway has an in-flight run for the session.
+// It is the authoritative "is this session busy" signal: the SSE hub only knows
+// whether a browser is attached, which is false after a reload while the run is
+// still going.
+func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
+	out, err := c.sessionHistory(ctx, sessionKey)
+	if err != nil {
+		return false, err
+	}
+	return hasInFlightRun(out.InFlightRun), nil
+}
+
+// SessionInFlightRun returns the gateway's in-flight run for the session: its
+// run id when the snapshot carries one, and whether a run is in flight at all.
+//
+// The two are separate answers on purpose, and the caller must not collapse
+// them into a bare id. The id is what scopes an abort (chat.abort runId) so it
+// cannot terminate a run promoted after the one the caller meant; the browser
+// never learns it, but on the reload-takeover path the server has lost its own
+// copy too -- releaseLive dropped the local turn when the request driving it
+// ended, while the run it started can still be executing -- and chat.history is
+// then the only place the id exists. active reports whether chat.history
+// described a run at all: the inFlightRun payload is the gateway's own run
+// descriptor and so opaque to this schema, and a descriptor that carries no
+// runId yields active=true with an empty id. Reading that as "nothing is
+// running" is wrong -- it means a run exists that cannot be named, which a
+// caller about to issue a session-scoped abort in its place needs to know.
+func (c *Client) SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error) {
+	out, err := c.sessionHistory(ctx, sessionKey)
+	if err != nil {
+		return "", false, err
+	}
+	if !hasInFlightRun(out.InFlightRun) {
+		return "", false, nil
+	}
+	var run struct {
+		RunID string `json:"runId"`
+	}
+	if err := json.Unmarshal(out.InFlightRun, &run); err != nil {
+		return "", false, fmt.Errorf("decode chat.history inFlightRun: %w", err)
+	}
+	return run.RunID, true, nil
 }
 
 // GetQuestion reads one question record (question.get). The gateway keeps a

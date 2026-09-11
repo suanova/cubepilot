@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha512"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,26 @@ import (
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
+
+// errNoGatewayChannel reports that the caller has no usable gateway connection,
+// so the request never reached the gateway at all.
+//
+// Callers have to tell it apart from a gateway call that failed on a live
+// connection. The connection is dialled lazily on first use, so "none yet" is
+// the ordinary state of a fresh API process or a user who has not sent a
+// message -- there, a read that says "cannot determine" is a false alarm, and a
+// command (the abort) cannot succeed either way. A failure with a channel up is
+// the opposite: the answer really is unknown.
+//
+// The sentinel spans two states that a caller must not collapse either, and it
+// cannot tell them apart on its own: this process has no usable channel for the
+// user, and an established connection that is down right now. They differ in
+// whether a turn this process started can still be running -- see
+// gatewayConnected, which records that difference for the log even though no
+// caller branches on it any more: /turn establishes a channel rather than
+// reasoning from the local state, so both states now end as the same honest
+// "cannot determine" rather than as an idle answer.
+var errNoGatewayChannel = errors.New("no live gateway channel")
 
 // hitlPairRetryDelay is the pause between NOT_PAIRED connect retries while the
 // in-pod supervisor approves the device pairing (overridable in tests).
@@ -48,6 +69,9 @@ type hitlGateway interface {
 	CancelQuestion(ctx context.Context, id, resolvedBy string) error
 	GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error)
 	ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error)
+	AbortChat(ctx context.Context, sessionKey, runID string) (bool, error)
+	SessionBusy(ctx context.Context, sessionKey string) (bool, error)
+	SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error)
 	Close()
 }
 
@@ -62,13 +86,13 @@ type openClawLiveRunner struct {
 
 var _ agentruntime.LiveTurnRunner = (*openClawLiveRunner)(nil)
 
-func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string, params agentruntime.LiveTurnParams, emit func(agentruntime.Event) error) error {
+func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string, params agentruntime.LiveTurnParams, emit func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
 	if r.manager == nil {
-		return fmt.Errorf("live chat unavailable: runtime live channel is not configured")
+		return agentruntime.TurnOutcome{}, fmt.Errorf("live chat unavailable: runtime live channel is not configured")
 	}
 	guarded, err := r.manager.PreTurn(ctx, r.user)
 	if err != nil {
-		return fmt.Errorf("confirmation gating failed: %w", err)
+		return agentruntime.TurnOutcome{}, fmt.Errorf("confirmation gating failed: %w", err)
 	}
 	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, guarded, emit)
 }
@@ -100,10 +124,15 @@ type hitlManager struct {
 	// wsURLOf returns the gateway WS endpoint for a user. Overridable in tests.
 	wsURLOf func(user string) string
 
-	mu         sync.Mutex
-	conns      map[string]*userHitlConn
-	connecting map[string]*sync.Mutex // serializes first connect per user
-	revPol     map[string]string      // user -> applied policy revision
+	mu    sync.Mutex
+	conns map[string]*userHitlConn
+	// connecting serializes the first connect per user. Each entry is a cap-1
+	// channel rather than a sync.Mutex so waiting for it is context-aware: the
+	// holder may be inside a dial or the NOT_PAIRED pairing retry, and a caller
+	// with a bounded context -- /turn's channel probe -- has to give up at its
+	// own deadline instead of parking until that dial returns.
+	connecting map[string]chan struct{}
+	revPol     map[string]string // user -> applied policy revision
 
 	liveMu sync.Mutex
 	live   map[string]*liveTurn // sessionKey -> active live-tool turn (issue #130)
@@ -122,9 +151,14 @@ type liveTurn struct {
 	runMu sync.Mutex
 	runID string // runId of the turn's run; set from the send ACK, filters events
 
-	done    chan struct{}
-	once    sync.Once
-	doneErr error
+	done chan struct{}
+	once sync.Once
+	// doneErr and doneStopped are written together inside once.Do and read only
+	// through outcome(), which returns both under resMu so no caller can observe
+	// a torn pair (a stopped turn that looks completed, or vice versa).
+	resMu       sync.Mutex
+	doneErr     error
+	doneStopped bool
 }
 
 // setRunID records the run this turn is projecting (from sessions.send's ACK).
@@ -148,17 +182,46 @@ func (t *liveTurn) acceptRun(id string) bool {
 	return t.runID == "" || (id != "" && t.runID == id)
 }
 
-// finish marks the turn terminal (idempotent).
+// finish marks the turn terminal as neither stopped nor failed (idempotent).
 func (t *liveTurn) finish(err error) {
+	t.finishWith(err, false)
+}
+
+// finishWith marks the turn terminal with its outcome (idempotent). stopped
+// records that the terminal frame was a request-initiated abort.
+func (t *liveTurn) finishWith(err error, stopped bool) {
 	t.once.Do(func() {
+		t.resMu.Lock()
 		t.doneErr = err
+		t.doneStopped = stopped
+		t.resMu.Unlock()
 		close(t.done)
 	})
+}
+
+// outcome reports how the turn ended -- both the outcome and the terminal
+// error -- from a single guarded read, so the agent.wait tail path (where
+// t.done never closed) can never see the two halves inconsistently and report
+// a stopped turn as (Stopped:false, err:nil), i.e. a plain completion. Safe to
+// call after terminal.
+func (t *liveTurn) outcome() (agentruntime.TurnOutcome, error) {
+	t.resMu.Lock()
+	defer t.resMu.Unlock()
+	return agentruntime.TurnOutcome{Stopped: t.doneStopped}, t.doneErr
 }
 
 type userHitlConn struct {
 	user string
 	gw   hitlGateway
+	// connected records that this entry's handshake has succeeded at least once.
+	// It is monotonic: a connection that comes and goes keeps it, and a re-dial
+	// carries it into the replacement entry. It is what gatewayConnected reads,
+	// and it must NOT be set when the entry is merely registered -- conn stores
+	// the entry up front and the pairing retry loop can hold it for up to 30s, so
+	// treating "registered" as "has a channel" made a /turn during a user's first
+	// connect answer 502 and flash the Portal's cannot-check banner at a session
+	// that was idle.
+	connected bool
 }
 
 // ConfiguredHITL builds the manager, or returns nil (HITL disabled) when no
@@ -173,7 +236,7 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 		masterKey:  masterKey,
 		logf:       logf,
 		conns:      map[string]*userHitlConn{},
-		connecting: map[string]*sync.Mutex{},
+		connecting: map[string]chan struct{}{},
 		revPol:     map[string]string{},
 		live:       map[string]*liveTurn{},
 	}
@@ -247,17 +310,23 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 		return gw, nil
 	}
 	if m.connecting == nil {
-		m.connecting = map[string]*sync.Mutex{}
+		m.connecting = map[string]chan struct{}{}
 	}
 	lm, ok := m.connecting[user]
 	if !ok {
-		lm = &sync.Mutex{}
+		lm = make(chan struct{}, 1)
 		m.connecting[user] = lm
 	}
 	m.mu.Unlock()
 
-	lm.Lock()
-	defer lm.Unlock()
+	// Context-aware, so a bounded caller does not wait out another goroutine's
+	// dial (up to the 30s pairing budget) before its own deadline can fire.
+	select {
+	case lm <- struct{}{}:
+		defer func() { <-lm }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
 	// Re-check under the per-user lock: the first caller may have connected.
 	m.mu.Lock()
@@ -301,7 +370,13 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 	})
 
 	m.mu.Lock()
-	m.conns[user] = &userHitlConn{user: user, gw: gw}
+	// The entry is registered before the handshake, but it is NOT yet
+	// "connected": until a handshake succeeds there is no channel, which is what
+	// gatewayConnected reports. A re-dial replaces the entry and carries the
+	// earlier success forward, because a turn started over that connection can
+	// still be running through the break.
+	entry := &userHitlConn{user: user, gw: gw, connected: m.hasConnectedLocked(user)}
+	m.conns[user] = entry
 	m.mu.Unlock()
 
 	// First connect may be rejected NOT_PAIRED while the in-pod supervisor
@@ -319,6 +394,7 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 		err := gw.Connect(aCtx)
 		cancel()
 		if err == nil {
+			m.markConnected(user)
 			return gw, nil
 		}
 		connectErr = err
@@ -465,9 +541,62 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 	return out
 }
 
+// gatewayConnected reports whether this process has a gateway channel for the
+// user: one that is usable now, or one it opened and has since lost.
+//
+// It is deliberately NOT "an entry exists in m.conns". conn registers the entry
+// before the handshake -- there is no earlier moment at which a second conn()
+// could be told to wait on the first -- and the NOT_PAIRED pairing retry can
+// hold that state for up to 30 seconds. Reading a registration as a channel made
+// a /turn issued during a user's first connect answer "cannot determine" and
+// raise the Portal's cannot-check banner over a session that was in fact idle;
+// the state that matters is a *successful* connect, so the flag is set when a
+// handshake returns. It is monotonic: a connection that drops does not un-dial
+// the process, and a turn started over it can still be running.
+//
+// /turn no longer classifies by it -- that handler establishes a channel and
+// asks the gateway directly (see SessionBusyEstablished), which answers the same
+// case without the banner. The flag is kept because it still records, for the
+// log, whether a failure to re-establish came on a process that had a channel at
+// all, and because "an entry exists" must never be read as "there is a channel":
+// the same reasoning applies to any future caller. See the sentinel's comment
+// for the two states liveConn collapses into one error.
+func (m *hitlManager) gatewayConnected(user string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasConnectedLocked(user)
+}
+
+// hasConnectedLocked is gatewayConnected's body, for callers already holding
+// m.mu (conn carries the flag into a replacement entry while it has the lock).
+func (m *hitlManager) hasConnectedLocked(user string) bool {
+	c := m.conns[user]
+	if c == nil {
+		return false
+	}
+	// A usable connection is a successful connect by definition -- this covers
+	// the instant between Connect returning and the flag being set -- and the
+	// flag covers the channel that has since gone down.
+	return c.connected || (c.gw != nil && c.gw.Connected())
+}
+
+// markConnected records that the user's handshake succeeded.
+func (m *hitlManager) markConnected(user string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c := m.conns[user]; c != nil {
+		c.connected = true
+	}
+}
+
 // liveConn returns the user's established gateway connection without dialing a
-// new one. Resolution and pending-state reads must not open a connection (and
-// trigger a device pairing) as a side effect of a status request.
+// new one. The reads made while a turn is in flight -- question resolution and
+// the pending-state lookups -- must not open a connection (and trigger a device
+// pairing) as a side effect: they are made on behalf of a run that already has
+// a channel, so a missing one is genuinely "no channel", not a reason to dial.
+// The one status read that does establish a channel is /turn, through
+// SessionBusyEstablished, where the dial is how the question gets answered at
+// all after a restart.
 //
 // The connection is registered before its handshake completes (conn stores it
 // up front so the pairing retry loop can hold the per-user lock), so a stored
@@ -522,6 +651,111 @@ func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error
 	return gw.CancelQuestion(ctx, id, user)
 }
 
+// Abort cancels the session's active run over the user's gateway connection.
+// runID scopes the abort to the run the server believes is live so it cannot
+// kill a run promoted after that one settles; an empty runID falls back to the
+// session-scoped abort, which terminates whatever the session happens to be
+// running.
+//
+// The empty run id stays available here, but /abort -- its only caller -- never
+// passes one: a Stop that cannot name a run is answered as a failure instead of
+// being sent, because the session-scoped form can kill a run the user never
+// meant to stop and the gateway's aborted:true carries nothing that tells the
+// two apart (see handleAbort). Keep it that way: a caller that issues an
+// unscoped abort has to be able to prove the session holds nothing but the run
+// it wants gone, and no caller in this process can.
+//
+// It reports whether the gateway actually aborted a run. A nil error with
+// aborted=false is an RPC that succeeded and stopped nothing -- the run id
+// matched no abortable run -- so the caller must not read it as a stop. It gets
+// no channel of its own: an abort issued over a connection this process had to
+// dial would be a stop racing its own lookup, and the caller treats the failure
+// as it does any other.
+func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string) (bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return false, fmt.Errorf("abort %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.AbortChat(ctx, sessionKey, runID)
+}
+
+// SessionBusy reports whether the gateway still has an in-flight run for the
+// session, on the user's established channel. Unlike the SSE hub this survives
+// a browser disconnect, so it is the only signal that means anything on the
+// reload-takeover path. Callers that do not already hold a channel -- a status
+// read arriving after an API restart -- want SessionBusyEstablished instead.
+func (m *hitlManager) SessionBusy(ctx context.Context, user, sessionKey string) (bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return false, fmt.Errorf("session busy %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.SessionBusy(ctx, sessionKey)
+}
+
+// SessionBusyEstablished answers SessionBusy, first establishing the user's
+// gateway channel if this process has none.
+//
+// The channel is dialled lazily on first use, so after an API restart or a pod
+// roll this process has no entry for the user while a run the *previous*
+// process started can still be executing gateway-side. Answering "idle" from
+// the local state then would hide a running turn and take its Stop away, which
+// is the one answer this read must never give; the only way to know is to ask
+// the gateway, which needs the channel.
+//
+// The dial is bounded by channelProbeTimeout. It is a status read, so it must
+// not inherit conn()'s 30s NOT_PAIRED pairing budget: the caller renders a
+// failure as "could not check" with a Retry, and the ordinary case -- a user
+// who has simply never chatted -- dials straight through and gets a true
+// answer. On success the connection is kept, so the Stop that answer offers
+// can actually be issued (Abort uses the established channel).
+func (m *hitlManager) SessionBusyEstablished(ctx context.Context, user, sessionKey string) (bool, error) {
+	gw, err := m.connEstablished(ctx, user)
+	if err != nil {
+		return false, fmt.Errorf("session busy %q: %w", sessionKey, err)
+	}
+	return gw.SessionBusy(ctx, sessionKey)
+}
+
+// connEstablished returns the user's usable gateway channel, dialling one
+// under a bounded connect when there is none live. A usable connection is
+// returned as it is; a down one is replaced, because the question the callers
+// ask ("is the gateway running something for this user") cannot be answered
+// over a broken socket and a fresh dial is the only way to answer it.
+func (m *hitlManager) connEstablished(ctx context.Context, user string) (hitlGateway, error) {
+	if gw, ok := m.liveConn(user); ok {
+		return gw, nil
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
+	defer cancel()
+	return m.conn(dialCtx, user)
+}
+
+// InFlightRunID returns the gateway's in-flight run for the session: its run id
+// when the snapshot carries one, and whether a run is in flight at all. It is
+// what an abort on the reload-takeover path is scoped to when LiveRunID has
+// nothing: the local turn is gone (releaseLive removed it when the request
+// driving it ended) while the run it started can still be executing.
+//
+// The two are separate answers because the caller responds to each differently:
+// no run at all makes the Stop an idempotent no-op, while a run with no id is a
+// run that cannot be scoped, which the caller must refuse rather than abort
+// session-wide. A bare id could not tell those apart -- both were "" -- which is
+// what let an unnamed run be stopped by whatever the session happened to be
+// running.
+//
+// It uses the established channel rather than establishing one, unlike /turn:
+// the abort RPC that follows is issued over the same channel and cannot run
+// without it either, so a dial here would only delay the failure. /turn is what
+// puts the channel in place on this path -- the Portal checks it on mount, and
+// the Stop that answer offers then has a channel to be issued over.
+func (m *hitlManager) InFlightRunID(ctx context.Context, user, sessionKey string) (string, bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return "", false, fmt.Errorf("in-flight run %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.SessionInFlightRun(ctx, sessionKey)
+}
+
 // ResolveApproval implements ApprovalResolver: the Portal decision is applied
 // to the user's gateway connection.
 func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, decision string) error {
@@ -541,6 +775,26 @@ func (m *hitlManager) ResolveApproval(ctx context.Context, user, approvalID, dec
 // frames are TCP-ordered before the agent.wait response, so this is normally
 // already resolved and returns immediately.
 const wsRunTail = 500 * time.Millisecond
+
+// LiveRunID returns the run id of the user's active live turn on this session.
+// The browser never learns the run id; the server does, and passing it scopes an
+// abort so it cannot kill a run promoted after this one settles.
+//
+// The user is part of the key on purpose. m.live is indexed by session key
+// alone, and a session key can be client-supplied, so without the ownership
+// check one user's /abort could pick up another user's run id. routeLive checks
+// the same thing when it routes; keep them together.
+func (m *hitlManager) LiveRunID(user, sessionKey string) (string, bool) {
+	m.liveMu.Lock()
+	t := m.live[sessionKey]
+	m.liveMu.Unlock()
+	if t == nil || t.user != user {
+		return "", false
+	}
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	return t.runID, t.runID != ""
+}
 
 // registerLive registers the live turn for a session so connection events route
 // to it. The turn stays registered until releaseLive.
@@ -582,11 +836,11 @@ func (m *hitlManager) releaseLive(user, sessionKey string, gw hitlGateway) {
 // the run is terminal and is the authoritative completion signal, so the turn
 // stays subscribed long enough to receive everything (fix: a previous version
 // returned on the start ACK and unsubscribed ~3s in, before the first token).
-func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, guarded bool, sink func(agentruntime.Event) error) error {
+func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message, model string, guarded bool, sink func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		m.sayf("chat %s: %s: gateway connect: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	// sessions.send only auto-creates the agent's main session, not arbitrary
 	// conversation keys (the OpenAI-compat HTTP surface created those on the
@@ -595,7 +849,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	state, err := gw.CreateSession(ctx, sessionKey)
 	if err != nil {
 		m.sayf("chat %s: %s: ensure session: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	// sessions.send has no model or permission fields. Reconcile both through
 	// one typed sessions.patch so a failed update cannot leave only half of the
@@ -615,7 +869,7 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	if patch.Model.Set || patch.PermissionMode.Set {
 		if err := gw.PatchSessionSettings(ctx, sessionKey, patch); err != nil {
 			m.sayf("chat %s: %s: apply session settings: %v", user, sessionKey, err)
-			return err
+			return agentruntime.TurnOutcome{}, err
 		}
 	}
 	t := m.registerLive(user, sessionKey, sink)
@@ -630,11 +884,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 
 	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
 		m.sayf("chat %s: %s: subscribe: %v", user, sessionKey, err)
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	runID, err := gw.SendSessionMessage(ctx, sessionKey, message, idem)
 	if err != nil {
-		return err
+		return agentruntime.TurnOutcome{}, err
 	}
 	if runID != "" && runID != idem {
 		t.setRunID(runID)
@@ -655,11 +909,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}()
 	select {
 	case <-t.done:
-		return t.doneErr
+		return t.outcome()
 	case err := <-waitDone:
 		if err != nil {
 			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
-			return err
+			return agentruntime.TurnOutcome{}, err
 		}
 		// agent.wait returned ok; settle a moment for any trailing terminal frame
 		// already queued before returning.
@@ -667,11 +921,11 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 		case <-t.done:
 		case <-time.After(wsRunTail):
 		case <-ctx.Done():
-			return ctx.Err()
+			return agentruntime.TurnOutcome{}, ctx.Err()
 		}
-		return t.doneErr
+		return t.outcome()
 	case <-ctx.Done():
-		return ctx.Err()
+		return agentruntime.TurnOutcome{}, ctx.Err()
 	}
 }
 
@@ -702,28 +956,38 @@ func (m *hitlManager) routeLive(user, evName string, payload []byte) {
 		}
 	}
 	if terminal {
-		// A chat "error"/"aborted" frame is a terminal failure; surface its text
-		// so the caller emits message_done with an error instead of a plain done.
-		var err error
+		// A chat "error"/"aborted" frame is terminal. A request-initiated abort
+		// is not a failure, so it is reported as an outcome rather than an error.
+		var (
+			err     error
+			stopped bool
+		)
 		if evName == "chat" {
-			err = chatTerminalErr(payload)
+			err, stopped = chatTerminalOutcome(payload)
 		}
-		t.finish(err)
+		t.finishWith(err, stopped)
 	}
 }
 
-// chatTerminalErr extracts the diagnostic message from a terminal chat frame
-// (state "error"/"aborted"). OpenClaw carries the message under errorMessage
-// (and sometimes error / errorKind / stopReason); returning nil for any other
-// state means the caller treats the frame as a plain terminal.
-func chatTerminalErr(payload []byte) error {
+// chatTerminalOutcome classifies a terminal chat frame (state "error"/"aborted").
+// OpenClaw carries the diagnostic under errorMessage (and sometimes error) and
+// the cancel origin under stopReason. A request-initiated stop -- stopReason
+// "rpc" for the chat.abort RPC, "stop" for the /stop command path -- is an
+// outcome, not a failure: it returns a nil error and stopped=true, so the
+// caller emits message_done{stopped:true} instead of message_done{error}.
+// Any other abort (timeout, restart, auth-revoked) stays an error.
+func chatTerminalOutcome(payload []byte) (error, bool) {
 	var st struct {
 		State        string `json:"state"`
 		Error        string `json:"error"`
 		ErrorMessage string `json:"errorMessage"`
+		StopReason   string `json:"stopReason"`
 	}
 	if json.Unmarshal(payload, &st) != nil || (st.State != "error" && st.State != "aborted") {
-		return nil
+		return nil, false
+	}
+	if st.StopReason == "rpc" || st.StopReason == "stop" {
+		return nil, true
 	}
 	msg := st.ErrorMessage
 	if msg == "" {
@@ -732,5 +996,5 @@ func chatTerminalErr(payload []byte) error {
 	if msg == "" {
 		msg = "agent run " + st.State
 	}
-	return fmt.Errorf("%s", msg)
+	return fmt.Errorf("%s", msg), false
 }

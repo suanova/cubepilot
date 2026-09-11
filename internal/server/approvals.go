@@ -29,6 +29,26 @@ type ApprovalService struct {
 	mu        sync.Mutex
 	byID      map[string]pendingApproval // approval id -> pending
 	bySession map[string]string          // session key -> approval id (one pending per session)
+	// inflight holds the approvals a Resolve has taken out of the maps above
+	// for the duration of its gateway round trip. It exists so a settle that
+	// lands in that window can still find the record: the reservation is what
+	// makes the card absent from Pending, and without this the settle would find
+	// nothing, the failed resolve would restore the record, and a reload would
+	// resurrect a card for a session whose turn was stopped.
+	//
+	// It is bounded by the number of concurrent Resolve calls (at most one entry
+	// each, removed on every exit path), so it is empty whenever no decision is
+	// in flight.
+	inflight map[string]*approvalReservation
+}
+
+// approvalReservation is one approval a Resolve has reserved while it talks to
+// the gateway. settled records that the session was settled in that window: the
+// gateway reply may still be honoured, but the card must not come back, so the
+// restore path drops it instead of re-adding it.
+type approvalReservation struct {
+	pending pendingApproval
+	settled bool
 }
 
 // ApprovalResolver resolves a pending approval on the gateway. decision is the
@@ -57,6 +77,7 @@ func NewApprovalService(hub *Hub, st *store.Store, logf func(format string, args
 		logf:      logf,
 		byID:      map[string]pendingApproval{},
 		bySession: map[string]string{},
+		inflight:  map[string]*approvalReservation{},
 	}
 }
 
@@ -136,14 +157,37 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 		s.mu.Unlock()
 		return pendingApproval{}, errNoPending
 	}
-	// Reserve before the (slow) gateway round trip.
+	// Reserve before the (slow) gateway round trip. The reservation stays
+	// visible to a settle through inflight: the record is gone from the two maps
+	// Pending reads, and a settle that lands in this window has to be able to
+	// find it anyway.
 	delete(s.byID, id)
 	delete(s.bySession, p.SessionKey)
+	res := &approvalReservation{pending: p}
+	s.inflight[id] = res
 	resolver := s.resolver
 	s.mu.Unlock()
 
+	// release ends the reservation. Every exit path calls exactly one of
+	// release / restore, so inflight is empty again once the decision is over --
+	// there is nothing to expire and nothing to sweep.
+	release := func() {
+		s.mu.Lock()
+		delete(s.inflight, p.ApprovalID)
+		s.mu.Unlock()
+	}
 	restore := func() {
 		s.mu.Lock()
+		delete(s.inflight, p.ApprovalID)
+		// A settle that ran while this decision was in flight owns the outcome:
+		// the session's turn is gone, so re-adding the record would put a card
+		// back on screen (and back into reload recovery) for a run that was
+		// stopped. The marker is consumed here -- it only ever covers an
+		// in-flight reservation, and this is the one moment it can be honoured.
+		if res.settled {
+			s.mu.Unlock()
+			return
+		}
 		// Re-add the reserved approval. Do not clobber the session mapping if a
 		// newer Begin landed for the same session while the gateway call was in
 		// flight -- that newer approval must stay the active one for the session.
@@ -169,6 +213,7 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 		restore()
 		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
 	}
+	release()
 	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
 		Type:      agentruntime.EventConfirmResolved,
 		SessionID: p.SessionKey,
@@ -177,6 +222,72 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 	})
 	s.recordDecision(user, p, approved)
 	return p, nil
+}
+
+// settleSession claims and forgets the session's pending approval without
+// deciding it. It is the abort path: the run is gone, so there is nothing to
+// allow or deny, and no decision is recorded -- a stopped turn is neither an
+// approval nor a rejection that a later audit could attribute to the human. The
+// session mapping is dropped only when it still points at this approval, so a
+// newer Begin for the same session (which Resolve protects the same way) keeps
+// its claim.
+//
+// Lookup and removal share one lock acquisition by design. As two (Pending, then
+// settle) a Resolve can reserve the approval in between -- it deletes from both
+// maps before its gateway round trip -- and the settle then finds nothing to
+// claim, leaving the failed resolve's restore to put the card back for a session
+// whose turn was stopped. Under one lock the reservation is found instead, and
+// the outcome it returns is what restore honours.
+//
+// The reservation scan runs on every call, including the one that also claims a
+// record from the maps: a claim from the maps says nothing about the reservations
+// in flight for the same session, and one that is left unmarked is restored by
+// its own failed resolve.
+//
+// A record is claimed only for its owner; another user's pending approval for
+// the same session key is not this caller's to clear.
+func (s *ApprovalService) settleSession(user, sessionKey string) (pendingApproval, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Mark every in-flight reservation for this session settled, on every call --
+	// not only when the maps held nothing. Both states can hold for one session at
+	// once: a Resolve reserves approval A, the gateway raises approval B, and
+	// Begin puts B into the maps. Claiming B and returning would leave A's
+	// reservation unmarked, so A's failed gateway call would restore it -- and,
+	// with bySession just deleted, re-point the session at A -- putting a card
+	// back on screen for a turn the user stopped. Marking all of them (rather
+	// than the first) is the conservative choice: each belongs to a session whose
+	// turn is gone, and the marker is only ever honoured by that reservation's
+	// own restore.
+	var reserved pendingApproval
+	haveReserved := false
+	for _, res := range s.inflight {
+		if res.pending.SessionKey == sessionKey && res.pending.User == user {
+			res.settled = true
+			if !haveReserved {
+				reserved, haveReserved = res.pending, true
+			}
+		}
+	}
+
+	// Whatever the maps still hold for this session is claimed and returned.
+	if id, ok := s.bySession[sessionKey]; ok {
+		if p, ok := s.byID[id]; ok && p.User == user {
+			if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
+				delete(s.bySession, p.SessionKey)
+			}
+			delete(s.byID, p.ApprovalID)
+			return p, true
+		}
+	}
+	// Nothing in the maps, but a decision for this session may be mid-flight: the
+	// record is out of them because Resolve reserved it. Reporting it lets the
+	// caller publish the resolved event that drops the card.
+	if haveReserved {
+		return reserved, true
+	}
+	return pendingApproval{}, false
 }
 
 func (s *ApprovalService) recordDecision(user string, p pendingApproval, approved bool) {

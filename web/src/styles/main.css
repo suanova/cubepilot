@@ -181,6 +181,9 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .mini-table tr:last-child td{border-bottom:none}
 .tool-status{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
 .tool-status.done-mark{color:var(--success);gap:4px}
+/* the stream died mid-turn: not a failure of the turn and not a completion --
+   the outcome is unknown, so it reads as a warning, not the red of an error */
+.tool-status.lost-mark{color:var(--warn)}
 .tool-status.done-mark .icon{width:14px;height:14px}
 .tool-card.tool-running{border-color:var(--accent-strong);box-shadow:0 0 0 1px var(--accent-soft)}
 /* final-answer panel: the assistant's closing text stands out from the tool log */
@@ -210,6 +213,10 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .confirm-cmd{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--fg);overflow-x:auto;white-space:nowrap}
 .confirm-note{font-size:12px;color:var(--muted)}
 .confirm-actions{display:flex;gap:8px}
+/* a turn running with no stream of this view's own (another tab, or a reload) */
+.turn-banner{display:flex;align-items:center;gap:9px;max-width:760px;margin:0 auto 10px;padding:7px 12px;border:1px solid var(--border);border-radius:10px;background:var(--accent-soft);font-size:12.5px;color:var(--accent-ink)}
+.turn-banner .btn{margin-left:auto}
+.turn-banner .btn + .btn{margin-left:0}
 /* input bar */
 .composer{border-top:1px solid var(--border);padding:12px 24px 16px;background:var(--surface)}
 .composer-inner{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
@@ -217,6 +224,10 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .composer textarea{flex:1;border:none;outline:none;resize:none;background:none;font-size:13.5px;line-height:1.5;max-height:120px;padding:4px 2px}
 .send-btn{width:34px;height:34px;border-radius:8px;background:var(--accent-strong);color:#fff;display:flex;align-items:center;justify-content:center;flex:none;transition:background .12s}
 .send-btn:hover{background:oklch(41% 0.13 145)}
+/* A send is refused while the session's turn is still settling (the banner's
+   Stop owns the window), and the button says so rather than looking live: the
+   glyph is all it has, where the labelled buttons change their text. */
+.send-btn:disabled{background:var(--border);color:var(--muted);cursor:default}
 .send-btn .icon{width:16px;height:16px}
 .composer-hint{max-width:760px;margin:8px auto 0;font-size:11.5px;color:var(--muted)}
 .chat-head{flex:none;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface)}

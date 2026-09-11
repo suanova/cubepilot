@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
 import type { HistoryContentBlock, HistoryMessage, PendingConfirm, QuestionItem, SessionInfo } from '@/api/types'
+import { showToast } from '@/stores/toast'
 import { shortSession } from '@/utils/format'
 
 const user = getCurrentUser()
@@ -59,6 +60,26 @@ interface BubbleQuestion {
   error?: string
 }
 
+// StopEvidence is what this view knows about a turn it stopped, and the only
+// thing a later history render may use to recognise that turn's row.
+//
+// The transcript the server hands back carries no stopped field (the design's
+// v1 decision), and a stopped turn that produced no text leaves no row at all:
+// the gateway captures an aborted partial only when the run's text buffer has
+// content. "The session's newest assistant bubble" is therefore not the stopped
+// turn unless something says it is, and marking the wrong bubble paints a
+// *completed* answer "Stopped". A stop has one of two ways to say so, depending
+// on whether this view held a stream for the turn; see `stopEvidence`.
+type StopEvidence =
+  // A stop over a stream this view held: the partial it watched the turn
+  // produce. Only a bubble carrying exactly that text may be relabelled, so a
+  // newer turn another tab started cannot be relabelled by this one.
+  | { text: string }
+  // A stop with no stream of this view's own (the banner): the transcript this
+  // view had already rendered, as `transcriptShape`. See `applyStoppedTurn` for
+  // what the reload has to look like.
+  | { users: string[]; lastText: string }
+
 interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
@@ -68,6 +89,16 @@ interface BubbleMsg {
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
   confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
+  // The user stopped this turn. Its partial text is not a finished answer, so
+  // the bubble reads "Stopped" rather than the green Done check (issue #166).
+  stopped?: boolean
+  // The stream for this turn ended without a server terminal (sse.ts's
+  // synthetic message_done): a transport failure, not a turn outcome, so this
+  // is neither `stopped` nor `error`. The run may still be executing, which is
+  // why the bubble says so rather than claiming Done or Failed, and why its
+  // HITL cards are left live and answerable. Carries the reason the stream gave
+  // up, for display.
+  transportLost?: string
   // Every question this turn has asked, in order. The agent can ask several in
   // one turn (a blocked ask_user resumes, then another follows), so they are
   // kept as a collection rather than one slot that a later question replaces --
@@ -106,6 +137,42 @@ function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
   t.done = true
 }
 
+// settleBubbleCards closes the human-in-the-loop cards of a bubble whose turn
+// has just ended.
+//
+// The abort settles these records server-side and publishes confirm_resolved /
+// question_resolved alongside the terminal, but that event is not reliable: the
+// gateway broadcasts the aborted chat frame before it answers the chat.abort
+// RPC, so the resolve races the stream's own close (Hub.PublishTo silently does
+// nothing once the stream is gone) and for a question it is two gateway round
+// trips behind. The record is deleted either way, so a card left live would
+// offer Approve/Reject buttons that POST to something that no longer exists.
+// `message_done` is the one event the stream guarantees, so the cards are
+// settled from it as well. Doing it twice is harmless: it is idempotent.
+//
+// Only for a *confirmed* server terminal. A synthesized one
+// (`message_done{synthetic:true}`) reports a transport failure, not the end of
+// the turn: the run may still be parked on exactly these cards, and closing
+// them would take away the only controls that can unblock it. The caller
+// decides; this function must not be reached on that path.
+function settleBubbleCards(b: BubbleMsg) {
+  if (b.confirm && !b.confirm.resolved) {
+    b.confirm.resolved = true
+    // `approved` stays undefined on purpose: nobody decided this, which renders
+    // the neutral stopped pill rather than the red "Rejected" the user never
+    // chose. A decision that did happen has already set the field.
+    b.confirm.busy = false
+  }
+  for (const q of b.questions || []) {
+    if (q.resolved) continue
+    q.resolved = true
+    // The same outcome the server's own settle publishes, so the card looks the
+    // same whether its resolved event arrived or was lost.
+    q.outcome = 'cancelled'
+    q.busy = false
+  }
+}
+
 function ChatBubbleIcon() {
   return (
     <svg className="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -113,6 +180,7 @@ function ChatBubbleIcon() {
     </svg>
   )
 }
+
 
 // QuestionCard renders an ask_user question (issue #161): one block per
 // question with its options as selectable buttons, plus Submit and Dismiss.
@@ -291,6 +359,22 @@ function SendIcon() {
   )
 }
 
+// A filled square, unlike the outline icons it sits beside. The shared `.icon`
+// class paints outlines (`fill:none`), and a CSS rule beats any presentation
+// attribute, so the fill is set inline where it wins.
+function StopIcon() {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      style={{ width: 13, height: 13, fill: 'currentColor', stroke: 'none' }}
+    >
+      <rect x="5" y="5" width="14" height="14" rx="2.5" />
+    </svg>
+  )
+}
+
 function DoneCheckIcon() {
   return (
     <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -391,6 +475,28 @@ export default function ChatView() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [bubbles, setBubbles] = useState<BubbleMsg[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  // A turn running without a stream of this view's own: it was started in
+  // another tab, or this view was reloaded while the agent kept working. It can
+  // still be stopped; its output arrives on the next history refresh, because
+  // stream re-attach is out of scope.
+  const [runningElsewhere, setRunningElsewhere] = useState(false)
+  // The turn-status check itself failed. It is kept apart from
+  // `runningElsewhere` so the banner never claims a turn nobody confirmed, and
+  // it is still shown: the API answers 502 when it cannot determine, and
+  // "cannot tell" is not "idle" -- hiding Stop here would strand exactly the
+  // user whose turn is running.
+  const [turnCheckFailed, setTurnCheckFailed] = useState(false)
+  // The session whose banner Stop is waiting on `/abort`, or null. The server
+  // answers only once the turn has settled -- seconds -- so the banner's Stop
+  // reads "Stopping…" and the composer's Send is disabled for the whole window.
+  // It is also what refuses a send in that window, because Enter reaches
+  // `sendMessage` past the disabled button.
+  //
+  // A session rather than a bool: `stoppingRef` already says an abort is in
+  // flight for *some* turn, but a stop the user has navigated away from must
+  // neither label nor block the session they moved to.
+  const [stoppingSession, setStoppingSession] = useState<string | null>(null)
   // Only Allowlist policy honors a durable "always allow" grant; under
   // AlwaysAsk everything asks and under None nothing does (issue #116).
   const [allowAlwaysOk, setAllowAlwaysOk] = useState(false)
@@ -401,6 +507,40 @@ export default function ChatView() {
   // slow history/pending request that resolves after a switch is discarded
   // instead of painting another session's confirmations onto this one.
   const activeSessionRef = useRef<string | null>(null)
+  // Monotonic stream generation: a stream opened for an earlier session (or
+  // before a session switch) must not write into the current view.
+  //
+  // The session id cannot be the guard. A brand-new chat has no id at send
+  // time -- the server mints one and reports it in message_start -- so guarding
+  // on the id would invalidate a just-started stream as soon as its own first
+  // event arrived, and nothing would ever render.
+  const streamGenRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
+  // One submission at a time. The guard matters for a redirect: the textarea
+  // keeps the typed text for the whole abort round trip, so without it a second
+  // Enter in that window passes `if (!text) return` and `if (streaming)` both
+  // and starts a second send -- two POSTs for one redirect, the loser refused by
+  // the server's one-stream-per-session guard, and the winner superseded before
+  // its answer arrives. The same window opens when the settling old stream
+  // clears `streaming` mid-redirect and the composer offers Send again.
+  const sendingRef = useRef(false)
+  // One abort per turn. The Stop control stays live for the whole redirect
+  // window (the composer still renders Stop while the send waits on the abort),
+  // and a click there would issue a second POST /abort for a run that is
+  // already settling -- a redundant request at best, and a spurious error toast
+  // if the gateway rejects the second one. Held across the request and released
+  // on every exit path: a missed release would leave Stop permanently inert.
+  const stoppingRef = useRef(false)
+  // Sessions whose newest turn this tab stopped, and what this tab knows that
+  // lets a history render recognise that turn's row (see StopEvidence). A stop
+  // this view issued is the one stopped state the server cannot be asked about
+  // later -- the design's v1 decision records that a plain reload loses it -- so
+  // it is remembered here and applied whenever that session's history is
+  // rendered, which is the refresh the stop itself triggers. It is dropped as
+  // soon as this view sends a new message for the session, because the stopped
+  // turn is not the newest one any more then. Never persisted: a real reload has
+  // no local memory left, and the design declined a server-side marker.
+  const stoppedTurnsRef = useRef<Map<string, StopEvidence>>(new Map())
 
   // Keep a mutable mirror of bubbles so SSE callbacks can mutate the latest
   // assistant bubble without stale-closure problems.
@@ -412,6 +552,18 @@ export default function ChatView() {
     const ticker = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(ticker)
   }, [])
+
+  // The without-a-stream banner is on screen: a turn this view holds no stream
+  // for, so the banner's Stop is the direct way to end it -- and a send while it
+  // is up is a redirect, which `sendMessage` runs through its own
+  // stop-then-send sequence.
+  const bannerUp = (runningElsewhere || turnCheckFailed) && !streaming
+  // ...and that Stop is waiting on the server for the session on screen. The
+  // turn is then still running, so a send must not go out yet: it would be
+  // POSTed against a session whose turn is still settling, and retiring the
+  // banner would take away that turn's only Stop control. Both the controls and
+  // the refusal in `sendMessage` read this.
+  const stoppingElsewhere = bannerUp && stoppingSession === currentSessionId
 
   const chatTitle = (() => {
     if (!currentSessionId) return 'New conversation'
@@ -450,7 +602,7 @@ export default function ChatView() {
     setBubbles([])
     try {
       const items = await api.sessionHistory(id)
-      renderHistory(items)
+      renderHistory(items, id)
       void recoverPending(id)
     } catch (e) {
       setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
@@ -458,6 +610,56 @@ export default function ChatView() {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)
     }
+  }
+
+  // checkTurnElsewhere asks the server whether the session still has a turn in
+  // flight -- the only signal that survives a reload, since this view has no
+  // stream to consult.
+  //
+  // Best-effort in what a failure costs (nothing: history has already loaded
+  // and is never blocked by this), never in how one is read. An error here
+  // means the server could not determine the answer, so it is reported as
+  // exactly that rather than collapsed into "not running".
+  //
+  // `gen` is the generation the caller captured *before* its own await, and the
+  // answer is applied only while the view still holds it -- the same
+  // capture-then-re-check the redirect continuation uses. A session switch or a
+  // new chat in the window runs dropStream(), and an answer for the session the
+  // user left must not paint a banner onto the view they moved to.
+  async function checkTurnElsewhere(id: string, gen: number) {
+    try {
+      const { active } = await api.sessionTurn(id)
+      if (streamGenRef.current !== gen) return
+      setRunningElsewhere(!!active)
+      setTurnCheckFailed(false)
+    } catch {
+      // Never folded into "not running": the API answers 502 exactly when it
+      // could not determine whether the turn is still going.
+      if (streamGenRef.current !== gen) return
+      setRunningElsewhere(false)
+      setTurnCheckFailed(true)
+    }
+  }
+
+  // retryTurnCheck re-asks after a failed check. Without it an "unknown" banner
+  // would have no way back to a definite answer short of leaving the session,
+  // which is a poor trade for one cheap GET. The banner is withdrawn while the
+  // retry is in flight and returns if the check fails again.
+  function retryTurnCheck() {
+    if (!currentSessionId) return
+    setTurnCheckFailed(false)
+    void checkTurnElsewhere(currentSessionId, streamGenRef.current)
+  }
+
+  // dismissTurnCheck withdraws the "could not check" banner on request. Retry is
+  // the way back to an answer, but it is not a way *out*: for a channel this
+  // process cannot use, every retry fails the same way, and a reload fails the
+  // check again, so the banner would sit over a conversation that is otherwise
+  // perfectly usable with no control that removes it. Dismissing claims nothing
+  // -- the next reload, session switch or Retry asks again, and a send is
+  // unaffected -- it only stops the alarm from being permanent.
+  function dismissTurnCheck() {
+    clearTurnElsewhere()
   }
 
   // syncAllowAlways refreshes whether a durable "Always allow" is meaningful
@@ -545,7 +747,99 @@ export default function ChatView() {
   const blocks = (c: HistoryMessage['content']): HistoryContentBlock[] =>
     typeof c === 'string' ? [{ type: 'text', text: c }] : c
 
-  function renderHistory(items: HistoryMessage[]) {
+  // markStoppedTurn records that this tab stopped the session's newest turn,
+  // together with the evidence that identifies that turn's row. It is what lets
+  // renderHistory show that turn as stopped on the refresh the stop triggers:
+  // the server has no field to ask for, and the stopped flag on the wire only
+  // ever reaches a client still attached to the stream. `null` evidence is
+  // knowledge too -- a turn stopped before it produced any text leaves no row
+  // behind -- and drops the record rather than keeping the previous one, so no
+  // stale evidence can relabel some other turn's answer.
+  function markStoppedTurn(session: string | null, evidence: StopEvidence | null) {
+    if (!session) return
+    if (!evidence) {
+      stoppedTurnsRef.current.delete(session)
+      return
+    }
+    stoppedTurnsRef.current.set(session, evidence)
+  }
+
+  // transcriptShape is the part of a rendered list that identifies its turns:
+  // the prompts in order, and the newest assistant text. A list that carries a
+  // prompt this shape does not have belongs to a newer turn, and a list whose
+  // newest assistant text has not moved carries nothing the stop persisted.
+  function transcriptShape(list: BubbleMsg[]): { users: string[]; lastText: string } {
+    const users: string[] = []
+    let lastText = ''
+    for (const b of list) {
+      if (b.kind === 'user') users.push(b.text || '')
+      else if (b.text) lastText = b.text
+    }
+    return { users, lastText }
+  }
+
+  // stopEvidence captures what this view knows about the turn it is about to
+  // stop, before the round trip. A stream of this view's own identifies the turn
+  // outright: its bubble is the newest assistant bubble and the text it has
+  // produced is the partial the abort will persist -- and a turn stopped before
+  // it produced any text persists no row at all (the gateway captures an aborted
+  // partial only when the run's text buffer has content), so there is nothing to
+  // mark and no evidence to record. With no stream -- the banner -- the only
+  // thing this view can recognise the row by later is the transcript it has
+  // already rendered.
+  function stopEvidence(): StopEvidence | null {
+    const list = bubblesRef.current
+    if (!streaming) return transcriptShape(list)
+    const last = list[list.length - 1]
+    const text = last && last.kind === 'assistant' ? last.text : undefined
+    return text ? { text } : null
+  }
+
+  // applyStoppedTurn marks a freshly rendered bubble list as stopped, when this
+  // tab stopped a turn and the list is consistent with what that stop left
+  // behind. It is applied to the history a reload or a session switch renders --
+  // the two places a stopped turn would otherwise come back as a finished
+  // answer. A turn that ends while a stream is attached needs none of this:
+  // message_done{stopped} carries the marker itself.
+  //
+  // Nothing is ever marked on the strength of position alone: see StopEvidence
+  // for why "the newest assistant bubble" is a different turn's answer whenever
+  // the stopped turn persisted no text.
+  function applyStoppedTurn(list: BubbleMsg[], session: string | null): BubbleMsg[] {
+    const evidence = session ? stoppedTurnsRef.current.get(session) : undefined
+    if (!evidence) return list
+    if ('text' in evidence) {
+      // The stopped turn's own row, by the exact partial this view watched it
+      // produce. Searched from the end so the newest match wins when the same
+      // partial was produced twice, and a row that does not carry that text is
+      // never touched: another turn's answer -- a newer one any tab started
+      // included -- cannot be relabelled by this.
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].kind === 'assistant' && list[i].text === evidence.text) {
+          list[i].stopped = true
+          break
+        }
+      }
+      return list
+    }
+    // With no stream of this view's own there is no partial to recognise, so the
+    // marker may only fall on the newest bubble, and only when the reload is the
+    // transcript this view had rendered *plus* assistant content it had not
+    // seen. A prompt the shape does not have means a newer turn -- possibly
+    // another tab's -- owns that bubble; an unchanged newest text means this
+    // stop left no row here, i.e. it stopped a turn that had produced nothing.
+    // Either way the bubble on screen belongs to another turn, and relabelling
+    // it is the bug this evidence exists to prevent.
+    const last = list[list.length - 1]
+    if (!last || last.kind !== 'assistant') return list
+    const shape = transcriptShape(list)
+    if (shape.users.length !== evidence.users.length || shape.users.some((u, i) => u !== evidence.users[i])) return list
+    if (shape.lastText === evidence.lastText) return list
+    last.stopped = true
+    return list
+  }
+
+  function renderHistory(items: HistoryMessage[], session: string) {
     const out: BubbleMsg[] = []
     let last: BubbleMsg | null = null
     const openAssistant = () => {
@@ -587,17 +881,51 @@ export default function ChatView() {
         }
       }
     }
-    setBubbles(out)
+    setBubbles(applyStoppedTurn(out, session))
+  }
+
+  // dropStream retires the live stream: every event still in flight for it is
+  // superseded (its generation no longer matches) and its fetch is cancelled.
+  // The streaming flag is cleared here rather than left to the retiring
+  // stream's own `finally`, which sees itself as stale and refuses to touch it.
+  //
+  // The without-a-stream banner is retired with it -- both describe a turn this
+  // view is leaving behind -- and the generation bump discards a turn-status
+  // check still in flight for it, whose snapshot could otherwise re-arm a
+  // banner that has just been retired.
+  function dropStream() {
+    streamGenRef.current++
+    abortRef.current?.abort()
+    setStreaming(false)
+    clearTurnElsewhere()
+  }
+
+  // clearTurnElsewhere retires the without-a-stream banner, both states at once
+  // so they can never disagree. The paths that leave a session's turn behind --
+  // a switch, a new chat, a stop -- all go through dropStream; a send clears it
+  // alongside its own generation bump; and the check's own answer is the third.
+  function clearTurnElsewhere() {
+    setRunningElsewhere(false)
+    setTurnCheckFailed(false)
   }
 
   const switchSession = useCallback(async (id: string) => {
+    dropStream()
+    // Captured with the session, not after the history load: by then another
+    // switch (into a session whose history loaded faster) has already taken the
+    // view, and a check issued then would be asking about a session this view
+    // no longer shows.
+    const gen = streamGenRef.current
     activeSessionRef.current = id
     setCurrentSessionId(id)
     await loadHistory(id)
+    if (streamGenRef.current !== gen) return
+    void checkTurnElsewhere(id, gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function newChat() {
+    dropStream()
     activeSessionRef.current = null
     setCurrentSessionId(null)
     setBubbles([])
@@ -605,21 +933,249 @@ export default function ChatView() {
     requestAnimationFrame(() => inputEl.current?.focus())
   }
 
+  // stopTurn asks the server to stop the session's running turn. It resolves
+  // true once the turn has settled and false when the stop did not take -- the
+  // caller must then treat the turn as still running and say so. An ApiError
+  // here is an expected outcome, not a crash: 504 means the turn did not settle
+  // in time and 502 that the gateway channel was unavailable, so it is surfaced
+  // as a toast and the stop control stays available rather than the page being
+  // painted as broken.
+  async function stopTurn(): Promise<boolean> {
+    // No session id yet: the request is still in flight and the server has not
+    // reported the id it minted, so there is no turn we can address. This is a
+    // refusal, not a success -- a POST with an empty `session_id` does not
+    // conflict with the running turn, the server mints a *new* session for it
+    // and the conversation forks, leaving the original turn running invisibly.
+    // So the caller keeps the text and the Stop control, exactly as for a stop
+    // the server refused.
+    if (!currentSessionId) return false
+    // An abort is already in flight for this turn: join it by refusing, rather
+    // than starting a second request whose outcome nothing is waiting on. The
+    // caller treats a refusal as "the turn is still running", which is exactly
+    // what is true while the first abort settles.
+    if (stoppingRef.current) return false
+    const session = currentSessionId
+    // Captured before the round trip, and about the session the abort is issued
+    // for, not whatever the view shows when it answers.
+    const evidence = stopEvidence()
+    stoppingRef.current = true
+    try {
+      await api.abortSession(session)
+    } catch (e) {
+      // Refused: the turn is still running, so nothing was stopped and any
+      // record of an *earlier* stop of this session no longer describes its
+      // newest turn. Dropping it here is what keeps a later history render from
+      // stamping this turn's row with a stop that never happened.
+      markStoppedTurn(session, null)
+      showToast(String(e))
+      return false
+    } finally {
+      stoppingRef.current = false
+    }
+    markStoppedTurn(session, evidence)
+    // The stream closes with message_done{stopped:true}; nothing more to do
+    // here -- do NOT abort the local fetch, the server's terminal is cleaner.
+    return true
+  }
+
+  // stopElsewhere stops a turn this view has no stream for. `/abort` does not
+  // answer until the turn has settled, so the history reload that follows it
+  // already contains the stopped turn's partial output.
+  //
+  // It shares `stoppingRef` with the streaming Stop: both issue the same
+  // gateway abort. The banner's button is still on screen for the whole round
+  // trip -- it is only withdrawn once the server has answered -- and it is
+  // disabled in the meantime, but `stoppingRef` is what actually refuses a
+  // click that arrives before that re-render: a second POST for a turn that is
+  // already settling is redundant at best. A stop the server refuses is an
+  // expected outcome -- 504 means it did not settle in time, 502 that the
+  // channel was unavailable -- so it is surfaced as a toast and the banner
+  // stays, because the turn is then still running.
+  async function stopElsewhere() {
+    const session = currentSessionId
+    if (!session) return
+    if (stoppingRef.current) return
+    // The round trip is long -- the server answers only once the turn has
+    // settled -- so the user can switch away mid-stop. The generation, captured
+    // before the await and re-checked after it, is what stops this from
+    // reloading the stopped session's history into the view they moved to.
+    const gen = streamGenRef.current
+    // With no stream of this view's own, the transcript it has rendered is the
+    // only thing that can identify the stopped turn's row once the reload lands.
+    const evidence = stopEvidence()
+    stoppingRef.current = true
+    setStoppingSession(session)
+    try {
+      await api.abortSession(session)
+    } catch (e) {
+      // Refused: the turn is still running. The record of an earlier stop of
+      // this session must go with it -- the evidence would otherwise outlive
+      // the turn it described and mark a later one's row on the next history
+      // render (see stopTurn for the same clearing).
+      markStoppedTurn(session, null)
+      showToast(String(e))
+      return
+    } finally {
+      stoppingRef.current = false
+      setStoppingSession(null)
+    }
+    // The stop landed, whatever the view does next: the session's newest turn is
+    // stopped, and only this tab knows it (see stoppedTurnsRef).
+    markStoppedTurn(session, evidence)
+    if (streamGenRef.current !== gen) return
+    // dropStream, not clearTurnElsewhere: the banner is done, and the
+    // generation bump discards a turn-status check still in flight for it,
+    // whose pre-stop snapshot would otherwise re-arm the banner the stop just
+    // retired.
+    dropStream()
+    await loadHistory(session)
+  }
+
   async function sendMessage() {
     const el = inputEl.current
     if (!el) return
+    if (sendingRef.current) return
     const text = el.value.trim()
     if (!text) return
-    const nextBubbles = [
-      ...bubblesRef.current,
-      { kind: 'user' as const, text, tools: [], thinking: false },
-      { kind: 'assistant' as const, tools: [], thinking: true },
-    ]
-    setBubbles(nextBubbles)
+    // A banner Stop is in flight for the session on screen, so its turn is
+    // still running server-side and its outcome is not known yet. Refusing here
+    // keeps this send from racing it: the stop-then-send branch below would find
+    // the stop already in flight and abandon the send anyway, retiring the
+    // banner and, with it, the running turn's only Stop control. The composer's
+    // Send is disabled and the banner's Stop reads "Stopping…" for the same
+    // window, so this is not a click swallowed in silence; and it is
+    // deliberately not a queue -- the text stays in the box, and Enter again
+    // once the stop answers sends it.
+    if (stoppingElsewhere) return
+    // `streaming` and `bannerUp` are the same situation from the send's point of
+    // view: a turn is running for the session on screen and this send is the
+    // user redirecting it. A banner send has to take the stop-then-send route
+    // too, not just the streaming one. Left on the plain path it gets one of two
+    // wrong outcomes, neither of them a refusal the user could act on: the
+    // pre-reload stream is still registered server-side, so the POST is refused
+    // with a raw 409; or that stream has closed while the run has not, and the
+    // gateway's default queueMode steers the text into the running turn -- no
+    // stop, no new turn, and the message swallowed, which is the steering
+    // behaviour the design declares a non-goal. `/abort` answers only once the
+    // session has settled, so the send that follows it can do neither. (A
+    // turnCheckFailed banner takes the same route: the check failed, so a turn
+    // may well be running, and an abort is a no-op when none is.)
+    if (streaming || bannerUp) {
+      // Redirect: stop the running turn first. The server only answers once the
+      // turn has settled, so the send below cannot hit the 409 guard. What
+      // happens when the stop does not take is decided below, per banner: a
+      // confirmed turn keeps the text and the Stop button, the un-checkable one
+      // sends anyway.
+      //
+      // The guard is held for the whole stop-then-send sequence -- including the
+      // banner's history reload -- and released on every exit path: the
+      // abandoned redirect below, the throw out of the stop, and the send that
+      // follows. It has to span the reload too. The stop settling to the
+      // textarea being cleared is where the composer looks most idle: nothing
+      // has visibly happened, the text is still in the box and Send is offered
+      // again, so pressing Enter once more is the natural reaction. Without the
+      // guard that second submission re-enters this whole sequence and issues a
+      // *second* `POST /abort` for the session, which is not harmless: by then
+      // the redirect's own send has started a new run for the session, that run
+      // is the one the server's in-flight read finds, and a stop scoped to it is
+      // a stop of the turn the user just asked for.
+      //
+      // The generation is captured *before* the await and re-checked *after*
+      // it, not just before the send. Everything below -- the bubbles, the POST
+      // body, the new stream -- is built from this render closure's
+      // `currentSessionId`, and the abort round trip is long (up to the
+      // server's settle timeout). A session switch or a new chat in that window
+      // runs dropStream(), and the continuation resumes as if it were still
+      // current, because it takes a fresh generation of its own: it would POST
+      // to the session the user left (silently giving it a turn that only shows
+      // up on reload) while painting that turn's bubbles into the view they
+      // switched to. The re-check is what makes the switch win; a check only
+      // before the send cannot see a switch that has not happened yet.
+      const genAtSend = streamGenRef.current
+      // The banner's own Stop control is on screen with nothing to show for the
+      // wait, so the round trip is made visible the same way the banner's Stop
+      // makes it visible: the composer's Send is disabled and the banner reads
+      // "Stopping…" for the whole sequence, reload included. Held here rather
+      // than left to `stopTurn`/`stopElsewhere`, which release it as soon as the
+      // abort answers -- before the reload that is the rest of the wait.
+      const holdVisibleStop = bannerUp && !!currentSessionId
+      if (holdVisibleStop) setStoppingSession(currentSessionId)
+      sendingRef.current = true
+      let stopped = false
+      try {
+        stopped = await stopTurn()
+        if (streamGenRef.current !== genAtSend) return
+        if (!stopped) {
+          // The stop did not take. For a turn the view or the server has
+          // *confirmed* -- a stream of this view's own, or `runningElsewhere` --
+          // the send is abandoned, and deliberately: the Stop control is on
+          // screen, it is the control that ends that turn, and it is worth
+          // another try. Putting the message in flight against a session that is
+          // still running is the 409-or-silent-steer outcome the stop-then-send
+          // route exists to prevent.
+          //
+          // The "could not check" banner is the exception, and it is the state
+          // that would otherwise be a dead end. Nothing there confirmed a turn,
+          // and the stop is refused for the same reason the check failed -- a
+          // gateway channel this process cannot use -- so the banner's Stop
+          // provably cannot work either. The send is then the only request left
+          // that re-dials the channel (it is the turn path that calls `conn`,
+          // see the API's PreTurn), and refusing it leaves no in-page recovery
+          // at all: the user retries, reloads, and lands on the same banner,
+          // because the next /turn check fails the same way. So it falls through
+          // to the ordinary send below.
+          //
+          // What that trades away, exactly: if the channel was merely down for
+          // the *API* while the gateway run was still alive, the abandoned stop
+          // means the follow-up send can be steered into that run and swallowed
+          // -- the case the stop-then-send route was built for. It is taken
+          // knowingly, and only here: a confirmed turn never falls through, and
+          // the alternative is a state whose only exit is "New chat".
+          if (!turnCheckFailed) return
+        } else if (bannerUp) {
+          // The banner's turn had no stream in this view, so nothing in it ever
+          // carried that turn's stopped marker: the only record of what happened
+          // is the history the abort has just persisted. Re-render it -- with
+          // `stoppedTurnsRef` marking its own row -- before the new turn's
+          // bubbles are appended below, or the turn the user just stopped comes
+          // back looking like a finished answer.
+          if (!currentSessionId) return
+          await loadHistory(currentSessionId)
+          if (streamGenRef.current !== genAtSend) return
+        }
+      } finally {
+        sendingRef.current = false
+        if (holdVisibleStop) setStoppingSession(null)
+      }
+    }
+    // The newest turn of this session is about to be the one this send starts,
+    // so the local stopped marker no longer describes it: a later history render
+    // must not mark the new turn stopped.
+    if (currentSessionId) stoppedTurnsRef.current.delete(currentSessionId)
+    // This view is about to drive its own turn: the without-a-stream banner
+    // describes the turn being left behind, and would otherwise reappear when
+    // the new stream ends.
+    clearTurnElsewhere()
+    // A functional update, not a spread of bubblesRef.current: the history
+    // reload above may have set new bubbles that React has not re-rendered yet,
+    // and the ref would still hold the pre-reload list -- dropping exactly the
+    // stopped turn that reload exists for.
+    const bubble: BubbleMsg = { kind: 'assistant', tools: [], thinking: true }
+    setBubbles((prev) => [...prev, { kind: 'user' as const, text, tools: [], thinking: false }, bubble])
     el.value = ''
     el.style.height = 'auto'
-    const bubble: BubbleMsg = nextBubbles[nextBubbles.length - 1]
     requestAnimationFrame(scrollThread)
+
+    const gen = ++streamGenRef.current
+    const stale = () => streamGenRef.current !== gen
+    // The session this stream turned out to be for. A brand-new chat has no id
+    // at send time -- the server mints one and reports it in message_start --
+    // so the send-time `currentSessionId` cannot name it. Needed by the
+    // synthesized terminal below, which carries no session_id of its own.
+    let turnSession = currentSessionId
+    const controller = new AbortController()
+    abortRef.current = controller
+    setStreaming(true)
 
     try {
       await streamSSE(
@@ -630,8 +1186,37 @@ export default function ChatView() {
           body: JSON.stringify({ session_id: currentSessionId, content: text }),
         },
         (_evName, ev) => {
+          if (stale()) {
+            // A superseded stream paints nothing into the current view -- with
+            // one exception. A redirect leaves the stopped turn's bubble on
+            // screen, and the events that close that turn out address that
+            // bubble, not a turn the view has moved on from. They are:
+            //   - its own `message_done`, else the bubble spins "Running..."
+            //     forever;
+            //   - the `confirm_resolved` / `question_resolved` the abort
+            //     publishes alongside it, else its write card keeps live
+            //     Approve/Reject buttons that POST to a record the settle
+            //     already deleted (and its question card keeps offering an
+            //     answer, to the same effect).
+            // Those are state transitions on a bubble the user is still looking
+            // at, and they happen to be the only way it can leave the "live"
+            // rendering. A *synthesized* terminal is the exception to the
+            // exception: it is a transport failure, not the superseded turn
+            // ending, so it closes nothing (see the handler below) and the
+            // session is not re-checked -- this view has left that session, and
+            // dropStream already retired its banner. Turn *output* is different
+            // and stays dropped: deltas, tool calls and fresh pending cards
+            // carry content from the superseded turn's own conversation, which
+            // is exactly what the user redirected away from. The session-switch
+            // path aborts the fetch instead, so an aborted stream emits nothing
+            // at all and cannot reach here.
+            const settlesSupersededTurn =
+              ev.type === 'message_done' || ev.type === 'confirm_resolved' || ev.type === 'question_resolved'
+            if (!settlesSupersededTurn) return
+          }
           if (ev.type === 'message_start') {
             if (ev.session_id) {
+              turnSession = ev.session_id
               setCurrentSessionId(ev.session_id)
               loadSessions()
             }
@@ -672,7 +1257,12 @@ export default function ChatView() {
           if (ev.type === 'confirm_resolved') {
             if (bubble.confirm && (!ev.call_id || bubble.confirm.approvalId === ev.call_id)) {
               bubble.confirm.resolved = true
-              bubble.confirm.approved = !!ev.approved
+              // `approved` is a *bool on the wire: absent means nobody decided
+              // this -- the turn was stopped while the write was parked -- and
+              // that is not the same as the explicit false of a rejection.
+              // Copying it only when present leaves the card reading "Stopped"
+              // instead of painting the user a red "Rejected" they never chose.
+              if (ev.approved !== undefined) bubble.confirm.approved = ev.approved
               bubble.confirm.busy = false
               setBubbles([...bubblesRef.current])
             }
@@ -723,19 +1313,66 @@ export default function ChatView() {
             return
           }
           if (ev.type === 'message_done') {
+            // A synthesized terminal is a transport failure, not a turn
+            // outcome: the stream died (or never opened) before the server's
+            // own terminal arrived. The gateway run may still be executing, and
+            // its approval or question may still be live -- so nothing here may
+            // treat the turn as over. No phase freeze (`done` would render
+            // in-flight tools as "Stopped" and the bubble as finished), no
+            // `stopped`, no `error`, and above all no settleBubbleCards:
+            // settling the cards is what removes the only controls that can
+            // unblock that run. The partial text stays on the bubble and the
+            // cards stay live and answerable.
+            if (ev.synthetic) {
+              bubble.transportLost = ev.error || 'the stream ended before the turn finished'
+              setBubbles([...bubblesRef.current])
+              // The turn may still be running with no stream of this view's
+              // own, which is exactly the state the banner describes -- and the
+              // banner's Stop is then the only control that can end it. Ask the
+              // server rather than assert it: a run that really did settle
+              // answers `active: false` and raises no banner. The check is
+              // issued only for the current stream (a superseded one has left
+              // its session behind, and dropStream already retired that
+              // banner).
+              if (!stale() && turnSession) void checkTurnElsewhere(turnSession, streamGenRef.current)
+              return
+            }
+            // Past this point the terminal is the server's own, so the turn
+            // really is over.
             setPhase(bubble, 'done')
-            if (ev.error) bubble.error = ev.error
+            // A stopped turn is neither a failure nor a normal completion, so
+            // it sets `stopped` and leaves `error` empty.
+            if (ev.stopped) bubble.stopped = true
+            else if (ev.error) bubble.error = ev.error
+            // The turn is over, so any card it left parked is dead -- the server
+            // settled those records. Its own *_resolved events are not reliable
+            // here (they race the stream's close), so the terminal settles them
+            // too; see settleBubbleCards.
+            settleBubbleCards(bubble)
             return
           }
         },
+        controller.signal,
       )
     } catch (e) {
-      setPhase(bubble, 'done')
-      bubble.error = String(e)
+      // An intentional abort (unmount, session switch) is a clean stop, not a
+      // failure: the stream helper has already returned silently for it, and
+      // nothing here should paint the user an error they did not cause.
+      if (!stale() && !controller.signal.aborted) {
+        setPhase(bubble, 'done')
+        bubble.error = String(e)
+      }
     } finally {
-      // Push a new array reference so React re-renders with the mutated bubble.
-      setBubbles([...bubblesRef.current])
-      requestAnimationFrame(scrollThread)
+      // A superseded stream touches nothing: the flags and the bubble list now
+      // belong to its successor, or to the session that retired it (dropStream
+      // clears the flag precisely because this branch will refuse to).
+      if (!stale()) {
+        setStreaming(false)
+        // Push a new array reference so React re-renders with the mutated
+        // bubble.
+        setBubbles([...bubblesRef.current])
+        requestAnimationFrame(scrollThread)
+      }
     }
   }
 
@@ -757,7 +1394,17 @@ export default function ChatView() {
       confirm.resolved = true
       confirm.approved = decision !== 'reject'
     } catch (e) {
-      confirm.error = String(e)
+      // 404 is the card having been settled underneath the click: the turn was
+      // stopped and the settle deleted the record, or it expired. The click lost
+      // that race, so the card is closed -- neutrally, with no decision recorded
+      // -- rather than left offering buttons that cannot work or reporting a
+      // failure the user did not cause.
+      if (e instanceof ApiError && e.status === 404) {
+        confirm.resolved = true
+        confirm.approved = undefined
+      } else {
+        confirm.error = String(e)
+      }
     } finally {
       confirm.busy = false
       setBubbles([...bubblesRef.current])
@@ -865,8 +1512,33 @@ export default function ChatView() {
     loadSessions()
   }, [])
 
+  // Unmount is the one teardown the stream cannot outlive: cancel the fetch so
+  // a reply cannot keep arriving into a view that is gone. Session switches and
+  // a new chat go through dropStream instead -- and so does this, rather than a
+  // bare abort: a redirect waiting on its abort when the view goes away resumes
+  // on the other side of that await, and it is the generation bump, not the
+  // cancelled fetch, that stops it POSTing into a view that no longer exists.
+  useEffect(() => {
+    return () => {
+      dropStream()
+    }
+  }, [])
+
   function statusLine(b: BubbleMsg): string {
-    if (b.kind === 'user' || !b.phase) return ''
+    if (b.kind === 'user') return ''
+    // The lost-connection headline is checked *before* the phase guard, and it
+    // has to be: sse.ts synthesizes its terminal on paths that run before any
+    // event arrives -- a non-2xx response, a rejected fetch, a body with no
+    // reader -- so the bubble is left with no phase at all, and a guard that
+    // returned '' on an unset phase would render the amber line empty and leave
+    // only the raw reason underneath. The headline is the whole point of that
+    // state, so it must not depend on a phase the failure never set.
+    if (b.transportLost) return 'Lost connection — this turn may still be running'
+    if (!b.phase) return ''
+    // Stopped outranks the parked-state lines below: a turn that was stopped
+    // cannot be waiting on a human, even when one of its cards has not been
+    // settled by the stream yet (a transient the settled event closes).
+    if (b.stopped) return 'Stopped'
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
     if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
@@ -932,13 +1604,35 @@ export default function ChatView() {
                 <div key={i} className={`msg ${b.kind}`}>
                   <div className="avatar">{b.kind === 'user' ? userInitials : 'AI'}</div>
                   <div className="bubble">
-                    {b.phase && b.phase !== 'done' && (
+                    {b.transportLost && (
+                      // Amber, not the red of `b.error` and not the green Done
+                      // check: the turn's outcome is unknown, not failed, and
+                      // the reason the stream gave up is kept underneath rather
+                      // than presented as the turn's error.
+                      <div className="tool-status lost-mark">
+                        <span>{statusLine(b)}</span>
+                      </div>
+                    )}
+                    {b.transportLost && (
+                      <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        {b.transportLost}
+                      </div>
+                    )}
+                    {b.phase && b.phase !== 'done' && !b.transportLost && (
                       <div className="tool-status">
                         <span className="spin" />
                         {statusLine(b)}
                       </div>
                     )}
-                    {b.phase === 'done' && !b.error && (
+                    {b.phase === 'done' && b.stopped && (
+                      // A stopped turn gets the muted marker, not the green Done
+                      // check: it neither finished nor failed.
+                      <div className="tool-status">
+                        <StopIcon />
+                        {statusLine(b)}
+                      </div>
+                    )}
+                    {b.phase === 'done' && !b.stopped && !b.error && !b.transportLost && (
                       <div className="tool-status done-mark">
                         <DoneCheckIcon />
                         {statusLine(b)}
@@ -951,6 +1645,12 @@ export default function ChatView() {
                           <span className="tool-cmd">{t.name}</span>
                           {!t.done && b.phase !== 'done' ? (
                             <span className="pill accent">Running...</span>
+                          ) : !t.done ? (
+                            // The turn was stopped while this tool was still in
+                            // flight: `message_done{stopped}` freezes the phase
+                            // to done, so the neutral "Done" pill would claim
+                            // completion for work that was interrupted.
+                            <span className="pill neutral">Stopped</span>
                           ) : (
                             <span className="pill neutral">Done</span>
                           )}
@@ -989,7 +1689,22 @@ export default function ChatView() {
                         <div className="tool-head">
                           <ToolIcon />
                           <span className="tool-cmd">Write confirmation</span>
-                          {b.confirm.resolved ? (
+                          {b.confirm.resolved && b.confirm.approved === undefined ? (
+                            // Settled without a decision: the turn was stopped
+                            // while this write was parked. Neutral, not a
+                            // rejection the user never made.
+                            <span
+                              style={{
+                                fontSize: 12,
+                                borderRadius: 999,
+                                padding: '2px 10px',
+                                background: 'rgba(0,0,0,.07)',
+                                color: 'rgba(0,0,0,.55)',
+                              }}
+                            >
+                              Stopped
+                            </span>
+                          ) : b.confirm.resolved ? (
                             <span
                               style={{
                                 fontSize: 12,
@@ -1090,6 +1805,67 @@ export default function ChatView() {
         </div>
 
         <div className="composer">
+          {/* A turn with no stream attached to this view (another tab, or a
+              reload). It sits above the input, and is hidden while this view
+              streams its own turn: the composer's Stop is the control for that
+              one. */}
+          {bannerUp && (
+            <div className="turn-banner">
+              {runningElsewhere && <span className="spin" />}
+              <span>
+                {/* The stop in flight wins the headline. A confirmed turn is
+                    still running while its abort waits, so testing that first
+                    would show "Still running…" for the whole wait and mask the
+                    only feedback the wait has. The branch stays (rather than
+                    being dropped as redundant) because `stoppingElsewhere` is
+                    not a subset of `runningElsewhere`: it is also true on the
+                    cannot-check banner, whose Stop-less wait is driven by the
+                    composer's send. */}
+                {stoppingElsewhere
+                  ? 'Stopping…'
+                  : runningElsewhere
+                    ? 'Still running…'
+                    : 'Could not check whether this chat is still running.'}
+              </span>
+              {turnCheckFailed && (
+                <button className="btn sm ghost" onClick={retryTurnCheck}>
+                  Retry
+                </button>
+              )}
+              {/* The way out of an alarm that cannot resolve itself: a check
+                  that keeps failing would otherwise sit over a usable
+                  conversation forever. Disabled for the same window the Stop
+                  is: while the abort is in flight the banner is the wait's only
+                  feedback, and dropping it would make the composer's disabled
+                  Send look unexplained. */}
+              {turnCheckFailed && (
+                <button className="btn sm ghost" onClick={dismissTurnCheck} disabled={stoppingElsewhere}>
+                  Dismiss
+                </button>
+              )}
+              {/* Stop only for a turn the server *confirmed* is running
+                  (`runningElsewhere`), and still on screen while the abort is
+                  in flight, unlike the composer's glyph button which has no
+                  label to change.
+
+                  The two controls on this banner are not interchangeable. When
+                  the check failed, nothing confirmed a turn and the reason it
+                  failed is the abort's own precondition: `/abort` issues its
+                  RPC over the user's existing gateway connection and never
+                  dials one (see hitlManager.Abort), so a Stop with no channel
+                  is guaranteed to answer 502 -- a control that provably cannot
+                  work, next to the one that can. Retry is that one: the /turn
+                  read establishes the connection, so it is what turns this
+                  banner back into a confirmed one with a real Stop. The
+                  composer's Send also re-dials, which is why the banner stays
+                  usable without a Stop on it. */}
+              {runningElsewhere && (
+                <button className="btn sm" onClick={stopElsewhere} disabled={stoppingElsewhere}>
+                  {stoppingElsewhere ? 'Stopping…' : 'Stop'}
+                </button>
+              )}
+            </div>
+          )}
           <div className="composer-inner">
             <textarea
               ref={inputEl}
@@ -1104,9 +1880,22 @@ export default function ChatView() {
                 }
               }}
             />
-            <button className="send-btn" aria-label="Send" onClick={sendMessage}>
-              <SendIcon />
-            </button>
+            {/* While a turn is running the send button becomes Stop. The
+                textarea stays enabled so the user can type the redirect they
+                want to send next. */}
+            {streaming ? (
+              <button className="send-btn" aria-label="Stop" onClick={stopTurn}>
+                <StopIcon />
+              </button>
+            ) : (
+              // Disabled while a banner Stop is in flight, so the refusal in
+              // `sendMessage` is something the user can see. Enter in the
+              // textarea still reaches it -- the button is a shortcut, not the
+              // only path -- which is why the refusal lives there too.
+              <button className="send-btn" aria-label="Send" onClick={sendMessage} disabled={stoppingElsewhere}>
+                <SendIcon />
+              </button>
+            )}
           </div>
           <div className="composer-hint">
             Operate platform resources via natural language - type <span className="mono">@</span> to reference a resource - write operations ask for your approval before they run

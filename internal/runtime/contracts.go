@@ -64,6 +64,10 @@ type Event struct {
 	Approved  *bool  `json:"approved,omitempty"`
 	Delta     string `json:"delta,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Stopped reports that the turn ended because the user stopped it, as
+	// opposed to failing or completing. Only ever set on message_done, and
+	// never together with Error.
+	Stopped bool `json:"stopped,omitempty"`
 	// Question carries the pending question prompt on question_pending, with
 	// CallID holding the gateway question id used to answer it.
 	Question *QuestionPrompt `json:"question,omitempty"`
@@ -103,10 +107,20 @@ type LiveTurnParams struct {
 	Model   string
 }
 
+// TurnOutcome reports how a live turn ended when it did not fail. The terminal
+// message_done is emitted by the HTTP handler, so a runtime that merely returns
+// a nil error cannot express "stopped by request" -- that needs its own channel.
+type TurnOutcome struct {
+	// Stopped is true when the turn was cancelled by request (the chat.abort
+	// RPC or the gateway's /stop command), not by a failure and not by
+	// completing normally.
+	Stopped bool
+}
+
 // LiveTurnRunner drives interactive chat, including live tool events and any
 // runtime-native approval gate required before the turn starts.
 type LiveTurnRunner interface {
-	RunLiveTurn(ctx context.Context, sessionKey string, params LiveTurnParams, emit func(Event) error) error
+	RunLiveTurn(ctx context.Context, sessionKey string, params LiveTurnParams, emit func(Event) error) (TurnOutcome, error)
 }
 
 // OneShotRunner drives non-interactive turns such as scheduled tasks and

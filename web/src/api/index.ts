@@ -25,6 +25,22 @@ export const api = {
       `/api/sessions/${encodeURIComponent(sessionKey)}/messages`,
     ).then((d) => d.items),
 
+  // Stops the session's running turn. The server does not answer until the turn
+  // has settled, so a send issued after this resolves cannot be rejected as a
+  // concurrent turn.
+  abortSession: (sessionKey: string) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/abort`,
+      { method: 'POST' },
+    ),
+
+  // Whether the session still has a turn in flight -- used after a reload, when
+  // this tab has no stream to tell it.
+  sessionTurn: (sessionKey: string) =>
+    apiFetch<{ active: boolean }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/turn`,
+    ),
+
   // HITL write confirmations (issue #20 / #116)
   postConfirm: (sessionKey: string, decision: 'approve' | 'reject' | 'allow-always') =>
     apiFetch<{ approved: boolean; decision: string; approval_id?: string; allowlisted?: boolean }>(

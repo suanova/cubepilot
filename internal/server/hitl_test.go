@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -71,6 +72,30 @@ type fakeHitlGateway struct {
 	listQuestionsErr    error
 	questionRecords     map[string]ws.QuestionRecord
 	pendingQuestions    []ws.QuestionRecord
+
+	// chat.abort / chat.history (issue #166)
+	aborts   []string // "sessionKey|runID"; empty runID means the session-scoped form
+	abortErr error
+	// abortAborted is what chat.abort's success payload reports: false is a
+	// successful RPC that stopped nothing (the run id matched no abortable run).
+	// Zero value is true, so a fixture that does not set it keeps meaning "the
+	// RPC stopped the run".
+	abortAborted   *bool
+	sessionBuses   []string // sessionKeys passed to chat.history
+	sessionBusy    bool
+	sessionBusyErr error
+	// inFlightRun is the runId chat.history reports as in flight. inFlightActive
+	// is the separate "a run is in flight at all" answer: it is what a descriptor
+	// that carries no runId produces, and a fixture sets it to model a run that
+	// exists but cannot be named.
+	inFlightRun    string
+	inFlightActive bool
+	inFlightRunErr error
+	inFlightReads  []string // sessionKeys passed to the in-flight-run read
+	// connectCtxDeadline records the bound the last connect ran under, which is
+	// how /turn's bounded probe is observed.
+	connectCtxDeadline    time.Time
+	connectCtxHasDeadline bool
 }
 
 func (f *fakeHitlGateway) Connected() bool {
@@ -81,6 +106,7 @@ func (f *fakeHitlGateway) Connected() bool {
 func (f *fakeHitlGateway) Connect(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.connectCtxDeadline, f.connectCtxHasDeadline = ctx.Deadline()
 	if len(f.connectSeq) > 0 {
 		err := f.connectSeq[0]
 		f.connectSeq = f.connectSeq[1:]
@@ -265,6 +291,37 @@ func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecor
 		return nil, f.listQuestionsErr
 	}
 	return f.pendingQuestions, nil
+}
+func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.aborts = append(f.aborts, key+"|"+runID)
+	// A failed RPC carries no payload, so there is no abort to report -- the real
+	// client answers (false, err) there. A fixture that does not set abortAborted
+	// means "the RPC aborted the run", so the existing callers keep exercising
+	// the aborted=true path.
+	if f.abortErr != nil {
+		return false, f.abortErr
+	}
+	if f.abortAborted != nil {
+		return *f.abortAborted, nil
+	}
+	return true, nil
+}
+func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionBuses = append(f.sessionBuses, key)
+	return f.sessionBusy, f.sessionBusyErr
+}
+func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inFlightReads = append(f.inFlightReads, key)
+	if f.inFlightRunErr != nil {
+		return "", false, f.inFlightRunErr
+	}
+	return f.inFlightRun, f.inFlightActive, nil
 }
 func (f *fakeHitlGateway) Close() {}
 
@@ -588,13 +645,14 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 	done := make(chan error, 1)
 	runner := &openClawLiveRunner{manager: m, user: "alice"}
 	go func() {
-		done <- runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
+		_, err := runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{
 			Message: "hi",
 			Model:   "provider/model",
 		}, func(ev openclaw.Event) error {
 			got = append(got, ev)
 			return nil
 		})
+		done <- err
 	}()
 
 	// Wait for the fake to report the send rather than polling its fields: the
@@ -668,7 +726,7 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 func TestHitl_RunLiveTurnSendError(t *testing.T) {
 	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	if err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
+	if _, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
 		t.Fatal("RunLiveTurn returned nil, want the send error")
 	}
 	if len(gw.subscribes) != 1 {
@@ -691,7 +749,7 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
 	gw := &fakeHitlGateway{modelErr: fmt.Errorf("model unavailable")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "model unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want model patch failure", err)
 	}
@@ -703,7 +761,7 @@ func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
 func TestHitl_RunLiveTurnSurfacesSessionCreateError(t *testing.T) {
 	gw := &fakeHitlGateway{createErr: fmt.Errorf("session store unavailable")}
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
-	err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
+	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "session store unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want session creation failure", err)
 	}
@@ -721,7 +779,7 @@ func TestHitl_RunLiveTurnClearsStaleGuardForNonePolicy(t *testing.T) {
 	}
 	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "rev-1", gw)
 	runner := &openClawLiveRunner{manager: m, user: "alice"}
-	_ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
+	_, _ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
 	if len(gw.unguarded) != 1 || gw.unguarded[0] != "conv-1" {
 		t.Fatalf("stale guarded state was not cleared: %v", gw.unguarded)
 	}
@@ -735,28 +793,517 @@ func TestHitl_RunLiveTurnSkipsUnchangedSessionSettings(t *testing.T) {
 		},
 	}
 	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
-	_ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
+	_, _ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if len(gw.models) != 0 || len(gw.guarded) != 0 || len(gw.unguarded) != 0 {
 		t.Fatalf("unchanged session settings were patched: models=%v guarded=%v unguarded=%v", gw.models, gw.guarded, gw.unguarded)
 	}
 }
 
-func TestChatTerminalErr(t *testing.T) {
-	cases := []struct{ name, payload, want string }{
-		{"errorMessage preserved", `{"state":"error","errorMessage":"provider boom","stopReason":"error"}`, "provider boom"},
-		{"errorMessage aborted", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user"},
-		{"error fallback", `{"state":"error","error":"legacy msg"}`, "legacy msg"},
-		{"no message default", `{"state":"aborted"}`, "agent run aborted"},
-		{"non-terminal state ignored", `{"state":"final"}`, ""},
+func TestChatTerminalOutcome(t *testing.T) {
+	cases := []struct {
+		name        string
+		payload     string
+		wantErr     string
+		wantStopped bool
+	}{
+		{"rpc stop is an outcome", `{"state":"aborted","stopReason":"rpc"}`, "", true},
+		{"slash stop is an outcome", `{"state":"aborted","stopReason":"stop"}`, "", true},
+		{"stop keeps no error text", `{"state":"error","stopReason":"rpc","errorMessage":"ignored"}`, "", true},
+		{"timeout abort stays an error", `{"state":"aborted","stopReason":"timeout","errorMessage":"cancelled by user"}`, "cancelled by user", false},
+		{"error state stays an error", `{"state":"error","errorMessage":"provider boom"}`, "provider boom", false},
+		{"errorMessage aborted", `{"state":"aborted","errorMessage":"cancelled by user"}`, "cancelled by user", false},
+		{"error field is the fallback", `{"state":"error","error":"legacy msg"}`, "legacy msg", false},
+		{"no diagnostic gets a default", `{"state":"aborted"}`, "agent run aborted", false},
+		{"non-terminal state is ignored", `{"state":"final"}`, "", false},
 	}
 	for _, c := range cases {
-		err := chatTerminalErr([]byte(c.payload))
+		err, stopped := chatTerminalOutcome([]byte(c.payload))
 		got := ""
 		if err != nil {
 			got = err.Error()
 		}
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		if got != c.wantErr || stopped != c.wantStopped {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.name, got, stopped, c.wantErr, c.wantStopped)
 		}
+	}
+}
+
+// TestLiveTurnOutcomeIsOneGuardedRead pins the accessor contract that makes the
+// agent.wait tail path safe: the outcome and the terminal error come back
+// together, so a stopped turn can never be reported as an unqualified
+// completion.
+func TestLiveTurnOutcomeIsOneGuardedRead(t *testing.T) {
+	stopped := &liveTurn{done: make(chan struct{})}
+	stopped.finishWith(nil, true)
+	if outcome, err := stopped.outcome(); !outcome.Stopped || err != nil {
+		t.Fatalf("stopped turn = (%+v, %v), want (Stopped:true, nil)", outcome, err)
+	}
+
+	failed := &liveTurn{done: make(chan struct{})}
+	failed.finishWith(fmt.Errorf("boom"), false)
+	outcome, err := failed.outcome()
+	if outcome.Stopped || err == nil || err.Error() != "boom" {
+		t.Fatalf("failed turn = (%+v, %v), want (Stopped:false, boom)", outcome, err)
+	}
+}
+
+// runLiveTurnToTerminalFrame drives one turn through the real call path
+// (openClawLiveRunner -> hitlManager.RunLiveTurn -> routeLive) and feeds it a
+// single terminal chat frame before releasing the send, returning what
+// RunLiveTurn reported to its caller: the observable result the SSE handler
+// turns into the terminal message_done.
+func runLiveTurnToTerminalFrame(t *testing.T, frame string) (agentruntime.TurnOutcome, error) {
+	t.Helper()
+	gw := &fakeHitlGateway{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
+	m := newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+
+	type result struct {
+		outcome agentruntime.TurnOutcome
+		err     error
+	}
+	res := make(chan result, 1)
+	runner := &openClawLiveRunner{manager: m, user: "alice"}
+	go func() {
+		outcome, err := runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
+		res <- result{outcome, err}
+	}()
+
+	// Wait for the fake to report the send rather than polling its fields: the
+	// receive orders this goroutine against everything the turn did before the
+	// send (the subscribe and the OnEvent registration included).
+	select {
+	case <-gw.sendRecorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sessions.send was never called")
+	}
+	onEvent := gw.eventSink()
+	run := gw.idempotencyKey()
+	if onEvent == nil || run == "" {
+		t.Fatal("turn did not register an event router for its run id")
+	}
+	onEvent("chat", []byte(`{"sessionKey":"conv-1","runId":"`+run+`",`+frame+`}`))
+	// Release the send only once the turn is already terminal, so RunLiveTurn
+	// takes its terminal path (not the agent.wait tail) and reports the outcome
+	// the frame produced.
+	close(gw.sendBlock)
+
+	select {
+	case r := <-res:
+		return r.outcome, r.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLiveTurn did not return after the terminal frame")
+		return agentruntime.TurnOutcome{}, nil
+	}
+}
+
+// TestRunLiveTurnReportsRequestStoppedTurn closes the path from a terminal
+// frame to the caller's result for a request-initiated stop: the outcome must
+// report stopped, with no error. Without this, routeLive could classify a stop
+// as an ordinary completion and every turn would still look fine.
+func TestRunLiveTurnReportsRequestStoppedTurn(t *testing.T) {
+	for _, stopReason := range []string{"rpc", "stop"} {
+		t.Run(stopReason, func(t *testing.T) {
+			outcome, err := runLiveTurnToTerminalFrame(t, `"state":"aborted","stopReason":"`+stopReason+`"`)
+			if err != nil {
+				t.Fatalf("RunLiveTurn error = %v, want nil for a request-initiated stop", err)
+			}
+			if !outcome.Stopped {
+				t.Fatalf("stopReason=%q frame reported Stopped=false: a stopped turn is indistinguishable from a completed one", stopReason)
+			}
+		})
+	}
+}
+
+// TestRunLiveTurnReportsNonRequestAbortAsError closes the other half: an abort
+// the user did not ask for stays a failure, so the browser is told the turn
+// failed rather than that it was stopped.
+func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
+	outcome, err := runLiveTurnToTerminalFrame(t, `"state":"aborted","stopReason":"timeout","errorMessage":"run timed out"`)
+	if err == nil {
+		t.Fatal("RunLiveTurn error = nil for a timeout abort, want a failure")
+	}
+	if !strings.Contains(err.Error(), "run timed out") {
+		t.Fatalf("RunLiveTurn error = %v, want the frame's diagnostic", err)
+	}
+	if outcome.Stopped {
+		t.Fatal("RunLiveTurn reported Stopped=true for a non-request abort")
+	}
+}
+
+// TestHitl_LiveRunID tracks the run id the server believes is live for a
+// session: absent while no turn is registered, then present from the moment the
+// turn registers.
+//
+// The id is installed *before* RunLiveTurn subscribes and sends (hitl.go:691-699
+// calls setRunID right after registerLive), and the gateway's client run id is
+// the send's idempotency key. So the id-less window is those two statements
+// wide, with no I/O between them -- it is not a pre-ACK window stretching across
+// the subscribe/send round trip. An empty LiveRunID therefore means no turn is
+// registered at all -- which is why /abort only treats it as a miss to be
+// resolved elsewhere, never as a reason to stop aborting.
+//
+// The lookup is scoped to the requesting user: m.live is indexed by session key
+// alone, and a session key can be client-supplied, so an unscoped read would let
+// one user's /abort pick up another user's run id. routeLive applies the same
+// ownership rule when it routes.
+func TestHitl_LiveRunID(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if id, ok := m.LiveRunID("alice", "conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID with no turn = (%q, %v), want empty", id, ok)
+	}
+
+	turn := m.registerLive("alice", "conv-1", nil)
+	if id, ok := m.LiveRunID("alice", "conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID in the registerLive..setRunID gap = (%q, %v), want empty", id, ok)
+	}
+	turn.setRunID("run-7")
+	if id, ok := m.LiveRunID("alice", "conv-1"); !ok || id != "run-7" {
+		t.Fatalf("LiveRunID = (%q, %v), want run-7", id, ok)
+	}
+
+	// Another user asking about the same session key must not see alice's run
+	// id: reading it is what would let their /abort kill her run.
+	if id, ok := m.LiveRunID("bob", "conv-1"); ok || id != "" {
+		t.Fatalf("LiveRunID for another user = (%q, %v), want empty", id, ok)
+	}
+	// The owner still reads it, so the check rejects only outsiders.
+	if id, ok := m.LiveRunID("alice", "conv-1"); !ok || id != "run-7" {
+		t.Fatalf("LiveRunID for the owner after another user read it = (%q, %v), want run-7", id, ok)
+	}
+}
+
+// TestHitl_AbortDelegatesToGateway pins the two things Task 5 depends on: the
+// run id the server holds reaches the gateway, and the empty-runID fallback
+// stays empty rather than being filled with something invented.
+func TestHitl_AbortDelegatesToGateway(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err != nil || !aborted {
+		t.Fatalf("Abort = (%v, %v), want (true, nil)", aborted, err)
+	}
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", ""); err != nil || !aborted {
+		t.Fatalf("Abort without a run id = (%v, %v), want (true, nil)", aborted, err)
+	}
+	want := []string{"conv-1|run-7", "conv-1|"}
+	if len(gw.aborts) != 2 || gw.aborts[0] != want[0] || gw.aborts[1] != want[1] {
+		t.Fatalf("aborts = %v, want %v", gw.aborts, want)
+	}
+}
+
+// TestHitl_AbortReportsAnAbortThatStoppedNothing: the gateway can answer ok with
+// aborted=false -- the run id matched no abortable run. That must reach the
+// caller as aborted=false, because it is the one thing /abort cannot read as a
+// stop: settling on it deletes the records of a run that is still going.
+func TestHitl_AbortReportsAnAbortThatStoppedNothing(t *testing.T) {
+	no := false
+	gw := &fakeHitlGateway{connected: true, abortAborted: &no}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7")
+	if err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if aborted {
+		t.Fatal("Abort reported a stop for a gateway that answered aborted=false")
+	}
+}
+
+func TestHitl_AbortRequiresAChannel(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
+		t.Fatal("Abort without a live gateway channel must fail, and must not claim a stop")
+	}
+}
+
+// TestHitl_AbortRejectsUnconnectedChannel: liveConn reports ok=false for two
+// distinct reasons -- there is no entry, and there is an entry whose gateway is
+// not connected. Only the first is covered by TestHitl_AbortRequiresAChannel.
+// A connection registered before its handshake completes must fail here rather
+// than be handed to the gateway, which would surface as a confusing
+// "ws: not connected" from inside Client.Call.
+func TestHitl_AbortRejectsUnconnectedChannel(t *testing.T) {
+	gw := &fakeHitlGateway{} // connected defaults to false
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
+		t.Fatal("Abort with a stored but unconnected gateway must fail, and must not claim a stop")
+	}
+	if len(gw.aborts) != 0 {
+		t.Fatalf("aborts = %v, want the gateway untouched", gw.aborts)
+	}
+}
+
+// TestHitl_AbortPropagatesGatewayError: an error from the gateway means the
+// abort's fate is unknown. It must reach the caller rather than be swallowed
+// into a nil success.
+func TestHitl_AbortPropagatesGatewayError(t *testing.T) {
+	wantErr := errors.New("gateway down")
+	gw := &fakeHitlGateway{connected: true, abortErr: wantErr}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); !errors.Is(err, wantErr) || aborted {
+		t.Fatalf("Abort = (%v, %v), want (false, %v)", aborted, err, wantErr)
+	}
+	if len(gw.aborts) != 1 {
+		t.Fatalf("aborts = %v, want the call attempted once", gw.aborts)
+	}
+}
+
+// TestHitl_SessionBusyDelegatesToGateway: the manager must report the gateway's
+// answer untouched, since it is the only busy signal that survives a reload.
+func TestHitl_SessionBusyDelegatesToGateway(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("SessionBusy: %v", err)
+	}
+	if !busy {
+		t.Fatal("SessionBusy = false, want the gateway's true")
+	}
+	if len(gw.sessionBuses) != 1 || gw.sessionBuses[0] != "conv-1" {
+		t.Fatalf("sessionBuses = %v, want [conv-1]", gw.sessionBuses)
+	}
+}
+
+func TestHitl_SessionBusyRequiresAChannel(t *testing.T) {
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusy without a live gateway channel must fail")
+	}
+}
+
+// TestHitl_SessionBusyRejectsUnconnectedChannel covers the second reason
+// liveConn returns ok=false: an entry exists but its gateway has not finished
+// connecting. The gateway must not be probed.
+func TestHitl_SessionBusyRejectsUnconnectedChannel(t *testing.T) {
+	gw := &fakeHitlGateway{} // connected defaults to false
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusy with a stored but unconnected gateway must fail")
+	}
+	if len(gw.sessionBuses) != 0 {
+		t.Fatalf("sessionBuses = %v, want the gateway untouched", gw.sessionBuses)
+	}
+}
+
+// TestHitl_SessionBusyEstablishedDialsBounded: with no channel the read
+// establishes one, and the dial is bounded by channelProbeTimeout. Inheriting
+// conn()'s 30s NOT_PAIRED pairing budget would let one /turn hold a Portal
+// refresh open for half a minute, and the caller's "could not check" would
+// arrive long after the user gave up.
+func TestHitl_SessionBusyEstablishedDialsBounded(t *testing.T) {
+	gw := &fakeHitlGateway{sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+
+	busy, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("SessionBusyEstablished: %v", err)
+	}
+	if !busy {
+		t.Fatal("SessionBusyEstablished = false, want the gateway's true")
+	}
+	if !gw.connectCtxHasDeadline {
+		t.Fatal("the establishing dial ran on a context with no deadline: a hung connect would hold the read open indefinitely")
+	}
+	if d := time.Until(gw.connectCtxDeadline); d <= 0 || d > channelProbeTimeout+time.Second {
+		t.Fatalf("dial deadline = now+%v, want (0, %v]", d, channelProbeTimeout)
+	}
+	// The channel is kept, not probed and dropped: the Stop the answer offers is
+	// issued over it.
+	if _, ok := m.liveConn("alice"); !ok {
+		t.Fatal("the established channel was not kept: the Stop offered over it would fail with no channel")
+	}
+}
+
+// TestHitl_SessionBusyEstablishedKeepsLiveChannel: an existing channel is used
+// as it is. Re-dialling on every status read would churn the connection (and
+// possibly the device pairing) that the running turn is observed over.
+func TestHitl_SessionBusyEstablishedKeepsLiveChannel(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw, connected: true}
+
+	if _, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1"); err != nil {
+		t.Fatalf("SessionBusyEstablished: %v", err)
+	}
+	if gw.connectCtxHasDeadline {
+		t.Fatal("the read dialled although a live channel existed")
+	}
+}
+
+// TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial: a second connect for
+// the same user waits for the first, which can be inside a dial (or the pairing
+// retry) for up to its budget. The wait has to be context-aware too, or the
+// bound above is nominal -- the probe would sit behind that dial and only then
+// start its own.
+func TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial(t *testing.T) {
+	blocking := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &blocking.fakeHitlGateway)
+	m.newClient = func(string, *ws.Device) hitlGateway { return blocking }
+
+	first := make(chan struct{})
+	go func() {
+		_, _ = m.conn(context.Background(), "alice")
+		close(first)
+	}()
+	<-blocking.entered
+
+	start := time.Now()
+	if _, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusyEstablished succeeded while the only channel was still dialling")
+	}
+	if d := time.Since(start); d > channelProbeTimeout+time.Second {
+		t.Fatalf("the probe waited %v for another dial, want it bounded by channelProbeTimeout", d)
+	}
+
+	close(blocking.release)
+	<-first
+}
+
+// TestHitl_InFlightRunIDDelegatesAndRequiresAChannel: the run an abort is scoped
+// to comes from the gateway, and a missing channel must be an error rather than
+// an empty id -- which is a different claim from "could not ask".
+//
+// active comes back as its own answer, and the three states are pinned here
+// because the caller branches on them: idle (no run at all) is an idempotent
+// no-op, a named run is aborted, and a run that is active but unnamed is a
+// failure. A fixture whose descriptor carries no run id is exactly that last
+// state, and it must not arrive as idle.
+func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, inFlightRun: "run-7", inFlightActive: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	id, active, err := m.InFlightRunID(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("InFlightRunID: %v", err)
+	}
+	if id != "run-7" || !active {
+		t.Fatalf("InFlightRunID = (%q, %v), want (run-7, true)", id, active)
+	}
+
+	unnamed := &fakeHitlGateway{connected: true, inFlightActive: true}
+	unnamedM := newTestHitl(v1alpha1.ConfirmPolicyNone, "", unnamed)
+	unnamedM.conns["alice"] = &userHitlConn{user: "alice", gw: unnamed}
+	id, active, err = unnamedM.InFlightRunID(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("InFlightRunID on an unnamed run: %v", err)
+	}
+	if id != "" || !active {
+		t.Fatalf("InFlightRunID on an unnamed run = (%q, %v), want (\"\", true): a run with no id is running, not idle", id, active)
+	}
+
+	noChannel := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if _, _, err := noChannel.InFlightRunID(context.Background(), "alice", "conv-1"); !errors.Is(err, errNoGatewayChannel) {
+		t.Fatalf("InFlightRunID without a channel = %v, want errNoGatewayChannel", err)
+	}
+}
+
+// TestHitl_SessionBusyDoesNotSwallowError pins the contract the reload-takeover
+// path depends on: a failed probe means "cannot determine", never "not busy". A
+// (false, nil) here would strand a turn that is still running.
+func TestHitl_SessionBusyDoesNotSwallowError(t *testing.T) {
+	wantErr := errors.New("chat.history failed")
+	gw := &fakeHitlGateway{connected: true, sessionBusyErr: wantErr}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("SessionBusy error = %v, want %v", err, wantErr)
+	}
+	if busy {
+		t.Fatal("SessionBusy = true alongside an error")
+	}
+}
+
+// blockingHitlGateway is a gateway whose handshake parks until the test releases
+// it, so the state in the middle of a dial can be observed. That window is the
+// one the Portal used to read as "cannot determine": conn registers the entry
+// before dialling, and the NOT_PAIRED pairing retry can hold it there for up to
+// 30 seconds.
+type blockingHitlGateway struct {
+	fakeHitlGateway
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingHitlGateway) Connect(ctx context.Context) error {
+	close(f.entered)
+	<-f.release
+	f.mu.Lock()
+	f.connected = true
+	f.mu.Unlock()
+	return nil
+}
+
+// TestHitlGatewayConnectedNeedsASuccessfulHandshake pins the flag /turn's
+// classification reads: it must be false for the whole of a dial that has not
+// finished -- an idle session then answers idle instead of raising the
+// cannot-check banner -- and true afterwards, including after the entry has been
+// replaced by a re-dial, because a turn started over the old connection can
+// still be running.
+func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
+	gw := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &gw.fakeHitlGateway)
+	m.newClient = func(url string, dev *ws.Device) hitlGateway { return gw }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.conn(context.Background(), "alice")
+		done <- err
+	}()
+
+	<-gw.entered
+	// The entry is registered (that is how the dial is tracked) and its gateway
+	// is not connected yet: registered must not read as a channel.
+	m.mu.Lock()
+	entry := m.conns["alice"]
+	m.mu.Unlock()
+	if entry == nil {
+		t.Fatal("no entry is registered during the dial; this test is not observing the state it claims to")
+	}
+	if m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = true while the handshake is still in flight: /turn would answer 502 and the Portal would flash its cannot-check banner over an idle session")
+	}
+
+	close(gw.release)
+	if err := <-done; err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	if !m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = false after a successful handshake")
+	}
+
+	// The connection then drops and is re-dialled: the replacement entry starts
+	// out unmarked, and must inherit the fact that this process once had a
+	// channel.
+	gw.mu.Lock()
+	gw.connected = false
+	gw.mu.Unlock()
+	gw.release = make(chan struct{})
+	gw.entered = make(chan struct{})
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := m.conn(context.Background(), "alice")
+		done2 <- err
+	}()
+	<-gw.entered
+	if !m.gatewayConnected("alice") {
+		t.Fatal("gatewayConnected = false during a re-dial after a drop: a turn started over the old connection may still be running")
+	}
+	close(gw.release)
+	if err := <-done2; err != nil {
+		t.Fatalf("re-dial: %v", err)
 	}
 }

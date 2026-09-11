@@ -36,7 +36,14 @@ type Client struct {
 	deviceTok string // deviceToken from hello; used on reconnect to skip re-signing
 	connected bool
 
-	writeMu sync.Mutex
+	// writeToken serialises frames written to conn. It is a cap-1 channel
+	// rather than a sync.Mutex because acquisition is context-aware: a writer
+	// wedged inside conn.Write holds the token, and a second writer must be
+	// able to give up at its own deadline instead of parking on the mutex until
+	// the first one returns -- a mutex has no way to be interrupted, so the
+	// caller's context could not bound the wait at all. Acquire with
+	// acquireWrite, release with releaseWrite.
+	writeToken chan struct{}
 
 	nextID atomic.Int64
 
@@ -58,6 +65,9 @@ type Client struct {
 
 	closeOnce sync.Once
 	done      chan struct{} // closed when the read pump exits
+
+	// callFn overrides Call in tests; nil means use the real transport.
+	callFn func(ctx context.Context, method string, params any) (json.RawMessage, error)
 }
 
 // NewClient returns a Client for url (ws://host/gateway), the shared gateway
@@ -67,11 +77,40 @@ type Client struct {
 // scopes intact (used by the supervisor to bootstrap device pairing).
 func NewClient(url, token string, dev *Device) *Client {
 	return &Client{
-		url:     url,
-		token:   token,
-		dev:     dev,
-		pending: map[string]chan responseFrame{},
-		done:    make(chan struct{}),
+		url:        url,
+		token:      token,
+		dev:        dev,
+		pending:    map[string]chan responseFrame{},
+		done:       make(chan struct{}),
+		writeToken: make(chan struct{}, 1),
+	}
+}
+
+// acquireWrite takes the connection's write token, or returns ctx.Err() when
+// ctx ends first. That ordering is the point: the frame is not written when the
+// context wins, so a caller whose deadline expires learns nothing was sent and
+// does not have to treat "the RPC failed" and "the request may have been
+// delivered" as the same thing. Callers must release with releaseWrite.
+//
+// A zero-value Client has no token (the method-builder fixtures construct one
+// directly); there is no transport to serialise there, and Call returns before
+// it would write.
+func (c *Client) acquireWrite(ctx context.Context) error {
+	if c.writeToken == nil {
+		return nil
+	}
+	select {
+	case c.writeToken <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseWrite returns the token taken by acquireWrite.
+func (c *Client) releaseWrite() {
+	if c.writeToken != nil {
+		<-c.writeToken
 	}
 }
 
@@ -305,8 +344,10 @@ func (c *Client) writeReq(ctx context.Context, conn *websocket.Conn, method stri
 	if err != nil {
 		return err
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	if err := c.acquireWrite(ctx); err != nil {
+		return err
+	}
+	defer c.releaseWrite()
 	return conn.Write(ctx, websocket.MessageText, raw)
 }
 
@@ -408,6 +449,9 @@ func (c *Client) dispatchEvent(ev eventFrame) {
 
 // Call invokes a gateway method and returns its response payload.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if c.callFn != nil {
+		return c.callFn(ctx, method, params)
+	}
 	c.connMu.Lock()
 	conn := c.conn
 	c.connMu.Unlock()
@@ -426,14 +470,34 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 
 	frame := requestFrame{Type: "req", ID: id, Method: method, Params: raw}
 	out, _ := json.Marshal(frame)
-	c.writeMu.Lock()
-	err = conn.Write(ctx, websocket.MessageText, out)
-	c.writeMu.Unlock()
-	if err != nil {
+	// The token is taken under the caller's context, before the frame is
+	// written: a writer wedged on the connection cannot hold this call past its
+	// deadline, and when ctx wins nothing was sent (see acquireWrite).
+	if werr := c.acquireWrite(ctx); werr != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return nil, fmt.Errorf("ws write %s: %w", method, err)
+		return nil, fmt.Errorf("ws write %s: %w", method, werr)
+	}
+	// Released by defer, on every path out of the write -- including a panic
+	// unwinding through conn.Write. A plain statement after the write leaks the
+	// token for good on that path: Connected() stays true, so this client is
+	// never replaced, and every later Call on it blocks on acquireWrite until
+	// its own deadline expires.
+	//
+	// The defer lives in a scope that ends with the write rather than with Call,
+	// so the token is not held for the whole RPC wait -- that would serialise
+	// every call on the connection behind the first one's response, which can
+	// take up to its own deadline.
+	werr := func() error {
+		defer c.releaseWrite()
+		return conn.Write(ctx, websocket.MessageText, out)
+	}()
+	if werr != nil {
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
+		return nil, fmt.Errorf("ws write %s: %w", method, werr)
 	}
 
 	select {

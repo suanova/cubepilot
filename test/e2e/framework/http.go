@@ -90,6 +90,58 @@ func (f *Framework) SendJSON(ctx context.Context, method, url string, body any, 
 	return out, resp.StatusCode, nil
 }
 
+// PostRaw performs a POST with the Portal's identity header and returns the raw
+// body and status code. body may be nil for endpoints that take no payload.
+func (f *Framework) PostRaw(ctx context.Context, url, user string, body []byte) ([]byte, int, error) {
+	var r io.Reader
+	headers := map[string]string{"X-CubePilot-User": user}
+	if body != nil {
+		r = bytes.NewReader(body)
+		headers["Content-Type"] = "application/json"
+	}
+	resp, err := f.do(ctx, http.MethodPost, url, r, headers)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return b, resp.StatusCode, nil
+}
+
+// AbortSession posts POST /api/sessions/{key}/abort -- the Portal's Stop, the
+// same call the UI makes before it sends a redirecting message.
+//
+// The endpoint deliberately does not answer until the session has settled, so a
+// 200 here is the promise the follow-up send relies on: it means the session is
+// idle, and the next POST /api/messages for it cannot be refused as a
+// concurrent turn.
+func (f *Framework) AbortSession(ctx context.Context, user, sessionKey string) ([]byte, int, error) {
+	return f.PostRaw(ctx, f.PortalBase+"/api/sessions/"+url.PathEscape(sessionKey)+"/abort", user, nil)
+}
+
+// SessionTurnActive reads GET /api/sessions/{key}/turn -- whether the session
+// still has a run in flight -- and returns the active flag with the status code.
+//
+// The API answers 502 when it cannot determine the answer (a gateway read that
+// failed on a live connection, or one that timed out) rather than reporting "not
+// busy", so callers must check the status: an unreadable status is not an idle
+// session. A user with no gateway connection at all is a different case and
+// answers an idle 200, because with no channel nothing can be running that this
+// process could stop.
+func (f *Framework) SessionTurnActive(ctx context.Context, user, sessionKey string) (bool, int, error) {
+	data, code, err := f.GetJSON(ctx,
+		f.PortalBase+"/api/sessions/"+url.PathEscape(sessionKey)+"/turn",
+		map[string]string{"X-CubePilot-User": user})
+	if err != nil {
+		return false, code, err
+	}
+	active, _ := data["active"].(bool)
+	return active, code, nil
+}
+
 // SSEEvent is one parsed Server-Sent Event from the chat stream.
 type SSEEvent struct {
 	Event string          // the event: type
