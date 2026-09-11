@@ -81,13 +81,14 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 	}
 }
 
-// A stop that fails at the gateway is a failure, never a success: an abort RPC
-// that errored means the run may still be going, and answering 200 would tell
-// the Portal to send the follow-up into a session that is still busy -- the 409
-// this endpoint exists to remove, plus a turn the user believes they stopped.
+// A stop the gateway refuses is a failure, never a success: the run is still in
+// flight, and answering 200 would tell the Portal to send the follow-up into a
+// session that is still busy -- the 409 this endpoint exists to remove, plus a
+// turn the user believes they stopped. The reconciliation read is what tells the
+// two failed-RPC cases apart, and here it confirms the worst one.
 func TestHandleAbortReportsAbortFailure(t *testing.T) {
 	h := NewHub()
-	gw := &fakeAbortGateway{abortErr: errors.New("gateway gone")}
+	gw := &fakeAbortGateway{abortErr: errors.New("gateway gone"), busy: true}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
@@ -96,6 +97,106 @@ func TestHandleAbortReportsAbortFailure(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rec.Code)
+	}
+	if gw.lastBusySession != abortTestKey {
+		t.Fatalf("reconcile read key = %q, want %q: a failed abort must be reconciled against the gateway", gw.lastBusySession, abortTestKey)
+	}
+}
+
+// A failed abort RPC does not prove the stop did not happen. The frame is
+// written before the response is waited for, so an abort that errors on its
+// deadline can still have been delivered and honoured -- and treating that as
+// "nothing happened" leaves the session's cards pending for a run that is
+// already dead, to resurface on reload as cards nothing can answer. When the
+// reconciliation read says the run is gone, the stop landed: settle, answer 200.
+func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{abortErr: errors.New("ws write chat.abort: context deadline exceeded")}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: the gateway no longer has the run, so the stop landed", rec.Code)
+	}
+	// The settle is the consequence of the decision: a landed stop must clear the
+	// records the run left behind, exactly as a successful RPC does.
+	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
+		t.Fatal("the run is gone but its pending confirmation survived: a reload resurrects a card for a dead run")
+	}
+}
+
+// The reconciliation is not a licence to guess. If it cannot be answered -- no
+// channel, a wedged read -- the run's fate is unknown, and settling on an
+// unknown result would delete a live, answerable card for a run that never
+// stopped. The records stay pending and the caller gets the 502.
+func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{
+		abortErr:  errors.New("ws write chat.abort: context deadline exceeded"),
+		busyErr:   errors.New("chat.history: connection closed"),
+		busy:      true,
+	}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502", rec.Code)
+	}
+	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
+		t.Fatal("the records were settled on an unknown result: the card for a run that may still be going is gone")
+	}
+}
+
+// The reload-takeover path has no live turn -- releaseLive removed it when the
+// request driving the turn ended -- so a run id has to come from the gateway.
+// Without it the abort is session-scoped, and a run promoted between the RPC
+// being processed and the run the user meant settling is the one it kills.
+func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{inFlightRun: "run-gateway"}
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if gw.inFlightSession != abortTestKey {
+		t.Fatalf("in-flight read key = %q, want the canonical %q", gw.inFlightSession, abortTestKey)
+	}
+	if gw.lastAbortRunID != "run-gateway" {
+		t.Fatalf("abort runID = %q, want the gateway's in-flight run: the session-scoped fallback can kill the next run", gw.lastAbortRunID)
+	}
+}
+
+// The last resort, spelled out: when the in-flight lookup answers nothing, the
+// abort stays session-scoped rather than being refused. Nothing is in flight, so
+// this is the idempotent no-op case -- and the only remaining reason to reach
+// the session-scoped form besides an unanswered read.
+func TestHandleAbortFallsBackToSessionScope(t *testing.T) {
+	h := NewHub()
+	gw := &fakeAbortGateway{} // no live turn, no in-flight run
+	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	s := newAbortTestServer(h, m)
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if gw.lastAbortRunID != "" {
+		t.Fatalf("abort runID = %q, want the empty (session-scoped) form when nothing is in flight", gw.lastAbortRunID)
 	}
 }
 
@@ -407,13 +508,12 @@ func TestHandleTurnStatus(t *testing.T) {
 	}
 }
 
-// The gateway read is bounded, exactly as /abort's RPC is. Nothing else bounds
-// it: ws.Client.Call takes the connection's write mutex and writes the frame
-// before it selects on the context, and the HTTP server sets no timeouts, so a
-// half-open gateway connection would park this handler forever and leak one
-// blocked request per Portal refresh. The fake reports the context it was
-// handed, which is the bound's only observable (an unbounded read simply never
-// returns, so no fast test can wait for it).
+// The gateway read is bounded, exactly as /abort's RPC is. The HTTP server sets
+// no timeouts of its own, so a half-open gateway connection would park this
+// handler for as long as the read takes and leak one blocked request per Portal
+// refresh; the bound is what turns that into a single reported failure. The fake
+// reports the context it was handed, which is the bound's only observable (an
+// unbounded read simply never returns, so no fast test can wait for it).
 func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 	gw := &fakeAbortGateway{busy: true}
 	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
@@ -436,67 +536,73 @@ func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 	}
 }
 
-// No gateway channel is not "cannot determine". The per-user connection is
-// dialled lazily on first use, so this is the ordinary state of a fresh API
-// process and of any user who has not sent a message -- answering 502 there
-// paints every conversation open with an alarm and a Stop button that provably
-// cannot work (the abort fails on the same missing channel). With no channel
-// this process cannot be driving a turn for that user, so the idle answer is the
-// truthful one.
+// A missing local entry is not evidence of an idle session. The per-user
+// connection is dialled lazily on first use, so after an API restart or a pod
+// roll the replacement process has no entry in m.conns while a run the
+// *previous* process started can still be executing gateway-side. Reading that
+// missing entry as idle hides the running turn and takes away its Stop, which
+// is the one answer this endpoint must never give.
 //
-// The classification is the load-bearing part, and it is what also keeps
-// TestHandleTurnStatusBusyErrorIsNotIdle honest: that fake holds a *live*
-// connection whose read failed, which is a different case and must stay an error.
-func TestHandleTurnStatusWithoutChannelIsIdle(t *testing.T) {
-	// No connection for the caller at all: the lazy dial has not happened yet.
-	m := &hitlManager{conns: map[string]*userHitlConn{}}
-
-	// The sentinel is the handler's whole basis for the distinction, so pin it
-	// where it is produced rather than inferring it from a status code.
-	if _, err := m.SessionBusy(context.Background(), "admin", abortTestKey); !errors.Is(err, errNoGatewayChannel) {
-		t.Fatalf("SessionBusy without a channel = %v, want errNoGatewayChannel", err)
+// So /turn establishes the channel -- bounded, so a user who has simply never
+// chatted dials straight through and gets a true answer -- and then asks the
+// gateway. The fake reports a run in flight, so the assertion is the
+// determination itself, not just the status code: the pre-fix handler answered
+// 200 {"active": false} here from the absent entry alone.
+func TestHandleTurnStatusEstablishesTheChannel(t *testing.T) {
+	gw := &fakeHitlGateway{sessionBusy: true}
+	m := &hitlManager{
+		conns:     map[string]*userHitlConn{},
+		newClient: func(string, *ws.Device) hitlGateway { return gw },
+		wsURLOf:   func(string) string { return "ws://fake/gateway" },
 	}
-
+	// The state the finding is about: no channel in this process at all.
+	if _, ok := m.liveConn("admin"); ok {
+		t.Fatal("fixture: the manager must start with no channel for the user")
+	}
 	s := newAbortTestServer(NewHub(), m)
+
 	rec := httptest.NewRecorder()
 	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200: with no channel nothing can be running to hide", rec.Code)
+		t.Fatalf("code = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("Cache-Control = %q, want no-store", got)
-	}
-	// The body is the determination, not just the status: the Portal skips its
-	// banner on `active`, so this must not be a 200 carrying an omitted field.
 	var body struct {
 		Active bool `json:"active"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Active {
-		t.Fatal("active = true, want false: with no gateway channel this process cannot be driving a turn")
+	if !body.Active {
+		t.Fatal("active = false with a run in flight at the gateway: a missing local entry cannot be read as idle")
+	}
+	if len(gw.sessionBuses) != 1 || gw.sessionBuses[0] != abortTestKey {
+		t.Fatalf("busy reads = %v, want one on the canonical key %q", gw.sessionBuses, abortTestKey)
+	}
+	// Establishing is not a probe-and-drop: the connection is kept, so the Stop
+	// this answer offers can actually be issued over it. A dropped channel would
+	// make the offered Stop fail with no channel at all.
+	if _, ok := m.liveConn("admin"); !ok {
+		t.Fatal("the handler discarded the channel it established: the Stop it just offered would fail")
 	}
 }
 
-// An established connection that is down is NOT the no-channel case, even
-// though hitlManager reports both through the same sentinel: this process had a
-// channel for the user, so a turn it started can still be running while the
-// connection is broken (a gateway restart or an API pod roll stops observation,
-// not the run). Reading this as idle would hide a running turn and take away its
-// Stop for exactly the user who needs it; "cannot determine" is the honest
-// answer.
-//
-// The test drives SessionBusy *and* the handler, because the sentinel cannot
-// carry the distinction -- both states produce it -- and the classification is
-// the entry's `connected` flag, which the handler has to consult.
+// A connection that is no longer usable is replaced by the probe, and when the
+// dial cannot be completed the answer is "cannot determine", not a false idle.
+// This process had a channel for the user, so a turn it started can still be
+// running while the connection is broken (a gateway restart or an API pod roll
+// stops observation, not the run); the caller renders the 502 as could-not-check
+// with a Retry.
 func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 	gw := &downAbortGateway{}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw, connected: true}}}
+	m := &hitlManager{
+		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw, connected: true}},
+		newClient: func(string, *ws.Device) hitlGateway { return gw },
+		wsURLOf:   func(string) string { return "ws://fake/gateway" },
+	}
 
 	if _, err := m.SessionBusy(context.Background(), "admin", abortTestKey); !errors.Is(err, errNoGatewayChannel) {
-		t.Fatalf("SessionBusy on a down connection = %v, want the same errNoGatewayChannel as the no-channel case", err)
+		t.Fatalf("SessionBusy on a down connection = %v, want errNoGatewayChannel", err)
 	}
 
 	s := newAbortTestServer(NewHub(), m)
@@ -509,39 +615,30 @@ func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 	assertNoActiveClaim(t, rec.Body.Bytes())
 }
 
-// The other half of the same map lookup, and the state the flag exists for: an
-// entry that is present but has never carried a successful handshake.
-//
-// conn registers the entry *before* dialling -- and the NOT_PAIRED pairing retry
-// can hold it that way for up to 30 seconds -- so reading registration as "has a
-// channel" made every /turn issued during a user's first connect answer "cannot
-// determine": the Portal raised its cannot-check banner, and the banner's Stop
-// failed on the same unusable channel. Nothing can be running for that user yet
-// (the dial has not completed), so idle is the truthful answer and the alarm is
-// noise the user cannot act on.
-//
-// It is the same fake as the test above, with the opposite `connected` flag,
-// which is what makes the pair a check of the flag rather than of Connected().
-func TestHandleTurnStatusMidDialIsIdle(t *testing.T) {
-	gw := &downAbortGateway{}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+// The same for an entry that is registered but has never carried a successful
+// handshake -- the state conn holds for the whole of a dial, and for up to the
+// 30s pairing retry when the device is not yet approved. Such an entry is not a
+// channel, so the read re-dials rather than answering from it; if that dial
+// cannot be completed there is no way to know whether the gateway has a run, and
+// that is an error rather than the idle the pre-fix handler inferred from the
+// unusable entry.
+func TestHandleTurnStatusRedialsUnusableEntry(t *testing.T) {
+	gw := &fakeHitlGateway{connectErr: errors.New("dial: gateway unreachable")}
+	m := &hitlManager{
+		// Registered, not connected: the handshake has not completed.
+		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
+		newClient: func(string, *ws.Device) hitlGateway { return gw },
+		wsURLOf:   func(string) string { return "ws://fake/gateway" },
+	}
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
 	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200: an entry whose handshake has not finished has no channel to hide a turn behind", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502: a channel that cannot be established means the busy state is unknown", rec.Code)
 	}
-	var body struct {
-		Active bool `json:"active"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Active {
-		t.Fatal("active = true, want false: a dial still in flight cannot be driving a turn")
-	}
+	assertNoActiveClaim(t, rec.Body.Bytes())
 }
 
 // A read whose bound runs out is an error, never an idle. "Cannot determine" is
@@ -691,6 +788,13 @@ type fakeAbortGateway struct {
 	// question.list, which is how the settle's detachment is observed.
 	listed     bool
 	listCtxErr error
+	// inFlightRun is the runId chat.history reports as in flight (empty means
+	// the gateway reports no run), and inFlightErr makes that read fail.
+	inFlightRun string
+	inFlightErr error
+	// inFlightSession records the key the in-flight-run read was made with, so a
+	// test can tell the reload-takeover lookup apart from a local run id.
+	inFlightSession string
 }
 
 func (f *fakeAbortGateway) AbortChat(ctx context.Context, sessionKey, runID string) error {
@@ -708,6 +812,11 @@ func (f *fakeAbortGateway) SessionBusy(ctx context.Context, sessionKey string) (
 	return f.busy, f.busyErr
 }
 
+func (f *fakeAbortGateway) SessionInFlightRun(ctx context.Context, sessionKey string) (string, error) {
+	f.inFlightSession = sessionKey
+	return f.inFlightRun, f.inFlightErr
+}
+
 // Connected and ListQuestions are not incidental: the settle step reaches the
 // gateway through hitlManager.liveConn, which drops a connection that is not
 // usable, and then lists its questions. Without an explicit Connected the
@@ -718,16 +827,24 @@ func (f *fakeAbortGateway) Connected() bool { return true }
 
 // downAbortGateway is a per-user connection that is not usable right now. It
 // shares the fake's busy answer, which is unreachable -- a down connection is
-// dropped by liveConn before any RPC.
+// dropped by liveConn before any RPC, and /turn's probe replaces it with a dial,
+// which fails here.
 //
 // On its own it models either of the two states the sentinel collapses: a dial
 // still handshaking, and an established channel that has gone down. Which one it
-// is depends solely on the `connected` flag of the entry it is stored in, and
-// the two tests below pin that the handler reads the flag rather than the mere
-// presence of the entry.
-type downAbortGateway struct{ fakeAbortGateway }
+// is depends solely on the `connected` flag of the entry it is stored in, which
+// is also what decides whether the failure is reported as "a channel was once
+// established" in the log -- the distinction the handler no longer branches on,
+// because both end as the same honest "cannot determine".
+type downAbortGateway struct{ fakeHitlGateway }
 
 func (f *downAbortGateway) Connected() bool { return false }
+
+// Connect fails: the re-dial /turn makes cannot reach the gateway, which is what
+// keeps the answer at "cannot determine".
+func (f *downAbortGateway) Connect(context.Context) error {
+	return errors.New("dial: gateway unreachable")
+}
 
 func (f *fakeAbortGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
 	f.listed = true

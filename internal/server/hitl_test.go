@@ -79,6 +79,15 @@ type fakeHitlGateway struct {
 	sessionBuses   []string // sessionKeys passed to chat.history
 	sessionBusy    bool
 	sessionBusyErr error
+	// inFlightRun is the runId chat.history reports as in flight; empty means
+	// the gateway reports no run.
+	inFlightRun    string
+	inFlightRunErr error
+	inFlightReads  []string // sessionKeys passed to the in-flight-run read
+	// connectCtxDeadline records the bound the last connect ran under, which is
+	// how /turn's bounded probe is observed.
+	connectCtxDeadline    time.Time
+	connectCtxHasDeadline bool
 }
 
 func (f *fakeHitlGateway) Connected() bool {
@@ -89,6 +98,7 @@ func (f *fakeHitlGateway) Connected() bool {
 func (f *fakeHitlGateway) Connect(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.connectCtxDeadline, f.connectCtxHasDeadline = ctx.Deadline()
 	if len(f.connectSeq) > 0 {
 		err := f.connectSeq[0]
 		f.connectSeq = f.connectSeq[1:]
@@ -285,6 +295,12 @@ func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, er
 	defer f.mu.Unlock()
 	f.sessionBuses = append(f.sessionBuses, key)
 	return f.sessionBusy, f.sessionBusyErr
+}
+func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inFlightReads = append(f.inFlightReads, key)
+	return f.inFlightRun, f.inFlightRunErr
 }
 func (f *fakeHitlGateway) Close() {}
 
@@ -1037,6 +1053,103 @@ func TestHitl_SessionBusyRejectsUnconnectedChannel(t *testing.T) {
 	}
 	if len(gw.sessionBuses) != 0 {
 		t.Fatalf("sessionBuses = %v, want the gateway untouched", gw.sessionBuses)
+	}
+}
+
+// TestHitl_SessionBusyEstablishedDialsBounded: with no channel the read
+// establishes one, and the dial is bounded by channelProbeTimeout. Inheriting
+// conn()'s 30s NOT_PAIRED pairing budget would let one /turn hold a Portal
+// refresh open for half a minute, and the caller's "could not check" would
+// arrive long after the user gave up.
+func TestHitl_SessionBusyEstablishedDialsBounded(t *testing.T) {
+	gw := &fakeHitlGateway{sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+
+	busy, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("SessionBusyEstablished: %v", err)
+	}
+	if !busy {
+		t.Fatal("SessionBusyEstablished = false, want the gateway's true")
+	}
+	if !gw.connectCtxHasDeadline {
+		t.Fatal("the establishing dial ran on a context with no deadline: a hung connect would hold the read open indefinitely")
+	}
+	if d := time.Until(gw.connectCtxDeadline); d <= 0 || d > channelProbeTimeout+time.Second {
+		t.Fatalf("dial deadline = now+%v, want (0, %v]", d, channelProbeTimeout)
+	}
+	// The channel is kept, not probed and dropped: the Stop the answer offers is
+	// issued over it.
+	if _, ok := m.liveConn("alice"); !ok {
+		t.Fatal("the established channel was not kept: the Stop offered over it would fail with no channel")
+	}
+}
+
+// TestHitl_SessionBusyEstablishedKeepsLiveChannel: an existing channel is used
+// as it is. Re-dialling on every status read would churn the connection (and
+// possibly the device pairing) that the running turn is observed over.
+func TestHitl_SessionBusyEstablishedKeepsLiveChannel(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw, connected: true}
+
+	if _, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1"); err != nil {
+		t.Fatalf("SessionBusyEstablished: %v", err)
+	}
+	if gw.connectCtxHasDeadline {
+		t.Fatal("the read dialled although a live channel existed")
+	}
+}
+
+// TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial: a second connect for
+// the same user waits for the first, which can be inside a dial (or the pairing
+// retry) for up to its budget. The wait has to be context-aware too, or the
+// bound above is nominal -- the probe would sit behind that dial and only then
+// start its own.
+func TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial(t *testing.T) {
+	blocking := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &blocking.fakeHitlGateway)
+	m.newClient = func(string, *ws.Device) hitlGateway { return blocking }
+
+	first := make(chan struct{})
+	go func() {
+		_, _ = m.conn(context.Background(), "alice")
+		close(first)
+	}()
+	<-blocking.entered
+
+	start := time.Now()
+	if _, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1"); err == nil {
+		t.Fatal("SessionBusyEstablished succeeded while the only channel was still dialling")
+	}
+	if d := time.Since(start); d > channelProbeTimeout+time.Second {
+		t.Fatalf("the probe waited %v for another dial, want it bounded by channelProbeTimeout", d)
+	}
+
+	close(blocking.release)
+	<-first
+}
+
+// TestHitl_InFlightRunIDDelegatesAndRequiresAChannel: the id an abort is scoped
+// to comes from the gateway, and a missing channel must be an error rather than
+// an empty id -- "" means "nothing in flight, session-scoped is the same thing",
+// which is a different claim from "could not ask".
+func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
+	gw := &fakeHitlGateway{connected: true, inFlightRun: "run-7"}
+	m := newTestHitl(v1alpha1.ConfirmPolicyNone, "", gw)
+	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+
+	id, err := m.InFlightRunID(context.Background(), "alice", "conv-1")
+	if err != nil {
+		t.Fatalf("InFlightRunID: %v", err)
+	}
+	if id != "run-7" {
+		t.Fatalf("InFlightRunID = %q, want run-7", id)
+	}
+
+	noChannel := newTestHitl(v1alpha1.ConfirmPolicyNone, "", &fakeHitlGateway{})
+	if _, err := noChannel.InFlightRunID(context.Background(), "alice", "conv-1"); !errors.Is(err, errNoGatewayChannel) {
+		t.Fatalf("InFlightRunID without a channel = %v, want errNoGatewayChannel", err)
 	}
 }
 

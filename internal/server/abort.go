@@ -23,15 +23,25 @@ const abortRPCDeadline = 5 * time.Second
 
 // abortSettleRPCTimeout bounds the settle step's gateway calls. The settle runs
 // on a context detached from the request (see handleAbort), so this bound is the
-// only thing that keeps a wedged connection from holding the handler open:
-// ws.Client.Call blocks on the connection's write mutex before it ever selects
-// on the context, so no per-call cancellation can rescue it.
+// only thing that keeps a wedged connection from holding the handler open.
 const abortSettleRPCTimeout = 3 * time.Second
+
+// abortRunIDReadTimeout bounds the chat.history read that scopes an abort on the
+// reload-takeover path. Short on purpose: it is a lookup in front of the command,
+// and a lookup that does not answer only costs the session-scoped fallback.
+const abortRunIDReadTimeout = 2 * time.Second
+
+// abortReconcileTimeout bounds the post-failure read that decides whether a
+// failed chat.abort nevertheless landed. Bounded for the same reason as every
+// other gateway call here, and short because the handler still owes the caller a
+// settle-and-wait afterwards.
+const abortReconcileTimeout = 2 * time.Second
 
 // handleAbort serves POST /api/sessions/{key}/abort -- the Portal's Stop.
 //
 // Order matters and is load-bearing:
-//  1. abort the run, scoped to the live turn's run id when there is one;
+//  1. abort the run, scoped to a run id read from the live turn, or from the
+//     gateway when there is no live turn (reload takeover);
 //  2. settle the session's pending HITL records IMMEDIATELY, while the SSE
 //     stream is still open, or the resolved events have nowhere to go and the
 //     UI keeps showing a card for a dead run;
@@ -40,13 +50,13 @@ const abortSettleRPCTimeout = 3 * time.Second
 //
 // Both gateway steps (1 and 2) run on contexts detached from the request. A
 // Stop is a command, not a read: it must not become a no-op because the client
-// that issued it went away. Detaching also removes an outright lie -- ws.Client.Call
-// writes the request frame BEFORE it selects on the context, so cancelling the
-// request mid-RPC leaves the abort delivered while the handler reports 502, and
-// a client that disconnects between (1) and (2) would leave behind the very
-// pending record (2) exists to clear, which resurfaces as a stale card on
-// reload. Each detached step keeps its own bound, and the response is simply
-// undeliverable once the client is gone.
+// that issued it went away, and a client that disconnects between (1) and (2)
+// would otherwise leave behind the very pending record (2) exists to clear,
+// which resurfaces as a stale card on reload. Each detached step keeps its own
+// bound, and the response is simply undeliverable once the client is gone.
+//
+// Step 1's failure is reconciled rather than trusted, and steps 2 and 3 run on
+// its outcome: see the comment on the abort call below.
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -66,14 +76,35 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	runID := ""
 	if id, ok := s.hitl.LiveRunID(user, sessionKey); ok {
 		runID = id
+	} else {
+		// No local turn to read one from: this is the reload-takeover path,
+		// where the gateway is the only source of the id.
+		runID = s.abortTargetRunID(r.Context(), user, sessionKey)
 	}
 
 	rpcCtx, cancelRPC := context.WithTimeout(context.WithoutCancel(r.Context()), abortRPCDeadline)
 	defer cancelRPC()
-	if err := s.hitl.Abort(rpcCtx, user, sessionKey, runID); err != nil {
-		s.logf("abort %s/%s: %v", user, sessionKey, err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
+	if abortErr := s.hitl.Abort(rpcCtx, user, sessionKey, runID); abortErr != nil {
+		// A failed RPC does not prove the stop did not happen. The frame is
+		// written before the response is waited for, so an abort that errors on
+		// its deadline can still have been delivered and honoured; treating that
+		// as "nothing happened" would leave the session's cards pending for a run
+		// that is already dead, and they would resurface on reload as cards
+		// nothing can answer. Reconcile with a bounded read: only a gateway that
+		// no longer has the run in flight proves the stop landed, in which case
+		// the session is settled normally below.
+		//
+		// Anything else stays conservative. A run still in flight is a refusal --
+		// the user asked to stop and it did not stop -- and an unanswered
+		// reconciliation is unknown, and settling on an unknown result would
+		// delete a live, answerable card for a run that never stopped, which is
+		// worse than a stale one. Both keep the records pending and answer 502.
+		if !s.abortLanded(r.Context(), user, sessionKey) {
+			s.logf("abort %s/%s: %v", user, sessionKey, abortErr)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": abortErr.Error()})
+			return
+		}
+		s.logf("abort %s/%s: %v (the run is no longer in flight: the stop landed)", user, sessionKey, abortErr)
 	}
 
 	// Before the wait: the stream is still attached and can deliver the
@@ -106,6 +137,49 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// abortTargetRunID reads the run the gateway has in flight for the session, so
+// an abort issued after a reload is scoped to that run rather than to whatever
+// the session happens to be running when the RPC is processed.
+//
+// The local live turn is the cheap source and the first one consulted by the
+// caller; it is gone on this path, because releaseLive removes it when the
+// request driving the turn ends and the run itself can outlive that (a browser
+// disconnect stops observation, not the run). A session-scoped abort is not
+// race-free -- a run promoted between this read and the RPC is the one it would
+// kill -- so the id is worth this lookup.
+//
+// Best-effort by design: an unanswered read leaves the caller with the
+// session-scoped abort, which is the last resort and still better than refusing
+// to stop a run the user asked to stop.
+func (s *Server) abortTargetRunID(ctx context.Context, user, sessionKey string) string {
+	ctx, cancel := context.WithTimeout(ctx, abortRunIDReadTimeout)
+	defer cancel()
+	id, err := s.hitl.InFlightRunID(ctx, user, sessionKey)
+	if err != nil {
+		s.logf("abort %s/%s: in-flight run lookup: %v", user, sessionKey, err)
+		return ""
+	}
+	return id
+}
+
+// abortLanded reports whether a reconciliation read proves the gateway no longer
+// has the session's run in flight, i.e. that an abort RPC which failed was
+// nevertheless delivered and honoured.
+//
+// It fails closed in both directions a read can fail: an RPC error leaves the
+// result unknown (the run may or may not have stopped), so it reports false and
+// the caller keeps the records pending. Only a positive "not busy" answer counts.
+func (s *Server) abortLanded(ctx context.Context, user, sessionKey string) bool {
+	ctx, cancel := context.WithTimeout(ctx, abortReconcileTimeout)
+	defer cancel()
+	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
+	if err != nil {
+		s.logf("abort %s/%s: reconcile: %v", user, sessionKey, err)
+		return false
+	}
+	return !busy
+}
+
 // handleTurnStatus serves GET /api/sessions/{key}/turn -- whether the session
 // still has a run in flight, so a Portal that reloaded (and therefore has no
 // stream) can say so and offer Stop.
@@ -132,40 +206,28 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Bound the read with the same abortRPCDeadline /abort's RPC uses, and for
-	// the same reason: ws.Client.Call takes the connection's write mutex and
-	// writes the frame before it ever selects on the context, and the HTTP
-	// server sets no timeouts at all, so a half-open gateway connection would
-	// park this handler forever -- one leaked blocked request per Portal
-	// refresh. It stays on the request context, unlike /abort's detached
-	// commands: a read is only meaningful to the caller still holding the
-	// request. Expiry surfaces as the error below (502), never as (false, nil),
-	// because "cannot determine" must not be rendered as "not busy".
+	// the same reason: the HTTP server sets no timeouts at all, so a half-open
+	// gateway connection would park this handler forever -- one leaked blocked
+	// request per Portal refresh. It stays on the request context, unlike
+	// /abort's detached commands: a read is only meaningful to the caller still
+	// holding the request. Expiry surfaces as the error below (502), never as
+	// (false, nil), because "cannot determine" must not be rendered as
+	// "not busy".
 	ctx, cancel := context.WithTimeout(r.Context(), abortRPCDeadline)
 	defer cancel()
-	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
+	busy, err := s.hitl.SessionBusyEstablished(ctx, user, sessionKey)
 	if err != nil {
-		// errNoGatewayChannel covers two states liveConn answers alike, and only
-		// one of them may be read as idle. The connection is dialled lazily on
-		// first use, so a process with *no channel* for the user -- never
-		// dialled, or still handshaking, which the pairing retry can drag out
-		// for up to 30s -- cannot be driving a turn for them: Stop could not
-		// succeed either (it fails on the same missing channel), and claiming
-		// "cannot determine" buys nothing while costing every conversation open
-		// a false alarm plus a Stop button that provably cannot work.
-		//
-		// A channel that came up and has since gone down is the opposite case:
-		// the break is in *observation*, not in the run -- the agent keeps
-		// working through a gateway restart or a pod roll -- so a turn this
-		// process started can still be in flight and the honest answer is that
-		// it could not be determined. Answering idle there would hide a running
-		// turn and offer no Stop, which is exactly what the check above this
-		// handler exists to prevent; the caller gets an error it reports as
-		// "could not check" with a Retry.
-		if errors.Is(err, errNoGatewayChannel) && !s.hitl.gatewayConnected(user) {
-			writeJSON(w, http.StatusOK, map[string]any{"active": false})
-			return
-		}
-		s.logf("turn status %s/%s: %v", user, sessionKey, err)
+		// The read establishes the channel before it asks, so it is not answered
+		// from local state at all. That matters after a restart or a rollout:
+		// the replacement process has no entry for the user while a run the
+		// *previous* process started can still be executing gateway-side, and
+		// reading the missing entry as idle would hide that turn and remove its
+		// Stop. A user who has simply never chatted dials straight through (the
+		// dial is bounded by channelProbeTimeout) and gets a true answer, so the
+		// only outcome left here is a channel that genuinely could not be
+		// established -- "could not check" with a Retry, which is now accurate
+		// rather than the old false alarm on every fresh conversation.
+		s.logf("turn status %s/%s (a channel was once established: %v): %v", user, sessionKey, s.hitl.gatewayConnected(user), err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
