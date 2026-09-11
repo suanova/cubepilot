@@ -92,6 +92,13 @@ interface BubbleMsg {
   // The user stopped this turn. Its partial text is not a finished answer, so
   // the bubble reads "Stopped" rather than the green Done check (issue #166).
   stopped?: boolean
+  // The stream for this turn ended without a server terminal (sse.ts's
+  // synthetic message_done): a transport failure, not a turn outcome, so this
+  // is neither `stopped` nor `error`. The run may still be executing, which is
+  // why the bubble says so rather than claiming Done or Failed, and why its
+  // HITL cards are left live and answerable. Carries the reason the stream gave
+  // up, for display.
+  transportLost?: string
   // Every question this turn has asked, in order. The agent can ask several in
   // one turn (a blocked ask_user resumes, then another follows), so they are
   // kept as a collection rather than one slot that a later question replaces --
@@ -142,6 +149,12 @@ function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
 // offer Approve/Reject buttons that POST to something that no longer exists.
 // `message_done` is the one event the stream guarantees, so the cards are
 // settled from it as well. Doing it twice is harmless: it is idempotent.
+//
+// Only for a *confirmed* server terminal. A synthesized one
+// (`message_done{synthetic:true}`) reports a transport failure, not the end of
+// the turn: the run may still be parked on exactly these cards, and closing
+// them would take away the only controls that can unblock it. The caller
+// decides; this function must not be reached on that path.
 function settleBubbleCards(b: BubbleMsg) {
   if (b.confirm && !b.confirm.resolved) {
     b.confirm.resolved = true
@@ -1154,6 +1167,11 @@ export default function ChatView() {
 
     const gen = ++streamGenRef.current
     const stale = () => streamGenRef.current !== gen
+    // The session this stream turned out to be for. A brand-new chat has no id
+    // at send time -- the server mints one and reports it in message_start --
+    // so the send-time `currentSessionId` cannot name it. Needed by the
+    // synthesized terminal below, which carries no session_id of its own.
+    let turnSession = currentSessionId
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
@@ -1181,17 +1199,23 @@ export default function ChatView() {
             //     answer, to the same effect).
             // Those are state transitions on a bubble the user is still looking
             // at, and they happen to be the only way it can leave the "live"
-            // rendering. Turn *output* is different and stays dropped: deltas,
-            // tool calls and fresh pending cards carry content from the superseded
-            // turn's own conversation, which is exactly what the user redirected
-            // away from. The session-switch path aborts the fetch instead, so an
-            // aborted stream emits nothing at all and cannot reach here.
+            // rendering. A *synthesized* terminal is the exception to the
+            // exception: it is a transport failure, not the superseded turn
+            // ending, so it closes nothing (see the handler below) and the
+            // session is not re-checked -- this view has left that session, and
+            // dropStream already retired its banner. Turn *output* is different
+            // and stays dropped: deltas, tool calls and fresh pending cards
+            // carry content from the superseded turn's own conversation, which
+            // is exactly what the user redirected away from. The session-switch
+            // path aborts the fetch instead, so an aborted stream emits nothing
+            // at all and cannot reach here.
             const settlesSupersededTurn =
               ev.type === 'message_done' || ev.type === 'confirm_resolved' || ev.type === 'question_resolved'
             if (!settlesSupersededTurn) return
           }
           if (ev.type === 'message_start') {
             if (ev.session_id) {
+              turnSession = ev.session_id
               setCurrentSessionId(ev.session_id)
               loadSessions()
             }
@@ -1288,6 +1312,32 @@ export default function ChatView() {
             return
           }
           if (ev.type === 'message_done') {
+            // A synthesized terminal is a transport failure, not a turn
+            // outcome: the stream died (or never opened) before the server's
+            // own terminal arrived. The gateway run may still be executing, and
+            // its approval or question may still be live -- so nothing here may
+            // treat the turn as over. No phase freeze (`done` would render
+            // in-flight tools as "Stopped" and the bubble as finished), no
+            // `stopped`, no `error`, and above all no settleBubbleCards:
+            // settling the cards is what removes the only controls that can
+            // unblock that run. The partial text stays on the bubble and the
+            // cards stay live and answerable.
+            if (ev.synthetic) {
+              bubble.transportLost = ev.error || 'the stream ended before the turn finished'
+              setBubbles([...bubblesRef.current])
+              // The turn may still be running with no stream of this view's
+              // own, which is exactly the state the banner describes -- and the
+              // banner's Stop is then the only control that can end it. Ask the
+              // server rather than assert it: a run that really did settle
+              // answers `active: false` and raises no banner. The check is
+              // issued only for the current stream (a superseded one has left
+              // its session behind, and dropStream already retired that
+              // banner).
+              if (!stale() && turnSession) void checkTurnElsewhere(turnSession, streamGenRef.current)
+              return
+            }
+            // Past this point the terminal is the server's own, so the turn
+            // really is over.
             setPhase(bubble, 'done')
             // A stopped turn is neither a failure nor a normal completion, so
             // it sets `stopped` and leaves `error` empty.
@@ -1479,6 +1529,10 @@ export default function ChatView() {
     // cannot be waiting on a human, even when one of its cards has not been
     // settled by the stream yet (a transient the settled event closes).
     if (b.stopped) return 'Stopped'
+    // The stream died mid-turn: this view no longer knows how the turn ends, so
+    // it says that rather than claiming Done, Failed or Stopped. The turn's
+    // cards stay live below it, which is where the actionable state is.
+    if (b.transportLost) return 'Lost connection — this turn may still be running'
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
     if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
@@ -1544,7 +1598,21 @@ export default function ChatView() {
                 <div key={i} className={`msg ${b.kind}`}>
                   <div className="avatar">{b.kind === 'user' ? userInitials : 'AI'}</div>
                   <div className="bubble">
-                    {b.phase && b.phase !== 'done' && (
+                    {b.transportLost && (
+                      // Amber, not the red of `b.error` and not the green Done
+                      // check: the turn's outcome is unknown, not failed, and
+                      // the reason the stream gave up is kept underneath rather
+                      // than presented as the turn's error.
+                      <div className="tool-status lost-mark">
+                        <span>{statusLine(b)}</span>
+                      </div>
+                    )}
+                    {b.transportLost && (
+                      <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        {b.transportLost}
+                      </div>
+                    )}
+                    {b.phase && b.phase !== 'done' && !b.transportLost && (
                       <div className="tool-status">
                         <span className="spin" />
                         {statusLine(b)}
@@ -1558,7 +1626,7 @@ export default function ChatView() {
                         {statusLine(b)}
                       </div>
                     )}
-                    {b.phase === 'done' && !b.stopped && !b.error && (
+                    {b.phase === 'done' && !b.stopped && !b.error && !b.transportLost && (
                       <div className="tool-status done-mark">
                         <DoneCheckIcon />
                         {statusLine(b)}

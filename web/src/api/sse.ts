@@ -3,7 +3,13 @@
 //
 // If the stream ends (or the connection dies) before a terminal message_done
 // event arrives, a synthetic message_done carrying an error is emitted so the
-// caller can always reset pending UI state instead of spinning forever.
+// caller can always reset pending UI state instead of spinning forever. It is
+// marked `synthetic: true` so a caller can tell it from the server's own
+// terminal: this is a transport failure, NOT the end of the turn. The gateway
+// run may still be executing server-side, with its approval or question still
+// live and answerable, so a caller must not read a synthesized terminal as
+// "the turn is over" (see ChatView's message_done handler). An older server
+// never sets the marker, and absence keeps meaning a real terminal.
 //
 // Abort contract: when the optional signal fires, this helper returns silently
 // and emits NO terminal event -- not an error, not a done. Callers that abort
@@ -15,8 +21,11 @@
 // emit nothing, and a UI waiting on a terminal event would spin forever.
 import type { SSEEvent } from './types'
 
+// emitDone is this helper's own terminal -- never a server one -- so it always
+// carries `synthetic: true`. That marker is the only thing that distinguishes
+// it: the empty session_id is incidental, and callers must not infer from it.
 function emitDone(onEvent: (name: string, ev: SSEEvent) => void, error?: string) {
-  onEvent('message_done', { type: 'message_done', session_id: '', error: error || '' })
+  onEvent('message_done', { type: 'message_done', session_id: '', error: error || '', synthetic: true })
 }
 
 // True when `e` is the error a cancelled fetch / errored stream rejects with.
