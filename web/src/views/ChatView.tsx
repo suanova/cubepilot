@@ -1524,15 +1524,20 @@ export default function ChatView() {
   }, [])
 
   function statusLine(b: BubbleMsg): string {
-    if (b.kind === 'user' || !b.phase) return ''
+    if (b.kind === 'user') return ''
+    // The lost-connection headline is checked *before* the phase guard, and it
+    // has to be: sse.ts synthesizes its terminal on paths that run before any
+    // event arrives -- a non-2xx response, a rejected fetch, a body with no
+    // reader -- so the bubble is left with no phase at all, and a guard that
+    // returned '' on an unset phase would render the amber line empty and leave
+    // only the raw reason underneath. The headline is the whole point of that
+    // state, so it must not depend on a phase the failure never set.
+    if (b.transportLost) return 'Lost connection — this turn may still be running'
+    if (!b.phase) return ''
     // Stopped outranks the parked-state lines below: a turn that was stopped
     // cannot be waiting on a human, even when one of its cards has not been
     // settled by the stream yet (a transient the settled event closes).
     if (b.stopped) return 'Stopped'
-    // The stream died mid-turn: this view no longer knows how the turn ends, so
-    // it says that rather than claiming Done, Failed or Stopped. The turn's
-    // cards stay live below it, which is where the actionable state is.
-    if (b.transportLost) return 'Lost connection — this turn may still be running'
     if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
     if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
     const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
@@ -1809,7 +1814,9 @@ export default function ChatView() {
               <span>
                 {runningElsewhere
                   ? 'Still running…'
-                  : 'Could not check whether this chat is still running.'}
+                  : stoppingElsewhere
+                    ? 'Stopping…'
+                    : 'Could not check whether this chat is still running.'}
               </span>
               {turnCheckFailed && (
                 <button className="btn sm ghost" onClick={retryTurnCheck}>
@@ -1827,11 +1834,27 @@ export default function ChatView() {
                   Dismiss
                 </button>
               )}
-              {/* Still on screen while the abort is in flight, unlike the
-                  composer's glyph button which has no label to change. */}
-              <button className="btn sm" onClick={stopElsewhere} disabled={stoppingElsewhere}>
-                {stoppingElsewhere ? 'Stopping…' : 'Stop'}
-              </button>
+              {/* Stop only for a turn the server *confirmed* is running
+                  (`runningElsewhere`), and still on screen while the abort is
+                  in flight, unlike the composer's glyph button which has no
+                  label to change.
+
+                  The two controls on this banner are not interchangeable. When
+                  the check failed, nothing confirmed a turn and the reason it
+                  failed is the abort's own precondition: `/abort` issues its
+                  RPC over the user's existing gateway connection and never
+                  dials one (see hitlManager.Abort), so a Stop with no channel
+                  is guaranteed to answer 502 -- a control that provably cannot
+                  work, next to the one that can. Retry is that one: the /turn
+                  read establishes the connection, so it is what turns this
+                  banner back into a confirmed one with a real Stop. The
+                  composer's Send also re-dials, which is why the banner stays
+                  usable without a Stop on it. */}
+              {runningElsewhere && (
+                <button className="btn sm" onClick={stopElsewhere} disabled={stoppingElsewhere}>
+                  {stoppingElsewhere ? 'Stopping…' : 'Stop'}
+                </button>
+              )}
             </div>
           )}
           <div className="composer-inner">
