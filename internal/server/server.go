@@ -155,28 +155,41 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/metrics", metrics.Handler())
+	// REST-only platform services -- no CRD (kube-apiserver) equivalent; these
+	// must go through cubepilot-api. Chat/session history and approvals live in
+	// the per-instance runtime (design §3.6); audit is API-owned PVC state; skill
+	// publish uploads tar content onto the API-owned repository.
 	mux.HandleFunc("/api/sessions", s.handleSessions)
-	mux.HandleFunc("/api/sessions/", s.handleSessionSubresource)
+	mux.HandleFunc("/api/sessions/", s.handleSessionSubresource) // {key}/messages|confirm[/pending]
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/inspect", s.handleInspect)
-	mux.HandleFunc("/api/tasks", s.handleTasks)
-	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/audit", s.handleAudit)
+	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
+
+	// CRD facade -- HTTP mirror of the six ai.cubestack.io CRDs, kept for
+	// HTTP-only clients (e.g. the open-source reference UI). Clients with
+	// kube-apiserver access may perform the same operations directly on the CRs
+	// (namespaced, issue #146); the data-plane contract is recorded in issue #148.
+	// Caveats: agent/config and agent/confirm GET recompute template+instance
+	// effective values (no merged value is stored in status); llms writes an
+	// AgentTemplate model plus a credential Secret (both k8s objects).
+	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
+	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
+	mux.HandleFunc("/api/tasktemplates", s.handleTaskTemplates)
+	mux.HandleFunc("/api/instances", s.handleInstances)
 	mux.HandleFunc("/api/agent/config", s.handleAgentConfig)
 	mux.HandleFunc("/api/agent/confirm", s.handleAgentConfirm)
 	mux.HandleFunc("/api/agent/status", s.handleAgentStatus)
-	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
-	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
-	mux.HandleFunc("/api/instances", s.handleInstances)
-	mux.HandleFunc("/api/llms", s.handleAddLLM)
 	mux.HandleFunc("/api/skills", s.handleSkills)
-	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
 	mux.HandleFunc("/api/skills/{name}/install", s.handleInstallSkill)
 	mux.HandleFunc("/api/skills/{name}/uninstall", s.handleUninstallSkill)
-	mux.HandleFunc("/api/tasktemplates", s.handleTaskTemplates)
+	mux.HandleFunc("/api/tasks", s.handleTasks)
+	mux.HandleFunc("/api/tasks/", s.handleTaskByID) // {id}[/run|/toggle|/reports]
 	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
-	mux.HandleFunc("/api/kinds", s.handleKinds)
+	mux.HandleFunc("/api/llms", s.handleAddLLM)
+	mux.HandleFunc("/api/kinds", s.handleKinds) // CRD schema discovery (apiextensions)
+
 	// Internal (cluster-only) endpoints -- the agent-side supervisor pulls
 	// its resolved config and the rendered gateway config here; not exposed
 	// through the Portal.
