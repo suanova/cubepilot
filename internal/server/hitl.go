@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha512"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,17 @@ import (
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
+
+// errNoGatewayChannel reports that the caller has no usable gateway connection,
+// so the request never reached the gateway at all.
+//
+// Callers have to tell it apart from a gateway call that failed on a live
+// connection. The connection is dialled lazily on first use, so "none yet" is
+// the ordinary state of a fresh API process or a user who has not sent a
+// message -- there, a read that says "cannot determine" is a false alarm, and a
+// command (the abort) cannot succeed either way. A failure with a channel up is
+// the opposite: the answer really is unknown.
+var errNoGatewayChannel = errors.New("no live gateway channel")
 
 // hitlPairRetryDelay is the pause between NOT_PAIRED connect retries while the
 // in-pod supervisor approves the device pairing (overridable in tests).
@@ -556,7 +568,7 @@ func (m *hitlManager) CancelQuestion(ctx context.Context, user, id string) error
 func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string) error {
 	gw, ok := m.liveConn(user)
 	if !ok {
-		return fmt.Errorf("abort %q: no live gateway channel", sessionKey)
+		return fmt.Errorf("abort %q: %w", sessionKey, errNoGatewayChannel)
 	}
 	return gw.AbortChat(ctx, sessionKey, runID)
 }
@@ -567,7 +579,7 @@ func (m *hitlManager) Abort(ctx context.Context, user, sessionKey, runID string)
 func (m *hitlManager) SessionBusy(ctx context.Context, user, sessionKey string) (bool, error) {
 	gw, ok := m.liveConn(user)
 	if !ok {
-		return false, fmt.Errorf("session busy %q: no live gateway channel", sessionKey)
+		return false, fmt.Errorf("session busy %q: %w", sessionKey, errNoGatewayChannel)
 	}
 	return gw.SessionBusy(ctx, sessionKey)
 }

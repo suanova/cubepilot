@@ -436,6 +436,50 @@ func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 	}
 }
 
+// No gateway channel is not "cannot determine". The per-user connection is
+// dialled lazily on first use, so this is the ordinary state of a fresh API
+// process and of any user who has not sent a message -- answering 502 there
+// paints every conversation open with an alarm and a Stop button that provably
+// cannot work (the abort fails on the same missing channel). With no channel
+// this process cannot be driving a turn for that user, so the idle answer is the
+// truthful one.
+//
+// The classification is the load-bearing part, and it is what also keeps
+// TestHandleTurnStatusBusyErrorIsNotIdle honest: that fake holds a *live*
+// connection whose read failed, which is a different case and must stay an error.
+func TestHandleTurnStatusWithoutChannelIsIdle(t *testing.T) {
+	// No connection for the caller at all: the lazy dial has not happened yet.
+	m := &hitlManager{conns: map[string]*userHitlConn{}}
+
+	// The sentinel is the handler's whole basis for the distinction, so pin it
+	// where it is produced rather than inferring it from a status code.
+	if _, err := m.SessionBusy(context.Background(), "admin", abortTestKey); !errors.Is(err, errNoGatewayChannel) {
+		t.Fatalf("SessionBusy without a channel = %v, want errNoGatewayChannel", err)
+	}
+
+	s := newAbortTestServer(NewHub(), m)
+	rec := httptest.NewRecorder()
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: with no channel nothing can be running to hide", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	// The body is the determination, not just the status: the Portal skips its
+	// banner on `active`, so this must not be a 200 carrying an omitted field.
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Active {
+		t.Fatal("active = true, want false: with no gateway channel this process cannot be driving a turn")
+	}
+}
+
 // A read whose bound runs out is an error, never an idle. "Cannot determine" is
 // not "not busy": a 200 {"active": false} here would hide a running turn and
 // remove the Stop the endpoint exists to offer. The fake behaves like a wedged

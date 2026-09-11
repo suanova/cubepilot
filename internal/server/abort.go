@@ -144,6 +144,20 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
 	if err != nil {
+		// No gateway channel at all is not "cannot determine". The connection is
+		// dialled lazily on first use, so this is the ordinary state of a fresh
+		// API process and of any user who has not sent a message: with no channel
+		// this process cannot be driving a turn for that user, and Stop could not
+		// succeed either (it fails on the same missing channel), so claiming
+		// "cannot determine" buys nothing and costs every conversation open a
+		// false alarm plus a Stop button that provably cannot work. A SessionBusy
+		// that errored while a channel *does* exist is the opposite case: there
+		// the answer really is unknown and Retry is meaningful, so it stays an
+		// error.
+		if errors.Is(err, errNoGatewayChannel) {
+			writeJSON(w, http.StatusOK, map[string]any{"active": false})
+			return
+		}
 		s.logf("turn status %s/%s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
