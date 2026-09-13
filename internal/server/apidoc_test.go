@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,23 +28,25 @@ var apiDocExemptRoutes = map[string]bool{
 // though they never appear as mux patterns.
 const sessionSubresourceBase = "/api/sessions/{key}"
 
-// TestAPIDocCoversRoutes fails when the HTTP surface and docs/cubepilot/api.md
-// drift apart -- a route that serves clients but is not written down, or a
-// documented path that no longer exists. The route table is parsed from
-// server.go rather than duplicated here, so adding a route without documenting
-// it breaks this test rather than going unnoticed.
+// TestAPIDocCoversRoutes fails when a route serves clients but is not written
+// down in docs/cubepilot/api.md. The route table is parsed from server.go
+// rather than duplicated here, so adding a route without documenting it breaks
+// this test rather than going unnoticed. The opposite direction -- a documented
+// path that no longer exists -- is TestAPIDocHasNoStalePaths.
 //
 // When this fails after an intentional change, update docs/cubepilot/api.md
 // (and add the route to apiDocExemptRoutes only if it is genuinely not part of
 // the client contract).
 func TestAPIDocCoversRoutes(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Clean(apiDocPath))
-	if err != nil {
-		t.Fatalf("read API doc: %v", err)
-	}
-	text := string(doc)
+	text := readAPIDoc(t)
 
-	want := documentedRoutes(t)
+	var want []string
+	for _, route := range registeredRoutes(t) {
+		if strings.HasPrefix(route, "/internal/") || apiDocExemptRoutes[route] {
+			continue
+		}
+		want = append(want, route)
+	}
 	if len(want) < 20 {
 		t.Fatalf("parsed only %d routes from server.go; the parser likely broke", len(want))
 	}
@@ -55,9 +58,95 @@ func TestAPIDocCoversRoutes(t *testing.T) {
 	}
 }
 
-// documentedRoutes returns every client-facing route the server registers,
-// including the per-session subresource suffixes, in stable order.
-func documentedRoutes(t *testing.T) []string {
+// TestAPIDocHasNoStalePaths is the other half of the drift check: every path the
+// document names must still be served. Documentation that survives the removal
+// of its endpoint is as misleading as an undocumented endpoint -- a client
+// codes against a path that answers 404.
+//
+// Every registered route counts here, including the cluster-internal ones: the
+// doc is allowed to describe them (section 6.5 does), it just is not required to.
+func TestAPIDocHasNoStalePaths(t *testing.T) {
+	text := readAPIDoc(t)
+	known := registeredRoutes(t)
+	if len(known) < 20 {
+		t.Fatalf("parsed only %d routes from server.go; the parser likely broke", len(known))
+	}
+
+	for _, candidate := range docPathCandidates(text) {
+		if !isServed(known, candidate) {
+			t.Errorf("path %s appears in %s but is not served; remove it or restore the route", candidate, apiDocPath)
+		}
+	}
+}
+
+// docPathCandidateRe matches the start of an API path in the prose. Path
+// parameters are brace-delimited in both the route table and the doc, so
+// "{...}" is part of the token.
+var docPathCandidateRe = regexp.MustCompile(`/(?:api|internal)/[A-Za-z0-9_{}/.-]*`)
+
+// docPathCandidates extracts every API path the document mentions. Subtree
+// roots ("/api/") and wildcards ("/api/*") are not paths to a route, so they
+// are dropped rather than matched.
+func docPathCandidates(doc string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, loc := range docPathCandidateRe.FindAllStringIndex(doc, -1) {
+		start, end := loc[0], loc[1]
+		// A match inside a longer path is a source-file reference, not an API
+		// path: "web/src/api/types.ts" contains "/api/types.ts".
+		if start > 0 && isPathByte(doc[start-1]) {
+			continue
+		}
+		cand := strings.TrimRight(doc[start:end], ".,;:")
+		if cand == "" || seen[cand] || strings.HasSuffix(cand, "/") || strings.Contains(cand, "*") {
+			continue
+		}
+		seen[cand] = true
+		out = append(out, cand)
+	}
+	return out
+}
+
+// isPathByte reports whether b can continue a path, so a match preceded by one
+// is part of a longer path rather than the start of an API path.
+func isPathByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '/' || b == '-' || b == '_' || b == '.':
+		return true
+	}
+	return false
+}
+
+// isServed reports whether a documented path is covered by a registered route:
+// either it is the route itself, or the route is a subtree base ("/api/tasks/")
+// that the path sits under ("/api/tasks/{id}/run").
+func isServed(known []string, candidate string) bool {
+	for _, route := range known {
+		if candidate == route {
+			return true
+		}
+		if strings.HasSuffix(route, "/") && strings.HasPrefix(candidate, route) {
+			return true
+		}
+	}
+	return false
+}
+
+func readAPIDoc(t *testing.T) string {
+	t.Helper()
+	doc, err := os.ReadFile(filepath.Clean(apiDocPath))
+	if err != nil {
+		t.Fatalf("read API doc: %v", err)
+	}
+	return string(doc)
+}
+
+// registeredRoutes returns every route the server registers, including the
+// per-session subresource suffixes, which are matched by suffix rather than
+// registered as mux patterns.
+func registeredRoutes(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "server.go", nil, 0)
@@ -70,9 +159,7 @@ func documentedRoutes(t *testing.T) []string {
 		// mux.HandleFunc("<pattern>", ...)
 		if call, ok := n.(*ast.CallExpr); ok {
 			if lit := stringArg(call, "HandleFunc", 0); lit != "" {
-				if !strings.HasPrefix(lit, "/internal/") && !apiDocExemptRoutes[lit] {
-					routes = append(routes, lit)
-				}
+				routes = append(routes, lit)
 			}
 			// strings.HasSuffix(r.URL.Path, "<suffix>") inside the subresource router
 			if lit := stringArg(call, "HasSuffix", 1); lit != "" && strings.HasPrefix(lit, "/") {
