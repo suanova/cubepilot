@@ -274,7 +274,7 @@ data: {"type":"message_delta","session_id":"agent:main:conv-x","delta":"集群�
 
 ```ts
 GET /api/sessions                        → {"sessions":[{"sessionKey","title"}]}
-GET /api/sessions/{encodeURIComponent(key)}/messages
+GET /api/sessions/{key}/messages
                                          → {"items":[HistoryMessage]}   // 原始透传
 ```
 
@@ -330,7 +330,7 @@ data: {"type":"confirm_pending","session_id":"...","call_id":"<approval id>",
 用户决定后提交：
 
 ```ts
-POST /api/sessions/{encodeURIComponent(key)}/confirm
+POST /api/sessions/{key}/confirm
 body: {"decision": "approve" | "reject" | "allow-always"}
 ```
 
@@ -377,11 +377,11 @@ data: {"type":"question_pending","session_id":"...","call_id":"<question id>",
 
 ```ts
 // 回答
-POST /api/sessions/{encodeURIComponent(key)}/question
+POST /api/sessions/{key}/question
 body: {"id": "<call_id>", "answers": {"<questionId>": ["选项 label"]}}
 
 // 或取消（让 agent 继续而不是等到超时）
-POST /api/sessions/{encodeURIComponent(key)}/question
+POST /api/sessions/{key}/question
 body: {"id": "<call_id>", "cancel": true}
 ```
 

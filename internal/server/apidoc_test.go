@@ -122,12 +122,38 @@ func isPathByte(b byte) bool {
 // isServed reports whether a documented path is covered by a registered route:
 // either it is the route itself, or the route is a subtree base ("/api/tasks/")
 // that the path sits under ("/api/tasks/{id}/run").
+//
+// Session paths are the exception. "/api/sessions/" is a mux catch-all whose
+// dispatcher answers 404 for anything that is not one of its known suffixes, so
+// the generic subtree rule would accept a typo such as
+// "/api/sessions/{key}/question/pendng" as documented. Those paths are matched
+// against the concrete subresources instead.
 func isServed(known []string, candidate string) bool {
+	if strings.HasPrefix(candidate, "/api/sessions/") {
+		return hasSessionSuffix(known, candidate)
+	}
 	for _, route := range known {
 		if candidate == route {
 			return true
 		}
 		if strings.HasSuffix(route, "/") && strings.HasPrefix(candidate, route) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSessionSuffix reports whether candidate names one of the session
+// dispatcher's concrete subresources. Matching is by suffix because that is how
+// handleSessionSubresource routes, so extra segments are absorbed into the
+// session key: "/api/sessions/a/b/messages" is served and reads as session "a/b".
+func hasSessionSuffix(known []string, candidate string) bool {
+	for _, route := range known {
+		suffix, ok := strings.CutPrefix(route, sessionSubresourceBase)
+		if !ok || !strings.HasPrefix(suffix, "/") {
+			continue
+		}
+		if strings.HasSuffix(candidate, suffix) {
 			return true
 		}
 	}
