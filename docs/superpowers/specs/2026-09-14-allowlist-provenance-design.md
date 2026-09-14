@@ -89,8 +89,27 @@ func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.Allowlist
 ```
 
 `spec.allowlist` becomes purely additive: empty means "add nothing", not
-"inherit and take over". Nothing can be frozen, so the fork cannot recur — and
-this holds for any future writer, not just the ones we know about today.
+"inherit and take over".
+
+#### The union alone does not fix the fork — the writers must change too
+
+An earlier revision of this spec treated the union as the whole fix. It is not,
+and the gap is worth recording because it is easy to re-derive wrongly.
+
+`allowlistAlways` and the Portal's `addRule`/`removeRule` all copy the *resolved
+effective list* — platform builtin included — into `spec` on first use. A union
+then faithfully includes that snapshot, so a builtin **removed** from `Default()`
+(a hardening) still auto-passes for that instance, reached through the spec
+instead of through `Effective`. Same fail-open direction, different route.
+
+So the fork fix is both halves, and they belong in one change:
+
+1. `Effective` unions instead of letting the instance own the list.
+2. Neither writer copies the inherited list in — `allowlistAlways` appends to
+   `inst.Spec.Allowlist` alone, and the Portal writes only `allowlistOwned`.
+
+With the builtin supplied live by the union and no snapshot left in the spec to
+be unioned back in, nothing can freeze, for today's writers or any added later.
 
 #### Consequence: a builtin entry can no longer be deleted
 
