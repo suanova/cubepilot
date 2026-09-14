@@ -93,10 +93,9 @@ func TestTaskToDTONextRunUTC(t *testing.T) {
 					CreationTimestamp: metav1.NewTime(c.base),
 				},
 				Spec: v1alpha1.TaskSpec{
-					Owner:   "zhang.wei",
-					Trigger: v1alpha1.TaskTriggerCron,
-					Cron:    "0 2 * * *",
-					State:   v1alpha1.TaskStateEnabled,
+					Owner: "zhang.wei",
+					Cron:  "0 2 * * *",
+					State: v1alpha1.TaskStateEnabled,
 				},
 			}
 			if c.asLast {

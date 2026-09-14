@@ -44,9 +44,10 @@ type TaskSpec struct {
 	// owner; the per-user instance is derived from it -- design §3.5: phase
 	// one has one cubepilot instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
-	// Trigger is Manual | Cron.
-	Trigger TaskTriggerKind `json:"trigger"`
-	// Cron is the 5-field cron expression (trigger=Cron).
+	// Cron is the 5-field cron expression. Empty means the task never fires on
+	// its own and runs only when asked (there is no separate trigger field: it
+	// was derivable from this one, and the two could disagree silently -- a
+	// task with trigger=Cron and an empty cron simply never ran).
 	// +optional
 	Cron string `json:"cron,omitempty"`
 	// State is the task enablement state (design §3.5: string enum, not

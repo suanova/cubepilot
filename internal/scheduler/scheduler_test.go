@@ -66,7 +66,6 @@ func dueTask(created time.Time) *v1alpha1.Task {
 		Spec: v1alpha1.TaskSpec{
 			TemplateRef: "daily-inspection",
 			Owner:       "zhang.wei",
-			Trigger:     v1alpha1.TaskTriggerCron,
 			Cron:        "* * * * *", // every minute -> deterministically due
 			State:       v1alpha1.TaskStateEnabled,
 		},
@@ -413,7 +412,6 @@ func TestManualOnlyTaskDoesNotFire(t *testing.T) {
 	cl := newFakeClient(t, scheme)
 
 	task := dueTask(time.Now().Add(-2 * time.Minute))
-	task.Spec.Trigger = v1alpha1.TaskTriggerManual
 	task.Spec.Cron = ""
 	if err := cl.Create(context.Background(), task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -446,7 +444,7 @@ func TestNewTaskRunSkeleton(t *testing.T) {
 	task := dueTask(time.Now())
 	task.UID = types.UID("uid-123")
 
-	run := NewTaskRun(task, "Cron")
+	run := NewTaskRun(task, v1alpha1.TaskTriggerCron)
 
 	if run.Status.Phase != v1alpha1.TaskRunPending {
 		t.Errorf("phase = %s, want Pending", run.Status.Phase)
@@ -468,6 +466,19 @@ func TestNewTaskRunSkeleton(t *testing.T) {
 	}
 	if run.Labels["cubepilot/task"] != task.Name {
 		t.Errorf("label cubepilot/task = %q, want %q", run.Labels["cubepilot/task"], task.Name)
+	}
+	// The run records what the task was called when it ran, so the name
+	// survives the Task being renamed or deleted. Without an annotation the CR
+	// name is the fallback.
+	if got := run.Annotations[v1alpha1.TaskDisplayNameAnnotation]; got != task.Name {
+		t.Errorf("display-name annotation = %q, want the CR name %q as fallback", got, task.Name)
+	}
+
+	named := dueTask(time.Now())
+	named.Annotations = map[string]string{v1alpha1.TaskDisplayNameAnnotation: "每日巡检"}
+	namedRun := NewTaskRun(named, v1alpha1.TaskTriggerManual)
+	if got := namedRun.Annotations[v1alpha1.TaskDisplayNameAnnotation]; got != "每日巡检" {
+		t.Errorf("display-name annotation = %q, want the human name", got)
 	}
 }
 

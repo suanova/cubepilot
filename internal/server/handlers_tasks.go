@@ -115,7 +115,7 @@ func taskRunToReport(taskName string, run v1alpha1.TaskRun) reportDTO {
 		ID:       run.Name,
 		TaskID:   run.Spec.CreatorTaskRef.Name,
 		TaskName: taskName,
-		Trigger:  run.Spec.Trigger,
+		Trigger:  string(run.Spec.Trigger),
 		Status:   reportRunStatus(run.Status.Phase),
 		Content:  run.Status.Content,
 	}
@@ -216,13 +216,11 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "params require a template (templateRef)"})
 			return
 		}
-		trigger := v1alpha1.TaskTriggerManual
 		if cronExpr != "" {
 			if _, err := schedule.Parse(cronExpr); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid cron expression: %v", err)})
 				return
 			}
-			trigger = v1alpha1.TaskTriggerCron
 		}
 		state := v1alpha1.TaskStateEnabled
 		if body.State != "" {
@@ -243,7 +241,6 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				Instruction: instruction,
 				Params:      params,
 				Owner:       s.userOf(r),
-				Trigger:     trigger,
 				Cron:        cronExpr,
 				State:       state,
 			},

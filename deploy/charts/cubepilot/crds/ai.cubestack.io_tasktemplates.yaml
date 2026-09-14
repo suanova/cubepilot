@@ -56,19 +56,6 @@ spec:
                   DefaultCron is the creation-wizard default schedule hint (design §3.5:
                   the Task's own cron wins).
                 type: string
-              defaults:
-                description: Defaults are the default trigger settings.
-                properties:
-                  cron:
-                    type: string
-                  trigger:
-                    description: TaskTriggerKind is how a task is triggered (design
-                      §3.3.3).
-                    enum:
-                    - Manual
-                    - Cron
-                    type: string
-                type: object
               description:
                 description: Description explains what the template does.
                 type: string

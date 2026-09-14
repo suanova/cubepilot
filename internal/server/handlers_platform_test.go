@@ -193,17 +193,15 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 	liTask := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: "li-ming-task-abc"},
 		Spec: v1alpha1.TaskSpec{
-			Owner:   "li.ming",
-			Trigger: v1alpha1.TaskTriggerManual,
-			State:   v1alpha1.TaskStateEnabled,
+			Owner: "li.ming",
+			State: v1alpha1.TaskStateEnabled,
 		},
 	}
 	wangTask := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: "wang-wu-task-def"},
 		Spec: v1alpha1.TaskSpec{
-			Owner:   "wang.wu",
-			Trigger: v1alpha1.TaskTriggerManual,
-			State:   v1alpha1.TaskStateEnabled,
+			Owner: "wang.wu",
+			State: v1alpha1.TaskStateEnabled,
 		},
 	}
 	s := platformTestServer(t, liTask, wangTask)

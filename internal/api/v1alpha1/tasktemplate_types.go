@@ -31,17 +31,6 @@ type RequiredPermissions struct {
 	Note  string `json:"note,omitempty"`
 }
 
-// TaskTemplateDefaults are the default trigger settings of a template.
-//
-// Deprecated: the simplified design (§3.5) moves scheduling to the Task
-// (Task.cron) and keeps only a creation-wizard hint on the template -- see
-// TaskTemplateSpec.DefaultCron. Kept only for compatibility; remove with the
-// JSON store migration.
-type TaskTemplateDefaults struct {
-	Trigger TaskTriggerKind `json:"trigger,omitempty"`
-	Cron    string          `json:"cron,omitempty"`
-}
-
 // TaskTemplateSpec is a parameterized task template (design §3.3.2) -- the
 // template (what to do), the "class" of tasks. Preloaded: daily-inspection.
 type TaskTemplateSpec struct {
@@ -66,9 +55,6 @@ type TaskTemplateSpec struct {
 	// the Task's own cron wins).
 	// +optional
 	DefaultCron string `json:"defaultCron,omitempty"`
-	// Defaults are the default trigger settings.
-	// +optional
-	Defaults *TaskTemplateDefaults `json:"defaults,omitempty"`
 }
 
 // +kubebuilder:object:root=true
