@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -169,8 +168,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			Params      map[string]string `json:"params"`
 			State       string            `json:"state"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+		if !decodeJSONBody(w, r, &body) {
 			return
 		}
 		body.Name = strings.TrimSpace(body.Name)
