@@ -92,7 +92,7 @@ var _ = Describe("LLM model lifecycle", func() {
 			"public":   true,
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(code).To(Equal(http.StatusOK), "%v", body)
+		Expect(code).To(Equal(http.StatusCreated), "%v", body)
 		// The SDK appends /chat/completions itself; storing the request URL
 		// would double it and 404.
 		Expect(nestedString(body, "model", "endpoint")).To(Equal(remoteBase))
@@ -122,7 +122,7 @@ var _ = Describe("LLM model lifecycle", func() {
 			"apiKey":   "sk-e2e-original",
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(code).To(Equal(http.StatusOK))
+		Expect(code).To(Equal(http.StatusCreated))
 		Expect(credentialValue()).To(Equal("sk-e2e-original"))
 
 		By("rotating it (secrets update)")

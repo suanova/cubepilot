@@ -214,7 +214,7 @@ func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, co
 	return events, scanner.Err()
 }
 
-// resolveApproval posts the human decision for a approval_pending event so the
+// resolveApproval posts the human decision for an approval_pending event so the
 // paused gateway run resumes and the SSE stream reaches message_done.
 func (f *Framework) resolveApproval(ctx context.Context, user string, data json.RawMessage, decision string) error {
 	var pending struct {
@@ -225,7 +225,7 @@ func (f *Framework) resolveApproval(ctx context.Context, user string, data json.
 		return fmt.Errorf("decode approval_pending: %w", err)
 	}
 	if pending.SessionID == "" {
-		return fmt.Errorf("approval_pending carried no session_id")
+		return fmt.Errorf("approval_pending carried no sessionId")
 	}
 	reqBody, err := json.Marshal(map[string]string{"decision": decision})
 	if err != nil {
@@ -243,7 +243,7 @@ func (f *Framework) resolveApproval(ctx context.Context, user string, data json.
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("confirm (%s) returned %d: %s", decision, resp.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf("approval (%s) returned %d: %s", decision, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }
