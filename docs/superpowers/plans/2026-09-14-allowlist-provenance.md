@@ -184,13 +184,54 @@ func TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 6: Update the test that asserted the old behaviour**
+
+`TestResolveEffectiveAllowlistOwned` (`internal/resolver/resolver_test.go:362-380`)
+asserts the fork itself. Replace it entirely with:
+
+```go
+// TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
+// still resolves the builtin and the template's additions (issue #185). This
+// used to assert the opposite — that an owned list replaced the inherited
+// default outright — which is exactly the fork: the instance was frozen off the
+// platform builtin on its first write, so a later hardening of Default() could
+// not reach it.
+func TestResolveEffectiveAllowlistOwned(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show)(\s|$)`}}
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+			a.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+		}),
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	want := map[string]bool{"git": false, "helm": false, "kubectl": false}
+	for _, e := range cfg.Allowlist {
+		if _, ok := want[e.Pattern]; ok {
+			want[e.Pattern] = true
+		}
+	}
+	for pattern, found := range want {
+		if !found {
+			t.Errorf("effective allowlist = %+v, missing %q", cfg.Allowlist, pattern)
+		}
+	}
+}
+```
+
+`TestResolveEffectiveAllowlistInherits` (line 335) asserts the un-owned case and needs no change.
+
+- [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `go test ./internal/allowlist/... ./internal/resolver/... -v 2>&1 | tail -30`
 
-Expected: PASS. Some pre-existing resolver test that asserted the old "owned wins" behaviour may fail here — if so, update that assertion to the union expectation rather than reverting the code, and say which test in the commit message.
+Expected: PASS, including the rewritten `TestResolveEffectiveAllowlistOwned`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add internal/allowlist/allowlist.go internal/allowlist/allowlist_test.go internal/resolver/resolver.go internal/resolver/resolver_test.go
@@ -203,6 +244,9 @@ reach that instance, which is the fail-open direction.
 
 Unconditionally union the platform builtin, the template additions, the
 hand-authored instance rules and the learned grants instead.
+
+TestResolveEffectiveAllowlistOwned asserted the old behaviour outright and is
+rewritten to assert the union.
 
 Assisted-by: Claude Code"
 ```
@@ -299,14 +343,13 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -357,7 +400,10 @@ func TestPutAgentApprovalRejectsInvalidArgPattern(t *testing.T) {
 }
 ```
 
-The `context` import in that file is then only needed by the Task 5 tests, which use `context.Background()` directly — keep it.
+The import list above is exactly what this step needs — nothing more. `context`
+is deliberately absent: neither test in this step uses it, and an unused import
+is a compile error, not a warning. Task 5's tests do use `context.Background()`
+and add the import then.
 
 - [ ] **Step 6: Run the test to verify it fails**
 
@@ -1232,7 +1278,8 @@ func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
 }
 ```
 
-Add `"time"`, `"k8s.io/apimachinery/pkg/types"` to that file's imports if absent.
+Add `"context"`, `"time"` and `"k8s.io/apimachinery/pkg/types"` to that file's
+imports — these tests use all three, and Task 2 deliberately left `context` out.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
