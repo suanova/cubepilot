@@ -96,22 +96,16 @@ type TaskRunSummary struct {
 // TaskRunSpec is the execution report of a task (design §3.3.4). It is
 // created and written by the scheduler with the platform identity.
 type TaskRunSpec struct {
-	// Type is inspection | verification | ...
-	Type string `json:"type,omitempty"`
-	// Scope is the task scope (e.g. all).
-	// +optional
-	Scope string `json:"scope,omitempty"`
 	// CreatorTaskRef links back to the owning Task.
 	CreatorTaskRef TaskRef `json:"creatorTaskRef"`
-	// TaskName is the display name of the task (denormalized).
-	// +optional
-	TaskName string `json:"taskName,omitempty"`
 	// Owner is the task owner (execution identity; derived from the Task's
 	// owner -- design §3.5).
 	Owner string `json:"owner,omitempty"`
-	// Trigger is Manual | Cron.
+	// Trigger records how this run was started -- the same Task can be fired by
+	// cron and by hand, so this is provenance about the run, not something
+	// derivable from the Task it came from.
 	// +optional
-	Trigger string `json:"trigger,omitempty"`
+	Trigger TaskTriggerKind `json:"trigger,omitempty"`
 }
 
 // +kubebuilder:object:root=true

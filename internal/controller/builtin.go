@@ -145,11 +145,6 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 			},
 			Skills:      []string{"cluster-inspection"},
 			DefaultCron: "0 2 * * *",
-			//nolint:staticcheck // TaskTemplateDefaults is deprecated (kept for compatibility, see TaskTemplateSpec.DefaultCron).
-			Defaults: &v1alpha1.TaskTemplateDefaults{
-				Trigger: v1alpha1.TaskTriggerCron,
-				Cron:    "0 2 * * *",
-			},
 		},
 	}
 }

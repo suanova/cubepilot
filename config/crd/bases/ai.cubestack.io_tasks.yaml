@@ -64,7 +64,11 @@ spec:
               TaskTemplate); creator decides the execution identity.
             properties:
               cron:
-                description: Cron is the 5-field cron expression (trigger=Cron).
+                description: |-
+                  Cron is the 5-field cron expression. Empty means the task never fires on
+                  its own and runs only when asked (there is no separate trigger field: it
+                  was derivable from this one, and the two could disagree silently -- a
+                  task with trigger=Cron and an empty cron simply never ran).
                 type: string
               instruction:
                 description: Instruction is the inline prompt (used when TemplateRef
@@ -95,15 +99,8 @@ spec:
                   TemplateRef points to the TaskTemplate (optional: inline instruction
                   tasks are also allowed, phase-one compatibility).
                 type: string
-              trigger:
-                description: Trigger is Manual | Cron.
-                enum:
-                - Manual
-                - Cron
-                type: string
             required:
             - owner
-            - trigger
             type: object
           status:
             description: TaskStatus is the observed state of a Task.

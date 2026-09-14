@@ -60,7 +60,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 	// clear the annotation so a reconcile retry cannot fire it twice (design
 	// §3.5: the API never writes TaskRuns -- the scheduler owns execution).
 	if ts, ok := task.Annotations[v1alpha1.TaskManualRunAnnotation]; ok && strings.TrimSpace(ts) != "" {
-		if err := r.fire(ctx, &task, "Manual"); err != nil {
+		if err := r.fire(ctx, &task, v1alpha1.TaskTriggerManual); err != nil {
 			log.Printf("scheduler: task %s manual fire: %v", task.Name, err)
 		}
 		patch := client.MergeFrom(task.DeepCopy())
@@ -74,7 +74,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 		r.patchPaused(ctx, &task)
 		return ctrl.Result{}, nil
 	}
-	if task.Spec.Trigger != v1alpha1.TaskTriggerCron || strings.TrimSpace(task.Spec.Cron) == "" {
+	if strings.TrimSpace(task.Spec.Cron) == "" {
 		return ctrl.Result{}, nil // manual-only: fired via API
 	}
 
@@ -87,7 +87,7 @@ func (r *ReconcileScheduler) Reconcile(ctx context.Context, req reconcile.Reques
 
 	// Fire the task (asynchronously -- a long agent turn must not block the
 	// reconcile loop; the requeue keeps the loop alive for the next due time).
-	if err := r.fire(ctx, &task, "Cron"); err != nil {
+	if err := r.fire(ctx, &task, v1alpha1.TaskTriggerCron); err != nil {
 		log.Printf("scheduler: task %s fire: %v", task.Name, err)
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -144,7 +144,7 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 // fire executes a due task: resolves the template (and the revisions actually
 // used -- design §3.5), creates a TaskRun (Pending -> Running), runs the agent
 // turn, and writes the report (Completed / Failed) with the platform identity.
-func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger string) error {
+func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trigger v1alpha1.TaskTriggerKind) error {
 	// Pre-fire instance-availability check (design §3.5: the scheduler never
 	// holds user permissions; the per-user cubepilot instance is the
 	// execution identity). When the owner's instance no longer exists (e.g.
@@ -275,7 +275,7 @@ func (r *ReconcileScheduler) ownerInstanceMissing(ctx context.Context, owner str
 // recordSkippedRun writes a Failed TaskRun for a fire that was skipped before
 // execution (owner instance missing) and advances the Task's due state so a
 // cron task does not re-fire (and re-fail) every reconcile.
-func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha1.Task, trigger string, reason error) {
+func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha1.Task, trigger v1alpha1.TaskTriggerKind, reason error) {
 	run := NewTaskRun(task, trigger)
 	if err := r.Create(ctx, run); err != nil {
 		log.Printf("scheduler: create skipped taskrun %s: %v", task.Name, err)
@@ -308,7 +308,7 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 // NewTaskRun builds the TaskRun skeleton (design §3.3.4: creatorTaskRef links
 // back to the Task; written with the platform identity). The TaskRun lives in
 // the same namespace as its Task (namespaced CRD scope, issue #146).
-func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
+func NewTaskRun(task *v1alpha1.Task, trigger v1alpha1.TaskTriggerKind) *v1alpha1.TaskRun {
 	ts := time.Now().UTC()
 	name := fmt.Sprintf("%s-%s", task.Name, ts.Format("20060102-150405"))
 	return &v1alpha1.TaskRun{
@@ -318,16 +318,23 @@ func NewTaskRun(task *v1alpha1.Task, trigger string) *v1alpha1.TaskRun {
 			Labels: map[string]string{
 				"cubepilot/task": task.Name,
 			},
+			// The run records what the task was called when it ran. It lives in
+			// an annotation rather than the spec for two reasons: a display name
+			// is observable provenance rather than desired state, and this is
+			// where the Task keeps its own (the CR name must be DNS-1123, so a
+			// human name cannot be metadata.name). The annotation outlives the
+			// Task, which is what the old denormalized spec field was for.
+			Annotations: map[string]string{
+				v1alpha1.TaskDisplayNameAnnotation: taskDisplayName(task),
+			},
 		},
 		Spec: v1alpha1.TaskRunSpec{
-			Type:    "inspection",
 			Owner:   task.Spec.Owner,
 			Trigger: trigger,
 			CreatorTaskRef: v1alpha1.TaskRef{
 				Name: task.Name,
 				UID:  string(task.UID),
 			},
-			TaskName: task.Spec.TemplateRef,
 		},
 		Status: v1alpha1.TaskRunStatus{Phase: v1alpha1.TaskRunPending},
 	}
@@ -374,3 +381,12 @@ func (r *ReconcileScheduler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 var _ reconcile.Reconciler = (*ReconcileScheduler)(nil)
+
+// taskDisplayName returns the human-facing name of a task: its display-name
+// annotation when set, else the CR name (which is the sanitized fallback).
+func taskDisplayName(task *v1alpha1.Task) string {
+	if n := task.Annotations[v1alpha1.TaskDisplayNameAnnotation]; n != "" {
+		return n
+	}
+	return task.Name
+}

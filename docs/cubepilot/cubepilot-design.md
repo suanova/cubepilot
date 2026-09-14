@@ -254,8 +254,8 @@ spec:
   owner: zhang.wei
   templateRef: daily-inspection           # 引用模板名（不钉版，下次执行用当前版本）
   params: { scope: all }                  # 只覆盖 paramsSchema 允许的参数
-  trigger: Cron                           # Cron | Manual（手动触发）
-  cron: "0 2 * * *"
+  cron: "0 2 * * *"                       # 空 = 永不自动触发，只能手动（没有独立的 trigger 字段：
+                                          # 它可由本字段推出，两者不一致时会静默不触发）
   state: Enabled                          # Enabled | Paused（字符串枚举，不用 bool）
 ```
 
@@ -266,7 +266,8 @@ metadata:
   name: zhang-wei-daily-inspection-20260820-020001
 spec:
   creatorTaskRef: { name: zhang-wei-daily-inspection, uid: "…" }
-  trigger: Cron                           # Cron | Manual
+  trigger: Cron                           # Cron | Manual —— 记录本次运行是怎么起来的；
+                                          # 同一任务可定时也可手触发，故不可由 Task 推出
 status:
   phase: Completed                        # Pending → Running → Completed / Failed
   startedAt: "2026-08-20T02:00:01Z"

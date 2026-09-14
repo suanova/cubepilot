@@ -81,17 +81,14 @@ spec:
                   Owner is the task owner (execution identity; derived from the Task's
                   owner -- design §3.5).
                 type: string
-              scope:
-                description: Scope is the task scope (e.g. all).
-                type: string
-              taskName:
-                description: TaskName is the display name of the task (denormalized).
-                type: string
               trigger:
-                description: Trigger is Manual | Cron.
-                type: string
-              type:
-                description: Type is inspection | verification | ...
+                description: |-
+                  Trigger records how this run was started -- the same Task can be fired by
+                  cron and by hand, so this is provenance about the run, not something
+                  derivable from the Task it came from.
+                enum:
+                - Manual
+                - Cron
                 type: string
             required:
             - creatorTaskRef
