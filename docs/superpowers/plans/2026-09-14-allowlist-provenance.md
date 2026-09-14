@@ -1,0 +1,2455 @@
+# Agent Allowlist Provenance Split -- Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stop the instance allowlist from freezing itself off the platform builtin on first edit, and move learned `allow-always` grants out of `AgentInstance.spec` into a per-user ConfigMap.
+
+**Architecture:** `allowlist.Effective` becomes an unconditional union of four sources (platform builtin, template, hand-authored instance rules, learned grants) instead of "the instance's own list wins". Learned grants get a new ConfigMap-backed store (`internal/grants`), written only by the API server and read by the resolver.
+
+**Tech Stack:** Go 1.2x, controller-runtime `client.Client` (direct, uncached), `k8s.io/client-go/util/retry`, React 18 + TypeScript (web), Go stdlib `testing` with `fake.NewClientBuilder`.
+
+**Spec:** `docs/superpowers/specs/2026-09-14-allowlist-provenance-design.md` (issue #185)
+
+## Global Constraints
+
+- **Pre-release, no compatibility promised.** No migration path, no fallback branches, and no one-time cleanup of pre-existing entries: existing materialized lists are not split, and legacy learned grants keep working through the union rather than being lost. They are merely indistinguishable from hand-authored rules afterwards, which is why the spec's Migration section rules out a cleanup and records the fail-open consequence on the hardening path.
+- **The v1 API contract is frozen** (PR #181). Every change to `/api/v1/...` shapes must be **additive** -- never remove or rename a response field.
+- **Displayed strings must not expose internal numbering.** No issue/PR numbers, requirement ids (`FR-M2-005`), milestone labels (`M4`), or roadmap phase names in any user-visible text, front-end or back-end. Such references belong in code comments only.
+- **Commits** are English, signed off (`git commit -s`), with an `Assisted-by: Claude Code` trailer.
+- **Go code** -- comments and identifiers in English.
+- Test command for Go: `go test ./internal/<pkg>/... -run <Name> -v`. Full gate before a PR: `go vet ./... && go test ./...`.
+
+---
+
+### Task 1: Stop the instance allowlist freezing itself off the platform builtin
+
+The fork fix. This is the standalone bug fix from the spec and is worth reviewing on its own.
+
+It takes **both** halves: the union (so the builtin is always supplied live) and
+removing the copy-in on both writers (so no snapshot survives in the spec to be
+unioned back in). The union alone is not enough -- see Step 7.
+
+**Files:**
+- Modify: `internal/allowlist/allowlist.go:96-106`
+- Test: `internal/allowlist/allowlist_test.go` (append)
+- Modify: `internal/resolver/resolver.go:218`
+- Test: `internal/resolver/resolver_test.go` (append)
+- Modify: `internal/server/handlers_agent_approval.go` (`allowlistAlways`)
+- Test: `internal/server/handlers_confirm_test.go` (rewrite `TestAllowlistAlwaysMaterializes`)
+- Modify: `web/src/views/AgentView.tsx` (`addRule`, `removeRule`)
+
+**Interfaces:**
+- Consumes: nothing (first task).
+- Produces: `func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule` -- replaces the old two-argument `Effective(owned, templateAllowlist)`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/allowlist/allowlist_test.go`:
+
+```go
+// TestEffectiveIsUnionNotOwnership is the regression test for the inherited
+// allowlist being frozen on first edit (issue #185). An instance that has its
+// own entries must still receive the platform builtin: without this, a later
+// hardening of Default() silently does not reach that instance -- which is the
+// fail-open direction.
+func TestEffectiveIsUnionNotOwnership(t *testing.T) {
+	instance := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	got := Effective(nil, instance, nil)
+
+	if !hasPattern(got, "helm") {
+		t.Fatal("instance rule dropped")
+	}
+	for _, b := range Default() {
+		if !hasPattern(got, b.Pattern) {
+			t.Errorf("builtin %q dropped for an instance that owns entries", b.Pattern)
+		}
+	}
+}
+
+// TestEffectiveUnionsAllThreeSources covers the template and grants arms, and
+// the dedup that Merge already provides across them.
+func TestEffectiveUnionsAllThreeSources(t *testing.T) {
+	tmpl := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	instance := []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	grants := []v1alpha1.AllowlistRule{
+		{Pattern: "terraform"}, // duplicate of the instance rule
+		{Pattern: "kubectl", ArgPattern: "^apply -f prod.yaml$"}, // same pattern as a builtin, different argPattern
+	}
+	got := Effective(tmpl, instance, grants)
+
+	for _, want := range []string{"helm", "terraform", "kubectl"} {
+		if !hasPattern(got, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if n := countPattern(got, "terraform"); n != 1 {
+		t.Errorf("terraform appears %d times, want 1", n)
+	}
+}
+
+func hasPattern(rules []v1alpha1.AllowlistRule, pattern string) bool {
+	return countPattern(rules, pattern) > 0
+}
+
+func countPattern(rules []v1alpha1.AllowlistRule, pattern string) int {
+	n := 0
+	for _, r := range rules {
+		if r.Pattern == pattern {
+			n++
+		}
+	}
+	return n
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/allowlist/... -run TestEffective -v`
+
+Expected: compile failure -- `too many arguments in call to Effective`.
+
+- [ ] **Step 3: Rewrite `Effective`**
+
+Replace `internal/allowlist/allowlist.go:96-106` (the whole doc comment and function) with:
+
+```go
+// Effective returns the effective allowlist for an instance (issue #185): the
+// platform builtin, the template's additions, the instance's hand-authored
+// additions and the instance's learned grants, unioned.
+//
+// There is deliberately no "the instance owns its list" override. The previous
+// design returned the instance list *instead of* the union whenever that list
+// was non-empty, so the first edit of any kind -- including a removal --
+// materialized the then-current builtin into the instance and froze it there.
+// A later hardening of Default() then could not reach that instance, which is
+// the fail-open direction. A union cannot freeze, for today's writers or any
+// added later.
+//
+// Consequence, accepted deliberately: a builtin entry can no longer be removed
+// per instance. AlwaysAsk is the strict posture.
+func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule {
+	all := make([]v1alpha1.AllowlistRule, 0, len(templateAllowlist)+len(instanceAllowlist)+len(grants))
+	all = append(all, templateAllowlist...)
+	all = append(all, instanceAllowlist...)
+	all = append(all, grants...)
+	return Merge(Default(), all)
+}
+```
+
+- [ ] **Step 4: Update the resolver call site**
+
+In `internal/resolver/resolver.go`, replace line 218:
+
+```go
+	cfg.Allowlist = allowlist.Effective(inst.Spec.Allowlist, tmplAllowlist)
+```
+
+with:
+
+```go
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, nil)
+```
+
+(The `nil` third argument becomes the grant list in Task 4.)
+
+Also update the comment above it (currently lines 213-217) to describe the union:
+
+```go
+	// Confirmation intent & allowlist (issue #185): an instance override wins
+	// over the template default; the effective allowlist is the union of the
+	// platform builtin, the template's additions and the instance's own
+	// additions. Learned grants are added in Task 4.
+```
+
+- [ ] **Step 5: Write the resolver regression test**
+
+Append to `internal/resolver/resolver_test.go`:
+
+```go
+// TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries is the resolver-level
+// half of the fork regression (issue #185): an instance with its own entries
+// must still resolve the platform builtin.
+func TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	r := testResolver(t, template("t1", nil), inst)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	byPattern := map[string]bool{}
+	for _, rule := range cfg.Allowlist {
+		byPattern[rule.Pattern] = true
+	}
+	if !byPattern["helm"] {
+		t.Error("instance rule missing")
+	}
+	if !byPattern["kubectl"] || !byPattern["ls"] {
+		t.Errorf("platform builtin missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+```
+
+- [ ] **Step 6: Update the test that asserted the old behaviour**
+
+`TestResolveEffectiveAllowlistOwned` (`internal/resolver/resolver_test.go:362-380`)
+asserts the fork itself. Replace it entirely with:
+
+```go
+// TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
+// still resolves the builtin and the template's additions (issue #185). This
+// used to assert the opposite -- that an owned list replaced the inherited
+// default outright -- which is exactly the fork: the instance was frozen off the
+// platform builtin on its first write, so a later hardening of Default() could
+// not reach it.
+func TestResolveEffectiveAllowlistOwned(t *testing.T) {
+	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show)(\s|$)`}}
+	r := testResolver(t,
+		template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
+			a.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+		}),
+		inst,
+	)
+	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("ResolveForUser: %v", err)
+	}
+	want := map[string]bool{"git": false, "helm": false, "kubectl": false}
+	for _, e := range cfg.Allowlist {
+		if _, ok := want[e.Pattern]; ok {
+			want[e.Pattern] = true
+		}
+	}
+	for pattern, found := range want {
+		if !found {
+			t.Errorf("effective allowlist = %+v, missing %q", cfg.Allowlist, pattern)
+		}
+	}
+}
+```
+
+`TestResolveEffectiveAllowlistInherits` (line 335) asserts the un-owned case and needs no change.
+
+- [ ] **Step 7: Stop the server materializing the inherited list**
+
+The union alone does **not** fix the fork. `allowlistAlways` still copies the whole
+resolved effective list -- platform builtin included -- into the spec on first use:
+
+```go
+	base := inst.Spec.Allowlist
+	if len(base) == 0 && s.mgr != nil {
+		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil {
+			base = cfg.Allowlist // materialize the inherited default on first ownership
+		}
+	}
+	inst.Spec.Allowlist = allowlist.Merge(base, []v1alpha1.AllowlistRule{rule})
+```
+
+The union then faithfully includes that snapshot, so a builtin **removed** from
+`Default()` still auto-passes here -- the same fail-open direction, reached
+through the spec instead of through `Effective`. In
+`internal/server/handlers_agent_approval.go`, replace that tail with:
+
+```go
+	// Append only to the instance's own rules. Deliberately NOT the resolved
+	// effective list: copying that in would write the platform builtin into the
+	// spec, and the union would then faithfully include the snapshot, so a
+	// builtin later removed from Default() -- a hardening -- would keep
+	// auto-passing here. The union supplies the builtin live instead.
+	inst.Spec.Allowlist = allowlist.Merge(inst.Spec.Allowlist, []v1alpha1.AllowlistRule{rule})
+```
+
+Rewrite the test that asserts the old behaviour -- `TestAllowlistAlwaysMaterializes`
+in `internal/server/handlers_confirm_test.go:83-111`:
+
+```go
+// TestAllowlistAlwaysDoesNotMaterialize verifies allow-always appends only the
+// rule itself. Copying the platform builtin into the spec would let that
+// snapshot outlive a later hardening of Default() (issue #185).
+func TestAllowlistAlwaysDoesNotMaterialize(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ok, err := s.allowlistAlways(context.Background(), "li.ming", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
+	if err != nil {
+		t.Fatalf("allowlistAlways: %v", err)
+	}
+	if !ok {
+		t.Fatal("allowlistAlways returned false under Allowlist policy")
+	}
+	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "li.ming", nil))
+	if len(view.AllowlistOwned) != 1 || view.AllowlistOwned[0].Pattern != "helm" {
+		t.Errorf("owned allowlist = %+v, want exactly the helm rule", view.AllowlistOwned)
+	}
+}
+```
+
+`TestAllowlistAlwaysSkippedUnderAlwaysAsk` (line 113) needs no change. Note the
+signature stays three-argument here -- the command text is added in a later task.
+
+- [ ] **Step 8: Stop the Portal materializing the inherited list**
+
+The same copy-in happens on the client. In `web/src/views/AgentView.tsx`:
+
+`addRule` currently falls back to the effective list:
+
+```tsx
+    const base = confirm && confirm.allowlistOwned.length ? confirm.allowlistOwned : (confirm ? confirm.allowlist : [])
+```
+
+Replace with:
+
+```tsx
+    // Only the hand-authored list. Falling back to the effective list copied
+    // the platform builtin into the spec -- the freeze this change removes.
+    const base = confirm ? confirm.allowlistOwned : []
+```
+
+`removeRule` does the same:
+
+```tsx
+    const base = confirm.allowlistOwned.length ? confirm.allowlistOwned : confirm.allowlist
+    void persistConfirm(base.filter((r) => ruleKey(r) !== key))
+```
+
+Replace the whole function body with:
+
+```tsx
+  function removeRule(key: string) {
+    if (!confirm) return
+    // Only hand-authored rules are removable: the platform builtin and the
+    // template's rules are a floor, supplied live by the union (issue #185).
+    void persistConfirm(confirm.allowlistOwned.filter((r) => ruleKey(r) !== key))
+  }
+```
+
+- [ ] **Step 9: Run the tests and the web build**
+
+Run: `go test ./internal/allowlist/... ./internal/resolver/... ./internal/server/... 2>&1 | tail -30`
+
+Expected: PASS, including the rewritten `TestResolveEffectiveAllowlistOwned` and `TestAllowlistAlwaysDoesNotMaterialize`. Any other test that asserted materialization will fail here -- rewrite it to the union expectation rather than restoring the copy-in, and name it in the commit message.
+
+Run: `cd web && npm run build`
+
+Expected: build succeeds.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/allowlist/ internal/resolver/ internal/server/handlers_agent_approval.go internal/server/handlers_confirm_test.go web/src/views/AgentView.tsx
+git commit -s -m "fix(allowlist): stop the effective list freezing the instance off the builtin (issue #185)
+
+The instance list used to win outright whenever it was non-empty, so the first
+edit of any kind -- including a removal -- cast the platform builtin into the
+instance and froze it there. A later hardening of Default() could then not
+reach that instance, which is the fail-open direction.
+
+Resolve by union instead, and stop both writers copying the inherited list into
+the spec. The union alone would not have been enough: with the snapshot still in
+the spec the union faithfully includes it, so a builtin removed from Default()
+would have kept auto-passing.
+
+TestResolveEffectiveAllowlistOwned, TestEffectiveOwnedIsAuthoritative and
+TestAllowlistAlwaysMaterializes asserted the old behaviour outright; they are
+rewritten or replaced.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 2: Validate rule patterns on write
+
+**Files:**
+- Modify: `internal/allowlist/allowlist.go` (append)
+- Test: `internal/allowlist/allowlist_test.go` (append)
+- Modify: `internal/server/handlers_agent_approval.go:82-102`
+- Test: `internal/server/handlers_confirm_test.go` (append -- the existing approval-handler test file)
+
+**Interfaces:**
+- Consumes: nothing from Task 1.
+- Produces: `func Validate(r v1alpha1.AllowlistRule) error`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/allowlist/allowlist_test.go`:
+
+```go
+// TestValidate covers the write-path validation added in issue #185: an
+// argPattern the gateway cannot compile must be rejected here, where the user
+// can see the error, rather than stored and shipped. Pattern is a command
+// name, not a regex, so only emptiness is checked.
+func TestValidate(t *testing.T) {
+	ok := []v1alpha1.AllowlistRule{
+		{Pattern: "ls"},
+		{Pattern: "kubectl", ArgPattern: `^get pods$`},
+		{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern},
+	}
+	for _, r := range ok {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
+		}
+	}
+
+	bad := []v1alpha1.AllowlistRule{
+		{Pattern: ""},
+		{Pattern: "   "},
+		{Pattern: "ls", ArgPattern: `^(.*$`},
+		// Accepted by RE2, rejected or silently misread by the JavaScript RegExp
+		// the gateway matches with. Each would otherwise be stored, pushed, and
+		// never reported -- the failure this task exists to close, reached from
+		// the other side. Lookaround and backreferences are deliberately absent:
+		// JavaScript supports both (lookbehind since ES2018), so rejecting them
+		// would refuse patterns that work.
+		{Pattern: "ls", ArgPattern: `(?i)^foo$`},
+		{Pattern: "ls", ArgPattern: `^(?P<x>a)$`},
+		{Pattern: "ls", ArgPattern: `^[[:alpha:]]+$`},
+		{Pattern: "ls", ArgPattern: `^\p{L}+$`},
+	}
+	for _, r := range bad {
+		if err := Validate(r); err == nil {
+			t.Errorf("Validate(%+v) = nil, want an error", r)
+		}
+	}
+}
+
+// TestValidateAcceptsEscapedLookalikes pins the false-positive side of the
+// denylist: a derived rule is regexp.QuoteMeta'd, so a command that happens to
+// contain `(?i)` or a backslash arrives escaped and must still validate.
+func TestValidateAcceptsEscapedLookalikes(t *testing.T) {
+	for _, r := range []v1alpha1.AllowlistRule{
+		{Pattern: "grep", ArgPattern: `^\(-P\) \\1$`},
+		{Pattern: "grep", ArgPattern: `^\(foo\)\?bar$`},
+	} {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/allowlist/... -run TestValidate -v`
+
+Expected: compile failure -- `undefined: Validate`.
+
+- [ ] **Step 3: Implement `Validate`**
+
+Append to `internal/allowlist/allowlist.go` (add `"errors"`, `"fmt"`, `"regexp"`, `"strings"` to the imports):
+
+```go
+// jsIncompatible lists the constructs Go's RE2 accepts that the gateway's
+// JavaScript `new RegExp(argPattern)` does not accept, or reads differently.
+// The gateway passes no `u` flag, so `[[:alpha:]]` and `\p{...}` are not the
+// classes they look like there. Without this check such a pattern validated,
+// was stored and was pushed, and then never matched -- the same "stored, never
+// reported" failure this task closes, reached from the other side.
+//
+// This is a best-effort denylist, not a sound validator: the two engines differ
+// in ways no list of patterns captures, and a shared subset is the most that
+// can be asserted. The residual divergence is fail-closed, because a pattern
+// the gateway cannot compile throws at match time and the runtime catches that
+// and treats it as no-match: the command asks again rather than auto-passing.
+var jsIncompatible = []struct {
+	re   *regexp.Regexp
+	what string
+}{
+	{regexp.MustCompile(`\(\?P<`), "a named group (?P<name>...), which JavaScript spells (?<name>...)"},
+	{regexp.MustCompile(`\(\?[a-zA-Z-]`), "an inline flag group such as (?i); pass flags to RegExp instead"},
+	{regexp.MustCompile(`\[\[:`), "a POSIX class such as [[:alpha:]]"},
+	{regexp.MustCompile(`\\[pP]\{`), "a Unicode property such as \\p{L}, which needs the RegExp u flag"},
+}
+
+// Validate reports whether a rule is well formed. Pattern is a command name
+// rather than a regular expression, so it is only checked for emptiness;
+// ArgPattern is a regular expression compiled by the gateway at match time, so
+// it is checked here against the constructs the gateway's RegExp engine cannot
+// take (jsIncompatible) and then compiled, rejecting it while the user is still
+// looking at the form. The denylist runs first so a construct is reported as the
+// JavaScript incompatibility it is rather than as a bare compile error. It is
+// best-effort; see it for why the gap is safe to leave.
+func Validate(r v1alpha1.AllowlistRule) error {
+	if strings.TrimSpace(r.Pattern) == "" {
+		return errors.New("pattern is required")
+	}
+	if r.ArgPattern == "" {
+		return nil
+	}
+	for _, c := range jsIncompatible {
+		if c.re.MatchString(r.ArgPattern) {
+			return fmt.Errorf("argPattern uses %s, which JavaScript's new RegExp does not accept: the gateway matches argPattern with new RegExp, not RE2", c.what)
+		}
+	}
+	if _, err := regexp.Compile(r.ArgPattern); err != nil {
+		return fmt.Errorf("argPattern is not a valid regular expression: %w", err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `go test ./internal/allowlist/... -run TestValidate -v`
+
+Expected: PASS.
+
+- [ ] **Step 5: Write the failing handler test**
+
+Append to `internal/server/handlers_confirm_test.go` -- the existing home of the
+approval-handler tests, which already carries the helpers this needs:
+
+```go
+// TestAgentConfirmRejectsInvalidArgPattern covers issue #185: argPattern is free
+// text from the form, shipped to the gateway unvalidated, so a typo was stored
+// and pushed and the user never heard about it.
+func TestAgentConfirmRejectsInvalidArgPattern(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []map[string]any{{"pattern": "ls", "argPattern": "^(.*$"}},
+		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+```
+
+Do **not** create a new test file or a new server helper. `platformTestServer`
+(`internal/server/handlers_platform_test.go:28`), `internalTestAgent` and
+`internalTestInstance` (`internal_api_test.go:26,40`) and `doReq` / `decode`
+(`handlers_platform_test.go:71,88`) already exist and are what every surrounding
+approval test uses. This step needs no import changes.
+
+- [ ] **Step 6: Run the test to verify it fails**
+
+Run: `go test ./internal/server/... -run TestAgentConfirmRejectsInvalidArgPattern -v`
+
+Expected: FAIL -- status 200, because nothing validates yet.
+
+- [ ] **Step 7: Validate in the PUT handler**
+
+In `internal/server/handlers_agent_approval.go`, in the `http.MethodPut` branch, after the `json.Decode` error check and before the `approvalPolicy` switch, insert:
+
+```go
+		for _, rule := range body.Allowlist {
+			if err := allowlist.Validate(rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+```
+
+- [ ] **Step 8: Run the tests to verify they pass**
+
+Run: `go test ./internal/server/... ./internal/allowlist/... -v 2>&1 | tail -30`
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/allowlist/ internal/server/handlers_agent_approval.go internal/server/handlers_confirm_test.go
+git commit -s -m "fix(api): validate allowlist argPattern before storing it (issue #185)
+
+argPattern was free text from the form, shipped verbatim to the gateway, and
+compiled there -- so a typo was stored, pushed, and never reported. Compile it
+on the write path instead and reject it with a 400 the form can show.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 3: The `grants` store
+
+A new package owning the per-user learned grants ConfigMap. Self-contained: no wiring yet, so it reviews on its own.
+
+**Files:**
+- Create: `internal/grants/grants.go`
+- Test: `internal/grants/grants_test.go`
+- Modify: `deploy/charts/cubepilot/templates/rbac.yaml:220-228`
+
+**Interfaces:**
+- Consumes: `k8s.ResourceName(prefix, user string) string`, `k8s.InstanceName(user, agent string) string`, `v1alpha1.DefaultAgentName`, `v1alpha1.GroupVersion`.
+- Produces:
+  - `const MaxGrants = 1000` (and the unexported `maxCommandBytes`, `maxRuleBytes`, `maxDataBytes`)
+  - `type Record struct { Pattern, ArgPattern, Command string; CreatedAt time.Time }` with method `Rule() v1alpha1.AllowlistRule`
+  - `type Store struct{...}`, `func New(cr client.Client, namespace string) *Store`
+  - `func (s *Store) Name(user string) string`
+  - `func (s *Store) List(ctx context.Context, user string) ([]Record, error)` -- oldest first
+  - `func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, command string, now time.Time) error` -- refuses (with an error) a rule whose Pattern + ArgPattern exceeds `maxRuleBytes`, and a write that would leave the payload over `maxDataBytes`
+  - `func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRule) error` -- idempotent; a missing ConfigMap or key is not an error
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/grants/grants_test.go`:
+
+```go
+package grants
+
+import (
+	"context"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
+)
+
+func testStore(t *testing.T, objs ...client.Object) *Store {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core types: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add platform types: %v", err)
+	}
+	return New(fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build(), "cubepilot")
+}
+
+// testStoreWithMax builds a Store with an overridden cap, so the eviction test
+// drives three entries instead of a thousand.
+func testStoreWithMax(t *testing.T, max int, objs ...client.Object) *Store {
+	t.Helper()
+	s := testStore(t, objs...)
+	s.max = max
+	return s
+}
+
+// testStoreWithBudget builds a Store with a payload budget small enough to
+// reach in a handful of writes, so the size eviction is exercised without
+// serializing hundreds of kilobytes.
+func testStoreWithBudget(t *testing.T, maxBytes int, objs ...client.Object) *Store {
+	t.Helper()
+	s := testStore(t, objs...)
+	s.maxBytes = maxBytes
+	return s
+}
+
+func TestListMissingConfigMapIsEmpty(t *testing.T) {
+	s := testStore(t)
+	got, err := s.List(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d grants, want 0", len(got))
+	}
+}
+
+func TestAddThenList(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	rule := v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^get pods$`}
+
+	if err := s.Add(ctx, "alice", rule, "kubectl get pods", now); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d grants, want 1", len(got))
+	}
+	if got[0].Pattern != "kubectl" || got[0].ArgPattern != `^get pods$` {
+		t.Errorf("round trip lost the rule: %+v", got[0])
+	}
+	if got[0].Command != "kubectl get pods" {
+		t.Errorf("Command = %q", got[0].Command)
+	}
+	if !got[0].CreatedAt.Equal(now) {
+		t.Errorf("CreatedAt = %v, want %v", got[0].CreatedAt, now)
+	}
+}
+
+// TestAddIsIdempotent pins the dedup identity to pattern|argPattern: the same
+// command approved twice must not grow the list, and must keep the original
+// CreatedAt so the cap evicts by first-seen order.
+func TestAddIsIdempotent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	rule := v1alpha1.AllowlistRule{Pattern: "helm"}
+	first := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	second := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
+
+	if err := s.Add(ctx, "alice", rule, "helm install x", first); err != nil {
+		t.Fatalf("Add first: %v", err)
+	}
+	if err := s.Add(ctx, "alice", rule, "helm install y", second); err != nil {
+		t.Fatalf("Add second: %v", err)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d grants, want 1", len(got))
+	}
+	if !got[0].CreatedAt.Equal(first) {
+		t.Errorf("CreatedAt = %v, want the original %v", got[0].CreatedAt, first)
+	}
+}
+
+// TestAddEvictsOldestPastCap: growth is human-driven, so the cap is a safety
+// net against a loop rather than a working limit. The store's cap is
+// overridden to 3 so this exercises the eviction path in three writes.
+func TestAddEvictsOldestPastCap(t *testing.T) {
+	s := testStoreWithMax(t, 3)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 3; i++ {
+		rule := v1alpha1.AllowlistRule{Pattern: "cmd", ArgPattern: "arg-" + strconv.Itoa(i)}
+		if err := s.Add(ctx, "alice", rule, "", base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+	// One more pushes past the cap.
+	newest := v1alpha1.AllowlistRule{Pattern: "newest"}
+	if err := s.Add(ctx, "alice", newest, "", base.Add(time.Hour)); err != nil {
+		t.Fatalf("Add newest: %v", err)
+	}
+
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d grants, want 3", len(got))
+	}
+	// The very first rule added must be gone, the newest kept.
+	for _, r := range got {
+		if r.Pattern == "cmd" && r.ArgPattern == "arg-0" {
+			t.Error("oldest grant was not evicted")
+		}
+	}
+	if got[len(got)-1].Pattern != "newest" {
+		t.Errorf("newest grant missing; last = %+v", got[len(got)-1])
+	}
+}
+
+// TestAddTruncatesLongCommand: the command text is display-only, and leaving it
+// unbounded would make the per-entry size -- and so the MaxGrants arithmetic --
+// meaningless.
+func TestAddTruncatesLongCommand(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	long := strings.Repeat("a", maxCommandBytes*2)
+	if err := s.Add(ctx, "alice", v1alpha1.AllowlistRule{Pattern: "bash"}, long, time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d grants, want 1", len(got))
+	}
+	// Truncated to the cap, with a visible marker so the UI can tell the text
+	// is incomplete.
+	want := maxCommandBytes + len("...")
+	if len(got[0].Command) != want {
+		t.Errorf("Command length = %d, want %d", len(got[0].Command), want)
+	}
+	if !strings.HasSuffix(got[0].Command, "...") {
+		t.Errorf("truncated command has no marker: %q", got[0].Command)
+	}
+}
+
+// TestRemoveDropsTheGrantAndIsIdempotent: revoking a learned grant must work
+// from the UI, and revoking one that is already gone must not error.
+func TestRemoveDropsTheGrantAndIsIdempotent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	keep := v1alpha1.AllowlistRule{Pattern: "terraform"}
+	drop := v1alpha1.AllowlistRule{Pattern: "helm"}
+	if err := s.Add(ctx, "alice", keep, "", time.Now()); err != nil {
+		t.Fatalf("Add keep: %v", err)
+	}
+	if err := s.Add(ctx, "alice", drop, "", time.Now()); err != nil {
+		t.Fatalf("Add drop: %v", err)
+	}
+
+	if err := s.Remove(ctx, "alice", drop); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := s.Remove(ctx, "alice", drop); err != nil {
+		t.Fatalf("Remove again should be a no-op: %v", err)
+	}
+	// Removing from a user with no ConfigMap at all is also a no-op.
+	if err := s.Remove(ctx, "bob", drop); err != nil {
+		t.Fatalf("Remove for a user without grants: %v", err)
+	}
+
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "terraform" {
+		t.Fatalf("grants = %+v, want only terraform", got)
+	}
+}
+
+// TestAddSetsOwnerReference: the ConfigMap is garbage-collected with the
+// instance it belongs to. Garbage collection matches an owner by UID, so the
+// reference is populated from the instance object -- a name-only reference has
+// an empty UID, which is dangling and leaves the ConfigMap liable to be deleted
+// rather than collected with its owner.
+func TestAddSetsOwnerReference(t *testing.T) {
+	inst := &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      k8s.InstanceName("alice", v1alpha1.DefaultAgentName),
+			Namespace: "cubepilot",
+			UID:       types.UID("11111111-2222-3333-4444-555555555555"),
+		},
+	}
+	s := testStore(t, inst)
+	ctx := context.Background()
+	if err := s.Add(ctx, "alice", v1alpha1.AllowlistRule{Pattern: "helm"}, "", time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	var cm corev1.ConfigMap
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: s.Name("alice")}, &cm); err != nil {
+		t.Fatalf("get ConfigMap: %v", err)
+	}
+	if got := cm.Name; got != k8s.ResourceName("cubepilot-grants", "alice") {
+		t.Errorf("ConfigMap name = %q", got)
+	}
+	if len(cm.OwnerReferences) != 1 {
+		t.Fatalf("got %d owner references, want 1", len(cm.OwnerReferences))
+	}
+	ref := cm.OwnerReferences[0]
+	if ref.Kind != "AgentInstance" || ref.Name != inst.Name {
+		t.Errorf("owner reference = %+v", ref)
+	}
+	if ref.UID != inst.UID {
+		t.Errorf("owner reference UID = %q, want %q", ref.UID, inst.UID)
+	}
+}
+
+// TestAddWithoutInstanceSkipsOwnerReference: with no instance to own it, the
+// ConfigMap is created unowned rather than with a dangling reference.
+func TestAddWithoutInstanceSkipsOwnerReference(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.Add(ctx, "alice", v1alpha1.AllowlistRule{Pattern: "helm"}, "", time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	var cm corev1.ConfigMap
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: s.Name("alice")}, &cm); err != nil {
+		t.Fatalf("get ConfigMap: %v", err)
+	}
+	if len(cm.OwnerReferences) != 0 {
+		t.Errorf("owner references = %+v, want none", cm.OwnerReferences)
+	}
+}
+
+// TestAddRefusesAnOversizedRule: a rule too large to store is refused, not
+// truncated. ArgPattern is a regular expression the gateway matches, so a
+// truncated one silently matches something different -- and cutting ^...$ mid
+// pattern breaks the anchors outright. The refusal is visible: the API answers
+// allowlisted: false and the Portal says the command was not added.
+func TestAddRefusesAnOversizedRule(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	rule := v1alpha1.AllowlistRule{Pattern: "bash", ArgPattern: strings.Repeat("a", maxRuleBytes+1)}
+	if err := s.Add(ctx, "alice", rule, "", time.Now()); err == nil {
+		t.Fatal("Add of an oversized rule should be refused")
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("refused rule was stored anyway: %+v", got)
+	}
+}
+
+// TestAddEvictsToStayUnderTheSizeBudget: the entry cap bounds how many grants a
+// user has, not how large they are -- a thousand entries at the per-entry
+// maxima is megabytes -- so the store also drops the oldest entries until the
+// serialized Data fits. Without that the API server rejects the ConfigMap, and
+// the rejection is not confined to this write: every later write for that user
+// fails too.
+func TestAddEvictsToStayUnderTheSizeBudget(t *testing.T) {
+	budget := 8 * 1024
+	s := testStoreWithBudget(t, budget)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	// Each rule stores ~2 KiB of argPattern, so a handful fit in the budget.
+	arg := strings.Repeat("a", 2*1024)
+
+	for i := 0; i < 6; i++ {
+		rule := v1alpha1.AllowlistRule{Pattern: "cmd", ArgPattern: arg + strconv.Itoa(i)}
+		if err := s.Add(ctx, "alice", rule, "", base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+
+	var cm corev1.ConfigMap
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: s.Name("alice")}, &cm); err != nil {
+		t.Fatalf("get ConfigMap: %v", err)
+	}
+	if got := dataSize(&cm); got > budget {
+		t.Errorf("stored payload = %d bytes, over the %d budget", got, budget)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) == 0 || got[len(got)-1].ArgPattern != arg+"5" {
+		t.Errorf("newest grant evicted: %+v", got)
+	}
+}
+
+```
+
+The test file's imports are `context`, `strconv`, `strings`, `testing`, `time`,
+`corev1`, `metav1`, `runtime`, `types`, `client`, `fake`, `v1alpha1`, `k8s`.
+`Key` is exercised indirectly by `Add`/`List`; import nothing you do not use --
+an unused import is a compile error in Go, which is why `apierrors` is absent
+here even though the package under test uses it.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/grants/... -v`
+
+Expected: compile failure -- `undefined: New`, `undefined: MaxGrants`, `undefined: Key`.
+
+- [ ] **Step 3: Implement the package**
+
+Create `internal/grants/grants.go`:
+
+```go
+// Package grants stores the learned "allow always" grants for a user: rules
+// the agent proposed, the user approved in chat, and the platform recorded so
+// the command auto-passes from then on (issue #185).
+//
+// Grants are recorded state, not desired state. They are kept out of
+// AgentInstance.spec so that a machine write can no longer flip the "the
+// instance owns its list" sentinel, and because a lost grant is fail-closed:
+// the command simply asks again. Storage is a per-user ConfigMap whose only
+// writer is the API server, which keeps the whole-object-overwrite failure
+// mode out of a field the controller also writes.
+package grants
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
+)
+
+// MaxGrants bounds a user's learned grants. Growth is driven by human clicks
+// rather than by the agent, so this is a safety net against a pathological
+// loop, not a working limit -- it has to sit far above what a heavy user
+// accumulates in a year (order of 300) or it silently evicts grants people
+// still rely on.
+//
+// It bounds the entry count, not the payload. The per-entry bounds below
+// multiplied by 1000 is several MiB, well past the ~1 MiB ConfigMap ceiling, so
+// Add also evicts against maxDataBytes. Sizing: a typical entry is roughly 250
+// bytes (32-char key plus the JSON value), so 1000 of them is about a quarter of
+// the ceiling; maxCommandBytes, maxRuleBytes and maxDataBytes are what keep the
+// arithmetic honest at the extremes.
+const (
+	MaxGrants = 1000
+	// maxCommandBytes bounds the stored command text, which is display-only and
+	// plays no part in matching. Without a bound a single `bash -c` with a long
+	// heredoc could push the ConfigMap past the 1 MiB API-server ceiling, and
+	// the failure would not be confined to that entry: every later Add for that
+	// user would fail too.
+	maxCommandBytes = 512
+	// maxRuleBytes bounds Pattern and ArgPattern together. A rule over this is
+	// refused rather than truncated: ArgPattern is a regular expression the
+	// gateway matches, so a shortened one silently matches something different,
+	// and cutting ^...$ mid-pattern breaks the anchors outright. Pattern is a
+	// bare command name and unbounded in principle for the same reason.
+	//
+	// The refusal is visible, not silent: Add reports it, the API answers
+	// allowlisted: false and the Portal tells the user the command was not
+	// added.
+	maxRuleBytes = 4096
+	// maxDataBytes bounds the whole serialized Data map, well under the 1 MiB
+	// ConfigMap ceiling and above what a thousand typical entries need. The
+	// entry-count cap does not bound the payload, so without this a user can
+	// pass the ceiling far below MaxGrants -- and an oversized ConfigMap is
+	// rejected for every later write of that user's, not just the current one,
+	// which is why the store evicts to fit before calling Update rather than
+	// letting the API server decide.
+	maxDataBytes = 512 * 1024
+)
+
+// The data keys of the grants ConfigMap are opaque digests; the values are
+// Records. One key per grant makes an add a single-key write that cannot lose
+// a concurrent add of a different grant.
+const managedByLabel = "cubepilot-grants"
+
+// Record is one stored grant.
+type Record struct {
+	Pattern    string    `json:"pattern"`
+	ArgPattern string    `json:"argPattern,omitempty"`
+	// Command is the invocation that produced the grant, kept for the UI so a
+	// learned rule can be shown as something a human recognises. It is display
+	// only -- matching uses Pattern and ArgPattern -- and is truncated by
+	// maxCommandBytes, with a trailing ellipsis when it was.
+	Command   string    `json:"command,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Rule is the public-API allowlist rule this grant contributes.
+func (r Record) Rule() v1alpha1.AllowlistRule {
+	return v1alpha1.AllowlistRule{Pattern: r.Pattern, ArgPattern: r.ArgPattern}
+}
+
+// Store reads and writes the per-user grants ConfigMap. max and maxBytes are
+// fields rather than the constants directly so the eviction tests can drive a
+// small cap and a small budget instead of writing a thousand entries or a few
+// hundred kilobytes.
+type Store struct {
+	cr       client.Client
+	ns       string
+	max      int
+	maxBytes int
+}
+
+// New returns a Store backed by cr in namespace ns.
+func New(cr client.Client, namespace string) *Store {
+	return &Store{cr: cr, ns: namespace, max: MaxGrants, maxBytes: maxDataBytes}
+}
+
+// Name is the grants ConfigMap name for a user.
+func (s *Store) Name(user string) string {
+	return k8s.ResourceName("cubepilot-grants", user)
+}
+
+// Key is the stable data key for a rule: a hex digest of the same
+// pattern|argPattern identity allowlist.Merge dedups on.
+func Key(r v1alpha1.AllowlistRule) string {
+	sum := sha256.Sum256([]byte(r.Pattern + "|" + r.ArgPattern))
+	return hex.EncodeToString(sum[:16])
+}
+
+// List returns the user's grants, oldest first. A missing ConfigMap is an
+// empty list rather than an error: most instances never record one.
+func (s *Store) List(ctx context.Context, user string) ([]Record, error) {
+	var cm corev1.ConfigMap
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: s.Name(user)}, &cm)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]Record, 0, len(cm.Data))
+	for _, raw := range cm.Data {
+		var rec Record
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.Pattern == "" {
+			// A malformed value is skipped rather than failing the resolve: a
+			// dropped grant asks again, which is the safe direction.
+			continue
+		}
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].Pattern < out[j].Pattern
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// Add records a grant. It is idempotent on (pattern, argPattern): recording
+// the same rule again keeps the original CreatedAt, so the cap evicts by
+// first-seen order rather than being kept alive by repeats.
+//
+// A rule too large for maxRuleBytes is refused. Only the display-only command
+// text is ever shortened; the matching fields are not, because a truncated
+// pattern is a different pattern.
+func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, command string, now time.Time) error {
+	if r.Pattern == "" {
+		return nil
+	}
+	if len(r.Pattern)+len(r.ArgPattern) > maxRuleBytes {
+		return fmt.Errorf("grant rule for %s is %d bytes, over the %d byte bound",
+			user, len(r.Pattern)+len(r.ArgPattern), maxRuleBytes)
+	}
+	raw, err := json.Marshal(Record{
+		Pattern:    r.Pattern,
+		ArgPattern: r.ArgPattern,
+		Command:    truncate(command, maxCommandBytes),
+		CreatedAt:  now.UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	key := Key(r)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := s.ensure(ctx, user)
+		if err != nil {
+			return err
+		}
+		if _, exists := cm.Data[key]; exists {
+			return nil
+		}
+		cm.Data[key] = string(raw)
+		if !evict(cm, s.max, s.maxBytes) {
+			// Refuse rather than write an object the API server will reject: an
+			// oversized ConfigMap fails every later write for this user, not
+			// just this one. This is not a conflict, so RetryOnConflict surfaces
+			// it instead of looping. The per-rule bound above makes it
+			// unreachable for entries this build wrote; it is the backstop for a
+			// ConfigMap written by an older build.
+			return fmt.Errorf("grants for %s would exceed the %d byte payload budget", user, s.maxBytes)
+		}
+		return s.cr.Update(ctx, cm)
+	})
+}
+
+// truncate bounds s to about n bytes, cutting on a byte boundary. The value is
+// display-only -- matching uses Pattern and ArgPattern -- so a split rune at the
+// cut is acceptable and not worth the extra code to avoid. The ellipsis is what
+// matters: a silently shortened command reads as a complete one, and the user
+// would be looking at a rule whose text they cannot trust.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// Remove revokes a grant. It is idempotent: a missing ConfigMap, or a key that
+// is not there, is a no-op rather than an error, so a double-click or a stale
+// UI does not surface a failure.
+func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRule) error {
+	if r.Pattern == "" {
+		return nil
+	}
+	key := Key(r)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var cm corev1.ConfigMap
+		err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: s.Name(user)}, &cm)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if _, exists := cm.Data[key]; !exists {
+			return nil
+		}
+		delete(cm.Data, key)
+		if len(cm.Data) == 0 {
+			return s.cr.Delete(ctx, &cm)
+		}
+		return s.cr.Update(ctx, &cm)
+	})
+}
+
+// ensure returns the user's grants ConfigMap, creating it when absent.
+//
+// The owner reference ties the ConfigMap to the instance, so it is
+// garbage-collected with the instance. Kubernetes resolves that relationship by
+// UID, so the reference is built from the instance object, not from its name: a
+// reference with an empty UID is dangling, and the dependent is then liable to
+// be deleted rather than collected with its owner. With no instance to point at
+// (not provisioned yet, or already gone) the ConfigMap is created without an
+// owner reference instead of with a broken one.
+func (s *Store) ensure(ctx context.Context, user string) (*corev1.ConfigMap, error) {
+	name := s.Name(user)
+	var cm corev1.ConfigMap
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: name}, &cm)
+	if err == nil {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		return &cm, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	var refs []metav1.OwnerReference
+	var inst v1alpha1.AgentInstance
+	instName := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+	err = s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: instName}, &inst)
+	switch {
+	case err == nil:
+		refs = []metav1.OwnerReference{{
+			APIVersion: v1alpha1.GroupVersion.String(),
+			Kind:       "AgentInstance",
+			Name:       inst.Name,
+			UID:        inst.UID,
+		}}
+	case apierrors.IsNotFound(err):
+		// No owner to reference.
+	default:
+		return nil, err
+	}
+
+	cm = corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       s.ns,
+			Labels:          map[string]string{"app.kubernetes.io/managed-by": managedByLabel},
+			OwnerReferences: refs,
+		},
+		Data: map[string]string{},
+	}
+	if err := s.cr.Create(ctx, &cm); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, err
+		}
+		// Lost a create race: re-read and use the existing object.
+		if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: name}, &cm); err != nil {
+			return nil, err
+		}
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+	}
+	return &cm, nil
+}
+
+// dataSize is the serialized size of a ConfigMap's Data, which is the bulk of
+// what the API server counts against its ~1 MiB object ceiling.
+func dataSize(cm *corev1.ConfigMap) int {
+	n := 0
+	for k, v := range cm.Data {
+		n += len(k) + len(v)
+	}
+	return n
+}
+
+// evict bounds a ConfigMap's payload: it drops the oldest entries until at most
+// max remain and the serialized Data fits budget. It reports whether the payload
+// fits afterwards; false means the surviving entries alone are over budget,
+// which the Add-time rule bound makes unreachable for entries this build wrote.
+//
+// The count and the size are bounded together rather than in two passes because
+// both order the entries the same way, by CreatedAt.
+func evict(cm *corev1.ConfigMap, max, budget int) bool {
+	type keyed struct {
+		key string
+		at  time.Time
+	}
+	all := make([]keyed, 0, len(cm.Data))
+	for k, raw := range cm.Data {
+		var rec Record
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			// Undecodable entries can never be ordered; drop them first.
+			delete(cm.Data, k)
+			continue
+		}
+		all = append(all, keyed{key: k, at: rec.CreatedAt})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for i := 0; i < len(all) && (len(cm.Data) > max || dataSize(cm) > budget); i++ {
+		delete(cm.Data, all[i].key)
+	}
+	return len(cm.Data) <= max && dataSize(cm) <= budget
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `go test ./internal/grants/... -v`
+
+Expected: PASS for all ten tests.
+
+**On concurrency:** `Add` and `Remove` wrap get-modify-update in `retry.RetryOnConflict`, so a concurrent write of a *different* grant retries instead of being lost. There is deliberately no unit test for it -- the controller-runtime fake client does not reproduce optimistic-concurrency conflicts, and a test that cannot fail is worse than none. The retry wrapper is the guarantee; say so in the PR body rather than claiming coverage.
+
+- [ ] **Step 5: Grant the API server ConfigMap access**
+
+In `deploy/charts/cubepilot/templates/rbac.yaml`, the API's namespaced Role currently lists only `secrets` (around line 220-228). Add a rule beside it:
+
+```yaml
+  # Learned allow-always grants (issue #185): the API is the sole writer of the
+  # per-user grants ConfigMap.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+- [ ] **Step 6: Verify the chart still renders**
+
+Run: `helm template cubepilot deploy/charts/cubepilot >/dev/null && echo OK`
+
+Expected: `OK` with no template error.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/grants/ deploy/charts/cubepilot/templates/rbac.yaml
+git commit -s -m "feat(grants): add the per-user learned-grants store (issue #185)
+
+Learned allow-always grants get their own ConfigMap-backed store, one key per
+grant, written only by the API server. Keeping them out of AgentInstance.spec
+stops a machine write from flipping the list-ownership sentinel, and a
+single-writer object avoids the whole-object-overwrite failure mode that a
+status subresource shared with the controller would reintroduce.
+
+Not wired up yet: nothing reads or writes the store until the next two tasks.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 4: The resolver reads grants
+
+**Files:**
+- Modify: `internal/resolver/resolver.go` (struct + `Resolve` allowlist call)
+- Test: `internal/resolver/resolver_test.go` (helper + append)
+
+**Interfaces:**
+- Consumes: `grants.New(cr client.Client, namespace string) *Store`, `(*Store).List(ctx, user) ([]Record, error)`, `(Record).Rule()`.
+- Produces: `ResolvedAgentConfig.Allowlist` now includes learned grants; changing a grant changes `ResolvedAgentConfig.Revision` (no code change needed -- `fingerprint()` already hashes `Allowlist`).
+
+- [ ] **Step 1: Extend the test scheme to core types**
+
+In `internal/resolver/resolver_test.go`, in `testResolver`, add `corev1` to the scheme (the grants ConfigMap is a core type, and the fake client rejects reads of unregistered kinds):
+
+```go
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+```
+
+Add `corev1 "k8s.io/api/core/v1"` to that file's imports.
+
+- [ ] **Step 2: Write the failing test**
+
+Append to `internal/resolver/resolver_test.go`:
+
+```go
+// TestResolvedAllowlistIncludesLearnedGrants covers the fourth arm of the
+// union (issue #185): a recorded grant auto-passes without appearing in
+// AgentInstance.spec.
+func TestResolvedAllowlistIncludesLearnedGrants(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      k8s.ResourceName("cubepilot-grants", "alice"),
+			Namespace: "",
+		},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","argPattern":"^install x$","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	r := testResolver(t, template("t1", nil), inst, cm)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	var found bool
+	for _, rule := range cfg.Allowlist {
+		if rule.Pattern == "helm" && rule.ArgPattern == "^install x$" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("learned grant missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+
+// TestGrantChangesTheRevision: the revision is what gates the gateway push
+// (internal/server/approvals.go, PreTurn), so a grant edit must move it.
+func TestGrantChangesTheRevision(t *testing.T) {
+	r := testResolver(t, template("t1", nil), instance("alice", "t1", ""))
+	before, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.ResourceName("cubepilot-grants", "alice")},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	if err := r.cr.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create grants ConfigMap: %v", err)
+	}
+
+	after, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve after: %v", err)
+	}
+	if before.Revision == after.Revision {
+		t.Errorf("revision did not change after recording a grant (%q)", after.Revision)
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/resolver/... -run 'TestResolvedAllowlistIncludesLearnedGrants|TestGrantChangesTheRevision' -v`
+
+Expected: FAIL -- the grant is not in the resolved allowlist (the second test fails on the unchanged revision).
+
+- [ ] **Step 4: Add the store to the Resolver**
+
+In `internal/resolver/resolver.go`, the struct and constructor are currently (lines 111-120):
+
+```go
+type Resolver struct {
+	cr client.Client
+	ns string
+}
+
+// New returns a Resolver backed by the controller-runtime client, reading
+// platform CRs from namespace (namespaced CRD scope, issue #146).
+func New(cr client.Client, namespace string) *Resolver {
+	return &Resolver{cr: cr, ns: namespace}
+}
+```
+
+Add the grants store -- the only change is the new field and the extra `New` argument:
+
+```go
+type Resolver struct {
+	cr     client.Client
+	ns     string
+	grants *grants.Store
+}
+
+// New returns a Resolver backed by the controller-runtime client, reading
+// platform CRs from namespace (namespaced CRD scope, issue #146).
+func New(cr client.Client, namespace string) *Resolver {
+	return &Resolver{cr: cr, ns: namespace, grants: grants.New(cr, namespace)}
+}
+```
+
+Import `"github.com/suanova/cubepilot/internal/grants"`. The constructor call sites (`cmd/cubepilot-api/main.go`, `internal/instances/manager.go`) do not change -- only the returned struct gains a field.
+
+- [ ] **Step 5: Feed the grants into `Effective`**
+
+In `internal/resolver/resolver.go`, replace the call added in Task 1:
+
+```go
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, nil)
+```
+
+with:
+
+```go
+	records, err := r.grants.List(ctx, user)
+	if err != nil {
+		return nil, fmt.Errorf("list grants for %s: %w", user, err)
+	}
+	learnedRules := make([]v1alpha1.AllowlistRule, 0, len(records))
+	for _, rec := range records {
+		learnedRules = append(learnedRules, rec.Rule())
+	}
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learnedRules)
+```
+
+Update the comment above it to mention the fourth arm (drop the "added in Task 4" note from Task 1).
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `go test ./internal/resolver/... -v 2>&1 | tail -30`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/resolver/
+git commit -s -m "feat(resolver): union learned grants into the effective allowlist (issue #185)
+
+The resolver now reads the per-user grants ConfigMap and folds it into the
+effective list, so a recorded grant auto-passes without living in
+AgentInstance.spec. The grants are part of the config fingerprint already, so
+recording one still moves the revision that gates the gateway push.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 5: `allow-always` writes a grant instead of the spec
+
+**Files:**
+- Modify: `internal/server/handlers_agent_approval.go:177-250`
+- Modify: `internal/server/approvals.go:352-368` (the `allow-always` branch)
+- Modify: `internal/server/approvals.go:438-448, 494` (the revision gate and `applyPolicy`)
+- Test: `internal/server/handlers_confirm_test.go` (append)
+- Test: `internal/server/hitl_test.go` (extend the fake gateway, add the CAS retry tests)
+
+**Interfaces:**
+- Consumes: `grants.New`, `(*Store).Add(ctx, user, rule, command, now)`, `(*Store).List(ctx, user)`, `(*Store).Remove(ctx, user, rule)`, `deriveAllowAlwaysRule(command string) (v1alpha1.AllowlistRule, bool)` (existing).
+- Produces: `func (s *Server) grantsStore() *grants.Store`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `internal/server/handlers_confirm_test.go`:
+
+```go
+// TestAllowAlwaysWritesAGrantNotTheSpec covers issue #185: the machine-written
+// grant must land in the grants store, and the instance spec must stay
+// untouched so a learned rule cannot be mistaken for a hand-authored one.
+func TestAllowAlwaysWritesAGrantNotTheSpec(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, ok := deriveAllowAlwaysRule("kubectl get pods -n foo")
+	if !ok {
+		t.Fatal("deriveAllowAlwaysRule returned !ok")
+	}
+	if _, err := s.allowlistAlways(ctx, "li.ming", "kubectl get pods -n foo", rule); err != nil {
+		t.Fatalf("allowlistAlways: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "kubectl" {
+		t.Fatalf("grants = %+v, want one kubectl grant", got)
+	}
+	if got[0].Command != "kubectl get pods -n foo" {
+		t.Errorf("Command = %q, want the approved invocation", got[0].Command)
+	}
+
+	var inst v1alpha1.AgentInstance
+	name := types.NamespacedName{Namespace: "cubepilot", Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}
+	if err := s.cr.Get(ctx, name, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.Allowlist) != 0 {
+		t.Errorf("instance spec was written: %+v", inst.Spec.Allowlist)
+	}
+}
+
+// TestClearOwnedAllowlistKeepsGrants: the Reset button must not discard what the
+// user approved in chat -- the two stores are separate.
+func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	if err := s.saveConfirm(ctx, "li.ming", v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("saveConfirm: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("Reset discarded learned grants: %+v", got)
+	}
+}
+```
+
+Add `"context"`, `"time"` and `"k8s.io/apimachinery/pkg/types"` to
+`handlers_confirm_test.go`'s imports. `platformTestServer` already registers the
+core types and builds a real `instances.Manager`, so nothing else is needed.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./internal/server/... -run 'TestAllowAlwaysWritesAGrantNotTheSpec|TestClearOwnedAllowlistKeepsGrants' -v`
+
+Expected: compile failure -- `s.grantsStore undefined`.
+
+- [ ] **Step 3: Add the store accessor**
+
+In `internal/server/handlers_agent_approval.go` (near `allowlistAlways`), add:
+
+```go
+// grantsStore returns the learned-grants store. It is derived from the client
+// and namespace on each call rather than held as a field: it is two values, and
+// a lazily-initialised field would be a data race on a Server the HTTP server
+// drives concurrently.
+func (s *Server) grantsStore() *grants.Store {
+	return grants.New(s.cr, s.cfg.Namespace)
+}
+```
+
+Import `"github.com/suanova/cubepilot/internal/grants"`.
+
+- [ ] **Step 4: Retarget `allowlistAlways`**
+
+In `internal/server/handlers_agent_approval.go`, replace the body of `allowlistAlways` (currently lines ~223-250) with:
+
+```go
+// allowlistAlways records an allow-always entry in the user's grants store
+// (issue #185). The grant lives outside AgentInstance.spec: writing it into the
+// spec used to materialize the whole inherited list on first use, freezing that
+// instance off the platform builtin for good. The command text is stored with
+// the grant so a learned rule can be shown as the invocation the user approved.
+// No-op (false) when the effective policy is not Allowlist (under AlwaysAsk
+// everything asks anyway).
+func (s *Server) allowlistAlways(ctx context.Context, user, command string, rule v1alpha1.AllowlistRule) (bool, error) {
+	if s.cr == nil {
+		return false, nil
+	}
+	if s.mgr != nil {
+		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil && !cfg.Empty() {
+			if cfg.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
+				return false, nil
+			}
+		}
+	}
+	if err := s.grantsStore().Add(ctx, user, rule, command, time.Now()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+```
+
+Import `"time"`.
+
+The signature widens by one parameter so the stored grant can carry the command
+text for display. That breaks three call sites, not just the production one --
+all three need the extra argument or they stop compiling:
+
+- `internal/server/approvals.go`, in the `body.Decision == "allow-always"`
+  branch, which already has `p.Command` in scope. Change
+  `s.allowlistAlways(r.Context(), user, rule)` to
+  `s.allowlistAlways(r.Context(), user, p.Command, rule)`.
+- `internal/server/handlers_confirm_test.go`, `TestAllowlistAlwaysDoesNotMaterialize`
+  (added in Task 1). Its call becomes
+  `s.allowlistAlways(context.Background(), "li.ming", "helm list", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})`
+  -- pass the invocation the rule was derived from. Do not restructure the test.
+- `internal/server/handlers_confirm_test.go`, `TestAllowlistAlwaysSkippedUnderAlwaysAsk`
+  (pre-existing): the same call, the same change. The command argument is never
+  read on that path (the policy check returns first), but the call has to
+  compile. Do not restructure the test.
+
+- [ ] **Step 5: Let the UI revoke a learned grant**
+
+`persistConfirm` in the Portal can only write `spec.allowlist`, so a learned grant has no revoke path once it stops living in the spec. Add one, additively: the PUT body accepts an optional list of grants to drop.
+
+In `internal/server/handlers_agent_approval.go`, extend the PUT body struct:
+
+```go
+		var body struct {
+			ApprovalPolicy v1alpha1.ApprovalPolicy  `json:"approvalPolicy"`
+			Allowlist      []v1alpha1.AllowlistRule `json:"allowlist"`
+			// RevokeGrants drops learned grants (issue #185). Grants are a
+			// separate store, so revoking one cannot be expressed by rewriting
+			// the hand-authored list.
+			RevokeGrants []v1alpha1.AllowlistRule `json:"revokeGrants"`
+		}
+```
+
+Right after the `Allowlist` validation loop added in Task 2, validate these the
+same way -- before anything is written, so a malformed revoke is a 400 and not a
+half-applied save:
+
+```go
+		for _, rule := range body.RevokeGrants {
+			if err := allowlist.Validate(rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+```
+
+Apply them after `saveConfirm` succeeds, not before. In the `http.MethodPut`
+branch, after the existing `if err := s.saveConfirm(...); err != nil { ... }`
+block, insert:
+
+```go
+		// Revoke after the save, not before (issue #185). Both operations are
+		// idempotent, so this order leaves a retryable failure state -- the
+		// policy edit persisted, the grant still present. Revoking first would
+		// instead delete the grant and then answer 500, telling the user
+		// nothing happened while their revocation had in fact landed.
+		for _, rule := range body.RevokeGrants {
+			if err := s.grantsStore().Remove(r.Context(), s.userOf(r), rule); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+```
+
+- [ ] **Step 6: Write the revoke test**
+
+Append to `internal/server/handlers_confirm_test.go`:
+
+```go
+// TestAgentConfirmRevokesLearnedGrant covers the revoke path added in issue
+// #185: a learned grant is dropped from the grants store without the
+// hand-authored list being rewritten.
+func TestAgentConfirmRevokesLearnedGrant(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []any{},
+			"revokeGrants":   []map[string]any{{"pattern": "helm", "argPattern": "^install x$"}},
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("grant not revoked: %+v", got)
+	}
+}
+```
+
+- [ ] **Step 7: Stop `saveConfirm` from touching grants**
+
+`saveConfirm` (lines 177-195) already only writes `inst.Spec.ApprovalPolicy` and `inst.Spec.Allowlist` -- it never touched the grants store, so no code change is needed there. Update its doc comment to say so explicitly:
+
+```go
+// saveConfirm writes the instance's confirmation override and hand-authored
+// allowlist. An empty approvalPolicy clears the override (inherit the
+// template); an empty allowlist clears the hand-authored rules. Learned grants
+// are a separate store and are deliberately untouched (issue #185) -- clearing
+// your own rules must not discard what you approved in chat.
+```
+
+- [ ] **Step 8: Retry the approvals CAS instead of refusing the turn**
+
+This is the other half of the same write path: with grants recorded, `applyPolicy`
+is what pushes them. It gets, modifies and sets with an optimistic `baseHash`, so
+a write landing between its get and its set fails the set, and
+`internal/server/approvals.go:438-448` turns that into a refused turn. The race is
+not the user's fault and the operation is idempotent, so it is retried.
+
+First, give the fake gateway in `internal/server/hitl_test.go` a per-call failure
+queue, so a test can fail one attempt and succeed on the next. Beside `setErr`:
+
+```go
+	setErrs      []error // optional per-call results, consumed in order
+```
+
+and at the top of its `SetApprovalsPolicy`, before the `setErr` check:
+
+```go
+	// Consume a queued per-call failure first: a test uses one entry to fail the
+	// first attempt and let the retry succeed.
+	if len(f.setErrs) > 0 {
+		err := f.setErrs[0]
+		f.setErrs = f.setErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+```
+
+Then append the tests:
+
+```go
+// TestHitl_ApplyPolicyRetriesAConcurrentWrite covers issue #185:
+// exec.approvals.set compares the hash from the get, so a write landing in
+// between fails it. That has to be retried rather than surfaced -- the caller
+// treats an applyPolicy error as fatal to the turn, so a lost race would refuse
+// a turn the user is entitled to take.
+func TestHitl_ApplyPolicyRetriesAConcurrentWrite(t *testing.T) {
+	gw := &fakeGatewayClient{
+		setErrs: []error{fmt.Errorf("exec.approvals.set: hash mismatch: stale baseHash")},
+	}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+	if len(gw.policySets) != 1 {
+		t.Errorf("policy sets = %d, want 1 after the retry succeeded", len(gw.policySets))
+	}
+}
+
+// TestHitl_ApplyPolicySurfacesAPersistentFailure: the retry is bounded. A
+// gateway that rejects every attempt must surface the error, not spin.
+func TestHitl_ApplyPolicySurfacesAPersistentFailure(t *testing.T) {
+	gw := &fakeGatewayClient{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err == nil {
+		t.Fatal("applyPolicy should surface a persistent failure")
+	}
+	if len(gw.policySets) != 0 {
+		t.Errorf("policy sets = %d, want 0 (every attempt failed)", len(gw.policySets))
+	}
+}
+```
+
+Finally, bound the retry in `internal/server/approvals.go`. Add beside `applyPolicy`
+and rename its current body to `applyPolicyOnce`:
+
+```go
+// applyPolicyAttempts is how many get-modify-set rounds applyPolicy runs before
+// giving up, and applyPolicyRetryDelay the pause between them.
+const (
+	applyPolicyAttempts   = 3
+	applyPolicyRetryDelay = 50 * time.Millisecond
+)
+
+// applyPolicy writes the effective exec-approvals policy into agents."main" of
+// the gateway (get -> set, CAS). The allowlist is rewritten wholesale from the
+// resolved config (issue #116): the platform bookkeeping is the instance
+// allowlist, so a removed entry really disappears. AlwaysAsk runs a guarded,
+// on-miss session with an empty allowlist -- every command misses and therefore
+// asks -- which is the strictest posture and needs no unverified ask:always
+// semantics. It reports failure so the caller can defer advancing the
+// applied-revision watermark, and retries a lost CAS before reporting one
+// (issue #185).
+func (m *gatewayConns) applyPolicy(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
+	// Bounded retry (issue #185): the set is a compare-and-set against the hash
+	// the get returned, so a write landing in between fails it. The caller
+	// treats an error here as fatal to the turn, so a lost race must not be
+	// surfaced. Both halves are repeated, not just the set: the retry needs the
+	// hash the winner left, and re-reading it is also why no error is classified
+	// as a conflict -- the gateway reports a CAS failure as a plain JSON-RPC
+	// error with no typed discriminator to test for. The last error still
+	// surfaces, so a gateway that is down or consistently rejecting is not
+	// retried into a hang.
+	var lastErr error
+	for attempt := 0; attempt < applyPolicyAttempts; attempt++ {
+		lastErr = m.applyPolicyOnce(ctx, user, gw, pol, allow)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < applyPolicyAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(applyPolicyRetryDelay):
+			}
+		}
+	}
+	return lastErr
+}
+
+// applyPolicyOnce is one get-modify-set round of applyPolicy.
+func (m *gatewayConns) applyPolicyOnce(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
+```
+
+Its body is unchanged; only the name and its position under the new wrapper move.
+`time` is already imported in this file.
+
+`TestHitl_AlwaysAskFailsClosedOnPolicyError` and
+`TestHitl_AllowlistFailsClosedOnPolicyError` keep passing -- a persistent `setErr`
+still surfaces, it just takes `applyPolicyAttempts` rounds and the delay between
+them -- so the retry must stay short enough not to slow the suite.
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+Run: `go test ./internal/server/... -v 2>&1 | tail -40`
+
+Expected: PASS, including the two CAS retry tests and the pre-existing
+fail-closed policy tests. If a pre-existing test asserted that allow-always lands
+in `inst.Spec.Allowlist`, update it to the grants-store expectation and name it in
+the commit message.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/server/
+git commit -s -m "feat(api): record allow-always in the grants store, not the instance spec (issue #185)
+
+Allow-always used to append to AgentInstance.spec.allowlist, materializing the
+whole inherited list on first use and freezing that instance off the platform
+builtin. It now records into the per-user grants store instead, so the spec
+holds only hand-authored rules. Clearing your own rules no longer discards what
+you approved in chat.
+
+applyPolicy now retries a lost compare-and-set before reporting it: it pushes the
+grants this task starts recording, and a write landing between its get and its
+set would otherwise refuse a turn the user is entitled to take.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 6: Serve provenance on the approval view, and document it
+
+**Files:**
+- Modify: `internal/server/handlers_agent_approval.go:36-66, 145-175`
+- Modify: `web/src/api/types.ts:273-292`
+- Modify: `docs/cubepilot/api.md:525-536`
+- Test: `internal/server/handlers_confirm_test.go` (append)
+
+**Interfaces:**
+- Consumes: `grants.Store.List`, `grants.Record`, `allowlist.BuiltinLabel`, `Default()`.
+- Produces: `approvalRule` gains `Source string \`json:"source,omitempty"\`` with values `builtin`/`template`/`user`/`learned` and `Command string \`json:"command,omitempty"\`` (learned rules only); `approvalView` gains `AllowlistLearned []approvalRule \`json:"allowlistLearned,omitempty"\``.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/server/handlers_confirm_test.go`:
+
+```go
+// TestApprovalViewTagsProvenance covers issue #185: the UI needs to say where a
+// rule came from instead of guessing from an isOwned flag.
+func TestApprovalViewTagsProvenance(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	if err := s.cr.Update(ctx, &inst); err != nil {
+		t.Fatalf("update instance: %v", err)
+	}
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	view, err := s.approvalView(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("approvalView: %v", err)
+	}
+
+	byPattern := map[string]string{}
+	for _, r := range view.Allowlist {
+		byPattern[r.Pattern] = r.Source
+	}
+	if got := byPattern["kubectl"]; got != "builtin" {
+		t.Errorf("kubectl source = %q, want builtin", got)
+	}
+	if got := byPattern["terraform"]; got != "user" {
+		t.Errorf("terraform source = %q, want user", got)
+	}
+	if got := byPattern["helm"]; got != "learned" {
+		t.Errorf("helm source = %q, want learned", got)
+	}
+	if len(view.AllowlistLearned) != 1 || view.AllowlistLearned[0].Pattern != "helm" {
+		t.Errorf("allowlistLearned = %+v", view.AllowlistLearned)
+	}
+	// The command the user approved rides along, so the learned group can show
+	// an invocation rather than a bare pattern plus an escaped regex.
+	if len(view.AllowlistLearned) == 1 && view.AllowlistLearned[0].Command != "helm install x" {
+		t.Errorf("learned command = %q, want the approved invocation", view.AllowlistLearned[0].Command)
+	}
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/server/... -run TestApprovalViewTagsProvenance -v`
+
+Expected: compile failure -- `view.AllowlistLearned` and `r.Source` undefined.
+
+- [ ] **Step 3: Add `Source`, `Command` and `AllowlistLearned`**
+
+In `internal/server/handlers_agent_approval.go`, extend the two structs:
+
+```go
+type approvalView struct {
+	Exists           bool                    `json:"exists"`
+	ApprovalPolicy   v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
+	Override         v1alpha1.ApprovalPolicy `json:"override"`
+	TemplatePolicy   v1alpha1.ApprovalPolicy `json:"templatePolicy"`
+	Allowlist        []approvalRule          `json:"allowlist,omitempty"`
+	AllowlistOwned   []approvalRule          `json:"allowlistOwned,omitempty"`
+	AllowlistLearned []approvalRule          `json:"allowlistLearned,omitempty"`
+	Channel          string                  `json:"channel"`
+}
+
+// approvalRule is one allowlist rule served to the Portal. Source says where
+// the rule came from -- builtin, template, user or learned (issue #185) -- so the
+// UI can group by origin rather than guessing from an ownership flag. Label is
+// set by the server ONLY for rules that exactly match a platform builtin
+// read-only rule, so the UI never guesses that a user-added rule (which may
+// allow a write) is read-only. Command is set for learned rules only: it is the
+// invocation the user approved, which is what makes the rule recognisable, where
+// Pattern plus an escaped ArgPattern is not.
+type approvalRule struct {
+	Pattern    string `json:"pattern"`
+	ArgPattern string `json:"argPattern,omitempty"`
+	Label      string `json:"label,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Command    string `json:"command,omitempty"`
+}
+
+const (
+	sourceBuiltin  = "builtin"
+	sourceTemplate = "template"
+	sourceUser     = "user"
+	sourceLearned  = "learned"
+)
+
+// ruleID is the identity allowlist.Merge dedups on.
+func ruleID(r v1alpha1.AllowlistRule) string { return r.Pattern + "|" + r.ArgPattern }
+
+// toSourcedRules tags each rule of the effective list with the source it came
+// from. The tag is derived by membership rather than by rebuilding the union,
+// so the view cannot drift from what the resolver enforces. Later arguments win
+// on an exact collision, matching the union order -- a rule both the user and
+// the template declare shows as the user's.
+func toSourcedRules(effective, learned, owned, tmpl []v1alpha1.AllowlistRule) []approvalRule {
+	origin := make(map[string]string, len(tmpl)+len(owned)+len(learned))
+	for _, r := range tmpl {
+		origin[ruleID(r)] = sourceTemplate
+	}
+	for _, r := range owned {
+		origin[ruleID(r)] = sourceUser
+	}
+	for _, r := range learned {
+		origin[ruleID(r)] = sourceLearned
+	}
+	out := make([]approvalRule, 0, len(effective))
+	for _, r := range effective {
+		source, ok := origin[ruleID(r)]
+		if !ok {
+			source = sourceBuiltin
+		}
+		out = append(out, approvalRule{
+			Pattern:    r.Pattern,
+			ArgPattern: r.ArgPattern,
+			Label:      allowlist.BuiltinLabel(r),
+			Source:     source,
+		})
+	}
+	return out
+}
+
+// toGroupRules converts one source's rules for the per-source group lists.
+func toGroupRules(rules []v1alpha1.AllowlistRule, source string) []approvalRule {
+	out := make([]approvalRule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, approvalRule{
+			Pattern:    r.Pattern,
+			ArgPattern: r.ArgPattern,
+			Label:      allowlist.BuiltinLabel(r),
+			Source:     source,
+		})
+	}
+	return out
+}
+
+// toLearnedRules converts the learned grants for the "learned" group. It takes
+// the stored records rather than their derived rules because the command text
+// lives only on the record: a learned rule shown as its pattern plus an escaped
+// regex is not something a person recognises (issue #185).
+func toLearnedRules(records []grants.Record) []approvalRule {
+	out := make([]approvalRule, 0, len(records))
+	for _, rec := range records {
+		out = append(out, approvalRule{
+			Pattern:    rec.Pattern,
+			ArgPattern: rec.ArgPattern,
+			Label:      allowlist.BuiltinLabel(rec.Rule()),
+			Source:     sourceLearned,
+			Command:    rec.Command,
+		})
+	}
+	return out
+}
+```
+
+Delete the now-unused `toApprovalRules`: `toGroupRules` and `toLearnedRules`
+replace its call sites, and a dead helper will be flagged by the linter.
+`BuiltinLabel` is still used, from `toGroupRules`, `toLearnedRules` and
+`toSourcedRules`. This file already imports `grants` from Task 5.
+
+- [ ] **Step 4: Populate them in `approvalView`**
+
+Replace the whole function (currently lines 143-175) with this. The effective list is built with the same `allowlist.Effective` the resolver calls, so the view and the enforcement cannot drift; the resolver is then consulted only for the effective policy.
+
+```go
+// approvalView resolves the effective + owned confirmation state for a user's
+// default instance.
+func (s *Server) approvalView(ctx context.Context, user string) (approvalView, error) {
+	var view approvalView
+	if s.cr == nil {
+		return view, nil
+	}
+	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+	var inst v1alpha1.AgentInstance
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return view, nil // not provisioned
+		}
+		return view, err
+	}
+	view.Exists = true
+	view.Override = inst.Spec.ApprovalPolicy
+
+	var tmplAllowlist []v1alpha1.AllowlistRule
+	if inst.Spec.TemplateRef != "" {
+		var def v1alpha1.AgentTemplate
+		err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: inst.Spec.TemplateRef}, &def)
+		switch {
+		case err == nil:
+			view.TemplatePolicy = def.Spec.ApprovalPolicy
+			tmplAllowlist = def.Spec.Allowlist
+		case apierrors.IsNotFound(err):
+			// A missing template contributes nothing, as in the resolver.
+		default:
+			// Not swallowed (issue #185). With provenance tagging, a template
+			// read that failed silently would relabel the template's rules as
+			// builtin -- the exact distinction this view exists to make. Better
+			// an error than a confidently wrong view.
+			return view, err
+		}
+	}
+
+	records, err := s.grantsStore().List(ctx, user)
+	if err != nil {
+		return view, err
+	}
+	learned := make([]v1alpha1.AllowlistRule, 0, len(records))
+	for _, rec := range records {
+		learned = append(learned, rec.Rule())
+	}
+
+	// Same union the resolver enforces (issue #185), tagged by source so the
+	// Portal can group by origin instead of guessing from an ownership flag.
+	view.Allowlist = toSourcedRules(allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learned), learned, inst.Spec.Allowlist, tmplAllowlist)
+	view.AllowlistOwned = toGroupRules(inst.Spec.Allowlist, sourceUser)
+	view.AllowlistLearned = toLearnedRules(records)
+
+	if s.mgr != nil {
+		cfg, err := s.mgr.ResolvedConfigForUser(ctx, user)
+		switch {
+		case err == nil:
+			if cfg != nil && !cfg.Empty() {
+				view.ApprovalPolicy = cfg.ApprovalPolicy
+			}
+		case apierrors.IsNotFound(err):
+			// Nothing to add and nothing wrong. The resolver reports a missing
+			// instance as an empty config rather than a not-found, so reaching
+			// this arm is unusual; it is tolerated because "not provisioned" is
+			// not a failure.
+		default:
+			// Same reasoning as the template read above: swallowing this is how
+			// the view came back wrong rather than absent.
+			return view, err
+		}
+	}
+	return view, nil
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `go test ./internal/server/... -v 2>&1 | tail -40`
+
+Expected: PASS.
+
+- [ ] **Step 6: Update the TypeScript type**
+
+In `web/src/api/types.ts`, extend `AllowlistRule` (around line 273) and the approval view interface (around line 285):
+
+```ts
+export interface AllowlistRule {
+  pattern: string
+  argPattern?: string
+  label?: string
+  // Where the rule came from (issue #185). 'learned' rules are recorded from an
+  // allow-always in chat; the rest are declarative.
+  source?: 'builtin' | 'template' | 'user' | 'learned'
+  // The invocation the user approved. Set for learned rules only; the server
+  // omits it otherwise.
+  command?: string
+}
+```
+
+and add to the approval view type beside `allowlistOwned`:
+
+```ts
+  // Learned grants are absent when empty -- the server tags the field
+  // `omitempty` -- so optional, like the value the normalizer already guards.
+  allowlistLearned?: AllowlistRule[]
+```
+
+- [ ] **Step 7: Type-check the web build**
+
+Run: `cd web && npm run build`
+
+Expected: build succeeds.
+
+- [ ] **Step 8: Document the shape**
+
+In `docs/cubepilot/api.md`, in the section listing the approval view fields (around lines 520-540), add `source` to the `allowlist` entry shape and document the new fields. Match the file's existing table/bullet style -- do not restructure it. At minimum:
+
+- `allowlist` entries now carry `source`: `builtin | template | user | learned`
+- `allowlistLearned` is a new optional field listing the learned grants, present only when non-empty (same "omitted when empty" convention as `allowlist`/`allowlistOwned`)
+- learned entries carry `command`: the invocation the user approved, which is what
+  the learned group should render instead of the derived regex. Set only for
+  learned rules
+- the PUT row's request shape gains the optional `revokeGrants` list from Task 5
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/server/ web/src/api/types.ts docs/cubepilot/api.md
+git commit -s -m "feat(api): tag allowlist rules with their provenance (issue #185)
+
+The view could only say whether a rule was the user's or not, so the UI guessed
+at origin from an ownership flag. Tag each rule with source
+(builtin/template/user/learned) and add allowlistLearned for the groups that
+need their own affordances, carrying the approved command on learned entries so
+the group can show an invocation rather than a derived regex. Additive only -- no
+v1 field is removed or renamed.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+### Task 7: Group the allowlist by provenance, and surface a grant that did not save
+
+**Files:**
+- Modify: `web/src/views/AgentView.tsx:542-585` (the allowlist card body)
+- Modify: `web/src/views/AgentView.tsx:119` (`allowlistLabel`)
+- Modify: `web/src/views/AgentView.tsx` (the `withConfirmDefaults` normalizer, ~line 95)
+- Modify: `web/src/views/ChatView.tsx:1383-1398` (`decide`)
+
+**Interfaces:**
+- Consumes: `ApprovalRule.source`, `ApprovalRule.allowlistLearned`, `ApprovalRule.command` from Task 6.
+- Produces: no new exports; purely presentational.
+
+- [ ] **Step 1: Normalize the new field**
+
+In `web/src/views/AgentView.tsx`, in the function that normalizes the approval view (the one with the comment "The API may omit allowlist/allowlistOwned (null); normalize to []"), add:
+
+```ts
+    allowlistLearned: v.allowlistLearned ?? [],
+```
+
+- [ ] **Step 2: Render four groups**
+
+Replace the block inside `{confirm?.approvalPolicy === 'Allowlist' ? (<> ... </>) : ( ... )}` that currently maps `confirm.allowlist` (lines ~545-583, the `<div style={{ display: 'flex', flexDirection: 'column', ... }}>` and its contents) with:
+
+```tsx
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                      {(
+                        [
+                          ['Your rules', 'user', true],
+                          ['Learned from Allow always', 'learned', true],
+                          ['From the template', 'template', false],
+                          ['Platform safe commands', 'builtin', false],
+                        ] as const
+                      ).map(([title, source, editable]) => {
+                        const rows = (confirm.allowlist || []).filter((r) => (r.source || 'builtin') === source)
+                        if (!rows.length) return null
+                        return (
+                          <div key={source}>
+                            <div className="label" style={{ marginBottom: 4 }}>{title}</div>
+                            {rows.map((r) => (
+                              <div key={ruleKey(r)} className="rule-row" style={{ display: 'block', padding: '8px 12px', marginBottom: 6 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                                  <WarnIcon />
+                                  <span className="mono" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={allowlistLabel(r)}>
+                                    {allowlistLabel(r)}
+                                  </span>
+                                  {editable && (
+                                    <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                                {r.argPattern ? (
+                                  <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    argPattern: {r.argPattern}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })}
+                      {confirm.allowlist.length === 0 && (
+                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist -- every command asks.</div>
+                      )}
+                    </div>
+```
+
+Then make the learned row say what was approved. `allowlistLabel` (line 119)
+currently returns `r.label || r.pattern || '(empty)'`; the carried command is the
+better title where it exists, and it is set only for learned rules:
+
+```tsx
+  function allowlistLabel(r: AllowlistRule): string {
+    // A learned rule is the invocation the user approved; its pattern plus an
+    // escaped regex is not something anyone recognises (issue #185).
+    return r.command || r.label || r.pattern || '(empty)'
+  }
+```
+
+- [ ] **Step 3: Let a learned grant be revoked from the Portal**
+
+Task 1 already stopped `addRule` and `removeRule` copying the effective list into
+the spec. The gap left here is that a learned grant has no revoke path at all:
+`persistConfirm` can only write `spec.allowlist`, and the grant no longer lives
+there.
+
+Extend the API client in `web/src/api/index.ts` (line 126):
+
+```ts
+  saveAgentApproval: (body: { approvalPolicy?: string; allowlist?: AllowlistRule[]; revokeGrants?: AllowlistRule[] }) =>
+```
+
+Extend `persistConfirm`:
+
+```tsx
+  // Every change PUTs the full desired owned state; the server treats an empty
+  // list as clearing the hand-authored rules. revokeGrants drops learned
+  // grants, which live in their own store (issue #185).
+  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string, revokeGrants?: AllowlistRule[]) {
+    if (!confirm || confirmBusy) return
+    setConfirmBusy(true)
+    try {
+      const pol = policy !== undefined ? policy : policySel
+      const v = await api.saveAgentApproval({ approvalPolicy: pol, allowlist: owned ?? [], revokeGrants })
+      setConfirm(withConfirmDefaults(v))
+      setPolicySel(v.override || '')
+    } catch (e) {
+      showToast('Save confirmation config failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+```
+
+Replace `removeRule` so a learned grant revokes rather than being filtered out of
+a list it is not in:
+
+```tsx
+  function removeRule(key: string) {
+    if (!confirm) return
+    const learned = confirm.allowlistLearned.find((r) => ruleKey(r) === key)
+    if (learned) {
+      void persistConfirm(confirm.allowlistOwned, undefined, [learned])
+      return
+    }
+    // Only hand-authored rules are removable: the platform builtin and the
+    // template's rules are a floor (issue #185).
+    void persistConfirm(confirm.allowlistOwned.filter((r) => ruleKey(r) !== key))
+  }
+```
+
+- [ ] **Step 4: Tell the user when the grant did not save**
+
+`POST /sessions/{key}/approval` already answers `allowlisted`, and the handler
+sets it to `false` when `allowlistAlways` fails -- but `decide` discards the
+response body, so a failed grant looks exactly like a successful one and the
+command silently asks again next time. Capture it.
+
+In `web/src/views/ChatView.tsx`, in `decide` (line 1391), change:
+
+```tsx
+      await api.postApproval(session, decision)
+      confirm.resolved = true
+      confirm.approved = decision !== 'reject'
+```
+
+to:
+
+```tsx
+      const res = await api.postApproval(session, decision)
+      confirm.resolved = true
+      confirm.approved = decision !== 'reject'
+      // The approval itself went through, but recording the durable grant did
+      // not, so this command will ask again. Reporting the plain success the
+      // user is relying on would be a lie (issue #185).
+      if (decision === 'allow-always' && res.allowlisted === false) {
+        showToast('Approved, but the command was not added to your allowlist -- it will ask again.')
+      }
+```
+
+`showToast` is already imported at the top of the file (line 10), so no import
+change is needed. The message deliberately does not name a cause: `allowlisted`
+is `false` both when the store write fails and when the effective policy is not
+`Allowlist`, and only the first is reachable from the Portal (the allow-always
+button is hidden unless the policy is `Allowlist`, `ChatView.tsx:671`).
+
+- [ ] **Step 5: Check the build and lint**
+
+Run: `cd web && npm run build && npm run lint 2>/dev/null || npm run build`
+
+Expected: build succeeds with no TypeScript error.
+
+- [ ] **Step 6: Verify by hand**
+
+Run the portal, open Agent Config, and confirm: the four groups render in order, Remove shows only under "Your rules" and "Learned from Allow always", and the platform group has no Remove button.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add web/src/views/AgentView.tsx web/src/views/ChatView.tsx web/src/api/index.ts
+git commit -s -m "feat(web): group the allowlist by provenance, revoke grants, surface a failed save (issue #185)
+
+Replace the merged list plus an ownership pill with four groups -- yours,
+learned, template, platform -- and only offer Remove where removal is
+meaningful. A learned grant is revoked through its own store rather than by
+rewriting a list it is not in, and an allow-always whose grant failed to record
+is surfaced: the API already reported allowlisted=false and the client threw it
+away, so the command silently asked again with the user believing it had been
+remembered.
+
+Assisted-by: Claude Code"
+```
+
+---
+
+## Final verification
+
+- [ ] `go vet ./... && go test ./...`
+- [ ] `cd web && npm run build`
+- [ ] `helm template cubepilot deploy/charts/cubepilot >/dev/null`
+
+Then open the PR (see the `upstream-fork-pr` workflow): `go vet`/`go test` green, `helm template` clean, and the PR body should carry the fork scenario as the motivation -- a user who clicked allow-always once keeps auto-passing a command the platform later hardened.
