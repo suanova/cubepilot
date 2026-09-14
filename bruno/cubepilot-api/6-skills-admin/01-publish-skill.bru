@@ -1,0 +1,45 @@
+meta {
+  name: publish skill
+  type: http
+  seq: 1
+}
+
+docs {
+  # 发布技能(**201**)
+
+  ⚠️ 元数据走 **query 参数**,body 是**原始 gzip tar 字节** —— 不是 multipart。
+
+  - `displayName` **必填**;`description` 可选。
+  - tar 的**根目录**必须有 `SKILL.md`(不是包在一层目录里),否则 400。
+  - 超过 10 MiB → **413**。
+  - `name` 必须是 DNS 风格小写 slug,否则 400。
+  - `visibility` 阶段一强制 `Platform`,其他值 → 400。
+
+  重新打包(改了 `fixtures/sample-skill/` 之后):
+  `./scripts/make-sample-skill.sh`
+
+  ⚠️ `file:` 的值**必须写成 `@file(...)`** —— 少了 `@` 只会把路径字符串当正文发出去
+  (会得到 `{"error":"empty skill tar"}` 或 `invalid skill tar`)。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/skills/bruno-demo/publish?displayName=Bruno%20Demo&description=Throwaway%20skill%20for%20exercising%20publish
+  body: file
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:file {
+  file: @file(./fixtures/sample-skill.tar.gz)
+  @contentType: application/gzip
+}
+
+tests {
+  test("201", function() { expect(res.status).to.equal(201) })
+  test("enveloped under skill", function() {
+    expect(res.body).to.have.property("skill")
+  })
+}

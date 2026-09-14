@@ -1,0 +1,33 @@
+meta {
+  name: run task (manual trigger)
+  type: http
+  seq: 3
+}
+
+docs {
+  # 手动触发(**202**,不是 200)
+
+  只写一个 `cubepilot/manual-run` 时间戳 annotation ——
+  **API 从不直接创建 TaskRun**,由 operator 的 scheduler 消费并执行(时间戳即幂等键)。
+
+  ⚠️ 这会**真的跑一次巡检**(真调 LLM、真执行 kubectl),耗时且消耗额度。
+
+  触发后看 `04-task-reports` 和 `05-taskruns`。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}/run
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("202 accepted", function() { expect(res.status).to.equal(202) })
+  test("enveloped under started", function() {
+    expect(res.body).to.have.property("started")
+  })
+}

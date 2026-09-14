@@ -1,0 +1,28 @@
+meta {
+  name: agent status
+  type: http
+  seq: 1
+}
+
+docs {
+  # 实例状态
+
+  **扁平**返回 —— 是实例的若干字段,不是一个名为 status 的对象。
+  `phase`: `Creating` → `Ready`;`not provisioned (resident policy)` 表示实例不存在。
+
+  不加热实例,永远快。首屏第一问就该打它。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/status
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("ok", function() { expect(res.status).to.equal(200) })
+}

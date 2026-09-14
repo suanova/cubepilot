@@ -1,0 +1,36 @@
+meta {
+  name: uninstall skill (PUT)
+  type: http
+  seq: 2
+}
+
+docs {
+  # 卸技能 —— 同样是 **PUT**
+
+  ## 「全开基线」的物化(最值得看的一个行为)
+
+  实例的 `enabledSkills` 为空数组 = **全开基线**(所有可见技能都启用)。
+  第一次**卸载**时,把这个基线**物化**成一个显式的 allow-list = 可见技能减去被卸的那个。
+
+  为什么必须这样:不物化的话,「卸载」在空集上是个空操作,
+  而此后**新发布的技能又会自动被打开** —— 用户的卸载意图就丢了。
+
+  所以你会看到返回的 `enabledSkills` 从 `[]` 变成一串具体名字。
+}
+
+put {
+  url: {{baseUrl}}/api/v1/skills/bruno-demo/uninstall
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under enabledSkills", function() {
+    expect(res.body).to.have.property("enabledSkills")
+  })
+}

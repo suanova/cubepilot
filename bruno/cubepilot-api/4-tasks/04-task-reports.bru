@@ -1,0 +1,32 @@
+meta {
+  name: task reports
+  type: http
+  seq: 4
+}
+
+docs {
+  # 该任务的运行报告
+
+  `reportDTO`: `id`、`taskId`、`taskName`、`trigger`(`Manual|Cron`)、
+  `status`(`success|failed|running`)、`startedAt`、`finishedAt`、
+  `content`、`p0`、`p1`、`p2`。
+
+  `running` **包含「已入队但未开始」** —— 未完成的运行不会被当成 success。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}/reports
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under reports", function() {
+    expect(res.body).to.have.property("reports")
+  })
+}

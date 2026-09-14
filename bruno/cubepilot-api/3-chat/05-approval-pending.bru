@@ -1,0 +1,29 @@
+meta {
+  name: approval pending
+  type: http
+  seq: 5
+}
+
+docs {
+  # 找回未决审批
+
+  刷新页面后恢复确认卡片用 —— **必需,不是可选**。
+
+  `404 {"error":"no pending approval"}` 是**正常**的"没有未决项",静默忽略。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/approval/pending
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200 with approval, or 404 when none pending", function() {
+    expect([200, 404]).to.include(res.status)
+  })
+}

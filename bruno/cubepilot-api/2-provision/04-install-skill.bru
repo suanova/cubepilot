@@ -1,0 +1,33 @@
+meta {
+  name: install skill (PUT)
+  type: http
+  seq: 4
+}
+
+docs {
+  # 装技能 —— 注意是 **PUT** 不是 POST
+
+  为什么:这是**幂等的集合成员变更**(重复调用结果一致),所以用 PUT。
+
+  本质是改自己实例的 `enabledSkills`。空数组是「全开基线」;
+  第一次 **uninstall** 会把 allow-list 物化(见 `6-skills-admin/02-uninstall-skill`)。
+
+  未开通实例 → 409;实例 owner 不符 → 403。
+}
+
+put {
+  url: {{baseUrl}}/api/v1/skills/cluster-inspection/install
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under enabledSkills", function() {
+    expect(res.body).to.have.property("enabledSkills")
+  })
+}

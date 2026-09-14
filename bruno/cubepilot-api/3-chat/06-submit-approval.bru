@@ -1,0 +1,48 @@
+meta {
+  name: submit approval
+  type: http
+  seq: 6
+}
+
+docs {
+  # 提交审批决定
+
+  收到 `approval_pending` 事件后调它。**在另一条连接上**调用 ——
+  对话 SSE 流仍开着并停在 pending 上。
+
+  | decision | 效果 |
+  |---|---|
+  | `approve` | 本次放行,回合继续 |
+  | `reject` | 拒绝,写操作**不执行** |
+  | `allow-always` | 放行 + 记入实例 allowlist,此后自动通过 |
+
+  ⚠️ 已知问题(issue #180):这里必须用 **canonical 形式的 key**
+  (即 `message_start` 返回的那个 `agent:main:conv-...`)。
+  用你自己传给 `/messages` 的短 key 会 **404** —— 而 `/turn`、`/abort` 两个端点
+  却接受短 key,契约不一致。
+
+  **失败关闭**:审批通道不可用时回合**直接失败**而不是静默放行;
+  `503 approval channel unavailable` 表示该回合被拒,**不要重试成"跳过确认"**。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/approval
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "decision": "reject"
+  }
+}
+
+tests {
+  test("200 approved, or 404 no pending", function() {
+    expect([200, 404]).to.include(res.status)
+  })
+}

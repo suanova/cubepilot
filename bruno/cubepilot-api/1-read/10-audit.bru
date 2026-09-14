@@ -1,0 +1,34 @@
+meta {
+  name: audit
+  type: http
+  seq: 10
+}
+
+docs {
+  # 工具调用审计
+
+  由 API 从对话 SSE 流里事后捕获 `tool_call` 产生。
+  `level`: `L0` 只读 / `L1` 写。
+  `status`: `executed | approved | rejected | failed`。
+
+  可选 `?limit=`(默认 400)。
+
+  ⚠️ 已知问题(issue #180):被**拒绝**的写操作,这里仍会有一条 `executed`
+  —— 同一个命令可能出现两条互相矛盾的记录。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/audit
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped under entries", function() {
+    expect(res.body).to.have.property("entries")
+  })
+}

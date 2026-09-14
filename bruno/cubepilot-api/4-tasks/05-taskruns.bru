@@ -1,0 +1,29 @@
+meta {
+  name: taskruns
+  type: http
+  seq: 5
+}
+
+docs {
+  # 全局运行记录
+
+  可加 `?task=<name>` 只看一个任务的。
+  信封是 `taskruns`(**全小写** —— 和 `taskTemplates` 的驼峰不一致,注意别取错)。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/taskruns
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under taskruns", function() {
+    expect(res.body).to.have.property("taskruns")
+  })
+}

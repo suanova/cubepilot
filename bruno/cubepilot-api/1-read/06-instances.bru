@@ -1,0 +1,28 @@
+meta {
+  name: instances
+  type: http
+  seq: 6
+}
+
+docs {
+  # 我的实例
+
+  只返回调用者自己的 —— 后端按 `X-CubePilot-User` 过滤。
+  所以你冒充谁,就只能看到谁的。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/instances
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped under instances", function() {
+    expect(res.body).to.have.property("instances")
+  })
+}

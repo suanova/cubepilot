@@ -1,0 +1,47 @@
+meta {
+  name: add LLM
+  type: http
+  seq: 1
+}
+
+docs {
+  # 加一个模型(201)
+
+  往内置 `cubepilot` 模板追加一个 OpenAI 兼容模型。operator 会把它渲染进网关配置,
+  并创建 `llm-<name>` 凭据 Secret。
+
+  **`apiKey` 与 `public` 二选一**:需要鉴权的给 key;确实不需要鉴权的给 `"public": true`。
+  都不给或都给 → 400。
+
+  `endpoint` 是 **API root**(OpenAI SDK 自己追加 `/chat/completions`)。
+  传完整 URL(结尾 `/chat/completions`)时服务端会剥掉后缀。
+
+  **重名 → 409**,所以这里同时接受 201 和 409。
+  要改已存在的模型用 `5-llm-admin/01-edit-llm`。
+
+  ⚠️ 需要先在集合根目录的 `.env` 里填 `llmApiKey`。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/llms
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "name": "{{llmName}}",
+    "endpoint": "{{llmEndpoint}}",
+    "apiKey": "{{process.env.llmApiKey}}"
+  }
+}
+
+tests {
+  test("201 created, or 409 already exists", function() {
+    expect([201, 409]).to.include(res.status)
+  })
+}

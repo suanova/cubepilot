@@ -1,0 +1,28 @@
+meta {
+  name: agenttemplates
+  type: http
+  seq: 4
+}
+
+docs {
+  # Agent 模板
+
+  `spec.models` 是**内联**的模型清单(没有独立的 Model CRD)。
+  `spec.skills` 是可启用技能;`spec.approvalPolicy` 决定对话中会不会出现 `approval_pending`。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agenttemplates
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped under agentTemplates", function() {
+    expect(res.body).to.have.property("agentTemplates")
+  })
+}

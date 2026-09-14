@@ -1,0 +1,62 @@
+meta {
+  name: create task
+  type: http
+  seq: 1
+}
+
+docs {
+  # 创建任务(201)
+
+  字段规则:
+
+  - `name` 必填(人类可读,**中文放这里**——CR name 由服务端 sanitize 生成)。
+  - `instruction` 与 `templateRef` **至少一个**。
+  - `cron` 是**指针语义**:省略 ⇒ 用模板的 `defaultCron`(或 Manual);
+    显式 `""` ⇒ Manual;给值 ⇒ 按 5 字段 cron 解析(**按 UTC 求值**,非法 → 400)。
+  - `params` 必须配合 `templateRef`,否则 400。
+  - `state`: `Enabled` / `Paused`。
+
+  ⚠️ 没有 `enabled` 布尔 —— `state` 是**唯一**的启停字段。
+
+  后置脚本会把返回的 `task.id` 写进环境变量,供后面几条复用。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "name": "Bruno 演示任务",
+    "templateRef": "daily-inspection",
+    "params": { "scope": "all" },
+    "cron": "0 2 * * *",
+    "state": "Paused"
+  }
+}
+
+script:post-response {
+  // 选了环境就写环境变量;没选(靠 collection.bru 兜底)就退回运行时变量。
+  const setVar = (k, v) => { try { bru.setEnvVar(k, v); } catch (e) { bru.setVar(k, v); } };
+
+  if (res.body.task && res.body.task.id) {
+    setVar("taskId", res.body.task.id);
+    console.log("taskId ->", res.body.task.id);
+  }
+}
+
+tests {
+  test("201", function() { expect(res.status).to.equal(201) })
+  test("enveloped under task", function() {
+    expect(res.body).to.have.property("task")
+  })
+  test("state is the only switch", function() {
+    expect(res.body.task).to.not.have.property("enabled")
+  })
+}

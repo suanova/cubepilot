@@ -1,0 +1,31 @@
+meta {
+  name: turn status
+  type: http
+  seq: 4
+}
+
+docs {
+  # 这一轮还在跑吗
+
+  状态来自**网关**(不是本地 hub),响应带 `Cache-Control: no-store`。
+  用于页面加载时判断"刷新前那轮还在跑吗"。
+
+  不加热实例。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/turn
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("has active flag", function() {
+    expect(res.body).to.have.property("active")
+  })
+}

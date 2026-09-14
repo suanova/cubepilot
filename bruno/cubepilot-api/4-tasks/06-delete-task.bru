@@ -1,0 +1,30 @@
+meta {
+  name: delete task
+  type: http
+  seq: 6
+}
+
+docs {
+  # 删除任务
+
+  历史 TaskRun **保留**(报告不随任务删除而消失)。
+
+  信封是 `deleted`,值是 id。
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under deleted", function() {
+    expect(res.body).to.have.property("deleted")
+  })
+}

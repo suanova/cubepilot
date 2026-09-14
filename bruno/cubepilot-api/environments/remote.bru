@@ -1,0 +1,15 @@
+vars {
+  # 远端 CubePilot 的地址。填「入口」地址,不要带 /api/v1 后缀
+  # —— 集合里每条请求的路径已经含有它。
+  baseUrl: https://cubepilot.example.com
+
+  # 你在那套环境里的身份。阶段一无认证,这个头是自报的。
+  user: admin
+
+  # 模型 —— 远端的模板里得已经有这个名字
+  llmName: my-model
+  llmEndpoint: https://llm.example.com/v1
+
+  sessionId:
+  taskId:
+}

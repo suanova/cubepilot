@@ -1,0 +1,32 @@
+meta {
+  name: abort turn
+  type: http
+  seq: 7
+}
+
+docs {
+  # 停止进行中的回合
+
+  - **幂等**:没有运行中的回合时直接返回 200,不发任何网关 RPC。
+  - 最长等约 5 秒让回合落定;超时 → `504 {"error":"the run did not settle in time; try again"}`。
+  - 不加热实例。
+  - 被停止的回合以 `message_done` + `"stopped": true` 结束(`stopped` 与 `error` 互斥)。
+
+  与 `/approval` 不同,这个端点**接受短 key**。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/abort
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200, or 504 if it did not settle", function() {
+    expect([200, 504]).to.include(res.status)
+  })
+}

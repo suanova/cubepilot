@@ -1,0 +1,25 @@
+meta {
+  name: toggle task
+  type: http
+  seq: 2
+}
+
+docs {
+  # 暂停 / 恢复
+
+  `Enabled` ↔ `Paused` 翻转。**POST**(非幂等 —— 每次调用都翻转)。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}/toggle
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+}

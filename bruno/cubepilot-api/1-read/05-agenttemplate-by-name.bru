@@ -1,0 +1,28 @@
+meta {
+  name: agenttemplate cubepilot
+  type: http
+  seq: 5
+}
+
+docs {
+  # 单个模板
+
+  **信封是单数**:`{"agentTemplate": {...}}`。
+  列表是 `agentTemplates`(复数)。取错层不报错,只会得到 undefined。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agenttemplates/cubepilot
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped singular", function() {
+    expect(res.body).to.have.property("agentTemplate")
+  })
+}
