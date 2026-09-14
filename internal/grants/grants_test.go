@@ -2,6 +2,7 @@ package grants
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -84,6 +85,36 @@ func TestAddThenList(t *testing.T) {
 	}
 	if !got[0].CreatedAt.Equal(now) {
 		t.Errorf("CreatedAt = %v, want %v", got[0].CreatedAt, now)
+	}
+}
+
+// TestGrantListsArePerUser: Name has to key the ConfigMap on the user, or two
+// users share one allowlist. That would be both an allowlist leak (one user's
+// approved rule auto-passing for another) and a cross-user write (one user's
+// Add evicting another's grants), so it is pinned rather than left to the
+// implementation to remember.
+func TestGrantListsArePerUser(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	alice := v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^get pods$`}
+
+	if err := s.Add(ctx, "alice", alice, "kubectl get pods", time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	bobGrants, err := s.List(ctx, "bob")
+	if err != nil {
+		t.Fatalf("List bob: %v", err)
+	}
+	if len(bobGrants) != 0 {
+		t.Errorf("bob sees %d of alice's grants: %+v", len(bobGrants), bobGrants)
+	}
+	aliceGrants, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List alice: %v", err)
+	}
+	if len(aliceGrants) != 1 || aliceGrants[0].Pattern != alice.Pattern {
+		t.Errorf("alice's grants = %+v, want her own", aliceGrants)
 	}
 }
 
@@ -215,6 +246,40 @@ func TestRemoveDropsTheGrantAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRemoveKeepsTheEmptyConfigMap: removing the last grant must leave the
+// ConfigMap in place, not delete it. Deleting it would be an unserialized
+// get-then-delete that RetryOnConflict does not cover -- neither failure is a
+// conflict -- so a concurrent Add could either fail with a spurious NotFound or
+// lose the grant it just wrote. An empty ConfigMap costs nothing and the owner
+// reference collects it with the instance.
+func TestRemoveKeepsTheEmptyConfigMap(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	only := v1alpha1.AllowlistRule{Pattern: "terraform"}
+	if err := s.Add(ctx, "alice", only, "", time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := s.Remove(ctx, "alice", only); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	var cm corev1.ConfigMap
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: s.Name("alice")}, &cm); err != nil {
+		t.Fatalf("ConfigMap should survive the last revoke: %v", err)
+	}
+	if len(cm.Data) != 0 {
+		t.Errorf("Data = %+v, want empty", cm.Data)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("grants = %+v, want none", got)
+	}
+}
+
 // TestAddSetsOwnerReference: the ConfigMap is garbage-collected with the
 // instance it belongs to. Garbage collection matches an owner by UID, so the
 // reference is populated from the instance object -- a name-only reference has
@@ -246,6 +311,11 @@ func TestAddSetsOwnerReference(t *testing.T) {
 	ref := cm.OwnerReferences[0]
 	if ref.Kind != "AgentInstance" || ref.Name != inst.Name {
 		t.Errorf("owner reference = %+v", ref)
+	}
+	// Garbage collection resolves the owner kind through APIVersion, so a
+	// reference without it is not a resolvable owner.
+	if ref.APIVersion != v1alpha1.GroupVersion.String() {
+		t.Errorf("owner reference APIVersion = %q, want %q", ref.APIVersion, v1alpha1.GroupVersion.String())
 	}
 	if ref.UID != inst.UID {
 		t.Errorf("owner reference UID = %q, want %q", ref.UID, inst.UID)
@@ -297,15 +367,18 @@ func TestAddRefusesAnOversizedRule(t *testing.T) {
 // the rejection is not confined to this write: every later write for that user
 // fails too.
 func TestAddEvictsToStayUnderTheSizeBudget(t *testing.T) {
-	budget := 8 * 1024
+	// The entries are deliberately tiny. The data keys are 32-byte digests, so
+	// with small values the keys are a large share of each entry -- which is
+	// what makes an eviction that stops counting them (see below) overshoot
+	// visibly. A handful of adds reaches the budget.
+	budget := 512
 	s := testStoreWithBudget(t, budget)
 	ctx := context.Background()
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	// Each rule stores ~2 KiB of argPattern, so a handful fit in the budget.
-	arg := strings.Repeat("a", 2*1024)
+	newest := "arg-5"
 
 	for i := 0; i < 6; i++ {
-		rule := v1alpha1.AllowlistRule{Pattern: "cmd", ArgPattern: arg + strconv.Itoa(i)}
+		rule := v1alpha1.AllowlistRule{Pattern: "cmd", ArgPattern: "arg-" + strconv.Itoa(i)}
 		if err := s.Add(ctx, "alice", rule, "", base.Add(time.Duration(i)*time.Minute)); err != nil {
 			t.Fatalf("Add %d: %v", i, err)
 		}
@@ -315,14 +388,23 @@ func TestAddEvictsToStayUnderTheSizeBudget(t *testing.T) {
 	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: "cubepilot", Name: s.Name("alice")}, &cm); err != nil {
 		t.Fatalf("get ConfigMap: %v", err)
 	}
-	if got := dataSize(&cm); got > budget {
+	// Measured with json.Marshal rather than dataSize on purpose: dataSize is
+	// the function evict bounds the payload with, so asserting against it would
+	// keep passing if dataSize stopped counting what it should -- dropping
+	// len(k), or returning 0 and disabling size eviction entirely -- which is
+	// exactly the regression this test exists to catch.
+	marshaled, err := json.Marshal(cm.Data)
+	if err != nil {
+		t.Fatalf("marshal Data: %v", err)
+	}
+	if got := len(marshaled); got > budget {
 		t.Errorf("stored payload = %d bytes, over the %d budget", got, budget)
 	}
 	got, err := s.List(ctx, "alice")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) == 0 || got[len(got)-1].ArgPattern != arg+"5" {
+	if len(got) == 0 || got[len(got)-1].ArgPattern != newest {
 		t.Errorf("newest grant evicted: %+v", got)
 	}
 }

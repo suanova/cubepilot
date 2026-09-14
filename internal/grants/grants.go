@@ -70,9 +70,8 @@ const (
 	maxDataBytes = 512 * 1024
 )
 
-// The data keys of the grants ConfigMap are opaque digests; the values are
-// Records. One key per grant makes an add a single-key write that cannot lose
-// a concurrent add of a different grant.
+// managedByLabel is the value of the ConfigMap's app.kubernetes.io/managed-by
+// label, marking the object as owned by this store rather than by a human.
 const managedByLabel = "cubepilot-grants"
 
 // Record is one stored grant.
@@ -114,7 +113,10 @@ func (s *Store) Name(user string) string {
 }
 
 // Key is the stable data key for a rule: a hex digest of the same
-// pattern|argPattern identity allowlist.Merge dedups on.
+// pattern|argPattern identity allowlist.Merge dedups on. The data keys of the
+// grants ConfigMap are opaque digests; the values are Records. One key per
+// grant makes a write touch a single key, which cannot lose a concurrent write
+// of a different grant.
 func Key(r v1alpha1.AllowlistRule) string {
 	sum := sha256.Sum256([]byte(r.Pattern + "|" + r.ArgPattern))
 	return hex.EncodeToString(sum[:16])
@@ -212,6 +214,17 @@ func truncate(s string, n int) string {
 // Remove revokes a grant. It is idempotent: a missing ConfigMap, or a key that
 // is not there, is a no-op rather than an error, so a double-click or a stale
 // UI does not surface a failure.
+//
+// Removing the last key leaves the ConfigMap in place rather than deleting it.
+// The object costs nothing empty and the owner reference already collects it
+// with the instance, while deleting it would be an unserialized get-then-delete
+// outside the retry this package relies on: it is not an optimistic-concurrency
+// conflict, so RetryOnConflict would not cover it. Two races follow from that
+// window. A concurrent Add can read the ConfigMap, Remove deletes it, and the
+// Add's Update then fails with a spurious NotFound. Worse, Remove can read a
+// one-entry ConfigMap, a concurrent Add can write a second grant, and the
+// delete then discards the grant the user just approved. Leaving the object
+// keeps every revoke a single-key write that cannot lose a concurrent add.
 func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRule) error {
 	if r.Pattern == "" {
 		return nil
@@ -230,9 +243,6 @@ func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRul
 			return nil
 		}
 		delete(cm.Data, key)
-		if len(cm.Data) == 0 {
-			return s.cr.Delete(ctx, &cm)
-		}
 		return s.cr.Update(ctx, &cm)
 	})
 }
