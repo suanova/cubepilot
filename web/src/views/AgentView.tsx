@@ -601,9 +601,6 @@ export default function AgentView() {
                           </div>
                         )
                       })}
-                      {confirm.allowlist.length === 0 && (
-                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist -- every command asks.</div>
-                      )}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
