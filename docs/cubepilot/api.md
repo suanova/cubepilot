@@ -395,7 +395,7 @@ body: {"decision": "approve" | "reject" | "allow-always"}
 | --- | --- |
 | `approve` | 本次放行，回合继续 |
 | `reject` | 拒绝，写操作不执行 |
-| `allow-always` | 本次放行，**并把该命令记入实例 allowlist**，此后自动通过 |
+| `allow-always` | 本次放行，**并把该命令记为当前用户的 learned 授权**（进 grants store，**不写实例 spec**），此后自动通过 |
 
 响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}`
 
@@ -522,8 +522,8 @@ GET /api/v1/sessions/{key}/question/pending
   "approvalPolicy": "None | Allowlist | AlwaysAsk | \"\"",
   "override": "",                       // 实例自身设定，"" = 继承模板
   "templatePolicy": "Allowlist",
-  "allowlist":     [{"pattern","argPattern?","label"?,"source"?}],
-  "allowlistOwned":[...],
+  "allowlist":     [{"pattern","argPattern?","label"?,"source"?,"command"?}],
+  "allowlistOwned":[{"pattern","argPattern?","label"?,"source":"user"}],
   "allowlistLearned":[{"pattern","argPattern?","label"?,"source":"learned","command"?}],
   "channel": "up | pairing | down | unconfigured | \"\""
 }
@@ -535,11 +535,14 @@ GET /api/v1/sessions/{key}/question/pending
 - `allowlist` 每条规则带 `source`，说明它从哪来：`builtin | template | user | learned`
   —— 分别是平台内置、模板、实例自己加的和聊天里 allow-always 学到的。界面按来源分组，
   不要再用「是不是自己的」这种标志去猜来源。
+- `allowlistOwned` 和 `allowlistLearned` 的条目**也**带 `source`，分别是 `user` 和 `learned`
+  ——每个分组列表只装自己那一类，`source` 只是让三个列表的条目形状统一，前端不必再记
+  「哪个列表对应哪个来源」。
 - `allowlistLearned` 是**可选**字段，列出 learned 授权，非空时才出现——为空即缺省，
   规则同 `allowlist` / `allowlistOwned`。
-- `allowlistLearned` 的条目额外带 `command`：用户当时批准的那条命令。learned 分组应该显示它，
-  而不是派生的正则（`pattern` 加上转义过的 `argPattern`，人认不出来）。这个字段**只**出现在
-  learned 条目上。
+- **learned 条目**（不管出现在 `allowlist` 还是 `allowlistLearned`）额外带 `command`：
+  用户当时批准的那条命令。learned 分组应该显示它，而不是派生的正则（`pattern` 加上转义过的
+  `argPattern`，人认不出来）。其他来源的条目没有这个字段。
 - `channel` 为 `""` 表示策略是 `None` 或实例不存在；`unconfigured` 表示策略要求拦截但
   HITL 通道未配置（此时拦截会失败关闭）。
 - `allowlist` / `allowlistOwned` / `allowlistLearned` 为空时字段**缺省**（不是 `[]`）。

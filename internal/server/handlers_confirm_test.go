@@ -8,6 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
@@ -317,18 +318,28 @@ func TestApprovalViewTagsProvenance(t *testing.T) {
 		t.Fatalf("approvalView: %v", err)
 	}
 
-	byPattern := map[string]string{}
+	byPattern := map[string]approvalRule{}
 	for _, r := range view.Allowlist {
-		byPattern[r.Pattern] = r.Source
+		byPattern[r.Pattern] = r
 	}
-	if got := byPattern["kubectl"]; got != "builtin" {
+	if got := byPattern["kubectl"].Source; got != "builtin" {
 		t.Errorf("kubectl source = %q, want builtin", got)
 	}
-	if got := byPattern["terraform"]; got != "user" {
+	if got := byPattern["terraform"].Source; got != "user" {
 		t.Errorf("terraform source = %q, want user", got)
 	}
-	if got := byPattern["helm"]; got != "learned" {
+	if got := byPattern["helm"].Source; got != "learned" {
 		t.Errorf("helm source = %q, want learned", got)
+	}
+	// The learned entry of the EFFECTIVE list carries the invocation too, not
+	// just the allowlistLearned one: the Portal groups that list by source, so a
+	// learned row there would otherwise show a bare pattern plus an escaped
+	// regex. A non-learned entry stays without one.
+	if got := byPattern["helm"].Command; got != "helm install x" {
+		t.Errorf("learned effective command = %q, want the approved invocation", got)
+	}
+	if got := byPattern["terraform"].Command; got != "" {
+		t.Errorf("user rule command = %q, want empty: command is for learned rules only", got)
 	}
 	if len(view.AllowlistLearned) != 1 || view.AllowlistLearned[0].Pattern != "helm" {
 		t.Errorf("allowlistLearned = %+v", view.AllowlistLearned)
@@ -337,6 +348,52 @@ func TestApprovalViewTagsProvenance(t *testing.T) {
 	// an invocation rather than a bare pattern plus an escaped regex.
 	if len(view.AllowlistLearned) == 1 && view.AllowlistLearned[0].Command != "helm install x" {
 		t.Errorf("learned command = %q, want the approved invocation", view.AllowlistLearned[0].Command)
+	}
+}
+
+// TestApprovalViewTagsTemplateAndCollisionProvenance covers the other half of
+// the provenance tagging (issue #185): a rule the template declares is served as
+// source "template", and a rule declared identically by template and instance is
+// tagged with the more specific declarer. The fixture other tests share declares
+// no allowlist, so without this the last two arguments of toSourcedRules could be
+// transposed -- relabelling template rules as user and the reverse -- and the
+// suite would not notice.
+func TestApprovalViewTagsTemplateAndCollisionProvenance(t *testing.T) {
+	tmpl := internalTestAgent(v1alpha1.DefaultAgentName)
+	tmpl.Spec.Allowlist = []v1alpha1.AllowlistRule{
+		{Pattern: "tflint"},
+		{Pattern: "helm", ArgPattern: `^list$`},
+	}
+	inst := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{
+		{Pattern: "terraform"},
+		{Pattern: "helm", ArgPattern: `^list$`},
+	}
+	s := platformTestServer(t, tmpl, inst)
+
+	view, err := s.approvalView(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("approvalView: %v", err)
+	}
+	source := map[string]string{}
+	for _, r := range view.Allowlist {
+		source[r.Pattern] = r.Source
+	}
+	if got := source["tflint"]; got != "template" {
+		t.Errorf("template-only rule source = %q, want template", got)
+	}
+	if got := source["terraform"]; got != "user" {
+		t.Errorf("instance-only rule source = %q, want user", got)
+	}
+	// helm is declared by both, byte for byte. The union keeps the template's
+	// copy (Merge keeps the first occurrence) but the tag names the instance,
+	// the more specific declarer -- the behaviour toSourcedRules documents, and
+	// a rule the union dedupes so it is served exactly once.
+	if got := source["helm"]; got != "user" {
+		t.Errorf("collision rule source = %q, want user (the more specific declarer)", got)
+	}
+	if n := len(view.Allowlist); n != len(allowlist.Effective(tmpl.Spec.Allowlist, inst.Spec.Allowlist, nil)) {
+		t.Errorf("effective allowlist has %d entries, want %d (the collision must not duplicate)", n, len(allowlist.Effective(tmpl.Spec.Allowlist, inst.Spec.Allowlist, nil)))
 	}
 }
 

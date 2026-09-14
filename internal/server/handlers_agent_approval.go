@@ -77,31 +77,51 @@ func ruleID(r v1alpha1.AllowlistRule) string { return r.Pattern + "|" + r.ArgPat
 // toSourcedRules tags each rule of the effective list with the source it came
 // from. The tag is derived by membership rather than by rebuilding the union,
 // so the view cannot drift from what the resolver enforces. Later arguments win
-// on an exact collision, matching the union order -- a rule both the user and
-// the template declare shows as the user's.
-func toSourcedRules(effective, learned, owned, tmpl []v1alpha1.AllowlistRule) []approvalRule {
+// on an exact collision -- a rule both the user and the template declare shows
+// as the user's, naming the most specific declarer.
+//
+// That precedence is deliberately the union's inverse. allowlist.Merge keeps the
+// FIRST occurrence (the builtin, then the template), so for a rule declared
+// identically by template and instance the union serves the template's copy
+// while this tag says the instance. Only the label differs: a collision is keyed
+// on Pattern|ArgPattern, so the two copies are the same rule and the runtime
+// enforces the same thing either way. The tag is what the UI groups by, and the
+// more specific declarer is the more useful origin to name.
+//
+// The learned grants are passed as records, not as their derived rules, because
+// the invocation a learned rule should show lives only on the record (issue
+// #185). Their Command is filled for the entries that resolve to learned; the
+// separate allowlistLearned list carries it too.
+func toSourcedRules(effective []v1alpha1.AllowlistRule, learned []grants.Record, owned, tmpl []v1alpha1.AllowlistRule) []approvalRule {
 	origin := make(map[string]string, len(tmpl)+len(owned)+len(learned))
+	commands := make(map[string]string, len(learned))
 	for _, r := range tmpl {
 		origin[ruleID(r)] = sourceTemplate
 	}
 	for _, r := range owned {
 		origin[ruleID(r)] = sourceUser
 	}
-	for _, r := range learned {
-		origin[ruleID(r)] = sourceLearned
+	for _, rec := range learned {
+		origin[ruleID(rec.Rule())] = sourceLearned
+		commands[ruleID(rec.Rule())] = rec.Command
 	}
 	out := make([]approvalRule, 0, len(effective))
 	for _, r := range effective {
-		source, ok := origin[ruleID(r)]
+		id := ruleID(r)
+		source, ok := origin[id]
 		if !ok {
 			source = sourceBuiltin
 		}
-		out = append(out, approvalRule{
+		rule := approvalRule{
 			Pattern:    r.Pattern,
 			ArgPattern: r.ArgPattern,
 			Label:      allowlist.BuiltinLabel(r),
 			Source:     source,
-		})
+		}
+		if source == sourceLearned {
+			rule.Command = commands[id]
+		}
+		out = append(out, rule)
 	}
 	return out
 }
@@ -290,8 +310,11 @@ func (s *Server) approvalView(ctx context.Context, user string) (approvalView, e
 	}
 
 	// Same union the resolver enforces (issue #185), tagged by source so the
-	// Portal can group by origin instead of guessing from an ownership flag.
-	view.Allowlist = toSourcedRules(allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learned), learned, inst.Spec.Allowlist, tmplAllowlist)
+	// Portal can group by origin instead of guessing from an ownership flag. The
+	// records go in, not the derived rules: the view's allowlist has to carry the
+	// learned invocation too, or grouping it by source yields learned rows with
+	// no command.
+	view.Allowlist = toSourcedRules(allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learned), records, inst.Spec.Allowlist, tmplAllowlist)
 	view.AllowlistOwned = toGroupRules(inst.Spec.Allowlist, sourceUser)
 	view.AllowlistLearned = toLearnedRules(records)
 
