@@ -38,32 +38,101 @@ const (
 // an empty allowlistOwned means "this instance adds nothing" -- not "inherit
 // and take over".
 type approvalView struct {
-	Exists         bool                    `json:"exists"`
-	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
-	Override       v1alpha1.ApprovalPolicy `json:"override"`
-	TemplatePolicy v1alpha1.ApprovalPolicy `json:"templatePolicy"`
-	Allowlist      []approvalRule          `json:"allowlist,omitempty"`
-	AllowlistOwned []approvalRule          `json:"allowlistOwned,omitempty"`
-	Channel        string                  `json:"channel"`
+	Exists           bool                    `json:"exists"`
+	ApprovalPolicy   v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
+	Override         v1alpha1.ApprovalPolicy `json:"override"`
+	TemplatePolicy   v1alpha1.ApprovalPolicy `json:"templatePolicy"`
+	Allowlist        []approvalRule          `json:"allowlist,omitempty"`
+	AllowlistOwned   []approvalRule          `json:"allowlistOwned,omitempty"`
+	AllowlistLearned []approvalRule          `json:"allowlistLearned,omitempty"`
+	Channel          string                  `json:"channel"`
 }
 
-// approvalRule is one allowlist rule served to the Portal. Label is set by the
-// server ONLY for rules that exactly match a platform builtin read-only rule,
-// so the UI never guesses that a user-added rule (which may allow a write) is
-// read-only.
+// approvalRule is one allowlist rule served to the Portal. Source says where
+// the rule came from -- builtin, template, user or learned (issue #185) -- so the
+// UI can group by origin rather than guessing from an ownership flag. Label is
+// set by the server ONLY for rules that exactly match a platform builtin
+// read-only rule, so the UI never guesses that a user-added rule (which may
+// allow a write) is read-only. Command is set for learned rules only: it is the
+// invocation the user approved, which is what makes the rule recognisable, where
+// Pattern plus an escaped ArgPattern is not.
 type approvalRule struct {
 	Pattern    string `json:"pattern"`
 	ArgPattern string `json:"argPattern,omitempty"`
 	Label      string `json:"label,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Command    string `json:"command,omitempty"`
 }
 
-func toApprovalRules(rules []v1alpha1.AllowlistRule) []approvalRule {
+const (
+	sourceBuiltin  = "builtin"
+	sourceTemplate = "template"
+	sourceUser     = "user"
+	sourceLearned  = "learned"
+)
+
+// ruleID is the identity allowlist.Merge dedups on.
+func ruleID(r v1alpha1.AllowlistRule) string { return r.Pattern + "|" + r.ArgPattern }
+
+// toSourcedRules tags each rule of the effective list with the source it came
+// from. The tag is derived by membership rather than by rebuilding the union,
+// so the view cannot drift from what the resolver enforces. Later arguments win
+// on an exact collision, matching the union order -- a rule both the user and
+// the template declare shows as the user's.
+func toSourcedRules(effective, learned, owned, tmpl []v1alpha1.AllowlistRule) []approvalRule {
+	origin := make(map[string]string, len(tmpl)+len(owned)+len(learned))
+	for _, r := range tmpl {
+		origin[ruleID(r)] = sourceTemplate
+	}
+	for _, r := range owned {
+		origin[ruleID(r)] = sourceUser
+	}
+	for _, r := range learned {
+		origin[ruleID(r)] = sourceLearned
+	}
+	out := make([]approvalRule, 0, len(effective))
+	for _, r := range effective {
+		source, ok := origin[ruleID(r)]
+		if !ok {
+			source = sourceBuiltin
+		}
+		out = append(out, approvalRule{
+			Pattern:    r.Pattern,
+			ArgPattern: r.ArgPattern,
+			Label:      allowlist.BuiltinLabel(r),
+			Source:     source,
+		})
+	}
+	return out
+}
+
+// toGroupRules converts one source's rules for the per-source group lists.
+func toGroupRules(rules []v1alpha1.AllowlistRule, source string) []approvalRule {
 	out := make([]approvalRule, 0, len(rules))
 	for _, r := range rules {
 		out = append(out, approvalRule{
 			Pattern:    r.Pattern,
 			ArgPattern: r.ArgPattern,
 			Label:      allowlist.BuiltinLabel(r),
+			Source:     source,
+		})
+	}
+	return out
+}
+
+// toLearnedRules converts the learned grants for the "learned" group. It takes
+// the stored records rather than their derived rules because the command text
+// lives only on the record: a learned rule shown as its pattern plus an escaped
+// regex is not something a person recognises (issue #185).
+func toLearnedRules(records []grants.Record) []approvalRule {
+	out := make([]approvalRule, 0, len(records))
+	for _, rec := range records {
+		out = append(out, approvalRule{
+			Pattern:    rec.Pattern,
+			ArgPattern: rec.ArgPattern,
+			Label:      allowlist.BuiltinLabel(rec.Rule()),
+			Source:     sourceLearned,
+			Command:    rec.Command,
 		})
 	}
 	return out
@@ -191,17 +260,57 @@ func (s *Server) approvalView(ctx context.Context, user string) (approvalView, e
 	}
 	view.Exists = true
 	view.Override = inst.Spec.ApprovalPolicy
-	view.AllowlistOwned = toApprovalRules(inst.Spec.Allowlist)
+
+	var tmplAllowlist []v1alpha1.AllowlistRule
 	if inst.Spec.TemplateRef != "" {
 		var def v1alpha1.AgentTemplate
-		if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: inst.Spec.TemplateRef}, &def); err == nil {
+		err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: inst.Spec.TemplateRef}, &def)
+		switch {
+		case err == nil:
 			view.TemplatePolicy = def.Spec.ApprovalPolicy
+			tmplAllowlist = def.Spec.Allowlist
+		case apierrors.IsNotFound(err):
+			// A missing template contributes nothing, as in the resolver.
+		default:
+			// Not swallowed (issue #185). With provenance tagging, a template
+			// read that failed silently would relabel the template's rules as
+			// builtin -- the exact distinction this view exists to make. Better
+			// an error than a confidently wrong view.
+			return view, err
 		}
 	}
+
+	records, err := s.grantsStore().List(ctx, user)
+	if err != nil {
+		return view, err
+	}
+	learned := make([]v1alpha1.AllowlistRule, 0, len(records))
+	for _, rec := range records {
+		learned = append(learned, rec.Rule())
+	}
+
+	// Same union the resolver enforces (issue #185), tagged by source so the
+	// Portal can group by origin instead of guessing from an ownership flag.
+	view.Allowlist = toSourcedRules(allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learned), learned, inst.Spec.Allowlist, tmplAllowlist)
+	view.AllowlistOwned = toGroupRules(inst.Spec.Allowlist, sourceUser)
+	view.AllowlistLearned = toLearnedRules(records)
+
 	if s.mgr != nil {
-		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil && !cfg.Empty() {
-			view.ApprovalPolicy = cfg.ApprovalPolicy
-			view.Allowlist = toApprovalRules(cfg.Allowlist)
+		cfg, err := s.mgr.ResolvedConfigForUser(ctx, user)
+		switch {
+		case err == nil:
+			if cfg != nil && !cfg.Empty() {
+				view.ApprovalPolicy = cfg.ApprovalPolicy
+			}
+		case apierrors.IsNotFound(err):
+			// Nothing to add and nothing wrong. The resolver reports a missing
+			// instance as an empty config rather than a not-found, so reaching
+			// this arm is unusual; it is tolerated because "not provisioned" is
+			// not a failure.
+		default:
+			// Same reasoning as the template read above: swallowing this is how
+			// the view came back wrong rather than absent.
+			return view, err
 		}
 	}
 	return view, nil

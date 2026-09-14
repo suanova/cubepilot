@@ -290,6 +290,56 @@ func TestAgentConfirmRejectsInvalidRevokeGrantBeforeWriting(t *testing.T) {
 	}
 }
 
+// TestApprovalViewTagsProvenance covers issue #185: the UI needs to say where a
+// rule came from instead of guessing from an isOwned flag.
+func TestApprovalViewTagsProvenance(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	if err := s.cr.Update(ctx, &inst); err != nil {
+		t.Fatalf("update instance: %v", err)
+	}
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	view, err := s.approvalView(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("approvalView: %v", err)
+	}
+
+	byPattern := map[string]string{}
+	for _, r := range view.Allowlist {
+		byPattern[r.Pattern] = r.Source
+	}
+	if got := byPattern["kubectl"]; got != "builtin" {
+		t.Errorf("kubectl source = %q, want builtin", got)
+	}
+	if got := byPattern["terraform"]; got != "user" {
+		t.Errorf("terraform source = %q, want user", got)
+	}
+	if got := byPattern["helm"]; got != "learned" {
+		t.Errorf("helm source = %q, want learned", got)
+	}
+	if len(view.AllowlistLearned) != 1 || view.AllowlistLearned[0].Pattern != "helm" {
+		t.Errorf("allowlistLearned = %+v", view.AllowlistLearned)
+	}
+	// The command the user approved rides along, so the learned group can show
+	// an invocation rather than a bare pattern plus an escaped regex.
+	if len(view.AllowlistLearned) == 1 && view.AllowlistLearned[0].Command != "helm install x" {
+		t.Errorf("learned command = %q, want the approved invocation", view.AllowlistLearned[0].Command)
+	}
+}
+
 // TestAgentConfirmRevokesLearnedGrant covers the revoke path added in issue
 // #185: a learned grant is dropped from the grants store without the
 // hand-authored list being rewritten.
