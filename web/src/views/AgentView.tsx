@@ -555,9 +555,11 @@ export default function AgentView() {
                                 {allowlistLabel(r)}
                               </span>
                               <span className={`pill ${isOwned ? 'accent' : 'neutral'}`}>{isOwned ? 'Yours' : 'Platform'}</span>
-                              <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
-                                Remove
-                              </button>
+                              {isOwned && (
+                                <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
+                                  Remove
+                                </button>
+                              )}
                             </div>
                             {r.argPattern ? (
                               <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
