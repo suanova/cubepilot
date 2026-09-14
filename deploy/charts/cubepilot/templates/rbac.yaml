@@ -225,6 +225,11 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create", "update", "delete"]
+  # Learned allow-always grants (issue #185): the API is the sole writer of the
+  # per-user grants ConfigMap.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
