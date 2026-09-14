@@ -9,6 +9,9 @@
 >
 > **维护**：`internal/server/apidoc_test.go` 会在路由表与本文不一致时失败。
 > 新增或删除端点必须同步更新本文，否则 CI 报错。
+>
+> **要改这个 API？** 先读 [api-conventions.md](./api-conventions.md)——命名来源、
+> 形状规则、状态码与方法语义，以及每条规则由哪个测试守住。
 
 ---
 
