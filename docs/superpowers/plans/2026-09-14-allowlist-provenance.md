@@ -475,7 +475,7 @@ approval test uses. This step needs no import changes.
 
 - [ ] **Step 6: Run the test to verify it fails**
 
-Run: `go test ./internal/server/... -run TestPutAgentApprovalRejectsInvalidArgPattern -v`
+Run: `go test ./internal/server/... -run TestAgentConfirmRejectsInvalidArgPattern -v`
 
 Expected: FAIL — status 200, because nothing validates yet.
 
