@@ -493,8 +493,11 @@ const (
 
 // applyPolicy writes the effective exec-approvals policy into agents."main" of
 // the gateway (get -> set, CAS). The allowlist is rewritten wholesale from the
-// resolved config (issue #116): the platform bookkeeping is the instance
-// allowlist, so a removed entry really disappears. AlwaysAsk runs a guarded,
+// resolved config (issue #116): the bookkeeping is that resolved list, so a
+// removed entry really disappears -- for the entries a removal can express. An
+// instance's own rule or a revoked grant drops out; a platform builtin cannot be
+// removed at all (issue #185 accepted that loss), so it comes back on the next
+// push. AlwaysAsk runs a guarded,
 // on-miss session with an empty allowlist -- every command misses and therefore
 // asks -- which is the strictest posture and needs no unverified ask:always
 // semantics. It reports failure so the caller can defer advancing the

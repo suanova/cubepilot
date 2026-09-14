@@ -551,6 +551,11 @@ GET /api/v1/sessions/{key}/question/pending
 
 - `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
   —— 模型没进模板的 `spec.models`；空 `selectedModel` 永远允许（表示「用运行时默认」）。
+- `400 pattern is required` —— `allowlist[]` 或 `revokeGrants[]` 里的 `pattern` 为空
+  （或只有空白）。以前这种条目被静默丢弃，现在整次 PUT 被拒：规则不会写进实例，也不会下发给
+  网关。同一条校验还拒绝含 `|` 的 `pattern`（错误文是 `pattern must not contain '|'`）：
+  `pattern` 是命令名，而 `|` 是规则身份 `pattern|argPattern` 的分隔符，带上它会让两条不同的
+  规则撞成同一个 key；`argPattern` 里的 `|` 是正则的或运算，不受影响。
 - `400 argPattern is not a valid regular expression: <detail>` —— `allowlist[]` 或
   `revokeGrants[]` 里的 `argPattern` 不是合法正则，整次 PUT 被拒：规则**不会**写进实例，
   也不会下发给网关（网关按 JavaScript `RegExp` 匹配，写入时用 Go 正则先行校验）。

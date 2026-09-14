@@ -131,8 +131,10 @@ AgentInstance.spec.allowlist     unchanged, hand-authored only
 ConfigMap cubepilot-grants-<user>  new, sole writer is the API server
 ```
 
-**Layout -- one key per grant**, so a write is a single-key patch and cannot
-conflict with a concurrent grant:
+**Layout -- one key per grant**, so a concurrent write is recovered by retry
+rather than silently lost. The write is a whole-object Get + Update, so two
+Adds do conflict; each grant having its own key is what keeps the retry a union
+rather than a last-writer-wins merge:
 
 ```yaml
 apiVersion: v1
@@ -197,7 +199,10 @@ deliberate -- both operations are idempotent, so saving first leaves a retryable
 state (the policy persisted, the grant still present) where dropping the grant
 first would answer 500 having already deleted it.
 
-`grants.Add` writes one ConfigMap key via a patch. On exceeding `MaxGrants`
+`grants.Add` writes one ConfigMap key. The write is a whole-object Get + Update
+under `RetryOnConflict`, so a concurrent grant conflicts and the loser retries
+against the object the winner left; because each grant has its own key, the
+retry re-adds only its own entry and neither is lost. On exceeding `MaxGrants`
 (1000) it deletes the oldest keys by `createdAt` in the same operation. The cap
 is insurance against a pathological click loop, not a response to normal use: it
 sits far above the order-of-300 entries a heavy user accumulates in a year, or
@@ -218,6 +223,19 @@ truncating a regex that the gateway matches.
   unchanged.
 - `agentApprovalView` (`internal/server/handlers_agent_approval.go:145-175`)
   reads the ConfigMap to render the learned group.
+
+The grants read is not confined to the approval path: it sits on the resolver's
+path for all three of its consumers, which are the policy push above, model
+selection and scheduled runs. Model selection reaches it through
+`Manager.SelectedModelFor` (`internal/instances/manager.go:196`), which the
+interactive turn, the one-shot path and the gateway-config endpoint all call;
+`runner.RunTask` (`internal/runner/runner.go:49`) calls the same method for
+every scheduled task. A grants-store failure is therefore fatal to model
+selection and to scheduled runs too, where it surfaces as
+`model resolution: ...` (`internal/runner/runner.go:51`). Accepted deliberately:
+the alternative -- unioning nothing when the read fails -- would make the
+enforced list differ from the one the API shows the user, which is the
+fail-open direction this design exists to close.
 
 `cmd/cubepilot-api/main.go:48` builds the client with `client.New` -- a **direct,
 uncached** client, so each of these is a live API call. One extra Get per turn

@@ -128,7 +128,7 @@ spec:
   # allowlist: [...]                      # 可选：模板默认的额外安全命令（与平台内置取并集），未设则仅平台内置
 ```
 
-模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。审批策略（`approvalPolicy`）定义在 **AgentTemplate 层而非 skill 层**：不同 AgentTemplate 复用同一 skill 时可有不同审批策略；skill 只承载语义与脚本、不携带权限/确认字段（权限由 RBAC 决定，确认由 AgentTemplate 的 `approvalPolicy` + 简单 HITL 执行，阶段二收敛到 MCP Gateway）。模板的审批策略是**默认值**，实例可覆盖（见 §3.2）。有效 allowlist = 平台内置安全命令（kubectl 读动词 + 只读 shell 工具；平台代码内置，非模板 CR 携带）∪ 模板 `spec.allowlist`；实例未自有时 live 继承该有效默认。
+模板变更生成不可变 `revision`，供审计与回滚。实例引用模板名（不钉版），模板更新在下次实例 reconcile 或重启时生效，不能静默改变正在运行的行为。审批策略（`approvalPolicy`）定义在 **AgentTemplate 层而非 skill 层**：不同 AgentTemplate 复用同一 skill 时可有不同审批策略；skill 只承载语义与脚本、不携带权限/确认字段（权限由 RBAC 决定，确认由 AgentTemplate 的 `approvalPolicy` + 简单 HITL 执行，阶段二收敛到 MCP Gateway）。模板的审批策略是**默认值**，实例可覆盖（见 §3.2）。有效 allowlist = 平台内置安全命令（kubectl 读动词 + 只读 shell 工具；平台代码内置，非模板 CR 携带）∪ 模板 `spec.allowlist` ∪ 实例自己的手写条目 ∪ 用户学到的授权（聊天里 allow-always）；四者恒取并集，实例只会增加、不能删减。
 
 ## 3.2 AgentInstance
 
@@ -146,7 +146,7 @@ spec:
   enabledSkills: [kubectl-platform, cluster-inspection]   # 启用的 skill 子集
   userInstructions: "回答尽量简洁，使用中文。"
   # approvalPolicy: None             # 可选：#120 起可覆盖模板默认（None | Allowlist | AlwaysAsk）；缺省 = 继承模板
-  # allowlist: [{ pattern: helm }]  # 可选：实例自有 allowlist；空 = 继承模板有效默认
+  # allowlist: [{ pattern: helm }]  # 可选：实例自己的额外安全命令；空 = 不额外增加（恒与内置/模板/授权取并集）
   dataVolume: { pvc: pvc-zhang-wei-cubepilot }
   identity: { mode: user, principalRef: { userRef: zhang.wei } }
 status:

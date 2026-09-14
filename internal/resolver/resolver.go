@@ -219,6 +219,13 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	if inst.Spec.ApprovalPolicy != "" {
 		cfg.ApprovalPolicy = inst.Spec.ApprovalPolicy
 	}
+	// A failed grants read is fatal on purpose, not an error to degrade past.
+	// Resolve backs ResolvedConfigForUser (the policy push) but also
+	// SelectedModelFor, which the interactive turn, the one-shot path, the
+	// gateway-config endpoint and every scheduled task call -- so a ConfigMap
+	// fault fails model selection and scheduled runs too. Unioning nothing on a
+	// failed read would be cheaper, but it would enforce a list different from
+	// the one the API shows the user, which is the fail-open direction.
 	records, err := r.grants.List(ctx, user)
 	if err != nil {
 		return nil, fmt.Errorf("list grants for %s: %w", user, err)
