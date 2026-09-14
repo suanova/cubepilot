@@ -110,6 +110,36 @@
 > **守住**：✅ `TestWireJSONTagsAreCamelCase`（扫描 `internal/server` 与 `internal/runtime`
 > 的 json tag，出现下划线即失败）
 
+## 8. 请求体必须严格
+
+**每一个接受 body 的 handler 都要走 `decodeJSONBody`**（`internal/server/handlers.go`），
+它打开 `DisallowUnknownFields`。
+
+```go
+var body x
+if !decodeJSONBody(w, r, &body) {
+    return   // 400 已经写好了
+}
+```
+
+**为什么**：`encoding/json` 遇到不认识的键**不报错，直接丢掉**，对应字段保持零值。
+于是打错一个字母不会被发现，而是按默认值办：
+
+| 场景 | 后果 |
+|---|---|
+| `{"selectedModell": "..."}` | 模型被清空，返回 **200** |
+| `{"name":..., "instruction":..., "cronn": "0 3 * * *"}` | 任务建成 **Manual**，返回 **201** |
+| `{"...", "enabled": false}`（旧字段）| 任务建成 **Enabled** |
+
+**这类错误全部是静默的**——调用方拿到成功状态码，资源却和他要求的不一样。
+
+**严格性是免费的**：唯一的代价是前向兼容（新客户端发新字段给旧服务端）。
+v1 未发布、**没有需要前向兼容的客户端**，所以这个代价为零；
+将来若真需要，那是引入 `/api/v2/` 的场景，不是放宽 v1 的理由。
+
+> **守住**：✅ `TestNoUnstrictBodyDecode`（源码里出现裸 `json.NewDecoder(r.Body)` 即失败）、
+> ✅ `TestWriteEndpointsRejectUnknownFields`（行为验证：未知字段必须 400）
+
 ---
 
 ## 改动 API 的清单
@@ -122,8 +152,9 @@
 4. **状态码**（§5）—— 创建是 201
 5. **方法 + 方法检查**（§6）
 6. **字段大小写**（§7）
-7. **更新 `api.md`** —— 有测试守着，忘了会红
-8. **跑测试** —— 上面标 ✅ 的四条会自动告诉你漏了哪条
+7. **请求体严格**（§8）—— 用 `decodeJSONBody`，不要自己 `Decode`
+8. **更新 `api.md`** —— 有测试守着，忘了会红
+9. **跑测试** —— 上面标 ✅ 的会自动告诉你漏了哪条
 
 ## 与文档的一致性
 

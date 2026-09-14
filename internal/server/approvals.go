@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -332,8 +331,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Decision string `json:"decision"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if body.Decision != "approve" && body.Decision != "reject" && body.Decision != "allow-always" {

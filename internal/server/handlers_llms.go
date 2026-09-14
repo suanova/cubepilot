@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -77,8 +76,7 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body llmRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	rawName := strings.TrimSpace(body.Name)
@@ -188,8 +186,7 @@ func (s *Server) handleLLMByName(w http.ResponseWriter, r *http.Request) {
 // direction -- it clears the credential and deletes its Secret.
 func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name string) {
 	var body llmRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	endpoint, err := normalizeEndpoint(body.Endpoint)

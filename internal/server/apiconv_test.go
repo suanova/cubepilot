@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/store"
 )
 
 // These checks enforce the parts of docs/cubepilot/api-conventions.md that a
@@ -109,5 +111,67 @@ func TestUnknownPathAnswersJSON(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"error"`) {
 		t.Errorf("unknown path body = %q, want a JSON error object", body)
+	}
+}
+
+// TestWriteEndpointsRejectUnknownFields is the behavioural half of the strict
+// decoding rule: a body carrying a field the endpoint does not define must be
+// refused, not decoded with that field dropped.
+//
+// Drops are silent and produce a different resource than the caller asked for.
+// On the agent config PUT that meant a wiped configuration; on task create it
+// means a misspelled `cron` yields a Manual task. Both answer success.
+func TestWriteEndpointsRejectUnknownFields(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	s := platformTestServerStore(t, st,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+	)
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{"misspelled field", map[string]any{"selectedModell": "deepseek-v4-flash"}},
+		{"unknown field", map[string]any{"selectedModel": "deepseek-v4-flash", "nope": 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestNoUnstrictBodyDecode fails when a handler decodes a request body without
+// going through decodeJSONBody.
+//
+// The behavioural test above only proves the endpoints it calls. This covers
+// the rest, and covers the next handler someone adds -- the rule is easy to
+// forget precisely because forgetting it changes nothing visible.
+func TestNoUnstrictBodyDecode(t *testing.T) {
+	const raw = "json.NewDecoder(r.Body)"
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		// The one legitimate use is inside decodeJSONBody itself.
+		if n := strings.Count(string(src), raw); n > 0 && !strings.Contains(string(src), "func decodeJSONBody(") {
+			t.Errorf("%s decodes a request body directly (%d occurrence(s)); use decodeJSONBody so unknown fields are rejected", name, n)
+		}
 	}
 }

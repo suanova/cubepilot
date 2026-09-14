@@ -126,7 +126,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"sessionId"`
 		Content   string `json:"content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "content required"})
 		return
 	}
@@ -409,6 +412,33 @@ func writeSSE(w http.ResponseWriter, ev agentruntime.Event) error {
 		return err
 	}
 	return nil
+}
+
+// decodeJSONBody reads a JSON request body into v, rejecting unknown fields.
+//
+// Every handler that accepts a body goes through here. encoding/json otherwise
+// ignores keys it does not know, so a misspelled field -- or a payload in a
+// shape this API used to use -- decodes to a zero value and the handler acts on
+// it. For a PUT that overwrites stored state that is a silent wipe: the caller
+// gets 200 and their configuration is gone.
+//
+// Strictness is affordable here precisely because v1 is unreleased and carries
+// no forward-compatibility obligation: there is no client that legitimately
+// sends fields this API does not know. It returns false after writing the 400,
+// so callers read:
+//
+//	var body x
+//	if !decodeJSONBody(w, r, &body) {
+//		return
+//	}
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+		return false
+	}
+	return true
 }
 
 // writeNotFound answers an unresolvable path with the same JSON error shape as

@@ -134,8 +134,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 			EnabledSkills    []string `json:"enabledSkills"`
 			UserInstructions string   `json:"userInstructions"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+		if !decodeJSONBody(w, r, &body) {
 			return
 		}
 		templateRef := strings.TrimSpace(body.TemplateRef)

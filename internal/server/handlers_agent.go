@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -73,16 +72,8 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "agent config is stored on the AgentInstance CR, which is unavailable (no Kubernetes client)"})
 			return
 		}
-		// DisallowUnknownFields: encoding/json ignores unknown keys, so a payload
-		// in a superseded shape (this body used to be {"config":{...}}) would
-		// decode to zero values and silently CLEAR selectedModel and
-		// userInstructions while answering 200. Rejecting it turns a silent wipe
-		// into a diagnosable 400.
 		var body agentConfigView
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
+		if !decodeJSONBody(w, r, &body) {
 			return
 		}
 		// Fail at save time, not at chat time: the resolver is fail-closed on an

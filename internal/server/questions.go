@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -208,8 +207,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		Answers map[string][]string `json:"answers"`
 		Cancel  bool                `json:"cancel"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeJSONBody(w, r, &body) {
 		return
 	}
 	if body.ID == "" {
