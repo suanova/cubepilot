@@ -354,12 +354,13 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
 		if body.Decision == "allow-always" {
 			// Durable grant (issue #116): approve-once happened above; now record
-			// the command as an instance-owned allowlist entry so it auto-passes
-			// from the next turn on (only under Allowlist policy).
+			// the command in the user's grants ConfigMap (grants.Store, via
+			// allowlistAlways) so it auto-passes from the next turn on (only
+			// under Allowlist policy). The instance spec is not touched.
 			allowlisted := false
 			if rule, ok := deriveAllowAlwaysRule(p.Command); ok {
 				if ok, err := s.allowlistAlways(r.Context(), user, p.Command, rule); err != nil {
-					s.logf("confirm %s/%s: allow-always append: %v", user, sessionKey, err)
+					s.logf("confirm %s/%s: allow-always grant: %v", user, sessionKey, err)
 				} else {
 					allowlisted = ok
 				}

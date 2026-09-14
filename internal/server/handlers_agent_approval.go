@@ -128,10 +128,17 @@ func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 		// policy edit persisted, the grant still present. Revoking first would
 		// instead delete the grant and then answer 500, telling the user
 		// nothing happened while their revocation had in fact landed.
-		for _, rule := range body.RevokeGrants {
-			if err := s.grantsStore().Remove(r.Context(), s.userOf(r), rule); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-				return
+		// A nil client is the no-op case the neighbouring helpers already return
+		// early on: saveConfirm persisted nothing above, so there is nothing to
+		// revoke. It also cannot be skipped, because grants.Store.Remove
+		// dereferences the client and there is no recovery middleware -- a panic
+		// here would drop the connection with no JSON error.
+		if s.cr != nil {
+			for _, rule := range body.RevokeGrants {
+				if err := s.grantsStore().Remove(r.Context(), s.userOf(r), rule); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+					return
+				}
 			}
 		}
 		view, err := s.approvalView(r.Context(), s.userOf(r))

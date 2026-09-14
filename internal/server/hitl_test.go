@@ -26,10 +26,15 @@ import (
 // directly is only valid once the call under test has returned, which is how
 // the sequential tests use it.
 type fakeGatewayClient struct {
-	mu           sync.Mutex
-	connected    bool
-	guarded      []string
-	policySets   []ws.ApprovalsFile
+	mu         sync.Mutex
+	connected  bool
+	guarded    []string
+	policySets []ws.ApprovalsFile
+	// policyGets counts exec.approvals.get calls. The CAS write needs the hash
+	// that call returns, so a retry that repeated only the set could never
+	// recover from a lost race; counting the reads is what pins that the retry
+	// repeats both halves.
+	policyGets   int
 	resolves     []string // "id|decision"
 	onRequested  func(ws.ApprovalRequested)
 	connectErr   error
@@ -222,6 +227,7 @@ func (f *fakeGatewayClient) PatchSessionSettings(ctx context.Context, key string
 func (f *fakeGatewayClient) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.policyGets++
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -1323,6 +1329,11 @@ func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
 // between fails it. That has to be retried rather than surfaced -- the caller
 // treats an applyPolicy error as fatal to the turn, so a lost race would refuse
 // a turn the user is entitled to take.
+//
+// The retry must repeat the get as well as the set: only a fresh read supplies
+// the hash the winner left, so a retry that re-sent the stale baseHash could
+// never recover. The get count is asserted to pin that, since a set-only retry
+// would also satisfy the policy-set count.
 func TestHitl_ApplyPolicyRetriesAConcurrentWrite(t *testing.T) {
 	gw := &fakeGatewayClient{
 		setErrs: []error{fmt.Errorf("exec.approvals.set: hash mismatch: stale baseHash")},
@@ -1333,6 +1344,9 @@ func TestHitl_ApplyPolicyRetriesAConcurrentWrite(t *testing.T) {
 	}
 	if len(gw.policySets) != 1 {
 		t.Errorf("policy sets = %d, want 1 after the retry succeeded", len(gw.policySets))
+	}
+	if gw.policyGets != 2 {
+		t.Errorf("exec.approvals.get calls = %d, want 2 (one per attempt): a retry that repeated only the set would re-send the hash the failed attempt used and could not recover", gw.policyGets)
 	}
 }
 

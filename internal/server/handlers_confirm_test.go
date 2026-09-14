@@ -244,6 +244,52 @@ func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
 	}
 }
 
+// TestAgentConfirmRejectsInvalidRevokeGrantBeforeWriting covers the validation
+// of revokeGrants (issue #185): an invalid entry must be refused with a 400
+// before anything is stored. Asserting the two stores are untouched is the
+// point -- a handler that wrote first and reported a failure afterwards would
+// still answer 400, but would leave the allowlist rewritten and the grant
+// deleted.
+func TestAgentConfirmRejectsInvalidRevokeGrantBeforeWriting(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	// The allowlist change is valid, so only the revoke entry can reject the
+	// request -- and a write of that allowlist would be visible in the spec.
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []map[string]any{{"pattern": "git", "argPattern": `^status$`}},
+			"revokeGrants":   []map[string]any{{"pattern": "helm", "argPattern": "^(install x$"}},
+		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	var inst v1alpha1.AgentInstance
+	name := types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}
+	if err := s.cr.Get(ctx, name, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.Allowlist) != 0 {
+		t.Errorf("instance spec was written despite the rejection: %+v", inst.Spec.Allowlist)
+	}
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "helm" {
+		t.Errorf("grants = %+v, want the helm grant still present: the revoke ran before the request was validated", got)
+	}
+}
+
 // TestAgentConfirmRevokesLearnedGrant covers the revoke path added in issue
 // #185: a learned grant is dropped from the grants store without the
 // hand-authored list being rewritten.
