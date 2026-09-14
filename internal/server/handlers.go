@@ -47,7 +47,7 @@ func (s *Server) userOf(r *http.Request) string {
 // runtime replaces this construction without changing the handlers.
 func (s *Server) agentRuntimeFor(user string) agentruntime.AgentRuntime {
 	httpClient := openclaw.New(s.mgr.BaseURL(user), s.cfg.GatewayToken)
-	live := &openClawLiveRunner{manager: s.hitl, user: user}
+	live := &openClawLiveRunner{manager: s.gatewayConns, user: user}
 	return agentruntime.Compose(live, httpClient, httpClient)
 }
 

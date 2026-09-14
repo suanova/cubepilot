@@ -324,10 +324,10 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
-	if cfg != nil && s.hitl != nil {
+	if cfg != nil && s.gatewayConns != nil {
 		// HITL: tell the supervisor which operator device to approve for pairing
 		// with this user's gateway (issue #20).
-		cfg.DevicePublicKey = s.hitl.DevicePublicKeyFor(user)
+		cfg.DevicePublicKey = s.gatewayConns.DevicePublicKeyFor(user)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
 }

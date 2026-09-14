@@ -20,11 +20,11 @@ const questionTestSession = "agent:main:conv-1"
 func questionTestServer(t *testing.T, gw *fakeGatewayClient, session string) (*Server, *httptest.ResponseRecorder) {
 	t.Helper()
 	s := platformTestServer(t)
-	s.hitl = newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	s.gatewayConns = newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	// A registered connection is only usable once its handshake completed, so
 	// the fixture marks the gateway connected rather than merely stored.
 	gw.setConnected(true)
-	s.hitl.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
+	s.gatewayConns.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 	rec := httptest.NewRecorder()
 	if _, err := s.hub.Open(session, rec, rec); err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -299,7 +299,7 @@ func TestHandleQuestionWithoutChannel(t *testing.T) {
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
-	delete(s.hitl.conns, "alice")
+	delete(s.gatewayConns.conns, "alice")
 
 	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})

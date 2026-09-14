@@ -46,7 +46,7 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 	gw.busy = false
 
 	// Build the Server through a helper, not a bare literal: settle touches
-	// s.approvals and s.qroutes as well as s.hitl, and a literal that omits them
+	// s.approvals and s.qroutes as well as s.gatewayConns, and a literal that omits them
 	// nil-panics on the test goroutine.
 	s := newAbortTestServer(h, m)
 
@@ -1104,7 +1104,7 @@ func shortenAbortSettleTimeout(t *testing.T, d time.Duration) {
 }
 
 // newAbortTestServer builds a Server with every collaborator settle and the
-// abort path touch. A bare &Server{hub: h, hitl: m} literal is not enough:
+// abort path touch. A bare &Server{hub: h, gatewayConns: m} literal is not enough:
 // settlePendingForSession dereferences s.approvals and s.qroutes too, and a
 // missing one nil-panics on the test goroutine. cfg carries the default user so
 // userOf resolves the same identity the fixtures register their gateway
@@ -1112,10 +1112,10 @@ func shortenAbortSettleTimeout(t *testing.T, d time.Duration) {
 // lookup are both keyed by it.
 func newAbortTestServer(h *Hub, m *gatewayConns) *Server {
 	return &Server{
-		cfg:       config.Config{DefaultUser: "admin"},
-		hub:       h,
-		hitl:      m,
-		approvals: NewApprovalService(h, nil, func(string, ...any) {}),
-		qroutes:   newQuestionRoutes(),
+		cfg:          config.Config{DefaultUser: "admin"},
+		hub:          h,
+		gatewayConns: m,
+		approvals:    NewApprovalService(h, nil, func(string, ...any) {}),
+		qroutes:      newQuestionRoutes(),
 	}
 }

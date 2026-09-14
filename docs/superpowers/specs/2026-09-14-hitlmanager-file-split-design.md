@@ -124,11 +124,23 @@ are named for the concern, and the methods now live where a reader would look.
 | `fakeHitlGateway` (test fake) | `fakeGatewayClient` | 96 |
 | `newTestHitl` (test helper) | `newTestGatewayConns` | 42 |
 | `blockingHitlGateway` (test fake) | `blockingGatewayClient` | 5 |
+| `Server.hitl` (the field) | `Server.gatewayConns` | 37 |
 
-The last three were found during implementation, not in the first pass: a grep
-for `hitl`-prefixed identifiers missed them because they carry `Hitl` mid-name.
-They are reference identifiers -- they name or construct the renamed types -- so
-leaving them would show a `fakeGatewayClient`-shaped hole in the rename.
+The three test fakes were found during implementation, not in the first pass: a
+grep for `hitl`-prefixed identifiers missed them because they carry `Hitl`
+mid-name. They are reference identifiers -- they name or construct the renamed
+types -- so leaving them would show a `fakeGatewayClient`-shaped hole in the
+rename.
+
+**`Server.hitl` was added late, against this document's first judgement.** The
+first draft listed it under "Deliberately kept", reasoning that it is the binding
+of the `EnableHITL` concept and so moves with that name. Reading the call sites
+showed the reasoning was wrong: of the field's 37 references, 24 are production
+call sites and only one of those (`channelState`) is about approvals at all. The
+rest are chat turns, aborts and questions. `EnableHITL` names an *action* -- turn
+the feature on -- and keeping it is right; `Server.hitl` names a *resource*
+handle, and at 23 of its 24 production uses that name is false. The rule is not
+that the two must agree.
 
 Occurrences span five files: `hitl.go`, `server.go`, `hitl_test.go`,
 `abort_test.go`, `questions_test.go`. `abort_test.go` constructs
@@ -145,11 +157,10 @@ holds them.
 - **`EnableHITL`** and the `hitl:` log prefix. HITL is a real product concept --
   human-in-the-loop approval -- and those names do not lie. Renaming them would
   spread the diff into `server.go`'s Secret handling and log output for no gain.
-- **`Server.hitl`**, the field `EnableHITL` assigns. It is the binding of that
-  kept concept, so it moves with `EnableHITL` rather than with the type.
-- **`TestHitl_*` test names.** They are scenario labels, not type references, and
-  renaming ~30 of them adds diff noise without helping the reader the issue is
-  about -- someone navigating production code.
+- **`TestHitl_*` test names**, and the `hitl bool` field of the two case tables
+  in `abort_test.go`. Both are scenario labels -- "this case runs with HITL on" --
+  rather than references to a type, and renaming them is noise for the reader
+  this issue is about.
 - **One type.** `gatewayConns` holds connection state *and* the approval-policy
   watermark. That is a minor grouping, worth splitting only if a second
   non-connection consumer of `revPol` appears. Splitting it now costs a new mutex

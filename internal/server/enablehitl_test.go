@@ -40,7 +40,7 @@ func TestEnableHITLAutoCreatesMasterSecret(t *testing.T) {
 	if err := s.EnableHITL(); err != nil {
 		t.Fatalf("EnableHITL: %v", err)
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		t.Fatal("hitl manager not configured after EnableHITL")
 	}
 	var sec corev1.Secret
@@ -65,11 +65,11 @@ func TestEnableHITLReusesPersistedKey(t *testing.T) {
 	if err := s.EnableHITL(); err != nil {
 		t.Fatalf("EnableHITL: %v", err)
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		t.Fatal("hitl manager not configured")
 	}
-	if string(s.hitl.masterKey) != key {
-		t.Fatalf("master key not re-used: %q", s.hitl.masterKey)
+	if string(s.gatewayConns.masterKey) != key {
+		t.Fatalf("master key not re-used: %q", s.gatewayConns.masterKey)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestEnableHITLFailsOnInvalidMasterKey(t *testing.T) {
 	if err := s.EnableHITL(); err == nil {
 		t.Fatal("EnableHITL should error on a corrupt master key")
 	}
-	if s.hitl != nil {
+	if s.gatewayConns != nil {
 		t.Fatal("hitl manager configured despite the corrupt master key")
 	}
 }
@@ -99,7 +99,7 @@ func TestEnableHITLFailsWithoutGatewayToken(t *testing.T) {
 	if err := s.EnableHITL(); err == nil {
 		t.Fatal("EnableHITL should error when the gateway token is missing")
 	}
-	if s.hitl != nil {
+	if s.gatewayConns != nil {
 		t.Fatal("hitl manager configured without a gateway token")
 	}
 }

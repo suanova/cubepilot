@@ -199,7 +199,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	}
@@ -224,7 +224,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	// other client holding an id) must not answer a question belonging to a
 	// different session, and only a question the gateway still considers open
 	// may be answered.
-	rec, err := s.hitl.GetQuestion(ctx, user, body.ID)
+	rec, err := s.gatewayConns.GetQuestion(ctx, user, body.ID)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
@@ -244,9 +244,9 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Cancel {
-		err = s.hitl.CancelQuestion(ctx, user, body.ID)
+		err = s.gatewayConns.CancelQuestion(ctx, user, body.ID)
 	} else {
-		err = s.hitl.ResolveQuestion(ctx, user, body.ID, body.Answers)
+		err = s.gatewayConns.ResolveQuestion(ctx, user, body.ID, body.Answers)
 	}
 	if err != nil {
 		s.writeQuestionGatewayError(w, user, "question "+body.ID, err)
@@ -274,11 +274,11 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 	noPending := func() {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending question"})
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		noPending()
 		return
 	}
-	list, err := s.hitl.ListQuestions(r.Context(), user)
+	list, err := s.gatewayConns.ListQuestions(r.Context(), user)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
 		noPending()

@@ -106,7 +106,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "abort channel unavailable"})
 		return
 	}
@@ -120,7 +120,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	// mean the run carrying on with nothing having tried to stop it.
 	runID := ""
 	idle := false
-	if id, ok := s.hitl.LiveRunID(user, sessionKey); ok {
+	if id, ok := s.gatewayConns.LiveRunID(user, sessionKey); ok {
 		runID = id
 	} else {
 		// No local turn to read one from: this is the reload-takeover path,
@@ -154,7 +154,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	var abortErr error
 	if !idle {
 		rpcCtx, cancelRPC := context.WithTimeout(context.WithoutCancel(r.Context()), abortRPCDeadline)
-		aborted, abortErr = s.hitl.Abort(rpcCtx, user, sessionKey, runID)
+		aborted, abortErr = s.gatewayConns.Abort(rpcCtx, user, sessionKey, runID)
 		// Released here rather than deferred: the handler may still have the
 		// settle wait ahead of it, and the RPC's budget is not that wait's.
 		cancelRPC()
@@ -286,7 +286,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 func (s *Server) abortTargetRunID(ctx context.Context, user, sessionKey string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, abortRunIDReadTimeout)
 	defer cancel()
-	id, active, err := s.hitl.InFlightRunID(ctx, user, sessionKey)
+	id, active, err := s.gatewayConns.InFlightRunID(ctx, user, sessionKey)
 	if err != nil {
 		s.logf("abort %s/%s: in-flight run lookup: %v", user, sessionKey, err)
 		return "", false, err
@@ -309,7 +309,7 @@ func (s *Server) abortTargetRunID(ctx context.Context, user, sessionKey string) 
 func (s *Server) abortLanded(ctx context.Context, user, sessionKey string) bool {
 	ctx, cancel := context.WithTimeout(ctx, abortReconcileTimeout)
 	defer cancel()
-	busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
+	busy, err := s.gatewayConns.SessionBusy(ctx, user, sessionKey)
 	if err != nil {
 		s.logf("abort %s/%s: reconcile: %v", user, sessionKey, err)
 		return false
@@ -338,7 +338,7 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
@@ -352,7 +352,7 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 	// "not busy".
 	ctx, cancel := context.WithTimeout(r.Context(), abortRPCDeadline)
 	defer cancel()
-	busy, err := s.hitl.SessionBusyEstablished(ctx, user, sessionKey)
+	busy, err := s.gatewayConns.SessionBusyEstablished(ctx, user, sessionKey)
 	if err != nil {
 		// The read establishes the channel before it asks, so it is not answered
 		// from local state at all. That matters after a restart or a rollout:
@@ -364,7 +364,7 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 		// only outcome left here is a channel that genuinely could not be
 		// established -- "could not check" with a Retry, which is now accurate
 		// rather than the old false alarm on every fresh conversation.
-		s.logf("turn status %s/%s (a channel was once established: %v): %v", user, sessionKey, s.hitl.gatewayConnected(user), err)
+		s.logf("turn status %s/%s (a channel was once established: %v): %v", user, sessionKey, s.gatewayConns.gatewayConnected(user), err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
@@ -400,7 +400,7 @@ func (s *Server) waitSessionIdle(ctx context.Context, user, sessionKey string) e
 			}
 			// The hub reported idle. It must still be idle at the moment both
 			// signals agree, not merely at the moment WaitIdle returned.
-			busy, err := s.hitl.SessionBusy(ctx, user, sessionKey)
+			busy, err := s.gatewayConns.SessionBusy(ctx, user, sessionKey)
 			if err != nil {
 				return err
 			}

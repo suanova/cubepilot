@@ -223,7 +223,7 @@ func (r *blockingResolver) ResolveApproval(_ context.Context, _, _, _ string) er
 }
 
 // A server built without an approval service must not panic. That is the shape
-// the abort handler's fixture uses (&Server{hub: h, hitl: m}), and both
+// the abort handler's fixture uses (&Server{hub: h, gatewayConns: m}), and both
 // handleApproval and handlePendingApproval already treat a nil service as a real
 // state; the settle has to as well.
 func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
@@ -232,7 +232,7 @@ func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
 
 	// The bare fixture: the live HITL manager, no approval service and no
 	// question routes.
-	s := &Server{hub: base.hub, hitl: base.hitl}
+	s := &Server{hub: base.hub, gatewayConns: base.gatewayConns}
 	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
 
 	if len(gw.questionCancels) != 0 {

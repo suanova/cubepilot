@@ -36,15 +36,15 @@ import (
 
 // Server holds shared dependencies for HTTP handlers.
 type Server struct {
-	cfg       config.Config
-	mgr       *instances.Manager
-	store     *store.Store
-	catalog   *skill.Catalog
-	cr        client.Client
-	hub       *Hub
-	approvals *ApprovalService
-	hitl      *gatewayConns   // nil when HITL is not configured (approvalPolicy stays declarative)
-	qroutes   *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
+	cfg          config.Config
+	mgr          *instances.Manager
+	store        *store.Store
+	catalog      *skill.Catalog
+	cr           client.Client
+	hub          *Hub
+	approvals    *ApprovalService
+	gatewayConns *gatewayConns   // nil when the gateway channel is not configured (approvalPolicy stays declarative)
+	qroutes      *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 
 // hitlMasterSecretName is the Secret holding the auto-generated device master
@@ -116,7 +116,7 @@ func (s *Server) EnableHITL() error {
 	if m == nil {
 		return fmt.Errorf("hitl: cannot configure the approval channel (missing manager or gateway token)")
 	}
-	s.hitl = m
+	s.gatewayConns = m
 	s.approvals.SetResolver(m)
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		s.approvals.Begin(user, pendingApproval{
