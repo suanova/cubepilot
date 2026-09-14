@@ -36,15 +36,15 @@ import (
 
 // Server holds shared dependencies for HTTP handlers.
 type Server struct {
-	cfg       config.Config
-	mgr       *instances.Manager
-	store     *store.Store
-	catalog   *skill.Catalog
-	cr        client.Client
-	hub       *Hub
-	approvals *ApprovalService
-	hitl      *hitlManager    // nil when HITL is not configured (approvalPolicy stays declarative)
-	qroutes   *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
+	cfg          config.Config
+	mgr          *instances.Manager
+	store        *store.Store
+	catalog      *skill.Catalog
+	cr           client.Client
+	hub          *Hub
+	approvals    *ApprovalService
+	gatewayConns *gatewayConns   // nil when the gateway channel is not configured (approvalPolicy stays declarative)
+	qroutes      *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 
 // hitlMasterSecretName is the Secret holding the auto-generated device master
@@ -96,7 +96,7 @@ func (s *Server) EnableHITL() error {
 			// Lost the create race to a peer replica: adopt the winner's persisted
 			// key so every replica derives the same device identities. Only a
 			// successful read + decode replaces mk -- never fall through to
-			// ConfiguredHITL with the random bytes we just generated, which would
+			// ConfigureGateway with the random bytes we just generated, which would
 			// leave the API with unstable (unpersisted) device identities.
 			var got corev1.Secret
 			if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr != nil {
@@ -112,11 +112,11 @@ func (s *Server) EnableHITL() error {
 		return fmt.Errorf("hitl: read master Secret: %w", err)
 	}
 
-	m := ConfiguredHITL(s.mgr, s.cfg.GatewayToken, mk, s.logf)
+	m := ConfigureGateway(s.mgr, s.cfg.GatewayToken, mk, s.logf)
 	if m == nil {
 		return fmt.Errorf("hitl: cannot configure the approval channel (missing manager or gateway token)")
 	}
-	s.hitl = m
+	s.gatewayConns = m
 	s.approvals.SetResolver(m)
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		s.approvals.Begin(user, pendingApproval{

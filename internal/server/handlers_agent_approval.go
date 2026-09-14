@@ -126,10 +126,10 @@ func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.App
 	// With no HITL manager the channel is unconfigured (after EnableHITL this
 	// only happens when the API could not bring the channel up -- a fatal
 	// misconfig).
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		return approvalChannelUnconfigured
 	}
-	return s.hitl.channelState(ctx, user)
+	return s.gatewayConns.channelState(ctx, user)
 }
 
 // approvalView resolves the effective + owned confirmation state for a user's

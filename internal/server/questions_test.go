@@ -17,14 +17,14 @@ const questionTestSession = "agent:main:conv-1"
 // questionTestServer builds a server whose HITL manager owns gw for user alice,
 // with a live SSE stream open for session (mimicking a chat turn parked on a
 // question). user is the identity every request is made as.
-func questionTestServer(t *testing.T, gw *fakeHitlGateway, session string) (*Server, *httptest.ResponseRecorder) {
+func questionTestServer(t *testing.T, gw *fakeGatewayClient, session string) (*Server, *httptest.ResponseRecorder) {
 	t.Helper()
 	s := platformTestServer(t)
-	s.hitl = newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	s.gatewayConns = newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	// A registered connection is only usable once its handshake completed, so
 	// the fixture marks the gateway connected rather than merely stored.
 	gw.setConnected(true)
-	s.hitl.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	s.gatewayConns.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 	rec := httptest.NewRecorder()
 	if _, err := s.hub.Open(session, rec, rec); err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -72,7 +72,7 @@ func eventOfType(evs []map[string]any, typ string) map[string]any {
 }
 
 func TestQuestionRelayProjectsPending(t *testing.T) {
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 
 	s.relayQuestionRequested(questionRecord("ask_1", questionTestSession))
@@ -114,7 +114,7 @@ func TestQuestionRelayProjectsRealAskUserRecord(t *testing.T) {
 	req := questionRecord("ask_1", questionTestSession)
 	req.Questions[0].IsOther = true
 
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.relayQuestionRequested(req)
 
@@ -143,7 +143,7 @@ func TestQuestionRelayDropsUnsupportedVariant(t *testing.T) {
 		{"no questions", func(r *ws.QuestionRecord) { r.Questions = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &fakeHitlGateway{}
+			gw := &fakeGatewayClient{}
 			s, rec := questionTestServer(t, gw, questionTestSession)
 			req := questionRecord("ask_1", questionTestSession)
 			tc.mutate(&req)
@@ -156,7 +156,7 @@ func TestQuestionRelayDropsUnsupportedVariant(t *testing.T) {
 }
 
 func TestQuestionRelayDropsRecordWithoutSession(t *testing.T) {
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.relayQuestionRequested(questionRecord("ask_1", ""))
 	if ev := eventOfType(sseEvents(t, rec.Body.String()), "question_pending"); ev != nil {
@@ -168,7 +168,7 @@ func TestQuestionRelayDropsRecordWithoutSession(t *testing.T) {
 // {id, status}, so it is addressed through the route recorded when the question
 // was relayed.
 func TestQuestionResolvedRoutesByRecordedSession(t *testing.T) {
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 
 	s.relayQuestionRequested(questionRecord("ask_1", questionTestSession))
@@ -186,7 +186,7 @@ func TestQuestionResolvedRoutesByRecordedSession(t *testing.T) {
 // TestQuestionResolvedUnknownIDIsDropped covers a resolution for a question
 // this process never relayed or recovered: it must not be broadcast blindly.
 func TestQuestionResolvedUnknownIDIsDropped(t *testing.T) {
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	before := rec.Body.Len()
 	s.relayQuestionResolved(ws.QuestionResolved{ID: "ask-unknown", Status: "cancelled"})
@@ -196,7 +196,7 @@ func TestQuestionResolvedUnknownIDIsDropped(t *testing.T) {
 }
 
 func TestHandleQuestionAnswers(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -212,7 +212,7 @@ func TestHandleQuestionAnswers(t *testing.T) {
 }
 
 func TestHandleQuestionCancel(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -233,7 +233,7 @@ func TestHandleQuestionCancel(t *testing.T) {
 // TestHandleQuestionRejectsForeignSession is the guard that stops a stale card
 // for one session from resolving a question belonging to another.
 func TestHandleQuestionRejectsForeignSession(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", "agent:main:other-session"),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -254,7 +254,7 @@ func TestHandleQuestionRejectsNotPendingOrExpired(t *testing.T) {
 	answered := questionRecord("ask_2", questionTestSession)
 	answered.Status = "answered"
 
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": expired, "ask_2": answered,
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -272,7 +272,7 @@ func TestHandleQuestionRejectsNotPendingOrExpired(t *testing.T) {
 }
 
 func TestHandleQuestionBadRequests(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -295,11 +295,11 @@ func TestHandleQuestionBadRequests(t *testing.T) {
 // existing connection rather than dialing a new one, so a user with no live
 // channel is told the channel is unavailable.
 func TestHandleQuestionWithoutChannel(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
-	delete(s.hitl.conns, "alice")
+	delete(s.gatewayConns.conns, "alice")
 
 	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
@@ -313,7 +313,7 @@ func TestHandleQuestionWithoutChannel(t *testing.T) {
 // unavailable channel rather than failing later inside the RPC as a gateway
 // error.
 func TestHandleQuestionDuringPairingReportsUnavailable(t *testing.T) {
-	gw := &fakeHitlGateway{questionRecords: map[string]ws.QuestionRecord{
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
 		"ask_1": questionRecord("ask_1", questionTestSession),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -335,7 +335,7 @@ func TestHandlePendingQuestion(t *testing.T) {
 	expired.ExpiresAtMs = time.Now().Add(-time.Second).UnixMilli()
 	secret := questionRecord("ask_secret", questionTestSession)
 	secret.Questions[0].IsSecret = true
-	gw := &fakeHitlGateway{pendingQuestions: []ws.QuestionRecord{
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{
 		questionRecord("ask_1", questionTestSession),
 		expired,
 		secret,
@@ -371,7 +371,7 @@ func TestHandlePendingQuestion(t *testing.T) {
 // TestHandlePendingQuestionNoPending: a session with nothing open reports 404,
 // which is what the browser uses to decide whether to render a card.
 func TestHandlePendingQuestionNoPending(t *testing.T) {
-	gw := &fakeHitlGateway{pendingQuestions: []ws.QuestionRecord{
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{
 		questionRecord("ask_1", "agent:main:other-session"),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
@@ -382,7 +382,7 @@ func TestHandlePendingQuestionNoPending(t *testing.T) {
 }
 
 func TestHandleQuestionRoutePrecedence(t *testing.T) {
-	gw := &fakeHitlGateway{pendingQuestions: nil}
+	gw := &fakeGatewayClient{pendingQuestions: nil}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	// /question/pending must not be swallowed by the /question route.
 	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)

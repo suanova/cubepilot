@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -198,7 +199,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	}
@@ -223,7 +224,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	// other client holding an id) must not answer a question belonging to a
 	// different session, and only a question the gateway still considers open
 	// may be answered.
-	rec, err := s.hitl.GetQuestion(ctx, user, body.ID)
+	rec, err := s.gatewayConns.GetQuestion(ctx, user, body.ID)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
@@ -243,9 +244,9 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Cancel {
-		err = s.hitl.CancelQuestion(ctx, user, body.ID)
+		err = s.gatewayConns.CancelQuestion(ctx, user, body.ID)
 	} else {
-		err = s.hitl.ResolveQuestion(ctx, user, body.ID, body.Answers)
+		err = s.gatewayConns.ResolveQuestion(ctx, user, body.ID, body.Answers)
 	}
 	if err != nil {
 		s.writeQuestionGatewayError(w, user, "question "+body.ID, err)
@@ -273,11 +274,11 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 	noPending := func() {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending question"})
 	}
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		noPending()
 		return
 	}
-	list, err := s.hitl.ListQuestions(r.Context(), user)
+	list, err := s.gatewayConns.ListQuestions(r.Context(), user)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
 		noPending()
@@ -354,3 +355,41 @@ func subresourceKey(path, suffix string) string {
 // connection can trigger a device pairing, which a read-only status request
 // must never do as a side effect.
 var errNoQuestionChannel = errors.New("question channel unavailable")
+
+// GetQuestion reads one question record from the user's gateway (question.get).
+func (m *gatewayConns) GetQuestion(ctx context.Context, user, id string) (*ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.GetQuestion(ctx, id)
+}
+
+// ListQuestions returns the user's gateway's pending questions (question.list).
+func (m *gatewayConns) ListQuestions(ctx context.Context, user string) ([]ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.ListQuestions(ctx)
+}
+
+// ResolveQuestion answers a pending question on the user's gateway connection.
+// answers maps each question id to the selected option labels.
+func (m *gatewayConns) ResolveQuestion(ctx context.Context, user, id string, answers map[string][]string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.ResolveQuestion(ctx, id, answers, user)
+}
+
+// CancelQuestion dismisses a pending question so the agent continues instead of
+// waiting out its own timeout.
+func (m *gatewayConns) CancelQuestion(ctx context.Context, user, id string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.CancelQuestion(ctx, id, user)
+}

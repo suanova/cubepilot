@@ -223,16 +223,16 @@ func (r *blockingResolver) ResolveApproval(_ context.Context, _, _, _ string) er
 }
 
 // A server built without an approval service must not panic. That is the shape
-// the abort handler's fixture uses (&Server{hub: h, hitl: m}), and both
+// the abort handler's fixture uses (&Server{hub: h, gatewayConns: m}), and both
 // handleApproval and handlePendingApproval already treat a nil service as a real
 // state; the settle has to as well.
 func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
-	gw := &fakeHitlGateway{}
+	gw := &fakeGatewayClient{}
 	base, _ := questionTestServer(t, gw, questionTestSession)
 
 	// The bare fixture: the live HITL manager, no approval service and no
 	// question routes.
-	s := &Server{hub: base.hub, hitl: base.hitl}
+	s := &Server{hub: base.hub, gatewayConns: base.gatewayConns}
 	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
 
 	if len(gw.questionCancels) != 0 {
@@ -283,7 +283,7 @@ func TestSettlePendingForSessionPublishesApprovalResolved(t *testing.T) {
 func TestSettlePendingForSessionClearsQuestions(t *testing.T) {
 	mine := questionRecord("ask_1", questionTestSession)
 	other := questionRecord("ask_other", "agent:main:other-session")
-	gw := &fakeHitlGateway{pendingQuestions: []ws.QuestionRecord{mine, other}}
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{mine, other}}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.qroutes.put("ask_1", questionTestSession)
 
@@ -311,7 +311,7 @@ func TestSettlePendingForSessionClearsQuestions(t *testing.T) {
 // canonical one, so a raw-keyed record must still settle.
 func TestSettlePendingForSessionMatchesRawRecordKey(t *testing.T) {
 	raw := questionRecord("ask_raw", "conv-1") // canonicalises to questionTestSession
-	gw := &fakeHitlGateway{pendingQuestions: []ws.QuestionRecord{raw}}
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{raw}}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.qroutes.put("ask_raw", raw.SessionKey)
 
@@ -337,7 +337,7 @@ func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 	freeText := questionRecord("ask_freeform", questionTestSession)
 	freeText.Questions[0].Options = nil // nothing to render as buttons
 
-	gw := &fakeHitlGateway{pendingQuestions: []ws.QuestionRecord{expired, freeText}}
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{expired, freeText}}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 
 	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
@@ -361,7 +361,7 @@ func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 // approval half has already run by then: a question-side failure must not
 // resurrect a confirmation card.
 func TestSettlePendingForSessionListQuestionsError(t *testing.T) {
-	gw := &fakeHitlGateway{listQuestionsErr: errors.New("question.list: boom")}
+	gw := &fakeGatewayClient{listQuestionsErr: errors.New("question.list: boom")}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.approvals.Begin("alice", pendingApproval{
 		ApprovalID: "ap-1",
@@ -396,7 +396,7 @@ func TestSettlePendingForSessionListQuestionsError(t *testing.T) {
 // retry can still address the card, and nothing is published -- the card is
 // still the user's until the gateway says otherwise.
 func TestSettlePendingForSessionCancelQuestionError(t *testing.T) {
-	gw := &fakeHitlGateway{
+	gw := &fakeGatewayClient{
 		pendingQuestions:   []ws.QuestionRecord{questionRecord("ask_1", questionTestSession)},
 		questionResolveErr: errors.New("question.cancel: boom"),
 	}

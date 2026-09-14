@@ -40,10 +40,10 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 		}
 	}
 
-	if s.hitl == nil {
+	if s.gatewayConns == nil {
 		return
 	}
-	list, err := s.hitl.ListQuestions(ctx, user)
+	list, err := s.gatewayConns.ListQuestions(ctx, user)
 	if err != nil {
 		s.logf("settle %s/%s: list questions: %v", user, sessionKey, err)
 		return
@@ -63,7 +63,7 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 		if canonicalSessionKey(rec.SessionKey) != sessionKey || rec.Status != "pending" {
 			continue
 		}
-		if err := s.hitl.CancelQuestion(ctx, user, rec.ID); err != nil {
+		if err := s.gatewayConns.CancelQuestion(ctx, user, rec.ID); err != nil {
 			s.logf("settle %s/%s: cancel question %s: %v", user, sessionKey, rec.ID, err)
 			continue
 		}
