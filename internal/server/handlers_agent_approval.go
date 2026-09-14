@@ -86,6 +86,12 @@ func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSONBody(w, r, &body) {
 			return
 		}
+		for _, rule := range body.Allowlist {
+			if err := allowlist.Validate(rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+		}
 		switch body.ApprovalPolicy {
 		case "", v1alpha1.ApprovalPolicyNone, v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
 		default:

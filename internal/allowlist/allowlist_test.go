@@ -211,6 +211,34 @@ func TestEffectiveUnionsAllThreeSources(t *testing.T) {
 	}
 }
 
+// TestValidate covers the write-path validation added in issue #185: an
+// argPattern the gateway cannot compile must be rejected here, where the user
+// can see the error, rather than stored and shipped. Pattern is a command
+// name, not a regex, so only emptiness is checked.
+func TestValidate(t *testing.T) {
+	ok := []v1alpha1.AllowlistRule{
+		{Pattern: "ls"},
+		{Pattern: "kubectl", ArgPattern: `^get pods$`},
+		{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern},
+	}
+	for _, r := range ok {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
+		}
+	}
+
+	bad := []v1alpha1.AllowlistRule{
+		{Pattern: ""},
+		{Pattern: "   "},
+		{Pattern: "ls", ArgPattern: `^(.*$`},
+	}
+	for _, r := range bad {
+		if err := Validate(r); err == nil {
+			t.Errorf("Validate(%+v) = nil, want an error", r)
+		}
+	}
+}
+
 func hasPattern(rules []v1alpha1.AllowlistRule, pattern string) bool {
 	return countPattern(rules, pattern) > 0
 }

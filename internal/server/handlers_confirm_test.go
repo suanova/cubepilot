@@ -149,3 +149,21 @@ func TestAgentConfirmUserScoped(t *testing.T) {
 		t.Fatalf("zhang.wei should have no instance, got %+v", view)
 	}
 }
+
+// TestAgentConfirmRejectsInvalidArgPattern covers issue #185: argPattern is free
+// text from the form, shipped to the gateway unvalidated, so a typo was stored
+// and pushed and the user never heard about it.
+func TestAgentConfirmRejectsInvalidArgPattern(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []map[string]any{{"pattern": "ls", "argPattern": "^(.*$"}},
+		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}

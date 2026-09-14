@@ -5,7 +5,14 @@
 // layer on top of it.
 package allowlist
 
-import "github.com/suanova/cubepilot/internal/api/v1alpha1"
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+)
 
 // kubectlGlobalFlag matches one optional kubectl global flag that may precede
 // the subcommand (--kubeconfig=/x, --context prod, -n default, ...). Global
@@ -113,4 +120,21 @@ func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.Allowlist
 	all = append(all, instanceAllowlist...)
 	all = append(all, grants...)
 	return Merge(Default(), all)
+}
+
+// Validate reports whether a rule is well formed. Pattern is a command name
+// rather than a regular expression, so it is only checked for emptiness;
+// ArgPattern is a regular expression compiled by the gateway at match time, so
+// it is compiled here to reject it while the user is still looking at the form.
+func Validate(r v1alpha1.AllowlistRule) error {
+	if strings.TrimSpace(r.Pattern) == "" {
+		return errors.New("pattern is required")
+	}
+	if r.ArgPattern == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(r.ArgPattern); err != nil {
+		return fmt.Errorf("argPattern is not a valid regular expression: %w", err)
+	}
+	return nil
 }
