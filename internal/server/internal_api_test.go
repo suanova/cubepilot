@@ -235,6 +235,40 @@ func TestAgentConfigReadsAndWritesInstance(t *testing.T) {
 	}
 }
 
+// TestAgentConfigRejectsSupersededShape pins that a payload in the shape this
+// endpoint used before the v1 freeze ({"config":{"model":...}}) is refused
+// instead of decoding into zero values. encoding/json ignores unknown keys, so
+// accepting it would CLEAR selectedModel and userInstructions and answer 200 --
+// a silent wipe of the caller's configuration, which is far worse than a 400.
+func TestAgentConfigRejectsSupersededShape(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	s := platformTestServerStore(t, st,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+	)
+
+	// Save a real configuration first, so a wipe would be observable.
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"selectedModel": "deepseek-v4-flash", "userInstructions": "You are helpful."})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("superseded shape status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+
+	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "", nil))
+	if resp.SelectedModel != "deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
+		t.Fatalf("a rejected payload altered the stored config: %+v", resp)
+	}
+}
+
 func TestAgentConfigRejectsUnsafeInstructions(t *testing.T) {
 	s := platformTestServerStore(t, nil,
 		internalTestAgent(v1alpha1.DefaultAgentName),

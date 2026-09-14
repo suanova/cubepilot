@@ -155,14 +155,17 @@ X-CubePilot-User: <用户名>
 
 ## 2.3 错误与状态码语义
 
-**所有**错误响应都是同一个形状：
+**所有**错误响应都包含 `error`：
 
 ```json
 { "error": "人类可读的原因" }
 ```
 
-不存在第二种形态——未匹配的路径也由 mux 兜底返回这个 JSON，不会出现 Go 默认的纯文本 404。
+不存在第二种形态——未匹配的路径也由 mux 兜底返回 JSON，不会出现 Go 默认的纯文本 404。
 客户端可以无条件地按 JSON 解析错误体。
+
+错误体是**可扩展**的：个别端点会在 `error` 之外附带结构化字段，客户端应当容忍未知键。
+目前只有一处：删除正被选用的模型时，`409` 额外带一个 `instances` 数组（见 §6.3）。
 
 以下状态码**有特定语义**，客户端必须区别处理：
 
@@ -480,8 +483,8 @@ GET /api/v1/sessions/{key}/question/pending
 
 | 方法 | 路径 | 请求 | 响应 | 加热 |
 | --- | --- | --- | --- | --- |
-| ANY | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
-| ANY | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
+| GET | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
+| GET | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
 | POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
 | POST | `/api/v1/inspect` | — | `{"report":"<自然语言文本>"}` | 是 |
 | POST | `/api/v1/sessions/{key}/approval` | `{"decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |

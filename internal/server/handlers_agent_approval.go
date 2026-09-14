@@ -84,7 +84,13 @@ func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 			ApprovalPolicy v1alpha1.ApprovalPolicy  `json:"approvalPolicy"`
 			Allowlist      []v1alpha1.AllowlistRule `json:"allowlist"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// DisallowUnknownFields for the same reason as the agent config PUT: a
+		// payload carrying the superseded `confirmPolicy` key would be ignored,
+		// silently resetting the policy to "inherit" and clearing the owned
+		// allowlist instead of reporting the mismatch.
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
