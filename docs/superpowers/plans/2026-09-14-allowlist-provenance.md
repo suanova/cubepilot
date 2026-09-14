@@ -398,16 +398,13 @@ func TestValidate(t *testing.T) {
 		{Pattern: ""},
 		{Pattern: "   "},
 		{Pattern: "ls", ArgPattern: `^(.*$`},
-		// Valid RE2, not valid (or not the same) under the JavaScript RegExp the
-		// gateway matches with. Each one would otherwise be stored, pushed, and
-		// never reported -- the failure this task exists to close, in the
-		// opposite direction.
+		// Accepted by RE2, rejected or silently misread by the JavaScript RegExp
+		// the gateway matches with. Each would otherwise be stored, pushed, and
+		// never reported -- the failure this task exists to close, reached from
+		// the other side. Lookaround and backreferences are deliberately absent:
+		// JavaScript supports both (lookbehind since ES2018), so rejecting them
+		// would refuse patterns that work.
 		{Pattern: "ls", ArgPattern: `(?i)^foo$`},
-		{Pattern: "ls", ArgPattern: `^foo(?=bar)$`},
-		{Pattern: "ls", ArgPattern: `^foo(?!bar)$`},
-		{Pattern: "ls", ArgPattern: `^foo(?<=bar)$`},
-		{Pattern: "ls", ArgPattern: `^foo(?<!bar)$`},
-		{Pattern: "ls", ArgPattern: `^(a)\1$`},
 		{Pattern: "ls", ArgPattern: `^(?P<x>a)$`},
 		{Pattern: "ls", ArgPattern: `^[[:alpha:]]+$`},
 		{Pattern: "ls", ArgPattern: `^\p{L}+$`},
@@ -461,15 +458,10 @@ var jsIncompatible = []struct {
 	re   *regexp.Regexp
 	what string
 }{
-	{regexp.MustCompile(`\(\?P<`), "a named group (?P<name>...)"},
-	{regexp.MustCompile(`\(\?[a-zA-Z-]`), "an inline flag group such as (?i)"},
-	{regexp.MustCompile(`\(\?<?[=!]`), "lookaround ((?=, (?!, (?<=, (?<!)"},
-	// The leading group keeps an escaped backslash out of it: `(^|[^\\])\\1`
-	// matches a backreference, not the literal backslash-plus-1 that
-	// regexp.QuoteMeta produces from a command containing one.
-	{regexp.MustCompile(`(^|[^\\])\\[1-9]`), "a backreference such as \\1"},
+	{regexp.MustCompile(`\(\?P<`), "a named group (?P<name>...), which JavaScript spells (?<name>...)"},
+	{regexp.MustCompile(`\(\?[a-zA-Z-]`), "an inline flag group such as (?i); pass flags to RegExp instead"},
 	{regexp.MustCompile(`\[\[:`), "a POSIX class such as [[:alpha:]]"},
-	{regexp.MustCompile(`\\[pP]\{`), "a Unicode property such as \\p{L}"},
+	{regexp.MustCompile(`\\[pP]\{`), "a Unicode property such as \\p{L}, which needs the RegExp u flag"},
 }
 
 // Validate reports whether a rule is well formed. Pattern is a command name
@@ -477,10 +469,9 @@ var jsIncompatible = []struct {
 // ArgPattern is a regular expression compiled by the gateway at match time, so
 // it is checked here against the constructs the gateway's RegExp engine cannot
 // take (jsIncompatible) and then compiled, rejecting it while the user is still
-// looking at the form. The denylist runs first so a backreference -- which RE2
-// also refuses, with a less useful message -- is reported as the JavaScript
-// incompatibility it is. The denylist is best-effort; see it for why the gap is
-// safe to leave.
+// looking at the form. The denylist runs first so a construct is reported as the
+// JavaScript incompatibility it is rather than as a bare compile error. It is
+// best-effort; see it for why the gap is safe to leave.
 func Validate(r v1alpha1.AllowlistRule) error {
 	if strings.TrimSpace(r.Pattern) == "" {
 		return errors.New("pattern is required")
