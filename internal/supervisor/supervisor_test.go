@@ -642,22 +642,78 @@ func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
 	}
 }
 
-// TestFetchConfigUnwrapsEnvelope pins the wire shape of the internal config
-// endpoint. The API serves it under a "config" key; a client that decoded the
-// body straight into ResolvedAgentConfig would get a zero value instead of an
-// error, and a zero config skips the device pairing that gates the approval
-// channel -- surfacing later as an unrelated NOT_PAIRED on the first gated
-// turn, which is exactly what end-to-end caught once.
-func TestFetchConfigUnwrapsEnvelope(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/agents/li.ming/config" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"config":{"revision":"rev-1","agent":"cubepilot",` +
-			`"instance":"li-ming-cubepilot","devicePublicKey":"PUBKEY"}}`))
+// TestFetchConfigWireShape pins how the internal config endpoint's payload is
+// read. Three shapes must be told apart, and conflating them is silent rather
+// than loud: a config decoded from the wrong shape is a zero value, and a zero
+// config skips the device pairing that gates the approval channel -- surfacing
+// later as an unrelated NOT_PAIRED on the first gated turn.
+func TestFetchConfigWireShape(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		// wantErr is set for shapes that are a contract mismatch.
+		wantErr bool
+		// wantRevision is checked when wantErr is false.
+		wantRevision string
+	}{
+		{
+			name:         "enveloped",
+			body:         `{"config":{"revision":"rev-1","instance":"li-ming-cubepilot","devicePublicKey":"PUBKEY"}}`,
+			wantRevision: "rev-1",
+		},
+		{
+			// The endpoint answers null for a user whose instance has no resolved
+			// config yet, and poll() has a branch for that state. It is not an
+			// error and must not become one.
+			name:         "null config is a valid empty config",
+			body:         `{"config":null}`,
+			wantRevision: "",
+		},
+		{
+			name:    "missing config key is a contract mismatch",
+			body:    `{}`,
+			wantErr: true,
+		},
+		{
+			name:    "bare config (the pre-envelope shape) is a contract mismatch",
+			body:    `{"revision":"rev-1","instance":"li-ming-cubepilot"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			s := New(Config{APIURL: srv.URL, User: "li.ming"})
+			s.http = srv.Client()
+
+			cfg, err := s.fetchConfig(context.Background())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("fetchConfig accepted %s as %+v; want a contract error", tc.body, cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fetchConfig(%s): %v", tc.body, err)
+			}
+			if cfg.Revision != tc.wantRevision {
+				t.Fatalf("revision = %q, want %q", cfg.Revision, tc.wantRevision)
+			}
+		})
+	}
+}
+
+// TestFetchConfigKeepsDeviceKey guards the field whose loss is silent: pairing
+// no-ops on an empty key, so nothing complains until a gated turn fails.
+func TestFetchConfigKeepsDeviceKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"config":{"revision":"rev-1","devicePublicKey":"PUBKEY"}}`))
 	}))
 	defer srv.Close()
 
@@ -668,11 +724,6 @@ func TestFetchConfigUnwrapsEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchConfig: %v", err)
 	}
-	if cfg.Revision != "rev-1" || cfg.Instance != "li-ming-cubepilot" {
-		t.Fatalf("decoded %+v, want the enveloped config", cfg)
-	}
-	// The pairing path silently no-ops on an empty key, so assert it survived:
-	// losing it is the failure that only showed up at the first gated turn.
 	if cfg.DevicePublicKey != "PUBKEY" {
 		t.Fatalf("devicePublicKey = %q, want PUBKEY", cfg.DevicePublicKey)
 	}
