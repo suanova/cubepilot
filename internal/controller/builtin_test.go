@@ -57,8 +57,8 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.Models[0].CredentialRef == nil || agent.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
 		t.Errorf("builtin model credentialRef = %+v, want cubepilot-llm", agent.Spec.Models[0].CredentialRef)
 	}
-	if agent.Spec.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
-		t.Errorf("confirmPolicy = %q, want Allowlist (design §3.1)", agent.Spec.ConfirmPolicy)
+	if agent.Spec.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
+		t.Errorf("approvalPolicy = %q, want Allowlist (design §3.1)", agent.Spec.ApprovalPolicy)
 	}
 	if len(agent.Spec.Models) == 0 || agent.Spec.Models[0].Name == "" {
 		t.Error("primary model missing")

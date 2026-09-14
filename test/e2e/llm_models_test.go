@@ -47,7 +47,7 @@ var _ = Describe("LLM model lifecycle", func() {
 	const (
 		modelName  = "e2e-scratch-model"
 		credName   = "llm-" + modelName
-		modelPath  = "/api/llms/" + modelName
+		modelPath  = "/api/v1/llms/" + modelName
 		remoteBase = "https://llm.example.com/v1"
 	)
 
@@ -76,7 +76,7 @@ var _ = Describe("LLM model lifecycle", func() {
 	}
 
 	It("refuses a model with no credential that is not declared public", func() {
-		body, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/llms", map[string]any{
+		body, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/v1/llms", map[string]any{
 			"name":     modelName,
 			"endpoint": remoteBase,
 		}, nil)
@@ -86,13 +86,13 @@ var _ = Describe("LLM model lifecycle", func() {
 	})
 
 	It("normalizes a full request URL and renders a keyless model", func() {
-		body, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/llms", map[string]any{
+		body, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/v1/llms", map[string]any{
 			"name":     modelName,
 			"endpoint": remoteBase + "/chat/completions",
 			"public":   true,
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(code).To(Equal(http.StatusOK), "%v", body)
+		Expect(code).To(Equal(http.StatusCreated), "%v", body)
 		// The SDK appends /chat/completions itself; storing the request URL
 		// would double it and 404.
 		Expect(nestedString(body, "model", "endpoint")).To(Equal(remoteBase))
@@ -116,13 +116,13 @@ var _ = Describe("LLM model lifecycle", func() {
 
 	It("rotates an existing credential and removes the model with it", func() {
 		By("adding a keyed model (secrets create)")
-		_, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/llms", map[string]any{
+		_, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/v1/llms", map[string]any{
 			"name":     modelName,
 			"endpoint": remoteBase,
 			"apiKey":   "sk-e2e-original",
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(code).To(Equal(http.StatusOK))
+		Expect(code).To(Equal(http.StatusCreated))
 		Expect(credentialValue()).To(Equal("sk-e2e-original"))
 
 		By("rotating it (secrets update)")

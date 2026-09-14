@@ -100,7 +100,13 @@ var _ = Describe("Gateway config", func() {
 			if code != http.StatusOK {
 				return fmt.Errorf("agent config returned %d", code)
 			}
-			rev, _ := cfg["revision"].(string)
+			// The endpoint serves an enveloped payload; reading revision from the
+			// top level would see "" forever and retry until the deadline.
+			inner, ok := cfg["config"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("agent config missing the config envelope: %v", cfg)
+			}
+			rev, _ := inner["revision"].(string)
 			if rev == "" {
 				return fmt.Errorf("agent config revision empty")
 			}

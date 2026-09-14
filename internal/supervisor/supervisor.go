@@ -629,9 +629,30 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var cfg resolver.ResolvedAgentConfig
-	if err := json.Unmarshal(body, &cfg); err != nil {
+	// The payload is enveloped under "config" (the documented shape of this
+	// endpoint). Decoding it blindly would turn a payload in any other shape --
+	// a bare config, a renamed key -- into a zero value, and a zero config
+	// silently skips the device pairing that gates the approval channel: the
+	// failure then surfaces much later as an unrelated-looking NOT_PAIRED on the
+	// first gated chat turn.
+	//
+	// A present-but-null "config" is a different thing from a missing one, and
+	// must keep working: the endpoint answers null for a user whose instance has
+	// no resolved config yet, and poll() has a branch for exactly that state.
+	// Only the missing key is a contract mismatch, and that one fails loudly.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	raw, ok := envelope["config"]
+	if !ok {
+		return nil, fmt.Errorf("decode config: response carries no \"config\" field (contract mismatch?)")
+	}
+	var cfg resolver.ResolvedAgentConfig
+	if string(raw) != "null" {
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("decode config: %w", err)
+		}
 	}
 	return &cfg, nil
 }

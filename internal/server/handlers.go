@@ -23,8 +23,8 @@ const agentMainKey = "main"
 
 // canonicalSessionKey maps a platform session key to the form the gateway uses
 // internally (agent:<agentId>:<segment>). Approval events carry the canonical
-// key, so the SSE hub, ledger, x-openclaw-session-key, the echoed session_id
-// and /confirm must all use the same canonical form or live confirmation cards
+// key, so the SSE hub, ledger, x-openclaw-session-key, the echoed sessionId
+// and /approval must all use the same canonical form or live confirmation cards
 // never reach the initiating chat stream.
 func canonicalSessionKey(key string) string {
 	if strings.HasPrefix(key, "agent:") {
@@ -71,6 +71,10 @@ func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (agentruntim
 
 // handleSessions lists the OpenClaw sessions for the current user.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
 	user := s.userOf(r)
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
@@ -87,8 +91,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 // handleHistory returns the raw session history for /api/sessions/{key}/messages.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
 	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/messages")
+	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, apiPrefix+"/sessions/"), "/messages")
 	sessionKey = strings.Trim(sessionKey, "/")
 	if sessionKey == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
@@ -115,7 +123,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		SessionID string `json:"session_id"`
+		SessionID string `json:"sessionId"`
 		Content   string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
@@ -401,6 +409,14 @@ func writeSSE(w http.ResponseWriter, ev agentruntime.Event) error {
 		return err
 	}
 	return nil
+}
+
+// writeNotFound answers an unresolvable path with the same JSON error shape as
+// every other response. http.NotFound would emit Go's plain-text
+// "404 page not found", which a client that parses {"error": ...} cannot read,
+// forcing it to handle two error formats for one status code.
+func writeNotFound(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusNotFound, map[string]any{"error": msg})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

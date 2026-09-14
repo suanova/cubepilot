@@ -42,10 +42,10 @@ func e2eEventSummary(events []framework.SSEEvent) string {
 }
 
 // HITL (issue #20): with the device master key configured, a Allowlist
-// chat turn that reaches a write operation must pause with a confirm_pending
+// chat turn that reaches a write operation must pause with a approval_pending
 // and a rejected write must not execute.
 var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func() {
-	It("emits confirm_pending and does not run the rejected write", func() {
+	It("emits approval_pending and does not run the rejected write", func() {
 		if os.Getenv("CUBEPILOT_E2E_CHAT") != "1" {
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping HITL chat e2e")
 		}
@@ -70,9 +70,9 @@ var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func()
 		sawPending, sawResolvedRejected, sawDone := false, false, false
 		for _, ev := range events {
 			switch ev.Event {
-			case openclaw.EventConfirmPending:
+			case openclaw.EventApprovalPending:
 				sawPending = true
-			case openclaw.EventConfirmResolved:
+			case openclaw.EventApprovalResolved:
 				var r struct {
 					Approved *bool `json:"approved"`
 				}
@@ -84,8 +84,8 @@ var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func()
 				sawDone = true
 			}
 		}
-		Expect(sawPending).To(BeTrue(), "a write must produce confirm_pending under HITL; event stream:\n%s", e2eEventSummary(events))
-		Expect(sawResolvedRejected).To(BeTrue(), "confirm_resolved should carry approved:false for a rejected write; event stream:\n%s", e2eEventSummary(events))
+		Expect(sawPending).To(BeTrue(), "a write must produce approval_pending under HITL; event stream:\n%s", e2eEventSummary(events))
+		Expect(sawResolvedRejected).To(BeTrue(), "approval_resolved should carry approved:false for a rejected write; event stream:\n%s", e2eEventSummary(events))
 		Expect(sawDone).To(BeTrue(), "message_done should terminate the turn after the rejection; event stream:\n%s", e2eEventSummary(events))
 
 		By("asserting the rejected namespace was never created")

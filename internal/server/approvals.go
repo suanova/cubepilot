@@ -16,7 +16,7 @@ import (
 
 // ApprovalService bridges gateway exec approvals to the Portal (issue #20):
 // it records each pending approval surfaced by the gateway WebSocket client,
-// injects a confirm_pending event into the session's open SSE stream, and
+// injects a approval_pending event into the session's open SSE stream, and
 // resolves the Portal's approve/reject decision back over the WS client. The
 // gateway-facing half is an ApprovalResolver (nil until the WS client is
 // wired) so the service stays testable in isolation.
@@ -88,7 +88,7 @@ func (s *ApprovalService) SetResolver(r ApprovalResolver) {
 	s.resolver = r
 }
 
-// Begin records a gateway approval and surfaces confirm_pending on the session
+// Begin records a gateway approval and surfaces approval_pending on the session
 // stream. Called by the gateway WS glue when exec.approval.requested arrives.
 func (s *ApprovalService) Begin(user string, p pendingApproval) {
 	if p.ApprovalID == "" || p.SessionKey == "" {
@@ -110,7 +110,7 @@ func (s *ApprovalService) Begin(user string, p pendingApproval) {
 	s.mu.Unlock()
 
 	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-		Type:      agentruntime.EventConfirmPending,
+		Type:      agentruntime.EventApprovalPending,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
 		Name:      p.Tool,
@@ -215,7 +215,7 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 	}
 	release()
 	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-		Type:      agentruntime.EventConfirmResolved,
+		Type:      agentruntime.EventApprovalResolved,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
 		Approved:  &approved,
@@ -316,14 +316,14 @@ var (
 
 // --- HTTP handlers -----------------------------------------------------------
 
-// handleConfirm serves POST /api/sessions/{key}/confirm.
-func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
+// handleApproval serves POST /api/sessions/{key}/approval.
+func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/confirm")
+	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, apiPrefix+"/sessions/"), "/approval")
 	sessionKey = strings.Trim(sessionKey, "/")
 	if sessionKey == "" || s.approvals == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
@@ -351,7 +351,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 	default:
 		approved := body.Decision != "reject"
-		resp := map[string]any{"approved": approved, "decision": body.Decision, "approval_id": p.ApprovalID}
+		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
 		if body.Decision == "allow-always" {
 			// Durable grant (issue #116): approve-once happened above; now record
 			// the command as an instance-owned allowlist entry so it auto-passes
@@ -370,15 +370,15 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handlePendingConfirm serves GET /api/sessions/{key}/confirm/pending — used to
+// handlePendingApproval serves GET /api/sessions/{key}/approval/pending — used to
 // restore a confirmation card after a Portal reload mid-approval.
-func (s *Server) handlePendingConfirm(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/confirm/pending")
+	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, apiPrefix+"/sessions/"), "/approval/pending")
 	sessionKey = strings.Trim(sessionKey, "/")
 	if sessionKey == "" || s.approvals == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
@@ -389,12 +389,12 @@ func (s *Server) handlePendingConfirm(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending approval"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":  p.SessionKey,
-		"approval_id": p.ApprovalID,
-		"tool":        p.Tool,
-		"command":     p.Command,
-		"level":       p.Level,
-		"message":     p.Message,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"approval": map[string]any{
+		"sessionId":  p.SessionKey,
+		"approvalId": p.ApprovalID,
+		"tool":       p.Tool,
+		"command":    p.Command,
+		"level":      p.Level,
+		"message":    p.Message,
+	}})
 }

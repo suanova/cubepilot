@@ -44,14 +44,18 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 // agentConfigView is the Agent Config page's read of the caller's agent: the
 // instance's own selections live on the AgentInstance CR (design §3.2), not in
-// any global config store. model is the explicit SelectedModel ("" = "Runtime
-// Default": clear the override, the gateway's configured primary decides);
-// systemPrompt is the UserInstructions appended after the template default
-// ("" = template only).
+// any global config store. The field names are the CRD's, so a client that also
+// reads the CR (issue #148) sees one vocabulary. selectedModel is the explicit
+// spec.selectedModel ("" = "Runtime Default": clear the override, the gateway's
+// configured primary decides); userInstructions is spec.userInstructions,
+// appended after the template default ("" = template only).
+//
+// The payload is flat: it is two fields of the instance, not an object the
+// platform calls "config".
 type agentConfigView struct {
-	Exists       bool   `json:"exists"`
-	Model        string `json:"model"`
-	SystemPrompt string `json:"systemPrompt"`
+	Exists           bool   `json:"exists"`
+	SelectedModel    string `json:"selectedModel"`
+	UserInstructions string `json:"userInstructions"`
 }
 
 // handleAgentConfig serves GET/PUT /api/agent/config. GET reads the caller's
@@ -61,7 +65,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 	user := s.userOf(r)
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"config": s.agentConfig(r.Context(), user)})
+		writeJSON(w, http.StatusOK, s.agentConfig(r.Context(), user))
 	case http.MethodPut:
 		// Config lives on the AgentInstance CR; without the CR client there is
 		// nowhere to write it, so answer a controlled 503 instead of panicking.
@@ -69,10 +73,15 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "agent config is stored on the AgentInstance CR, which is unavailable (no Kubernetes client)"})
 			return
 		}
-		var body struct {
-			Config agentConfigView `json:"config"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// DisallowUnknownFields: encoding/json ignores unknown keys, so a payload
+		// in a superseded shape (this body used to be {"config":{...}}) would
+		// decode to zero values and silently CLEAR selectedModel and
+		// userInstructions while answering 200. Rejecting it turns a silent wipe
+		// into a diagnosable 400.
+		var body agentConfigView
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
@@ -80,8 +89,8 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		// explicit selectedModel, so a model that is not in the builtin template
 		// would brick the instance (issue #117 model-less default). Empty =
 		// "Runtime Default" (clear the override).
-		model := strings.TrimSpace(body.Config.Model)
-		systemPrompt := strings.TrimSpace(body.Config.SystemPrompt)
+		model := strings.TrimSpace(body.SelectedModel)
+		systemPrompt := strings.TrimSpace(body.UserInstructions)
 		if err := instructions.Validate(systemPrompt); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
@@ -109,7 +118,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"config": s.agentConfig(r.Context(), user)})
+		writeJSON(w, http.StatusOK, s.agentConfig(r.Context(), user))
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or PUT required"})
 	}
@@ -128,8 +137,8 @@ func (s *Server) agentConfig(ctx context.Context, user string) agentConfigView {
 		return v // not provisioned
 	}
 	v.Exists = true
-	v.Model = inst.Spec.SelectedModel
-	v.SystemPrompt = inst.Spec.UserInstructions
+	v.SelectedModel = inst.Spec.SelectedModel
+	v.UserInstructions = inst.Spec.UserInstructions
 	return v
 }
 
@@ -159,6 +168,10 @@ func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool,
 // handleAgentStatus reports the live state of the caller's agent instance
 // (whether the Pod exists, its phase, uptime) for the Agent config page.
 func (s *Server) handleAgentStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
 	user := s.userOf(r)
 	exists, phase, startedAt := s.mgr.InstanceStatus(r.Context(), user)
 	resp := map[string]any{

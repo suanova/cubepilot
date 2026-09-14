@@ -1,4 +1,4 @@
-// Chat view -- session list + thread + composer, SSE streaming from /api/messages.
+// Chat view -- session list + thread + composer, SSE streaming from /api/v1/messages.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
@@ -6,7 +6,7 @@ import { api } from '@/api'
 import { ApiError } from '@/api/client'
 import { streamSSE } from '@/api/sse'
 import { getCurrentUser } from '@/api/client'
-import type { HistoryContentBlock, HistoryMessage, PendingConfirm, QuestionItem, SessionInfo } from '@/api/types'
+import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem, SessionInfo } from '@/api/types'
 import { showToast } from '@/stores/toast'
 import { shortSession } from '@/utils/format'
 
@@ -125,7 +125,7 @@ function questionAnswered(q: BubbleQuestion): boolean {
 }
 
 // attachToolResult pairs a tool's output with the tool call that produced it:
-// exact call_id when the stream carries one, otherwise the oldest call without
+// exact callId when the stream carries one, otherwise the oldest call without
 // a result yet (the gateway emits tool calls and results in the same order).
 function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
   const t =
@@ -140,7 +140,7 @@ function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
 // settleBubbleCards closes the human-in-the-loop cards of a bubble whose turn
 // has just ended.
 //
-// The abort settles these records server-side and publishes confirm_resolved /
+// The abort settles these records server-side and publishes approval_resolved /
 // question_resolved alongside the terminal, but that event is not reliable: the
 // gateway broadcasts the aborted chat frame before it answers the chat.abort
 // RPC, so the resolve races the stream's own close (Hub.PublishTo silently does
@@ -667,8 +667,8 @@ export default function ChatView() {
   // confirmation card appears.
   function syncAllowAlways() {
     api
-      .agentConfirm()
-      .then((v) => setAllowAlwaysOk(!!v.exists && v.confirmPolicy === 'Allowlist'))
+      .agentApproval()
+      .then((v) => setAllowAlwaysOk(!!v.exists && v.approvalPolicy === 'Allowlist'))
       .catch(() => setAllowAlwaysOk(false))
   }
 
@@ -712,9 +712,9 @@ export default function ChatView() {
         ])
       }
     }
-    let p: PendingConfirm
+    let p: PendingApproval
     try {
-      p = await api.pendingConfirm(id)
+      p = await api.pendingApproval(id)
     } catch {
       return // no pending approval for this session
     }
@@ -727,8 +727,8 @@ export default function ChatView() {
         thinking: false,
         phase: 'done' as const,
         confirm: {
-          sessionId: p.session_id,
-          approvalId: p.approval_id,
+          sessionId: p.sessionId,
+          approvalId: p.approvalId,
           command: p.command,
           level: p.level,
           message: p.message,
@@ -943,7 +943,7 @@ export default function ChatView() {
   async function stopTurn(): Promise<boolean> {
     // No session id yet: the request is still in flight and the server has not
     // reported the id it minted, so there is no turn we can address. This is a
-    // refusal, not a success -- a POST with an empty `session_id` does not
+    // refusal, not a success -- a POST with an empty `sessionId` does not
     // conflict with the running turn, the server mints a *new* session for it
     // and the conversation forks, leaving the original turn running invisibly.
     // So the caller keeps the text and the Stop control, exactly as for a stop
@@ -1171,7 +1171,7 @@ export default function ChatView() {
     // The session this stream turned out to be for. A brand-new chat has no id
     // at send time -- the server mints one and reports it in message_start --
     // so the send-time `currentSessionId` cannot name it. Needed by the
-    // synthesized terminal below, which carries no session_id of its own.
+    // synthesized terminal below, which carries no sessionId of its own.
     let turnSession = currentSessionId
     const controller = new AbortController()
     abortRef.current = controller
@@ -1179,11 +1179,11 @@ export default function ChatView() {
 
     try {
       await streamSSE(
-        '/api/messages',
+        '/api/v1/messages',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': user },
-          body: JSON.stringify({ session_id: currentSessionId, content: text }),
+          body: JSON.stringify({ sessionId: currentSessionId, content: text }),
         },
         (_evName, ev) => {
           if (stale()) {
@@ -1193,7 +1193,7 @@ export default function ChatView() {
             // bubble, not a turn the view has moved on from. They are:
             //   - its own `message_done`, else the bubble spins "Running..."
             //     forever;
-            //   - the `confirm_resolved` / `question_resolved` the abort
+            //   - the `approval_resolved` / `question_resolved` the abort
             //     publishes alongside it, else its write card keeps live
             //     Approve/Reject buttons that POST to a record the settle
             //     already deleted (and its question card keeps offering an
@@ -1211,13 +1211,13 @@ export default function ChatView() {
             // path aborts the fetch instead, so an aborted stream emits nothing
             // at all and cannot reach here.
             const settlesSupersededTurn =
-              ev.type === 'message_done' || ev.type === 'confirm_resolved' || ev.type === 'question_resolved'
+              ev.type === 'message_done' || ev.type === 'approval_resolved' || ev.type === 'question_resolved'
             if (!settlesSupersededTurn) return
           }
           if (ev.type === 'message_start') {
-            if (ev.session_id) {
-              turnSession = ev.session_id
-              setCurrentSessionId(ev.session_id)
+            if (ev.sessionId) {
+              turnSession = ev.sessionId
+              setCurrentSessionId(ev.sessionId)
               loadSessions()
             }
             return
@@ -1228,23 +1228,23 @@ export default function ChatView() {
           }
           if (ev.type === 'tool_call') {
             setPhase(bubble, 'tools')
-            bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.call_id || '', done: false })
+            bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.callId || '', done: false })
             return
           }
           if (ev.type === 'tool_result') {
             setPhase(bubble, 'tools')
             // Attach unconditionally (an empty output is still a result): the
             // call must be marked done even when the tool returned nothing.
-            attachToolResult(bubble.tools, ev.call_id || '', ev.output || '')
+            attachToolResult(bubble.tools, ev.callId || '', ev.output || '')
             return
           }
-          if (ev.type === 'confirm_pending') {
+          if (ev.type === 'approval_pending') {
             // A write is parked awaiting the human (issue #20). Show the card
             // immediately rather than waiting for the next 1s ticker render.
             setPhase(bubble, 'tools')
             bubble.confirm = {
-              sessionId: ev.session_id || currentSessionId || '',
-              approvalId: ev.call_id || '',
+              sessionId: ev.sessionId || currentSessionId || '',
+              approvalId: ev.callId || '',
               command: ev.command || '',
               level: ev.level || 'write',
               message: ev.message,
@@ -1254,8 +1254,8 @@ export default function ChatView() {
             requestAnimationFrame(scrollThread)
             return
           }
-          if (ev.type === 'confirm_resolved') {
-            if (bubble.confirm && (!ev.call_id || bubble.confirm.approvalId === ev.call_id)) {
+          if (ev.type === 'approval_resolved') {
+            if (bubble.confirm && (!ev.callId || bubble.confirm.approvalId === ev.callId)) {
               bubble.confirm.resolved = true
               // `approved` is a *bool on the wire: absent means nobody decided
               // this -- the turn was stopped while the write was parked -- and
@@ -1277,8 +1277,8 @@ export default function ChatView() {
               bubble.questions = [
                 ...(bubble.questions || []),
                 newBubbleQuestion(
-                  ev.session_id || currentSessionId || '',
-                  ev.call_id || '',
+                  ev.sessionId || currentSessionId || '',
+                  ev.callId || '',
                   ev.question.questions,
                   ev.question.timeoutSeconds,
                 ),
@@ -1291,7 +1291,7 @@ export default function ChatView() {
           if (ev.type === 'question_resolved') {
             // Settle only the matching card: another question of this turn may
             // still be open.
-            const q = (bubble.questions || []).find((x) => !ev.call_id || x.questionId === ev.call_id)
+            const q = (bubble.questions || []).find((x) => !ev.callId || x.questionId === ev.callId)
             if (q) {
               q.resolved = true
               q.outcome = ev.message || 'answered'
@@ -1390,7 +1390,7 @@ export default function ChatView() {
     confirm.error = ''
     setBubbles([...bubblesRef.current])
     try {
-      await api.postConfirm(session, decision)
+      await api.postApproval(session, decision)
       confirm.resolved = true
       confirm.approved = decision !== 'reject'
     } catch (e) {

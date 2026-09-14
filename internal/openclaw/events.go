@@ -6,15 +6,15 @@ import agentruntime "github.com/suanova/cubepilot/internal/runtime"
 // confirm_* (issue #20) are emitted by the HITL approval path; the rest stream
 // the chat turn.
 const (
-	EventMessageStart    = agentruntime.EventMessageStart
-	EventAgentThinking   = agentruntime.EventAgentThinking
-	EventToolCall        = agentruntime.EventToolCall
-	EventToolResult      = agentruntime.EventToolResult
-	EventMessageDelta    = agentruntime.EventMessageDelta
-	EventTextReplace     = agentruntime.EventTextReplace
-	EventMessageDone     = agentruntime.EventMessageDone
-	EventConfirmPending  = agentruntime.EventConfirmPending
-	EventConfirmResolved = agentruntime.EventConfirmResolved
+	EventMessageStart     = agentruntime.EventMessageStart
+	EventAgentThinking    = agentruntime.EventAgentThinking
+	EventToolCall         = agentruntime.EventToolCall
+	EventToolResult       = agentruntime.EventToolResult
+	EventMessageDelta     = agentruntime.EventMessageDelta
+	EventTextReplace      = agentruntime.EventTextReplace
+	EventMessageDone      = agentruntime.EventMessageDone
+	EventApprovalPending  = agentruntime.EventApprovalPending
+	EventApprovalResolved = agentruntime.EventApprovalResolved
 )
 
 // Event aliases the runtime-neutral event contract for OpenClaw mapper users.

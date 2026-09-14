@@ -32,7 +32,10 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir st
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/agents/"+user+"/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(cfg); err != nil {
+		// Enveloped, like the real API: serving a bare ResolvedAgentConfig here
+		// would let the fake disagree with production and hide a client that
+		// stopped unwrapping.
+		if err := json.NewEncoder(w).Encode(map[string]any{"config": cfg}); err != nil {
 			t.Errorf("encode: %v", err)
 		}
 	})
@@ -636,5 +639,92 @@ func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "do not read") {
 		t.Errorf("symlink target content was read and copied:\n%s", raw)
+	}
+}
+
+// TestFetchConfigWireShape pins how the internal config endpoint's payload is
+// read. Three shapes must be told apart, and conflating them is silent rather
+// than loud: a config decoded from the wrong shape is a zero value, and a zero
+// config skips the device pairing that gates the approval channel -- surfacing
+// later as an unrelated NOT_PAIRED on the first gated turn.
+func TestFetchConfigWireShape(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		// wantErr is set for shapes that are a contract mismatch.
+		wantErr bool
+		// wantRevision is checked when wantErr is false.
+		wantRevision string
+	}{
+		{
+			name:         "enveloped",
+			body:         `{"config":{"revision":"rev-1","instance":"li-ming-cubepilot","devicePublicKey":"PUBKEY"}}`,
+			wantRevision: "rev-1",
+		},
+		{
+			// The endpoint answers null for a user whose instance has no resolved
+			// config yet, and poll() has a branch for that state. It is not an
+			// error and must not become one.
+			name:         "null config is a valid empty config",
+			body:         `{"config":null}`,
+			wantRevision: "",
+		},
+		{
+			name:    "missing config key is a contract mismatch",
+			body:    `{}`,
+			wantErr: true,
+		},
+		{
+			name:    "bare config (the pre-envelope shape) is a contract mismatch",
+			body:    `{"revision":"rev-1","instance":"li-ming-cubepilot"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			s := New(Config{APIURL: srv.URL, User: "li.ming"})
+			s.http = srv.Client()
+
+			cfg, err := s.fetchConfig(context.Background())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("fetchConfig accepted %s as %+v; want a contract error", tc.body, cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fetchConfig(%s): %v", tc.body, err)
+			}
+			if cfg.Revision != tc.wantRevision {
+				t.Fatalf("revision = %q, want %q", cfg.Revision, tc.wantRevision)
+			}
+		})
+	}
+}
+
+// TestFetchConfigKeepsDeviceKey guards the field whose loss is silent: pairing
+// no-ops on an empty key, so nothing complains until a gated turn fails.
+func TestFetchConfigKeepsDeviceKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"config":{"revision":"rev-1","devicePublicKey":"PUBKEY"}}`))
+	}))
+	defer srv.Close()
+
+	s := New(Config{APIURL: srv.URL, User: "li.ming"})
+	s.http = srv.Client()
+
+	cfg, err := s.fetchConfig(context.Background())
+	if err != nil {
+		t.Fatalf("fetchConfig: %v", err)
+	}
+	if cfg.DevicePublicKey != "PUBKEY" {
+		t.Fatalf("devicePublicKey = %q, want PUBKEY", cfg.DevicePublicKey)
 	}
 }

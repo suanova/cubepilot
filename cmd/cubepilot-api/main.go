@@ -85,7 +85,7 @@ func main() {
 
 	// Human-in-the-loop write confirmations (issue #20 / #127). Always enabled:
 	// there is no platform-wide deployment switch any more -- whether an agent's
-	// interactive writes are gated is decided solely by its confirmPolicy
+	// interactive writes are gated is decided solely by its approvalPolicy
 	// (None | Allowlist | AlwaysAsk, template default + instance override).
 	// The device master key is auto-generated and persisted in a Secret, so no
 	// operator key is needed; the in-pod supervisor auto-pairs the derived

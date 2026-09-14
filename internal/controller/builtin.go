@@ -91,12 +91,12 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 			},
 		},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DisplayName:   "Platform Management Assistant",
-			Description:   "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
-			Runtime:       v1alpha1.RuntimeOpenClaw,
-			DefaultModel:  modelName,
-			Models:        BuiltinModels(endpoint, modelName),
-			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
+			DisplayName:    "Platform Management Assistant",
+			Description:    "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
+			Runtime:        v1alpha1.RuntimeOpenClaw,
+			DefaultModel:   modelName,
+			Models:         BuiltinModels(endpoint, modelName),
+			ApprovalPolicy: v1alpha1.ApprovalPolicyAllowlist,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (CubePilot)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",

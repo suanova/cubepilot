@@ -1,6 +1,6 @@
 // Tasks view -- task list + reports + templates + create dialog (FR-M4).
 // Tasks are either free-form (inline instruction, no template) or bound to a
-// real TaskTemplate (templateRef + params) served by GET /api/tasktemplates.
+// real TaskTemplate (templateRef + params) served by GET /api/v1/tasktemplates.
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
 import { getCurrentUser } from '@/api/client'
@@ -76,7 +76,7 @@ export default function TasksView() {
   const [tab, setTab] = useState<'list' | 'templates'>('list')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [trigger, setTrigger] = useState<'Cron' | 'Manual'>('Cron')
-  const [form, setForm] = useState({ name: '', prompt: '', cron: '0 2 * * *', templateRef: '', params: {} as Record<string, string> })
+  const [form, setForm] = useState({ name: '', instruction: '', cron: '0 2 * * *', templateRef: '', params: {} as Record<string, string> })
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
   const [reportIndex, setReportIndex] = useState(0)
   const pollTimeouts = useRef<number[]>([])
@@ -87,21 +87,21 @@ export default function TasksView() {
     return tpl ? templateDisplayName(tpl) : t.templateRef
   }
   function statusPill(t: Task): string {
-    return t.enabled ? 'Enabled' : 'Disabled'
+    return t.state === 'Enabled' ? 'Enabled' : 'Disabled'
   }
   function triggerLabel(t: Task): string {
-    return t.schedule && t.schedule.trim() ? 'Scheduled + Manual' : 'Manual only'
+    return t.cron && t.cron.trim() ? 'Scheduled + Manual' : 'Manual only'
   }
   // scheduleCell renders the human description for a task's schedule. Cron
   // expressions are evaluated in UTC (issue #95), so the description is labeled
   // "(UTC)" -- otherwise a user cannot tell whether "0 2 * * *" means their
   // local 02:00 or the server's.
   function scheduleCell(t: Task): string {
-    if (!t.schedule || !t.schedule.trim()) return 'Manual only'
-    const desc = cronDescription(t.schedule)
+    if (!t.cron || !t.cron.trim()) return 'Manual only'
+    const desc = cronDescription(t.cron)
     // Stored schedules are server-validated; fall back to the raw value only if
     // the frontend ever fails to describe one.
-    return (desc.text ?? t.schedule) + ' (UTC)'
+    return (desc.text ?? t.cron) + ' (UTC)'
   }
 
   useEffect(() => {
@@ -144,7 +144,7 @@ export default function TasksView() {
 
   async function toggleTask(t: Task) {
     await api.toggleTask(t.id)
-    showToast(t.enabled ? 'Task disabled' : 'Task enabled')
+    showToast(t.state === 'Enabled' ? 'Task disabled' : 'Task enabled')
     await loadTasks()
   }
 
@@ -197,7 +197,7 @@ export default function TasksView() {
   }
 
   function resetForm() {
-    setForm({ name: '', prompt: '', cron: '0 2 * * *', templateRef: '', params: {} })
+    setForm({ name: '', instruction: '', cron: '0 2 * * *', templateRef: '', params: {} })
   }
 
   // openDialog defaults to free-form (no template); passing a template name
@@ -211,7 +211,7 @@ export default function TasksView() {
 
   function onChangeTemplate(templateName: string) {
     if (!templateName) {
-      // Back to free-form: clear the binding but keep name/prompt/cron.
+      // Back to free-form: clear the binding but keep name/instruction/cron.
       setForm((f) => ({ ...f, templateRef: '', params: {} }))
       return
     }
@@ -237,7 +237,7 @@ export default function TasksView() {
       return
     }
     const activeTemplate = templates.find((x) => x.metadata.name === form.templateRef)
-    if (!activeTemplate && !form.prompt.trim()) {
+    if (!activeTemplate && !form.instruction.trim()) {
       showToast('Please enter a task prompt')
       return
     }
@@ -254,17 +254,17 @@ export default function TasksView() {
         return
       }
     }
-    const schedule = trigger === 'Cron' ? form.cron.trim() : ''
+    const cronExpr = trigger === 'Cron' ? form.cron.trim() : ''
     try {
       // Template-bound: send templateRef + params (the server renders the
       // instruction and defaults the schedule from the template). Free-form:
-      // send the raw prompt, exactly as before.
-      // Manual sends an explicit empty schedule so the server does NOT inherit
-      // the template's defaultCron (only a fully omitted schedule does, which
+      // send the raw instruction, exactly as before.
+      // Manual sends an explicit empty cron so the server does NOT inherit
+      // the template's defaultCron (only a fully omitted cron does, which
       // the UI never sends); Cron sends the entered expression.
       const payload = activeTemplate
-        ? { name, schedule, templateRef: activeTemplate.metadata.name, params: form.params }
-        : { name, prompt: form.prompt.trim(), schedule }
+        ? { name, cron: cronExpr, templateRef: activeTemplate.metadata.name, params: form.params }
+        : { name, instruction: form.instruction.trim(), cron: cronExpr }
       const task = await api.createTask(payload)
       setDialogOpen(false)
       resetForm()
@@ -289,7 +289,7 @@ export default function TasksView() {
   const activeTemplate = templates.find((x) => x.metadata.name === form.templateRef)
   const previewPrompt = activeTemplate
     ? renderInstruction(activeTemplate.spec?.instruction || '', form.params)
-    : form.prompt
+    : form.instruction
 
   return (
     <div className="view active">
@@ -362,16 +362,16 @@ export default function TasksView() {
                       <td style={{ fontWeight: 600 }}>{t.name}</td>
                       <td>{templateLabel(t)}</td>
                       <td>{triggerLabel(t)}</td>
-                      <td title={t.schedule && t.schedule.trim() ? `Cron (UTC): ${t.schedule.trim()}` : undefined}>{scheduleCell(t)}</td>
+                      <td title={t.cron && t.cron.trim() ? `Cron (UTC): ${t.cron.trim()}` : undefined}>{scheduleCell(t)}</td>
                       <td>
-                        <span className={`pill ${t.enabled ? 'success' : 'neutral'}`}>{statusPill(t)}</span>
+                        <span className={`pill ${t.state === 'Enabled' ? 'success' : 'neutral'}`}>{statusPill(t)}</span>
                       </td>
                       <td className="tnum">{t.lastRunAt ? fmtTime(t.lastRunAt) : '-'}</td>
                       <td className="tnum">{t.nextRunAt ? fmtTime(t.nextRunAt) : '-'}</td>
                       <td>{t.creator || '-'}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>
                         <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); runTaskId(t.id) }}>Run</button>
-                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleTask(t) }}>{t.enabled ? 'Disable' : 'Enable'}</button>
+                        <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); toggleTask(t) }}>{t.state === 'Enabled' ? 'Disable' : 'Enable'}</button>
                         <button className="btn sm ghost" onClick={(e) => { e.stopPropagation(); deleteTask(t) }}>Delete</button>
                       </td>
                     </tr>
@@ -608,8 +608,8 @@ export default function TasksView() {
                     rows={5}
                     aria-label="Task prompt"
                     placeholder="e.g. Check node readiness and abnormal Pods; grade findings P0/P1/P2"
-                    value={form.prompt}
-                    onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+                    value={form.instruction}
+                    onChange={(e) => setForm((f) => ({ ...f, instruction: e.target.value }))}
                   />
                 </div>
               )}

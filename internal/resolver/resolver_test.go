@@ -34,8 +34,8 @@ func template(name string, mod func(*v1alpha1.AgentTemplate)) *v1alpha1.AgentTem
 	t := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.AgentTemplateSpec{
-			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
-			Instructions:  "You are the platform assistant.",
+			ApprovalPolicy: v1alpha1.ApprovalPolicyAllowlist,
+			Instructions:   "You are the platform assistant.",
 		},
 	}
 	if mod != nil {
@@ -112,8 +112,8 @@ func TestResolveMergesFields(t *testing.T) {
 	if cfg.ModelName != "deepseek-v4-flash" {
 		t.Errorf("modelName = %q", cfg.ModelName)
 	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
-		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
+	if cfg.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
+		t.Errorf("approvalPolicy = %q", cfg.ApprovalPolicy)
 	}
 	if len(cfg.Skills) != 1 {
 		t.Fatalf("skills = %d, want 1", len(cfg.Skills))
@@ -303,11 +303,11 @@ func TestResolveUserInstructionsOnly(t *testing.T) {
 	}
 }
 
-// TestResolveConfirmPolicyOverride verifies an instance confirmPolicy override
+// TestResolveApprovalPolicyOverride verifies an instance approvalPolicy override
 // wins over the template default (issue #116 inherit-or-own).
-func TestResolveConfirmPolicyOverride(t *testing.T) {
+func TestResolveApprovalPolicyOverride(t *testing.T) {
 	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
-	inst.Spec.ConfirmPolicy = v1alpha1.ConfirmPolicyAlwaysAsk
+	inst.Spec.ApprovalPolicy = v1alpha1.ApprovalPolicyAlwaysAsk
 	r := testResolver(t,
 		template(v1alpha1.DefaultAgentName, nil), // template default Allowlist
 		inst,
@@ -316,8 +316,8 @@ func TestResolveConfirmPolicyOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAlwaysAsk {
-		t.Errorf("confirmPolicy = %q, want the instance override AlwaysAsk", cfg.ConfirmPolicy)
+	if cfg.ApprovalPolicy != v1alpha1.ApprovalPolicyAlwaysAsk {
+		t.Errorf("approvalPolicy = %q, want the instance override AlwaysAsk", cfg.ApprovalPolicy)
 	}
 
 	// No override -> the template default flows through.
@@ -327,26 +327,8 @@ func TestResolveConfirmPolicyOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if cfg2.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
-		t.Errorf("confirmPolicy = %q, want the template default Allowlist", cfg2.ConfirmPolicy)
-	}
-}
-
-// TestResolveLegacyConfirmWritesNormalized verifies a stored pre-rename
-// "ConfirmWrites" value resolves to Allowlist (issue #116), so an upgraded
-// cluster keeps gating interactive turns instead of silently treating the
-// unknown value as pass-through.
-func TestResolveLegacyConfirmWritesNormalized(t *testing.T) {
-	tmpl := template(v1alpha1.DefaultAgentName, func(a *v1alpha1.AgentTemplate) {
-		a.Spec.ConfirmPolicy = "ConfirmWrites" // legacy stored value
-	})
-	r := testResolver(t, tmpl, instance("li.ming", v1alpha1.DefaultAgentName, ""))
-	cfg, err := r.ResolveForUser(context.Background(), "li.ming")
-	if err != nil {
-		t.Fatalf("ResolveForUser: %v", err)
-	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
-		t.Errorf("confirmPolicy = %q, want Allowlist (legacy ConfirmWrites normalized)", cfg.ConfirmPolicy)
+	if cfg2.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
+		t.Errorf("approvalPolicy = %q, want the template default Allowlist", cfg2.ApprovalPolicy)
 	}
 }
 

@@ -17,46 +17,46 @@ import (
 )
 
 // Approval-channel state surfaced on the confirm view (issue #127): a gated
-// confirmPolicy only "does something" while the channel that pauses writes can
+// approvalPolicy only "does something" while the channel that pauses writes can
 // carry the turn. "up" = established/establishable now; "pairing" = first-time
 // device pairing in flight (auto-approves shortly); "down" = the channel cannot
 // be reached, so a gated turn fails closed; "unconfigured" = no HITL machinery
 // (the API could not bring the channel up).
 const (
-	confirmChannelUp           = "up"
-	confirmChannelPairing      = "pairing"
-	confirmChannelDown         = "down"
-	confirmChannelUnconfigured = "unconfigured"
+	approvalChannelUp           = "up"
+	approvalChannelPairing      = "pairing"
+	approvalChannelDown         = "down"
+	approvalChannelUnconfigured = "unconfigured"
 )
 
-// confirmView is the Portal's read of the confirmation configuration for the
-// caller's default agent instance (issue #116). confirmPolicy/allowlist are
+// approvalView is the Portal's read of the confirmation configuration for the
+// caller's default agent instance (issue #116). approvalPolicy/allowlist are
 // the *effective* values (what the runtime enforces); override/allowlistOwned
 // are the instance's own state (empty = inheriting the template default live).
-type confirmView struct {
-	Exists         bool                   `json:"exists"`
-	ConfirmPolicy  v1alpha1.ConfirmPolicy `json:"confirmPolicy"`
-	Override       v1alpha1.ConfirmPolicy `json:"override"`
-	TemplatePolicy v1alpha1.ConfirmPolicy `json:"templatePolicy"`
-	Allowlist      []confirmRule          `json:"allowlist,omitempty"`
-	AllowlistOwned []confirmRule          `json:"allowlistOwned,omitempty"`
-	Channel        string                 `json:"channel"`
+type approvalView struct {
+	Exists         bool                    `json:"exists"`
+	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
+	Override       v1alpha1.ApprovalPolicy `json:"override"`
+	TemplatePolicy v1alpha1.ApprovalPolicy `json:"templatePolicy"`
+	Allowlist      []approvalRule          `json:"allowlist,omitempty"`
+	AllowlistOwned []approvalRule          `json:"allowlistOwned,omitempty"`
+	Channel        string                  `json:"channel"`
 }
 
-// confirmRule is one allowlist rule served to the Portal. Label is set by the
+// approvalRule is one allowlist rule served to the Portal. Label is set by the
 // server ONLY for rules that exactly match a platform builtin read-only rule,
 // so the UI never guesses that a user-added rule (which may allow a write) is
 // read-only.
-type confirmRule struct {
+type approvalRule struct {
 	Pattern    string `json:"pattern"`
 	ArgPattern string `json:"argPattern,omitempty"`
 	Label      string `json:"label,omitempty"`
 }
 
-func toConfirmRules(rules []v1alpha1.AllowlistRule) []confirmRule {
-	out := make([]confirmRule, 0, len(rules))
+func toApprovalRules(rules []v1alpha1.AllowlistRule) []approvalRule {
+	out := make([]approvalRule, 0, len(rules))
 	for _, r := range rules {
-		out = append(out, confirmRule{
+		out = append(out, approvalRule{
 			Pattern:    r.Pattern,
 			ArgPattern: r.ArgPattern,
 			Label:      allowlist.BuiltinLabel(r),
@@ -65,36 +65,42 @@ func toConfirmRules(rules []v1alpha1.AllowlistRule) []confirmRule {
 	return out
 }
 
-// handleAgentConfirm serves GET/PUT /api/agent/confirm -- the instance owner's
-// confirmation posture: an optional confirmPolicy override ("" = follow the
+// handleAgentApproval serves GET/PUT /api/agent/approval -- the instance owner's
+// confirmation posture: an optional approvalPolicy override ("" = follow the
 // template) and the instance-owned allowlist ([] = inherit the template's
 // effective default live; a non-empty list is owned and authoritative).
-func (s *Server) handleAgentConfirm(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		view, err := s.confirmView(r.Context(), s.userOf(r))
+		view, err := s.approvalView(r.Context(), s.userOf(r))
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ConfirmPolicy)
+		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ApprovalPolicy)
 		writeJSON(w, http.StatusOK, view)
 	case http.MethodPut:
 		var body struct {
-			ConfirmPolicy v1alpha1.ConfirmPolicy   `json:"confirmPolicy"`
-			Allowlist     []v1alpha1.AllowlistRule `json:"allowlist"`
+			ApprovalPolicy v1alpha1.ApprovalPolicy  `json:"approvalPolicy"`
+			Allowlist      []v1alpha1.AllowlistRule `json:"allowlist"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// DisallowUnknownFields for the same reason as the agent config PUT: a
+		// payload carrying the superseded `confirmPolicy` key would be ignored,
+		// silently resetting the policy to "inherit" and clearing the owned
+		// allowlist instead of reporting the mismatch.
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
-		switch body.ConfirmPolicy {
-		case "", v1alpha1.ConfirmPolicyNone, v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
+		switch body.ApprovalPolicy {
+		case "", v1alpha1.ApprovalPolicyNone, v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
 		default:
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "confirmPolicy must be None, Allowlist, AlwaysAsk or empty"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "approvalPolicy must be None, Allowlist, AlwaysAsk or empty"})
 			return
 		}
-		if err := s.saveConfirm(r.Context(), s.userOf(r), body.ConfirmPolicy, body.Allowlist); err != nil {
+		if err := s.saveConfirm(r.Context(), s.userOf(r), body.ApprovalPolicy, body.Allowlist); err != nil {
 			code := http.StatusInternalServerError
 			if errors.Is(err, errNoInstance) {
 				code = http.StatusConflict
@@ -102,12 +108,12 @@ func (s *Server) handleAgentConfirm(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, code, map[string]any{"error": err.Error()})
 			return
 		}
-		view, err := s.confirmView(r.Context(), s.userOf(r))
+		view, err := s.approvalView(r.Context(), s.userOf(r))
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ConfirmPolicy)
+		view.Channel = s.gatedChannel(r.Context(), s.userOf(r), view.ApprovalPolicy)
 		writeJSON(w, http.StatusOK, view)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or PUT required"})
@@ -119,9 +125,9 @@ func (s *Server) handleAgentConfirm(w http.ResponseWriter, r *http.Request) {
 // instance has no gating to enforce, so probing would only add a needless
 // gateway dial (and seed a device pairing) for users who will never be gated.
 // It is empty otherwise.
-func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.ConfirmPolicy) string {
+func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.ApprovalPolicy) string {
 	switch pol {
-	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
+	case v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
 	default:
 		return ""
 	}
@@ -129,15 +135,15 @@ func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.Con
 	// only happens when the API could not bring the channel up -- a fatal
 	// misconfig).
 	if s.hitl == nil {
-		return confirmChannelUnconfigured
+		return approvalChannelUnconfigured
 	}
 	return s.hitl.channelState(ctx, user)
 }
 
-// confirmView resolves the effective + owned confirmation state for a user's
+// approvalView resolves the effective + owned confirmation state for a user's
 // default instance.
-func (s *Server) confirmView(ctx context.Context, user string) (confirmView, error) {
-	var view confirmView
+func (s *Server) approvalView(ctx context.Context, user string) (approvalView, error) {
+	var view approvalView
 	if s.cr == nil {
 		return view, nil
 	}
@@ -151,27 +157,27 @@ func (s *Server) confirmView(ctx context.Context, user string) (confirmView, err
 		return view, err
 	}
 	view.Exists = true
-	view.Override = inst.Spec.ConfirmPolicy
-	view.AllowlistOwned = toConfirmRules(inst.Spec.Allowlist)
+	view.Override = inst.Spec.ApprovalPolicy
+	view.AllowlistOwned = toApprovalRules(inst.Spec.Allowlist)
 	if inst.Spec.TemplateRef != "" {
 		var def v1alpha1.AgentTemplate
 		if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: inst.Spec.TemplateRef}, &def); err == nil {
-			view.TemplatePolicy = def.Spec.ConfirmPolicy
+			view.TemplatePolicy = def.Spec.ApprovalPolicy
 		}
 	}
 	if s.mgr != nil {
 		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil && !cfg.Empty() {
-			view.ConfirmPolicy = cfg.ConfirmPolicy
-			view.Allowlist = toConfirmRules(cfg.Allowlist)
+			view.ApprovalPolicy = cfg.ApprovalPolicy
+			view.Allowlist = toApprovalRules(cfg.Allowlist)
 		}
 	}
 	return view, nil
 }
 
 // saveConfirm writes the instance's confirmation override and owned allowlist.
-// An empty confirmPolicy clears the override (inherit the template); an empty
+// An empty approvalPolicy clears the override (inherit the template); an empty
 // allowlist clears ownership (inherit the template's effective default live).
-func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.ConfirmPolicy, al []v1alpha1.AllowlistRule) error {
+func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.ApprovalPolicy, al []v1alpha1.AllowlistRule) error {
 	if s.cr == nil {
 		return nil
 	}
@@ -183,12 +189,12 @@ func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.Conf
 		}
 		return err
 	}
-	inst.Spec.ConfirmPolicy = pol
+	inst.Spec.ApprovalPolicy = pol
 	inst.Spec.Allowlist = allowlist.Merge(nil, al) // sanitize: drop empty patterns, dedupe
 	return s.cr.Update(ctx, &inst)
 }
 
-// errNoInstance reports a PUT /api/agent/confirm against a user with no
+// errNoInstance reports a PUT /api/agent/approval against a user with no
 // provisioned instance (provision on the Agent Config page first).
 var errNoInstance = errors.New("no agent instance yet — provision it on the Agent Config page first")
 
@@ -220,7 +226,7 @@ func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1
 	}
 	if s.mgr != nil {
 		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil && !cfg.Empty() {
-			if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
+			if cfg.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
 				return false, nil
 			}
 		}

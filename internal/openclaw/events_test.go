@@ -119,13 +119,13 @@ func eventTypes(evs []Event) []string {
 	return out
 }
 
-// TestConfirmEventMarshal pins the confirm_pending / confirm_resolved SSE JSON
+// TestApprovalEventMarshal pins the approval_pending / approval_resolved SSE JSON
 // to the documented contract (docs/cubepilot/api.md lines 436-437): call_id is
 // the gateway approval id, tool is the exec tool, command/level/message carry
 // the write, approved the decision.
-func TestConfirmEventMarshal(t *testing.T) {
+func TestApprovalEventMarshal(t *testing.T) {
 	pending := Event{
-		Type:      EventConfirmPending,
+		Type:      EventApprovalPending,
 		SessionID: "conv-abc",
 		CallID:    "appr-1",
 		Name:      "exec",
@@ -135,9 +135,9 @@ func TestConfirmEventMarshal(t *testing.T) {
 	}
 	got := string(pending.Marshal())
 	for _, want := range []string{
-		`"type":"confirm_pending"`,
-		`"session_id":"conv-abc"`,
-		`"call_id":"appr-1"`,
+		`"type":"approval_pending"`,
+		`"sessionId":"conv-abc"`,
+		`"callId":"appr-1"`,
 		`"name":"exec"`,
 		`"command":"kubectl delete pod foo"`,
 		`"level":"write"`,
@@ -149,16 +149,16 @@ func TestConfirmEventMarshal(t *testing.T) {
 	}
 
 	resolved := Event{
-		Type:      EventConfirmResolved,
+		Type:      EventApprovalResolved,
 		SessionID: "conv-abc",
 		CallID:    "appr-1",
 		Approved:  boolPtr(true),
 	}
 	got = string(resolved.Marshal())
 	for _, want := range []string{
-		`"type":"confirm_resolved"`,
-		`"session_id":"conv-abc"`,
-		`"call_id":"appr-1"`,
+		`"type":"approval_resolved"`,
+		`"sessionId":"conv-abc"`,
+		`"callId":"appr-1"`,
 		`"approved":true`,
 	} {
 		if !strings.Contains(got, want) {
@@ -168,7 +168,7 @@ func TestConfirmEventMarshal(t *testing.T) {
 
 	// A reject must serialize an explicit approved:false (not be omitted).
 	rejected := Event{
-		Type:      EventConfirmResolved,
+		Type:      EventApprovalResolved,
 		SessionID: "conv-abc",
 		CallID:    "appr-2",
 		Approved:  boolPtr(false),

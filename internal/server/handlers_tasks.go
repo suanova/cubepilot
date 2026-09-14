@@ -20,17 +20,19 @@ import (
 	"github.com/suanova/cubepilot/internal/schedule"
 )
 
-// taskDTO is the API shape of a task (kept wire-compatible with the pre-CRD
-// JSON-store shape so the Portal needs no change). id = Task CR name; name =
-// display-name annotation (the CR name is DNS-1123 sanitized).
+// taskDTO is the API shape of a task. id = Task CR name; name = the
+// display-name annotation (the CR name is DNS-1123 sanitized). instruction and
+// cron carry the CRD's field names so a client that also reads the CR
+// (issue #148) sees one vocabulary. state is the only enablement field: an
+// "enabled" boolean alongside it would be a second source of truth for the
+// same fact.
 type taskDTO struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
-	Prompt      string     `json:"prompt"`
-	Schedule    string     `json:"schedule"`
+	Instruction string     `json:"instruction"`
+	Cron        string     `json:"cron"`
 	TemplateRef string     `json:"templateRef,omitempty"` // bound TaskTemplate name ("" = free-form)
 	State       string     `json:"state"`                 // Enabled | Paused
-	Enabled     bool       `json:"enabled"`               // derived from State (wire compat)
 	Creator     string     `json:"creator"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastRunAt   *time.Time `json:"lastRunAt,omitempty"`
@@ -58,10 +60,9 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 	dto := taskDTO{
 		ID:          t.Name,
 		Name:        t.Annotations[v1alpha1.TaskDisplayNameAnnotation],
-		Prompt:      t.Spec.Instruction,
-		Schedule:    t.Spec.Cron,
+		Instruction: t.Spec.Instruction,
+		Cron:        t.Spec.Cron,
 		TemplateRef: t.Spec.TemplateRef,
-		Enabled:     t.Enabled(),
 		State:       string(t.Spec.State),
 		Creator:     t.Spec.Owner,
 		CreatedAt:   t.CreationTimestamp.Time,
@@ -73,8 +74,8 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 	}
 	// Next fire time, mirroring the operator scheduler's computation (cron is
 	// evaluated in UTC -- issue #95; the UI labels schedules "(UTC)").
-	if dto.Enabled && dto.Schedule != "" {
-		if cron, err := schedule.Parse(dto.Schedule); err == nil {
+	if dto.State == string(v1alpha1.TaskStateEnabled) && dto.Cron != "" {
+		if cron, err := schedule.Parse(dto.Cron); err == nil {
 			base := t.CreationTimestamp.UTC()
 			if t.Status.LastRunTime != nil {
 				base = t.Status.LastRunTime.UTC()
@@ -162,27 +163,26 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var body struct {
 			Name        string            `json:"name"`
-			Prompt      string            `json:"prompt"`
-			Schedule    *string           `json:"schedule"` // omitted == use template default; explicit "" == Manual
+			Instruction string            `json:"instruction"`
+			Cron        *string           `json:"cron"` // omitted == use template default; explicit "" == Manual
 			TemplateRef string            `json:"templateRef"`
 			Params      map[string]string `json:"params"`
 			State       string            `json:"state"`
-			Enabled     *bool             `json:"enabled"` // deprecated wire compat
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad JSON body"})
 			return
 		}
 		body.Name = strings.TrimSpace(body.Name)
-		body.Prompt = strings.TrimSpace(body.Prompt)
+		body.Instruction = strings.TrimSpace(body.Instruction)
 		body.TemplateRef = strings.TrimSpace(body.TemplateRef)
 		cronExpr := ""
-		scheduleProvided := body.Schedule != nil
-		if body.Schedule != nil {
-			cronExpr = strings.TrimSpace(*body.Schedule)
+		cronProvided := body.Cron != nil
+		if body.Cron != nil {
+			cronExpr = strings.TrimSpace(*body.Cron)
 		}
-		if body.Name == "" || (body.Prompt == "" && body.TemplateRef == "") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and a prompt or template are required"})
+		if body.Name == "" || (body.Instruction == "" && body.TemplateRef == "") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and an instruction or template are required"})
 			return
 		}
 		// Optional template binding (design §3.5): a Task either binds a
@@ -190,7 +190,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// the template's current instruction and records the revision used) or
 		// is a free-form inline task (instruction only, no templateRef).
 		templateRef := body.TemplateRef
-		instruction := body.Prompt
+		instruction := body.Instruction
 		params := body.Params
 		if templateRef != "" {
 			var tpl v1alpha1.TaskTemplate
@@ -211,7 +211,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			// Default the schedule from the template only when the caller
 			// omitted it entirely. An explicit empty schedule means Manual and
 			// must stay Manual; an explicit cron expression wins.
-			if !scheduleProvided && tpl.Spec.DefaultCron != "" {
+			if !cronProvided && tpl.Spec.DefaultCron != "" {
 				cronExpr = tpl.Spec.DefaultCron
 			}
 		} else if len(body.Params) > 0 {
@@ -226,15 +226,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			trigger = v1alpha1.TaskTriggerCron
 		}
-		enabled := true
-		if body.Enabled != nil {
-			enabled = *body.Enabled
-		}
 		state := v1alpha1.TaskStateEnabled
 		if body.State != "" {
 			state = v1alpha1.TaskState(body.State)
-		} else if !enabled {
-			state = v1alpha1.TaskStatePaused
 		}
 		task := &v1alpha1.Task{
 			ObjectMeta: metav1.ObjectMeta{
@@ -260,7 +254,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"task": taskToDTO(*task)})
+		writeJSON(w, http.StatusCreated, map[string]any{"task": taskToDTO(*task)})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET or POST required"})
 	}
@@ -331,14 +325,14 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
 		return
 	}
-	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, apiPrefix+"/tasks/"), "/")
 	parts := strings.SplitN(rest, "/", 2)
 	id, action := parts[0], ""
 	if len(parts) == 2 {
 		action = parts[1]
 	}
 	if id == "" {
-		http.NotFound(w, r)
+		writeNotFound(w, "missing task id")
 		return
 	}
 	key := types.NamespacedName{Namespace: s.cfg.Namespace, Name: id}

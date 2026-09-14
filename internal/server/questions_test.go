@@ -20,7 +20,7 @@ const questionTestSession = "agent:main:conv-1"
 func questionTestServer(t *testing.T, gw *fakeHitlGateway, session string) (*Server, *httptest.ResponseRecorder) {
 	t.Helper()
 	s := platformTestServer(t)
-	s.hitl = newTestHitl(v1alpha1.ConfirmPolicyAllowlist, "rev-1", gw)
+	s.hitl = newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	// A registered connection is only usable once its handshake completed, so
 	// the fixture marks the gateway connected rather than merely stored.
 	gw.setConnected(true)
@@ -81,7 +81,7 @@ func TestQuestionRelayProjectsPending(t *testing.T) {
 	if ev == nil {
 		t.Fatalf("no question_pending in stream: %q", rec.Body.String())
 	}
-	if ev["call_id"] != "ask_1" || ev["session_id"] != questionTestSession {
+	if ev["callId"] != "ask_1" || ev["sessionId"] != questionTestSession {
 		t.Errorf("event = %+v, want call_id ask_1 on its session", ev)
 	}
 	q, ok := ev["question"].(map[string]any)
@@ -122,7 +122,7 @@ func TestQuestionRelayProjectsRealAskUserRecord(t *testing.T) {
 	if ev == nil {
 		t.Fatalf("a real ask_user record (isOther set) was not projected: %q", rec.Body.String())
 	}
-	if ev["call_id"] != "ask_1" {
+	if ev["callId"] != "ask_1" {
 		t.Errorf("event = %+v, want call_id ask_1", ev)
 	}
 }
@@ -178,7 +178,7 @@ func TestQuestionResolvedRoutesByRecordedSession(t *testing.T) {
 	if ev == nil {
 		t.Fatalf("no question_resolved in stream: %q", rec.Body.String())
 	}
-	if ev["call_id"] != "ask_1" || ev["session_id"] != questionTestSession || ev["message"] != "expired" {
+	if ev["callId"] != "ask_1" || ev["sessionId"] != questionTestSession || ev["message"] != "expired" {
 		t.Errorf("event = %+v", ev)
 	}
 }
@@ -201,7 +201,7 @@ func TestHandleQuestionAnswers(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -217,7 +217,7 @@ func TestHandleQuestionCancel(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "cancel": true})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -238,7 +238,7 @@ func TestHandleQuestionRejectsForeignSession(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
@@ -260,7 +260,7 @@ func TestHandleQuestionRejectsNotPendingOrExpired(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
 	for id, scenario := range map[string]string{"ask_1": "expired", "ask_2": "already answered"} {
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 			map[string]any{"id": id, "answers": map[string][]string{"where": {"workspace"}}})
 		if rec.Code != http.StatusConflict {
 			t.Errorf("%s (%s): status = %d, want 409: %s", id, scenario, rec.Code, rec.Body.String())
@@ -284,7 +284,7 @@ func TestHandleQuestionBadRequests(t *testing.T) {
 		"answers with no entry": {"id": "ask_1", "answers": map[string][]string{}},
 	}
 	for name, body := range cases {
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice", body)
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice", body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400: %s", name, rec.Code, rec.Body.String())
 		}
@@ -301,7 +301,7 @@ func TestHandleQuestionWithoutChannel(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	delete(s.hitl.conns, "alice")
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
@@ -319,12 +319,12 @@ func TestHandleQuestionDuringPairingReportsUnavailable(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	gw.setConnected(false) // registered, handshake still in flight
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
-	pending := doReq(t, s.Handler(), http.MethodGet, "/api/sessions/conv-1/question/pending", "alice", nil)
+	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
 	if pending.Code != http.StatusNotFound {
 		t.Fatalf("pending status = %d, want 404: %s", pending.Code, pending.Body.String())
 	}
@@ -344,7 +344,7 @@ func TestHandlePendingQuestion(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/sessions/conv-1/question/pending", "alice", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -375,7 +375,7 @@ func TestHandlePendingQuestionNoPending(t *testing.T) {
 		questionRecord("ask_1", "agent:main:other-session"),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/sessions/conv-1/question/pending", "alice", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
 	}
@@ -385,7 +385,7 @@ func TestHandleQuestionRoutePrecedence(t *testing.T) {
 	gw := &fakeHitlGateway{pendingQuestions: nil}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	// /question/pending must not be swallowed by the /question route.
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/sessions/conv-1/question/pending", "alice", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
 	if rec.Code == http.StatusMethodNotAllowed {
 		t.Fatalf("GET .../question/pending was routed to the answer handler: %s", rec.Body.String())
 	}

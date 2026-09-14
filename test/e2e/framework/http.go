@@ -119,7 +119,7 @@ func (f *Framework) PostRaw(ctx context.Context, url, user string, body []byte) 
 // idle, and the next POST /api/messages for it cannot be refused as a
 // concurrent turn.
 func (f *Framework) AbortSession(ctx context.Context, user, sessionKey string) ([]byte, int, error) {
-	return f.PostRaw(ctx, f.PortalBase+"/api/sessions/"+url.PathEscape(sessionKey)+"/abort", user, nil)
+	return f.PostRaw(ctx, f.PortalBase+"/api/v1/sessions/"+url.PathEscape(sessionKey)+"/abort", user, nil)
 }
 
 // SessionTurnActive reads GET /api/sessions/{key}/turn -- whether the session
@@ -133,7 +133,7 @@ func (f *Framework) AbortSession(ctx context.Context, user, sessionKey string) (
 // process could stop.
 func (f *Framework) SessionTurnActive(ctx context.Context, user, sessionKey string) (bool, int, error) {
 	data, code, err := f.GetJSON(ctx,
-		f.PortalBase+"/api/sessions/"+url.PathEscape(sessionKey)+"/turn",
+		f.PortalBase+"/api/v1/sessions/"+url.PathEscape(sessionKey)+"/turn",
 		map[string]string{"X-CubePilot-User": user})
 	if err != nil {
 		return false, code, err
@@ -152,9 +152,9 @@ type SSEEvent struct {
 // reply stream until message_done (or the stream ends / context deadline). It
 // replicates the assertions the old scripts/e2e.sh chat phase made with curl.
 //
-// HITL (issue #20): when the stream carries a confirm_pending (a write paused
+// HITL (issue #20): when the stream carries a approval_pending (a write paused
 // for a human), the stream only resumes after a decision, so the reader
-// auto-resolves it via POST /api/sessions/{key}/confirm with the given decision
+// auto-resolves it via POST /api/sessions/{key}/approval with the given decision
 // ("approve" by default; pass another decision to exercise the reject path).
 func (f *Framework) ChatSSE(ctx context.Context, user, sessionID, content string) ([]SSEEvent, error) {
 	return f.ChatSSEWithDecision(ctx, user, sessionID, content, "approve")
@@ -162,11 +162,11 @@ func (f *Framework) ChatSSE(ctx context.Context, user, sessionID, content string
 
 // ChatSSEWithDecision is ChatSSE with a configurable approval decision.
 func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, content, decision string) ([]SSEEvent, error) {
-	body, err := json.Marshal(map[string]string{"session_id": sessionID, "content": content})
+	body, err := json.Marshal(map[string]string{"sessionId": sessionID, "content": content})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := f.do(ctx, http.MethodPost, f.PortalBase+"/api/messages",
+	resp, err := f.do(ctx, http.MethodPost, f.PortalBase+"/api/v1/messages",
 		bytes.NewReader(body), map[string]string{
 			"Content-Type":     "application/json",
 			"X-CubePilot-User": user,
@@ -192,8 +192,8 @@ func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, co
 				if cur.Event == openclaw.EventMessageDone {
 					return events, nil
 				}
-				if cur.Event == openclaw.EventConfirmPending {
-					if err := f.resolveConfirm(ctx, user, cur.Data, decision); err != nil {
+				if cur.Event == openclaw.EventApprovalPending {
+					if err := f.resolveApproval(ctx, user, cur.Data, decision); err != nil {
 						return events, err
 					}
 				}
@@ -214,25 +214,25 @@ func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, co
 	return events, scanner.Err()
 }
 
-// resolveConfirm posts the human decision for a confirm_pending event so the
+// resolveApproval posts the human decision for an approval_pending event so the
 // paused gateway run resumes and the SSE stream reaches message_done.
-func (f *Framework) resolveConfirm(ctx context.Context, user string, data json.RawMessage, decision string) error {
+func (f *Framework) resolveApproval(ctx context.Context, user string, data json.RawMessage, decision string) error {
 	var pending struct {
-		SessionID string `json:"session_id"`
-		CallID    string `json:"call_id"`
+		SessionID string `json:"sessionId"`
+		CallID    string `json:"callId"`
 	}
 	if err := json.Unmarshal(data, &pending); err != nil {
-		return fmt.Errorf("decode confirm_pending: %w", err)
+		return fmt.Errorf("decode approval_pending: %w", err)
 	}
 	if pending.SessionID == "" {
-		return fmt.Errorf("confirm_pending carried no session_id")
+		return fmt.Errorf("approval_pending carried no sessionId")
 	}
 	reqBody, err := json.Marshal(map[string]string{"decision": decision})
 	if err != nil {
 		return err
 	}
 	resp, err := f.do(ctx, http.MethodPost,
-		f.PortalBase+"/api/sessions/"+url.PathEscape(pending.SessionID)+"/confirm",
+		f.PortalBase+"/api/v1/sessions/"+url.PathEscape(pending.SessionID)+"/approval",
 		bytes.NewReader(reqBody), map[string]string{
 			"Content-Type":     "application/json",
 			"X-CubePilot-User": user,
@@ -243,7 +243,7 @@ func (f *Framework) resolveConfirm(ctx context.Context, user string, data json.R
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("confirm (%s) returned %d: %s", decision, resp.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf("approval (%s) returned %d: %s", decision, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }

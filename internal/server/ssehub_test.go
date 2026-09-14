@@ -28,7 +28,7 @@ func TestSSEHub_OpenPublishAndClose(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	// External (WS-originated) event goes through PublishTo.
-	if !h.PublishTo("conv-1", openclaw.Event{Type: openclaw.EventConfirmPending, SessionID: "conv-1", CallID: "appr-1"}) {
+	if !h.PublishTo("conv-1", openclaw.Event{Type: openclaw.EventApprovalPending, SessionID: "conv-1", CallID: "appr-1"}) {
 		t.Fatal("PublishTo: expected true for an active stream")
 	}
 
@@ -36,8 +36,8 @@ func TestSSEHub_OpenPublishAndClose(t *testing.T) {
 	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"type":"message_start"`) {
 		t.Errorf("missing message_start in stream body: %q", body)
 	}
-	if !strings.Contains(body, "event: confirm_pending") || !strings.Contains(body, `"call_id":"appr-1"`) {
-		t.Errorf("missing confirm_pending in stream body: %q", body)
+	if !strings.Contains(body, "event: approval_pending") || !strings.Contains(body, `"callId":"appr-1"`) {
+		t.Errorf("missing approval_pending in stream body: %q", body)
 	}
 
 	// Duplicate Open conflicts while the first stream is live.
@@ -68,7 +68,7 @@ func TestSSEHub_PublishToNoStream(t *testing.T) {
 	if h.Active("conv-missing") {
 		t.Fatal("expected not active for unknown session")
 	}
-	if h.PublishTo("conv-missing", openclaw.Event{Type: openclaw.EventConfirmPending}) {
+	if h.PublishTo("conv-missing", openclaw.Event{Type: openclaw.EventApprovalPending}) {
 		t.Fatal("PublishTo on unknown session: expected false")
 	}
 }

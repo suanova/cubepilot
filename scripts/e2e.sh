@@ -108,7 +108,7 @@ trap 'rm -rf "$TMP"; cleanup' EXIT
 SESSION="e2e-$(date +%s)"
 BODY="$(jq -n --arg s "$SESSION" --arg c "你是 CubePilot 平台助手。请用一句话回复:你好。" \
   '{session_id: $s, content: $c}')"
-curl -sN --max-time 300 -X POST "http://127.0.0.1:18080/api/messages" \
+curl -sN --max-time 300 -X POST "http://127.0.0.1:18080/api/v1/messages" \
   -H 'Content-Type: application/json' \
   -H "X-CubePilot-User: $E2E_USER" \
   -d "$BODY" > "$TMP/sse.out" || fail "chat POST failed"
@@ -130,7 +130,7 @@ ok "agent pod running"
 # (deterministic) -- not that a model happens to follow it.
 step "system prompt renders into the agent workspace AGENTS.md"
 SP_MARKER="e2e-system-prompt-$(date +%s)"
-curl -sf --max-time 10 -X PUT "http://127.0.0.1:18080/api/agent/config" \
+curl -sf --max-time 10 -X PUT "http://127.0.0.1:18080/api/v1/agent/config" \
   -H 'Content-Type: application/json' \
   -H "X-CubePilot-User: $E2E_USER" \
   -d "$(jq -n --arg m "$SP_MARKER" '{config:{model:"",systemPrompt:$m}}')" >/dev/null \

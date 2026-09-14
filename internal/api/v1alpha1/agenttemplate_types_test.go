@@ -14,9 +14,9 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 	in := &AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 		Spec: AgentTemplateSpec{
-			Runtime:       RuntimeOpenClaw,
-			DefaultModel:  "deepseek-v4-flash",
-			ConfirmPolicy: ConfirmPolicyAllowlist,
+			Runtime:        RuntimeOpenClaw,
+			DefaultModel:   "deepseek-v4-flash",
+			ApprovalPolicy: ApprovalPolicyAllowlist,
 			Models: []TemplateModelSpec{
 				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com", CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"}},
 			},
@@ -31,7 +31,7 @@ func TestAgentTemplateSerializationRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Spec.Runtime != RuntimeOpenClaw || out.Spec.ConfirmPolicy != ConfirmPolicyAllowlist {
+	if out.Spec.Runtime != RuntimeOpenClaw || out.Spec.ApprovalPolicy != ApprovalPolicyAllowlist {
 		t.Errorf("scalar round-trip mismatch: %+v", out.Spec)
 	}
 	if len(out.Spec.Models) != 1 || out.Spec.Models[0].Endpoint == "" ||
@@ -59,7 +59,7 @@ func TestAgentTemplateRevision(t *testing.T) {
 		t.Errorf("status change altered revision: %q != %q", a.Revision(), base)
 	}
 	// Spec change does.
-	a.Spec.ConfirmPolicy = ConfirmPolicyAllowlist
+	a.Spec.ApprovalPolicy = ApprovalPolicyAllowlist
 	if a.Revision() == base {
 		t.Error("spec change did not alter revision")
 	}

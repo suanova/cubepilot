@@ -190,7 +190,7 @@ the api `/healthz`, and the Portal HTML.
 # Deploy path only (placeholder apiKey is fine):
 CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh
 
-# Full conversational e2e (needs a real apiKey; drives POST /api/messages
+# Full conversational e2e (needs a real apiKey; drives POST /api/v1/messages
 # over SSE and cold-starts a per-user agent Pod):
 CUBEPILOT_LLM_APIKEY='sk-real' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 ```
@@ -215,7 +215,7 @@ Publishing the images/chart to the registry is handled separately by the
 | Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-admin` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
 | User isolation | Deploy a second user (`--set 'agents.users=admin\,li.ming'`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
-| Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (`/api/inspect`) |
+| Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (`/api/v1/inspect`) |
 
 ## Current simplifications (phase-one boundaries)
 

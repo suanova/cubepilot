@@ -1,7 +1,7 @@
 // Agent config view -- model / system prompt / instance status / skills (FR-M2-005).
 import { useEffect, useState } from 'react'
 import { api } from '@/api'
-import type { AgentConfig, AgentConfirmView, AgentStatus, AllowlistRule, PlatformObject } from '@/api/types'
+import type { AgentConfig, AgentApprovalView, AgentStatus, AllowlistRule, PlatformObject } from '@/api/types'
 import { esc, fmtUptime } from '@/utils/format'
 import { enabledSkillsFromInstances, skillSpecStr } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
@@ -20,7 +20,7 @@ function WarnIcon() {
 }
 
 export default function AgentView() {
-  const [cfg, setCfg] = useState<AgentConfig>({ exists: false, model: '', systemPrompt: '' })
+  const [cfg, setCfg] = useState<AgentConfig>({ exists: false, selectedModel: '', userInstructions: '' })
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [skills, setSkills] = useState<Array<{ sk: PlatformObject; enabled: boolean }>>([])
   const [hasInstance, setHasInstance] = useState(false)
@@ -33,8 +33,8 @@ export default function AgentView() {
   // new one. The form is shared, so only one of the two is ever in flight.
   const [editingModel, setEditingModel] = useState<string | null>(null)
 
-  // Confirmation posture (issue #116): confirmPolicy override + owned allowlist.
-  const [confirm, setConfirm] = useState<AgentConfirmView | null>(null)
+  // Approval posture (issue #116): approvalPolicy override + owned allowlist.
+  const [confirm, setConfirm] = useState<AgentApprovalView | null>(null)
   const [policySel, setPolicySel] = useState('') // '' = follow the template default
   const [ruleForm, setRuleForm] = useState<{ pattern: string; argPattern: string }>({ pattern: '', argPattern: '' })
   const [confirmBusy, setConfirmBusy] = useState(false)
@@ -91,10 +91,10 @@ export default function AgentView() {
     }
   }
 
-  // Confirmation posture (issue #116) --------------------------------
+  // Approval posture (issue #116) --------------------------------
   // The API may omit allowlist/allowlistOwned (null); normalize to [] so no
   // render/handler path calls .some/.length on null (issue #123).
-  const withConfirmDefaults = (v: AgentConfirmView): AgentConfirmView => ({
+  const withConfirmDefaults = (v: AgentApprovalView): AgentApprovalView => ({
     ...v,
     allowlist: v.allowlist ?? [],
     allowlistOwned: v.allowlistOwned ?? [],
@@ -102,7 +102,7 @@ export default function AgentView() {
 
   async function loadConfirm() {
     try {
-      const v = await api.agentConfirm()
+      const v = await api.agentApproval()
       setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
     } catch (e) {
@@ -127,7 +127,7 @@ export default function AgentView() {
     setConfirmBusy(true)
     try {
       const pol = policy !== undefined ? policy : policySel
-      const v = await api.saveAgentConfirm({ confirmPolicy: pol, allowlist: owned ?? [] })
+      const v = await api.saveAgentApproval({ approvalPolicy: pol, allowlist: owned ?? [] })
       setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
     } catch (e) {
@@ -181,7 +181,7 @@ export default function AgentView() {
     if (provisioning) return
     setProvisioning(true)
     try {
-      const inst = await api.createInstance({ templateRef: 'cubepilot', selectedModel: cfg.model || undefined, userInstructions: cfg.systemPrompt || undefined })
+      const inst = await api.createInstance({ templateRef: 'cubepilot', selectedModel: cfg.selectedModel || undefined, userInstructions: cfg.userInstructions || undefined })
       showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
       await loadAgentView()
     } catch (e) {
@@ -222,7 +222,7 @@ export default function AgentView() {
       // Skills are persisted separately by the toggles above (enabledSkills);
       // here it is model (selectedModel) + system prompt (userInstructions),
       // both of which the resolver reads on the next turn.
-      const v = await api.saveAgentConfig({ model: cfg.model, systemPrompt: cfg.systemPrompt })
+      const v = await api.saveAgentConfig({ selectedModel: cfg.selectedModel, userInstructions: cfg.userInstructions })
       setCfg(v)
       showToast('Config saved - model and system prompt take effect on the next turn')
     } catch (e) {
@@ -331,8 +331,8 @@ export default function AgentView() {
                 <select
                   className="input"
                   aria-label="Select model"
-                  value={cfg.model || ''}
-                  onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value }))}
+                  value={cfg.selectedModel || ''}
+                  onChange={(e) => setCfg((c) => ({ ...c, selectedModel: e.target.value }))}
                 >
                   <option value="" disabled>-- Select a model --</option>
                   {templateModels.map((m) => (
@@ -371,8 +371,8 @@ export default function AgentView() {
                 rows={6}
                 aria-label="System prompt"
                 placeholder="Leave empty to use the persona built into the Agent image (SOUL.md)"
-                value={cfg.systemPrompt || ''}
-                onChange={(e) => setCfg((c) => ({ ...c, systemPrompt: e.target.value }))}
+                value={cfg.userInstructions || ''}
+                onChange={(e) => setCfg((c) => ({ ...c, userInstructions: e.target.value }))}
               />
             </div>
           </div>
@@ -519,11 +519,11 @@ export default function AgentView() {
                 </select>
                 {confirm && confirm.exists && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-                    Effective: <span className="pill neutral">{confirm.confirmPolicy || 'None'}</span>
+                    Effective: <span className="pill neutral">{confirm.approvalPolicy || 'None'}</span>
                     {' '}{confirm.override ? 'you override' : 'inherited from template'}
                   </div>
                 )}
-                {confirm && confirm.exists && (confirm.confirmPolicy === 'Allowlist' || confirm.confirmPolicy === 'AlwaysAsk') && confirm.channel && confirm.channel !== 'up' && (
+                {confirm && confirm.exists && (confirm.approvalPolicy === 'Allowlist' || confirm.approvalPolicy === 'AlwaysAsk') && confirm.channel && confirm.channel !== 'up' && (
                   <div style={{ marginTop: 6, fontSize: 12, color: confirm.channel === 'pairing' ? 'var(--warn)' : 'var(--danger)' }}>
                     {confirm.channel === 'unconfigured'
                       ? 'Approval channel is not configured — gated policies cannot be enforced.'
@@ -539,7 +539,7 @@ export default function AgentView() {
                 )}
               </div>
 
-              {confirm?.confirmPolicy === 'Allowlist' ? (
+              {confirm?.approvalPolicy === 'Allowlist' ? (
                 <>
                   <div className="field">
                     <label className="label">Allowlist — safe commands that auto-pass</label>
@@ -582,7 +582,7 @@ export default function AgentView() {
                 </>
               ) : (
                 <div style={{ marginTop: 8, fontSize: 13, color: 'var(--muted)' }}>
-                  {confirm?.confirmPolicy === 'AlwaysAsk'
+                  {confirm?.approvalPolicy === 'AlwaysAsk'
                     ? 'AlwaysAsk asks on every operation — the allowlist is not applied.'
                     : 'None passes everything through (audited) — no allowlist is applied.'}
                 </div>
