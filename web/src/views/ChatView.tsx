@@ -1378,8 +1378,9 @@ export default function ChatView() {
 
   // decide sends the human's answer for a pending write confirmation
   // (issue #20 / #116). "allow-always" approves this once and records the
-  // command on the instance allowlist so it auto-passes from then on. POSTing
-  // resolves the gateway approval; the SSE stream then carries the resumed turn.
+  // command as a learned grant for the user, so it auto-passes from then on;
+  // the instance allowlist is not touched. POSTing resolves the gateway
+  // approval; the SSE stream then carries the resumed turn.
   async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always') {
     const session = confirm.sessionId || currentSessionId
     if (!session) {
