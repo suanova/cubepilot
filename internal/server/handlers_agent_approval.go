@@ -207,11 +207,11 @@ func deriveAllowAlwaysRule(command string) (v1alpha1.AllowlistRule, bool) {
 	return rule, true
 }
 
-// allowlistAlways appends an allow-always entry to the user's instance
-// allowlist. When the instance was still inheriting (empty owned list) the
-// current effective list is materialized first, so appending preserves the
-// inherited defaults and only widens. No-op (false) when the effective policy
-// is not Allowlist (under AlwaysAsk everything asks anyway).
+// allowlistAlways appends an allow-always entry to the instance's own
+// allowlist. The inherited defaults are deliberately not copied in: the
+// resolver unions them in live, so the append only widens the instance's own
+// rules. No-op (false) when the effective policy is not Allowlist (under
+// AlwaysAsk everything asks anyway).
 func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1.AllowlistRule) (bool, error) {
 	if s.cr == nil {
 		return false, nil
@@ -228,13 +228,12 @@ func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1
 	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
 		return false, err
 	}
-	base := inst.Spec.Allowlist
-	if len(base) == 0 && s.mgr != nil {
-		if cfg, err := s.mgr.ResolvedConfigForUser(ctx, user); err == nil && cfg != nil {
-			base = cfg.Allowlist // materialize the inherited default on first ownership
-		}
-	}
-	inst.Spec.Allowlist = allowlist.Merge(base, []v1alpha1.AllowlistRule{rule})
+	// Append only to the instance's own rules. Deliberately NOT the resolved
+	// effective list: copying that in would write the platform builtin into the
+	// spec, and the union would then faithfully include the snapshot, so a
+	// builtin later removed from Default() — a hardening — would keep
+	// auto-passing here. The union supplies the builtin live instead.
+	inst.Spec.Allowlist = allowlist.Merge(inst.Spec.Allowlist, []v1alpha1.AllowlistRule{rule})
 	if err := s.cr.Update(ctx, &inst); err != nil {
 		return false, err
 	}

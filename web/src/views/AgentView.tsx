@@ -150,7 +150,9 @@ export default function AgentView() {
       return
     }
     const entry: AllowlistRule = { pattern, argPattern: ruleForm.argPattern.trim() || undefined }
-    const base = confirm && confirm.allowlistOwned.length ? confirm.allowlistOwned : (confirm ? confirm.allowlist : [])
+    // Only the hand-authored list. Falling back to the effective list copied
+    // the platform builtin into the spec — the freeze this change removes.
+    const base = confirm ? confirm.allowlistOwned : []
     if (base.some((r) => ruleKey(r) === ruleKey(entry))) {
       showToast('That command is already on the allowlist')
       return
@@ -161,10 +163,9 @@ export default function AgentView() {
 
   function removeRule(key: string) {
     if (!confirm) return
-    // Removing from an inheriting list materializes it first (owned = effective
-    // minus the rule), so the removal really sticks.
-    const base = confirm.allowlistOwned.length ? confirm.allowlistOwned : confirm.allowlist
-    void persistConfirm(base.filter((r) => ruleKey(r) !== key))
+    // Only hand-authored rules are removable: the platform builtin and the
+    // template's rules are a floor, supplied live by the union (issue #185).
+    void persistConfirm(confirm.allowlistOwned.filter((r) => ruleKey(r) !== key))
   }
 
   function resetConfirm() {

@@ -80,10 +80,10 @@ func TestAgentConfirmNoInstance(t *testing.T) {
 	}
 }
 
-// TestAllowlistAlwaysMaterializes verifies allow-always appends to the instance
-// allowlist, materializing the inherited default on first ownership; and that
-// under AlwaysAsk policy the append is a no-op.
-func TestAllowlistAlwaysMaterializes(t *testing.T) {
+// TestAllowlistAlwaysDoesNotMaterialize verifies allow-always appends only the
+// rule itself. Copying the platform builtin into the spec would let that
+// snapshot outlive a later hardening of Default() (issue #185).
+func TestAllowlistAlwaysDoesNotMaterialize(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
@@ -96,17 +96,8 @@ func TestAllowlistAlwaysMaterializes(t *testing.T) {
 		t.Fatal("allowlistAlways returned false under Allowlist policy")
 	}
 	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "li.ming", nil))
-	var sawKubectl, sawHelm bool
-	for _, e := range view.AllowlistOwned {
-		switch e.Pattern {
-		case "kubectl":
-			sawKubectl = true
-		case "helm":
-			sawHelm = true
-		}
-	}
-	if !sawKubectl || !sawHelm {
-		t.Errorf("owned allowlist = %+v, want materialized kubectl default + helm", view.AllowlistOwned)
+	if len(view.AllowlistOwned) != 1 || view.AllowlistOwned[0].Pattern != "helm" {
+		t.Errorf("owned allowlist = %+v, want exactly the helm rule", view.AllowlistOwned)
 	}
 }
 
