@@ -1674,11 +1674,12 @@ Assisted-by: Claude Code"
 
 ---
 
-### Task 7: Group the allowlist by provenance in the UI
+### Task 7: Group the allowlist by provenance, and surface a grant that did not save
 
 **Files:**
 - Modify: `web/src/views/AgentView.tsx:542-585` (the allowlist card body)
 - Modify: `web/src/views/AgentView.tsx` (the `withConfirmDefaults` normalizer, ~line 95)
+- Modify: `web/src/views/ChatView.tsx:1383-1398` (`decide`)
 
 **Interfaces:**
 - Consumes: `ApprovalRule.source`, `ApprovalRule.allowlistLearned` from Task 6.
@@ -1810,25 +1811,64 @@ Replace `removeRule` so a learned grant revokes rather than rewriting the list:
   }
 ```
 
-- [ ] **Step 4: Check the build and lint**
+- [ ] **Step 4: Tell the user when the grant did not save**
+
+`POST /sessions/{key}/approval` already answers `allowlisted`, and the handler
+sets it to `false` when `allowlistAlways` fails — but `decide` discards the
+response body, so a failed grant looks exactly like a successful one and the
+command silently asks again next time. Capture it.
+
+In `web/src/views/ChatView.tsx`, in `decide` (line 1391), change:
+
+```tsx
+      await api.postApproval(session, decision)
+      confirm.resolved = true
+      confirm.approved = decision !== 'reject'
+```
+
+to:
+
+```tsx
+      const res = await api.postApproval(session, decision)
+      confirm.resolved = true
+      confirm.approved = decision !== 'reject'
+      // The approval itself went through, but recording the durable grant did
+      // not, so this command will ask again. Reporting the plain success the
+      // user is relying on would be a lie (issue #185).
+      if (decision === 'allow-always' && res.allowlisted === false) {
+        showToast('Approved, but the command was not added to your allowlist — it will ask again.')
+      }
+```
+
+`showToast` is already imported at the top of the file (line 10), so no import
+change is needed. The message deliberately does not name a cause: `allowlisted`
+is `false` both when the store write fails and when the effective policy is not
+`Allowlist`, and only the first is reachable from the Portal (the allow-always
+button is hidden unless the policy is `Allowlist`, `ChatView.tsx:671`).
+
+- [ ] **Step 5: Check the build and lint**
 
 Run: `cd web && npm run build && npm run lint 2>/dev/null || npm run build`
 
 Expected: build succeeds with no TypeScript error.
 
-- [ ] **Step 5: Verify by hand**
+- [ ] **Step 6: Verify by hand**
 
 Run the portal, open Agent Config, and confirm: the four groups render in order, Remove shows only under "Your rules" and "Learned from Allow always", and the platform group has no Remove button.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/views/AgentView.tsx
+git add web/src/views/AgentView.tsx web/src/views/ChatView.tsx
 git commit -s -m "feat(web): group the allowlist by provenance (issue #185)
 
 Replace the merged list plus an ownership pill with four groups — yours,
-learned, template, platform — and only offer Remove where removal is meaningful.
-Removal no longer materializes the inherited list as a side effect.
+learned, template, platform — and only offer Remove where removal is
+meaningful. Removal no longer materializes the inherited list as a side effect.
+
+An allow-always whose grant failed to record is now surfaced: the API already
+reported allowlisted=false and the client threw it away, so the command
+silently asked again with the user believing it had been remembered.
 
 Assisted-by: Claude Code"
 ```
