@@ -1,4 +1,4 @@
-# Agent Allowlist Provenance Split — Implementation Plan
+# Agent Allowlist Provenance Split -- Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,10 +13,10 @@
 ## Global Constraints
 
 - **Pre-release, no compatibility promised.** No migration path, no fallback branches, and no one-time cleanup of pre-existing entries: existing materialized lists are not split, and legacy learned grants keep working through the union rather than being lost. They are merely indistinguishable from hand-authored rules afterwards, which is why the spec's Migration section rules out a cleanup and records the fail-open consequence on the hardening path.
-- **The v1 API contract is frozen** (PR #181). Every change to `/api/v1/...` shapes must be **additive** — never remove or rename a response field.
+- **The v1 API contract is frozen** (PR #181). Every change to `/api/v1/...` shapes must be **additive** -- never remove or rename a response field.
 - **Displayed strings must not expose internal numbering.** No issue/PR numbers, requirement ids (`FR-M2-005`), milestone labels (`M4`), or roadmap phase names in any user-visible text, front-end or back-end. Such references belong in code comments only.
 - **Commits** are English, signed off (`git commit -s`), with an `Assisted-by: Claude Code` trailer.
-- **Go code** — comments and identifiers in English.
+- **Go code** -- comments and identifiers in English.
 - Test command for Go: `go test ./internal/<pkg>/... -run <Name> -v`. Full gate before a PR: `go vet ./... && go test ./...`.
 
 ---
@@ -27,7 +27,7 @@ The fork fix. This is the standalone bug fix from the spec and is worth reviewin
 
 It takes **both** halves: the union (so the builtin is always supplied live) and
 removing the copy-in on both writers (so no snapshot survives in the spec to be
-unioned back in). The union alone is not enough — see Step 7.
+unioned back in). The union alone is not enough -- see Step 7.
 
 **Files:**
 - Modify: `internal/allowlist/allowlist.go:96-106`
@@ -40,7 +40,7 @@ unioned back in). The union alone is not enough — see Step 7.
 
 **Interfaces:**
 - Consumes: nothing (first task).
-- Produces: `func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule` — replaces the old two-argument `Effective(owned, templateAllowlist)`.
+- Produces: `func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule` -- replaces the old two-argument `Effective(owned, templateAllowlist)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -106,7 +106,7 @@ func countPattern(rules []v1alpha1.AllowlistRule, pattern string) int {
 
 Run: `go test ./internal/allowlist/... -run TestEffective -v`
 
-Expected: compile failure — `too many arguments in call to Effective`.
+Expected: compile failure -- `too many arguments in call to Effective`.
 
 - [ ] **Step 3: Rewrite `Effective`**
 
@@ -199,8 +199,8 @@ asserts the fork itself. Replace it entirely with:
 ```go
 // TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
 // still resolves the builtin and the template's additions (issue #185). This
-// used to assert the opposite — that an owned list replaced the inherited
-// default outright — which is exactly the fork: the instance was frozen off the
+// used to assert the opposite -- that an owned list replaced the inherited
+// default outright -- which is exactly the fork: the instance was frozen off the
 // platform builtin on its first write, so a later hardening of Default() could
 // not reach it.
 func TestResolveEffectiveAllowlistOwned(t *testing.T) {
@@ -235,7 +235,7 @@ func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 - [ ] **Step 7: Stop the server materializing the inherited list**
 
 The union alone does **not** fix the fork. `allowlistAlways` still copies the whole
-resolved effective list — platform builtin included — into the spec on first use:
+resolved effective list -- platform builtin included -- into the spec on first use:
 
 ```go
 	base := inst.Spec.Allowlist
@@ -248,7 +248,7 @@ resolved effective list — platform builtin included — into the spec on first
 ```
 
 The union then faithfully includes that snapshot, so a builtin **removed** from
-`Default()` still auto-passes here — the same fail-open direction, reached
+`Default()` still auto-passes here -- the same fail-open direction, reached
 through the spec instead of through `Effective`. In
 `internal/server/handlers_agent_approval.go`, replace that tail with:
 
@@ -256,12 +256,12 @@ through the spec instead of through `Effective`. In
 	// Append only to the instance's own rules. Deliberately NOT the resolved
 	// effective list: copying that in would write the platform builtin into the
 	// spec, and the union would then faithfully include the snapshot, so a
-	// builtin later removed from Default() — a hardening — would keep
+	// builtin later removed from Default() -- a hardening -- would keep
 	// auto-passing here. The union supplies the builtin live instead.
 	inst.Spec.Allowlist = allowlist.Merge(inst.Spec.Allowlist, []v1alpha1.AllowlistRule{rule})
 ```
 
-Rewrite the test that asserts the old behaviour — `TestAllowlistAlwaysMaterializes`
+Rewrite the test that asserts the old behaviour -- `TestAllowlistAlwaysMaterializes`
 in `internal/server/handlers_confirm_test.go:83-111`:
 
 ```go
@@ -288,7 +288,7 @@ func TestAllowlistAlwaysDoesNotMaterialize(t *testing.T) {
 ```
 
 `TestAllowlistAlwaysSkippedUnderAlwaysAsk` (line 113) needs no change. Note the
-signature stays three-argument here — the command text is added in a later task.
+signature stays three-argument here -- the command text is added in a later task.
 
 - [ ] **Step 8: Stop the Portal materializing the inherited list**
 
@@ -304,7 +304,7 @@ Replace with:
 
 ```tsx
     // Only the hand-authored list. Falling back to the effective list copied
-    // the platform builtin into the spec — the freeze this change removes.
+    // the platform builtin into the spec -- the freeze this change removes.
     const base = confirm ? confirm.allowlistOwned : []
 ```
 
@@ -330,7 +330,7 @@ Replace the whole function body with:
 
 Run: `go test ./internal/allowlist/... ./internal/resolver/... ./internal/server/... 2>&1 | tail -30`
 
-Expected: PASS, including the rewritten `TestResolveEffectiveAllowlistOwned` and `TestAllowlistAlwaysDoesNotMaterialize`. Any other test that asserted materialization will fail here — rewrite it to the union expectation rather than restoring the copy-in, and name it in the commit message.
+Expected: PASS, including the rewritten `TestResolveEffectiveAllowlistOwned` and `TestAllowlistAlwaysDoesNotMaterialize`. Any other test that asserted materialization will fail here -- rewrite it to the union expectation rather than restoring the copy-in, and name it in the commit message.
 
 Run: `cd web && npm run build`
 
@@ -343,7 +343,7 @@ git add internal/allowlist/ internal/resolver/ internal/server/handlers_agent_ap
 git commit -s -m "fix(allowlist): stop the effective list freezing the instance off the builtin (issue #185)
 
 The instance list used to win outright whenever it was non-empty, so the first
-edit of any kind — including a removal — cast the platform builtin into the
+edit of any kind -- including a removal -- cast the platform builtin into the
 instance and froze it there. A later hardening of Default() could then not
 reach that instance, which is the fail-open direction.
 
@@ -367,7 +367,7 @@ Assisted-by: Claude Code"
 - Modify: `internal/allowlist/allowlist.go` (append)
 - Test: `internal/allowlist/allowlist_test.go` (append)
 - Modify: `internal/server/handlers_agent_approval.go:82-102`
-- Test: `internal/server/handlers_confirm_test.go` (append — the existing approval-handler test file)
+- Test: `internal/server/handlers_confirm_test.go` (append -- the existing approval-handler test file)
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
@@ -435,7 +435,7 @@ func TestValidateAcceptsEscapedLookalikes(t *testing.T) {
 
 Run: `go test ./internal/allowlist/... -run TestValidate -v`
 
-Expected: compile failure — `undefined: Validate`.
+Expected: compile failure -- `undefined: Validate`.
 
 - [ ] **Step 3: Implement `Validate`**
 
@@ -499,7 +499,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Write the failing handler test**
 
-Append to `internal/server/handlers_confirm_test.go` — the existing home of the
+Append to `internal/server/handlers_confirm_test.go` -- the existing home of the
 approval-handler tests, which already carries the helpers this needs:
 
 ```go
@@ -532,7 +532,7 @@ approval test uses. This step needs no import changes.
 
 Run: `go test ./internal/server/... -run TestAgentConfirmRejectsInvalidArgPattern -v`
 
-Expected: FAIL — status 200, because nothing validates yet.
+Expected: FAIL -- status 200, because nothing validates yet.
 
 - [ ] **Step 7: Validate in the PUT handler**
 
@@ -560,7 +560,7 @@ git add internal/allowlist/ internal/server/handlers_agent_approval.go internal/
 git commit -s -m "fix(api): validate allowlist argPattern before storing it (issue #185)
 
 argPattern was free text from the form, shipped verbatim to the gateway, and
-compiled there — so a typo was stored, pushed, and never reported. Compile it
+compiled there -- so a typo was stored, pushed, and never reported. Compile it
 on the write path instead and reject it with a 400 the form can show.
 
 Assisted-by: Claude Code"
@@ -584,9 +584,9 @@ A new package owning the per-user learned grants ConfigMap. Self-contained: no w
   - `type Record struct { Pattern, ArgPattern, Command string; CreatedAt time.Time }` with method `Rule() v1alpha1.AllowlistRule`
   - `type Store struct{...}`, `func New(cr client.Client, namespace string) *Store`
   - `func (s *Store) Name(user string) string`
-  - `func (s *Store) List(ctx context.Context, user string) ([]Record, error)` — oldest first
+  - `func (s *Store) List(ctx context.Context, user string) ([]Record, error)` -- oldest first
   - `func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, command string, now time.Time) error` -- refuses (with an error) a rule whose Pattern + ArgPattern exceeds `maxRuleBytes`, and a write that would leave the payload over `maxDataBytes`
-  - `func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRule) error` — idempotent; a missing ConfigMap or key is not an error
+  - `func (s *Store) Remove(ctx context.Context, user string, r v1alpha1.AllowlistRule) error` -- idempotent; a missing ConfigMap or key is not an error
 
 - [ ] **Step 1: Write the failing test**
 
@@ -749,7 +749,7 @@ func TestAddEvictsOldestPastCap(t *testing.T) {
 }
 
 // TestAddTruncatesLongCommand: the command text is display-only, and leaving it
-// unbounded would make the per-entry size — and so the MaxGrants arithmetic —
+// unbounded would make the per-entry size -- and so the MaxGrants arithmetic --
 // meaningless.
 func TestAddTruncatesLongCommand(t *testing.T) {
 	s := testStore(t)
@@ -767,11 +767,11 @@ func TestAddTruncatesLongCommand(t *testing.T) {
 	}
 	// Truncated to the cap, with a visible marker so the UI can tell the text
 	// is incomplete.
-	want := maxCommandBytes + len("…")
+	want := maxCommandBytes + len("...")
 	if len(got[0].Command) != want {
 		t.Errorf("Command length = %d, want %d", len(got[0].Command), want)
 	}
-	if !strings.HasSuffix(got[0].Command, "…") {
+	if !strings.HasSuffix(got[0].Command, "...") {
 		t.Errorf("truncated command has no marker: %q", got[0].Command)
 	}
 }
@@ -934,7 +934,7 @@ here even though the package under test uses it.
 
 Run: `go test ./internal/grants/... -v`
 
-Expected: compile failure — `undefined: New`, `undefined: MaxGrants`, `undefined: Key`.
+Expected: compile failure -- `undefined: New`, `undefined: MaxGrants`, `undefined: Key`.
 
 - [ ] **Step 3: Implement the package**
 
@@ -975,7 +975,7 @@ import (
 
 // MaxGrants bounds a user's learned grants. Growth is driven by human clicks
 // rather than by the agent, so this is a safety net against a pathological
-// loop, not a working limit — it has to sit far above what a heavy user
+// loop, not a working limit -- it has to sit far above what a heavy user
 // accumulates in a year (order of 300) or it silently evicts grants people
 // still rely on.
 //
@@ -1024,7 +1024,7 @@ type Record struct {
 	ArgPattern string    `json:"argPattern,omitempty"`
 	// Command is the invocation that produced the grant, kept for the UI so a
 	// learned rule can be shown as something a human recognises. It is display
-	// only — matching uses Pattern and ArgPattern — and is truncated by
+	// only -- matching uses Pattern and ArgPattern -- and is truncated by
 	// maxCommandBytes, with a trailing ellipsis when it was.
 	Command   string    `json:"command,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -1141,7 +1141,7 @@ func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, 
 }
 
 // truncate bounds s to about n bytes, cutting on a byte boundary. The value is
-// display-only — matching uses Pattern and ArgPattern — so a split rune at the
+// display-only -- matching uses Pattern and ArgPattern -- so a split rune at the
 // cut is acceptable and not worth the extra code to avoid. The ellipsis is what
 // matters: a silently shortened command reads as a complete one, and the user
 // would be looking at a rule whose text they cannot trust.
@@ -1149,7 +1149,7 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return s[:n] + "..."
 }
 
 // Remove revokes a grant. It is idempotent: a missing ConfigMap, or a key that
@@ -1291,7 +1291,7 @@ Run: `go test ./internal/grants/... -v`
 
 Expected: PASS for all ten tests.
 
-**On concurrency:** `Add` and `Remove` wrap get-modify-update in `retry.RetryOnConflict`, so a concurrent write of a *different* grant retries instead of being lost. There is deliberately no unit test for it — the controller-runtime fake client does not reproduce optimistic-concurrency conflicts, and a test that cannot fail is worse than none. The retry wrapper is the guarantee; say so in the PR body rather than claiming coverage.
+**On concurrency:** `Add` and `Remove` wrap get-modify-update in `retry.RetryOnConflict`, so a concurrent write of a *different* grant retries instead of being lost. There is deliberately no unit test for it -- the controller-runtime fake client does not reproduce optimistic-concurrency conflicts, and a test that cannot fail is worse than none. The retry wrapper is the guarantee; say so in the PR body rather than claiming coverage.
 
 - [ ] **Step 5: Grant the API server ConfigMap access**
 
@@ -1338,7 +1338,7 @@ Assisted-by: Claude Code"
 
 **Interfaces:**
 - Consumes: `grants.New(cr client.Client, namespace string) *Store`, `(*Store).List(ctx, user) ([]Record, error)`, `(Record).Rule()`.
-- Produces: `ResolvedAgentConfig.Allowlist` now includes learned grants; changing a grant changes `ResolvedAgentConfig.Revision` (no code change needed — `fingerprint()` already hashes `Allowlist`).
+- Produces: `ResolvedAgentConfig.Allowlist` now includes learned grants; changing a grant changes `ResolvedAgentConfig.Revision` (no code change needed -- `fingerprint()` already hashes `Allowlist`).
 
 - [ ] **Step 1: Extend the test scheme to core types**
 
@@ -1425,7 +1425,7 @@ func TestGrantChangesTheRevision(t *testing.T) {
 
 Run: `go test ./internal/resolver/... -run 'TestResolvedAllowlistIncludesLearnedGrants|TestGrantChangesTheRevision' -v`
 
-Expected: FAIL — the grant is not in the resolved allowlist (the second test fails on the unchanged revision).
+Expected: FAIL -- the grant is not in the resolved allowlist (the second test fails on the unchanged revision).
 
 - [ ] **Step 4: Add the store to the Resolver**
 
@@ -1444,7 +1444,7 @@ func New(cr client.Client, namespace string) *Resolver {
 }
 ```
 
-Add the grants store — the only change is the new field and the extra `New` argument:
+Add the grants store -- the only change is the new field and the extra `New` argument:
 
 ```go
 type Resolver struct {
@@ -1460,7 +1460,7 @@ func New(cr client.Client, namespace string) *Resolver {
 }
 ```
 
-Import `"github.com/suanova/cubepilot/internal/grants"`. The constructor call sites (`cmd/cubepilot-api/main.go`, `internal/instances/manager.go`) do not change — only the returned struct gains a field.
+Import `"github.com/suanova/cubepilot/internal/grants"`. The constructor call sites (`cmd/cubepilot-api/main.go`, `internal/instances/manager.go`) do not change -- only the returned struct gains a field.
 
 - [ ] **Step 5: Feed the grants into `Effective`**
 
@@ -1565,7 +1565,7 @@ func TestAllowAlwaysWritesAGrantNotTheSpec(t *testing.T) {
 }
 
 // TestClearOwnedAllowlistKeepsGrants: the Reset button must not discard what the
-// user approved in chat — the two stores are separate.
+// user approved in chat -- the two stores are separate.
 func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
@@ -1599,7 +1599,7 @@ core types and builds a real `instances.Manager`, so nothing else is needed.
 
 Run: `go test ./internal/server/... -run 'TestAllowAlwaysWritesAGrantNotTheSpec|TestClearOwnedAllowlistKeepsGrants' -v`
 
-Expected: compile failure — `s.grantsStore undefined`.
+Expected: compile failure -- `s.grantsStore undefined`.
 
 - [ ] **Step 3: Add the store accessor**
 
@@ -1754,13 +1754,13 @@ func TestAgentConfirmRevokesLearnedGrant(t *testing.T) {
 
 - [ ] **Step 7: Stop `saveConfirm` from touching grants**
 
-`saveConfirm` (lines 177-195) already only writes `inst.Spec.ApprovalPolicy` and `inst.Spec.Allowlist` — it never touched the grants store, so no code change is needed there. Update its doc comment to say so explicitly:
+`saveConfirm` (lines 177-195) already only writes `inst.Spec.ApprovalPolicy` and `inst.Spec.Allowlist` -- it never touched the grants store, so no code change is needed there. Update its doc comment to say so explicitly:
 
 ```go
 // saveConfirm writes the instance's confirmation override and hand-authored
 // allowlist. An empty approvalPolicy clears the override (inherit the
 // template); an empty allowlist clears the hand-authored rules. Learned grants
-// are a separate store and are deliberately untouched (issue #185) — clearing
+// are a separate store and are deliberately untouched (issue #185) -- clearing
 // your own rules must not discard what you approved in chat.
 ```
 
@@ -1989,7 +1989,7 @@ func TestApprovalViewTagsProvenance(t *testing.T) {
 
 Run: `go test ./internal/server/... -run TestApprovalViewTagsProvenance -v`
 
-Expected: compile failure — `view.AllowlistLearned` and `r.Source` undefined.
+Expected: compile failure -- `view.AllowlistLearned` and `r.Source` undefined.
 
 - [ ] **Step 3: Add `Source`, `Command` and `AllowlistLearned`**
 
@@ -2008,7 +2008,7 @@ type approvalView struct {
 }
 
 // approvalRule is one allowlist rule served to the Portal. Source says where
-// the rule came from — builtin, template, user or learned (issue #185) — so the
+// the rule came from -- builtin, template, user or learned (issue #185) -- so the
 // UI can group by origin rather than guessing from an ownership flag. Label is
 // set by the server ONLY for rules that exactly match a platform builtin
 // read-only rule, so the UI never guesses that a user-added rule (which may
@@ -2036,7 +2036,7 @@ func ruleID(r v1alpha1.AllowlistRule) string { return r.Pattern + "|" + r.ArgPat
 // toSourcedRules tags each rule of the effective list with the source it came
 // from. The tag is derived by membership rather than by rebuilding the union,
 // so the view cannot drift from what the resolver enforces. Later arguments win
-// on an exact collision, matching the union order — a rule both the user and
+// on an exact collision, matching the union order -- a rule both the user and
 // the template declare shows as the user's.
 func toSourcedRules(effective, learned, owned, tmpl []v1alpha1.AllowlistRule) []approvalRule {
 	origin := make(map[string]string, len(tmpl)+len(owned)+len(learned))
@@ -2223,7 +2223,7 @@ Expected: build succeeds.
 
 - [ ] **Step 8: Document the shape**
 
-In `docs/cubepilot/api.md`, in the section listing the approval view fields (around lines 520-540), add `source` to the `allowlist` entry shape and document the new fields. Match the file's existing table/bullet style — do not restructure it. At minimum:
+In `docs/cubepilot/api.md`, in the section listing the approval view fields (around lines 520-540), add `source` to the `allowlist` entry shape and document the new fields. Match the file's existing table/bullet style -- do not restructure it. At minimum:
 
 - `allowlist` entries now carry `source`: `builtin | template | user | learned`
 - `allowlistLearned` is a new optional field listing the learned grants, present only when non-empty (same "omitted when empty" convention as `allowlist`/`allowlistOwned`)
@@ -2242,7 +2242,7 @@ The view could only say whether a rule was the user's or not, so the UI guessed
 at origin from an ownership flag. Tag each rule with source
 (builtin/template/user/learned) and add allowlistLearned for the groups that
 need their own affordances, carrying the approved command on learned entries so
-the group can show an invocation rather than a derived regex. Additive only — no
+the group can show an invocation rather than a derived regex. Additive only -- no
 v1 field is removed or renamed.
 
 Assisted-by: Claude Code"
@@ -2313,7 +2313,7 @@ Replace the block inside `{confirm?.approvalPolicy === 'Allowlist' ? (<> ... </>
                         )
                       })}
                       {confirm.allowlist.length === 0 && (
-                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist — every command asks.</div>
+                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist -- every command asks.</div>
                       )}
                     </div>
 ```
@@ -2385,7 +2385,7 @@ a list it is not in:
 - [ ] **Step 4: Tell the user when the grant did not save**
 
 `POST /sessions/{key}/approval` already answers `allowlisted`, and the handler
-sets it to `false` when `allowlistAlways` fails — but `decide` discards the
+sets it to `false` when `allowlistAlways` fails -- but `decide` discards the
 response body, so a failed grant looks exactly like a successful one and the
 command silently asks again next time. Capture it.
 
@@ -2407,7 +2407,7 @@ to:
       // not, so this command will ask again. Reporting the plain success the
       // user is relying on would be a lie (issue #185).
       if (decision === 'allow-always' && res.allowlisted === false) {
-        showToast('Approved, but the command was not added to your allowlist — it will ask again.')
+        showToast('Approved, but the command was not added to your allowlist -- it will ask again.')
       }
 ```
 
@@ -2433,8 +2433,8 @@ Run the portal, open Agent Config, and confirm: the four groups render in order,
 git add web/src/views/AgentView.tsx web/src/views/ChatView.tsx web/src/api/index.ts
 git commit -s -m "feat(web): group the allowlist by provenance, revoke grants, surface a failed save (issue #185)
 
-Replace the merged list plus an ownership pill with four groups — yours,
-learned, template, platform — and only offer Remove where removal is
+Replace the merged list plus an ownership pill with four groups -- yours,
+learned, template, platform -- and only offer Remove where removal is
 meaningful. A learned grant is revoked through its own store rather than by
 rewriting a list it is not in, and an allow-always whose grant failed to record
 is surfaced: the API already reported allowlisted=false and the client threw it
@@ -2452,4 +2452,4 @@ Assisted-by: Claude Code"
 - [ ] `cd web && npm run build`
 - [ ] `helm template cubepilot deploy/charts/cubepilot >/dev/null`
 
-Then open the PR (see the `upstream-fork-pr` workflow): `go vet`/`go test` green, `helm template` clean, and the PR body should carry the fork scenario as the motivation — a user who clicked allow-always once keeps auto-passing a command the platform later hardened.
+Then open the PR (see the `upstream-fork-pr` workflow): `go vet`/`go test` green, `helm template` clean, and the PR body should carry the fork scenario as the motivation -- a user who clicked allow-always once keeps auto-passing a command the platform later hardened.

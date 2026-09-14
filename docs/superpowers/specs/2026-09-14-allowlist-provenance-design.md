@@ -8,7 +8,7 @@ The agent safe-command allowlist is assembled from three layers:
 
 | Layer | Source | Written by |
 | --- | --- | --- |
-| Platform builtin | `allowlist.Default()` — code | platform release |
+| Platform builtin | `allowlist.Default()` -- code | platform release |
 | Template default | `AgentTemplate.spec.allowlist` | template admin |
 | Instance owned | `AgentInstance.spec.allowlist` | **two writers**: the user (AgentView) and the machine (the `allow-always` button) |
 
@@ -29,8 +29,8 @@ func Effective(owned, templateAllowlist []v1alpha1.AllowlistRule) []v1alpha1.All
 ### The fork
 
 `len(owned) > 0` doubles as the ownership sentinel, so **the first write of any
-kind** — an `allow-always` click, a manual add, or even a manual *remove*
-(`web/src/views/AgentView.tsx:164-166`) — snapshots the currently effective list
+kind** -- an `allow-always` click, a manual add, or even a manual *remove*
+(`web/src/views/AgentView.tsx:164-166`) -- snapshots the currently effective list
 into `spec`:
 
 ```go
@@ -47,7 +47,7 @@ consulted again for that instance. The freeze is asymmetric:
 
 | Platform change | Reaches a frozen instance? | Direction |
 | --- | --- | --- |
-| `Default()` removes a command (hardening) | no — the snapshot still holds it | **fail-open** |
+| `Default()` removes a command (hardening) | no -- the snapshot still holds it | **fail-open** |
 | Template `allowlist` removes an entry | no | fail-open |
 | builtin / template adds an entry | no | fail-closed (annoyance) |
 
@@ -58,7 +58,7 @@ nothing tells them. The only way back is the Reset button
 ### The root cause
 
 Machine-written state was given desired-state semantics. The ambiguity is not in
-the click path — it is that one field carries two provenances and expresses
+the click path -- it is that one field carries two provenances and expresses
 ownership by being empty or not. The fix is to stop the machine writing that
 field, not to add another special case to it.
 
@@ -91,13 +91,13 @@ func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.Allowlist
 `spec.allowlist` becomes purely additive: empty means "add nothing", not
 "inherit and take over".
 
-#### The union alone does not fix the fork — the writers must change too
+#### The union alone does not fix the fork -- the writers must change too
 
 An earlier revision of this spec treated the union as the whole fix. It is not,
 and the gap is worth recording because it is easy to re-derive wrongly.
 
 `allowlistAlways` and the Portal's `addRule`/`removeRule` all copy the *resolved
-effective list* — platform builtin included — into `spec` on first use. A union
+effective list* -- platform builtin included -- into `spec` on first use. A union
 then faithfully includes that snapshot, so a builtin **removed** from `Default()`
 (a hardening) still auto-passes for that instance, reached through the spec
 instead of through `Effective`. Same fail-open direction, different route.
@@ -105,7 +105,7 @@ instead of through `Effective`. Same fail-open direction, different route.
 So the fork fix is both halves, and they belong in one change:
 
 1. `Effective` unions instead of letting the instance own the list.
-2. Neither writer copies the inherited list in — `allowlistAlways` appends to
+2. Neither writer copies the inherited list in -- `allowlistAlways` appends to
    `inst.Spec.Allowlist` alone, and the Portal writes only `allowlistOwned`.
 
 With the builtin supplied live by the union and no snapshot left in the spec to
@@ -121,7 +121,7 @@ vetted read-only is a rare want, and `AlwaysAsk` already covers the strict
 posture completely and unambiguously. A `spec.allowlistDeny` overlay would need
 its own composition rules (does deny beat a template add? a builtin?) for a
 capability with no demonstrated demand. If a concrete need appears, add the
-overlay then — it is additive.
+overlay then -- it is additive.
 
 ### Learned grants move to a per-user ConfigMap
 
@@ -131,7 +131,7 @@ AgentInstance.spec.allowlist     unchanged, hand-authored only
 ConfigMap cubepilot-grants-<user>  new, sole writer is the API server
 ```
 
-**Layout — one key per grant**, so a write is a single-key patch and cannot
+**Layout -- one key per grant**, so a write is a single-key patch and cannot
 conflict with a concurrent grant:
 
 ```yaml
@@ -166,7 +166,7 @@ Why a ConfigMap and not a CRD, `status`, or the runtime:
   grants in `AgentInstance.status` would make the controller and the API both
   perform whole-object `Status().Update()`, which is the same
   full-object-overwrite bug class that `applyPolicy` already exhibits (see
-  "Latent, not live" below) — introduced knowingly this time.
+  "Latent, not live" below) -- introduced knowingly this time.
 - **No schema churn.** `createdAt` (and later `lastUsedAt`/`hitCount`) are JSON
   fields, not CRD fields. That metadata is the prerequisite for the cap below.
 - **Auditable.** `kubectl get cm` answers "what has this agent been
@@ -179,7 +179,7 @@ alternatives".
 
 ### Write paths
 
-`allow-always` keeps its current logic and changes only its destination —
+`allow-always` keeps its current logic and changes only its destination --
 `internal/server/handlers_agent_approval.go`:
 
 ```go
@@ -214,12 +214,12 @@ truncating a regex that the gateway matches.
 - `resolver.ResolveForUser` (`internal/resolver/resolver.go:218`) gains one
   ConfigMap Get and calls the new `Effective`. Grants already flow into
   `cfg.Revision` via `fingerprint()`, so changing a grant still bumps the
-  revision and the next `PreTurn` pushes it — the existing propagation is
+  revision and the next `PreTurn` pushes it -- the existing propagation is
   unchanged.
 - `agentApprovalView` (`internal/server/handlers_agent_approval.go:145-175`)
   reads the ConfigMap to render the learned group.
 
-`cmd/cubepilot-api/main.go:48` builds the client with `client.New` — a **direct,
+`cmd/cubepilot-api/main.go:48` builds the client with `client.New` -- a **direct,
 uncached** client, so each of these is a live API call. One extra Get per turn
 (`PreTurn`) and per supervisor poll is acceptable; a cached client is not
 warranted yet, and is a separate change if it becomes one.
@@ -242,26 +242,26 @@ merged list with an ownership flag.
 
 `argPattern` is compiled with `regexp.Compile` in the API on every write path
 (manual add and `deriveAllowAlwaysRule`) and rejected with a clear error.
-`pattern` is a command name, not a regex — it stays unvalidated beyond
+`pattern` is a command name, not a regex -- it stays unvalidated beyond
 non-emptiness, matching what the runtime expects.
 
 ## Latent, not live
 
 Two things I initially recorded as live bugs, corrected after re-deriving them:
 
-**`ws.AllowlistEntry` drops entry fields — latent.**
+**`ws.AllowlistEntry` drops entry fields -- latent.**
 `internal/openclaw/ws/frames.go:122-128` declares only
 `ID`/`Pattern`/`ArgPattern`/`Source`, while the runtime's entry also carries
 `lastUsedAt`, `commandText`, `lastUsedCommand`, `lastResolvedPath`. Go drops
-unknown JSON fields on decode, so a get→set round trip erases them. But the
+unknown JSON fields on decode, so a get->set round trip erases them. But the
 platform's `applyPolicy` replaces the whole allowlist with entries it authored
 itself, which have none of those fields, and nothing else writes to the
-allowlist under the current design. So the erasure is unreachable today — it
+allowlist under the current design. So the erasure is unreachable today -- it
 becomes real only if we ever preserve runtime-minted entries. **Not fixed by
 this design; recorded so it is not rediscovered as a new bug.** It becomes a
 prerequisite the moment the "preserve runtime grants" alternative is revisited.
 
-**`applyPolicy` clobbers runtime-minted grants — intentional, but silent.**
+**`applyPolicy` clobbers runtime-minted grants -- intentional, but silent.**
 `agent.Allowlist = toWSEntries(allow)` (`internal/server/approvals.go:505-512`)
 is a wholesale replace and `exec.approvals.set` has no server-side merge keyed
 on `source`, so any grant made through OpenClaw's own surfaces (TUI,
@@ -285,14 +285,14 @@ to `allow-once` (`internal/openclaw/ws/methods.go:46-48`), delete
 `deriveAllowAlwaysRule` + `allowlistAlways`, and stop storing grants in the
 platform at all.
 
-It is defensible — losing a grant is fail-closed, so grants need none of the
-durability desired state needs — and it is the smallest platform diff. Rejected
+It is defensible -- losing a grant is fail-closed, so grants need none of the
+durability desired state needs -- and it is the smallest platform diff. Rejected
 because the runtime's entry shape is a poor fit for what we need to show and
 manage:
 
 - An `allow-always` entry is `argPattern = sha256:cwd-argv:v1:<64hex>`: opaque.
   The UI cannot render, edit, or explain it; the current readable
-  "kubectl — read-only operations" affordances are lost.
+  "kubectl -- read-only operations" affordances are lost.
 - The hash binds the **cwd**, so the same command in a different directory
   re-prompts. `docs/tools/exec-approvals.md:425` calls the decision "Always
   allow here" for this reason.
@@ -326,7 +326,7 @@ alongside `Phase`/`PodName`/`Conditions`.
 ### Keep grants in `spec.allowlist` with a `source` marker
 
 No storage change at all. Rejected because it leaves the machine writing the
-field that carries ownership semantics — the change would have to redefine that
+field that carries ownership semantics -- the change would have to redefine that
 sentinel and special-case the machine's entries inside it, which is the bug
 rather than the fix.
 
@@ -353,7 +353,7 @@ choice; a user who wants a clean list clicks Reset and re-adds what they meant.
 ## Testing
 
 - `allowlist.Effective`: union, not ownership. A hardening change to `Default()`
-  reaches an instance that has its own entries — the regression test for the
+  reaches an instance that has its own entries -- the regression test for the
   fork.
 - `grants.Add`: idempotent on the same `pattern|argPattern`; cap eviction drops
   the oldest `createdAt`; a concurrent add does not lose a grant.
@@ -365,15 +365,15 @@ choice; a user who wants a clean list clicks Reset and re-adds what they meant.
 ## Adjacent fix: express `AlwaysAsk` with `ask: "always"`
 
 Not required by this design. Recorded because it concerns the same function and
-because the concern recorded in the code — `applyPolicy` implements `AlwaysAsk`
+because the concern recorded in the code -- `applyPolicy` implements `AlwaysAsk`
 by emptying the allowlist "which needs no unverified ask:always semantics"
-(`internal/server/approvals.go:489-492`) — can now be settled with evidence.
+(`internal/server/approvals.go:489-492`) -- can now be settled with evidence.
 
 The runtime has a first-class **per-agent** `ask` field, and `ask: "always"` is
 a true "ask about everything" mode:
 
-- `requiresExecApproval` short-circuits at `exec-approvals-policy.ts:18` —
-  `if (params.ask === "always") return true` — **before** reading
+- `requiresExecApproval` short-circuits at `exec-approvals-policy.ts:18` --
+  `if (params.ask === "always") return true` -- **before** reading
   `allowlistSatisfied` (`:19-28`) and before the `durableApprovalSatisfied`
   escape (`:21`). Neither an allowlist hit nor a durable grant suppresses the
   prompt. `docs/tools/exec-approvals.md:206` states the same rule.
@@ -388,12 +388,12 @@ needed: the `Allowlist` branch must set `ask` back to `on-miss`, since the
 platform currently never writes `ask` at all and relies on the default.
 
 Worth doing, but it is a behaviour change to an existing gate and belongs in its
-own PR — see "Out of scope".
+own PR -- see "Out of scope".
 
 ## Out of scope
 
 - The `ask: "always"` change above.
-- Cap/TTL policy beyond a fixed `MaxGrants` — the growth numbers above do not
+- Cap/TTL policy beyond a fixed `MaxGrants` -- the growth numbers above do not
   justify more.
 - A `spec.allowlistDeny` overlay.
 - Moving to a cached client.
@@ -406,12 +406,12 @@ Both questions this section originally carried were settled while writing the
 implementation plan
 (`docs/superpowers/plans/2026-09-14-allowlist-provenance.md`):
 
-1. **Cap and eviction — `MaxGrants = 1000`, oldest `createdAt` first.** LRU would
+1. **Cap and eviction -- `MaxGrants = 1000`, oldest `createdAt` first.** LRU would
    need a `lastUsedAt` write on every use, and the gateway does not report
    allowlist hits, so it is not available at any reasonable cost; oldest-first is
    free. The number is sized against the ConfigMap ceiling, not against expected
    use, since expected use sits well below it.
-2. **Per-entry revoke — required, not optional.** Moving grants out of
+2. **Per-entry revoke -- required, not optional.** Moving grants out of
    `spec.allowlist` removed the only path the Portal had to drop one:
    `persistConfirm` can only write the hand-authored list. The PUT body therefore
    gains an additive `revokeGrants` field. Without it the change would silently
