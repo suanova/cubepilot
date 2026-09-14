@@ -539,6 +539,9 @@ GET /api/v1/sessions/{key}/question/pending
 
 - `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
   —— 模型没进模板的 `spec.models`；空 `selectedModel` 永远允许（表示「用运行时默认」）。
+- `400 argPattern is not a valid regular expression: <detail>` —— `allowlist[].argPattern`
+  不是合法正则，整次 PUT 被拒：规则**不会**写进实例，也不会下发给网关（网关按 JavaScript
+  `RegExp` 匹配，写入时用 Go 正则先行校验）。
 - `409 no agent instance yet — provision it on the Agent Config page first`
   —— 实例不存在，先去创建。
 

@@ -31,7 +31,9 @@ const (
 // approvalView is the Portal's read of the confirmation configuration for the
 // caller's default agent instance (issue #116). approvalPolicy/allowlist are
 // the *effective* values (what the runtime enforces); override/allowlistOwned
-// are the instance's own state (empty = inheriting the template default live).
+// are the instance's own hand-authored state. The effective allowlist is the
+// platform builtin ∪ the template's allowlist ∪ it, so an empty allowlistOwned
+// means "this instance adds nothing" -- not "inherit and take over".
 type approvalView struct {
 	Exists         bool                    `json:"exists"`
 	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
@@ -66,8 +68,10 @@ func toApprovalRules(rules []v1alpha1.AllowlistRule) []approvalRule {
 
 // handleAgentApproval serves GET/PUT /api/agent/approval -- the instance owner's
 // confirmation posture: an optional approvalPolicy override ("" = follow the
-// template) and the instance-owned allowlist ([] = inherit the template's
-// effective default live; a non-empty list is owned and authoritative).
+// template) and the instance's own hand-authored allowlist rules. The effective
+// allowlist is Default() ∪ the template's rules ∪ those entries: the instance
+// adds to it and cannot remove from it, so [] means "this instance adds
+// nothing", never "inherit and take over".
 func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -172,9 +176,11 @@ func (s *Server) approvalView(ctx context.Context, user string) (approvalView, e
 	return view, nil
 }
 
-// saveConfirm writes the instance's confirmation override and owned allowlist.
-// An empty approvalPolicy clears the override (inherit the template); an empty
-// allowlist clears ownership (inherit the template's effective default live).
+// saveConfirm writes the instance's confirmation override and its own
+// hand-authored allowlist rules. An empty approvalPolicy clears the override
+// (inherit the template); an empty allowlist clears the instance's own
+// additions -- the effective list still carries the platform builtin and the
+// template's rules (the union is unconditional), it only stops adding to it.
 func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.ApprovalPolicy, al []v1alpha1.AllowlistRule) error {
 	if s.cr == nil {
 		return nil

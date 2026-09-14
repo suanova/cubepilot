@@ -120,18 +120,23 @@ export default function AgentView() {
     return r.label || r.pattern || '(empty)'
   }
 
-  // Every change PUTs the full desired owned state; the server treats an empty
-  // list as inheriting the template default live.
-  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string) {
-    if (!confirm || confirmBusy) return
+  // Every change PUTs the full desired owned state. The server unions it with
+  // the platform builtin and the template's rules, so an empty list means "this
+  // instance adds nothing" -- not "inherit and take over".
+  // Returns whether the PUT succeeded, so a caller that mutated local form
+  // state (addRule) can discard it only once the server accepted the change.
+  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string): Promise<boolean> {
+    if (!confirm || confirmBusy) return false
     setConfirmBusy(true)
     try {
       const pol = policy !== undefined ? policy : policySel
       const v = await api.saveAgentApproval({ approvalPolicy: pol, allowlist: owned ?? [] })
       setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
+      return true
     } catch (e) {
       showToast('Save confirmation config failed: ' + (e instanceof Error ? e.message : String(e)))
+      return false
     } finally {
       setConfirmBusy(false)
     }
@@ -143,7 +148,7 @@ export default function AgentView() {
     void persistConfirm(owned, value)
   }
 
-  function addRule() {
+  async function addRule() {
     const pattern = ruleForm.pattern.trim()
     if (!pattern) {
       showToast('Command pattern is required')
@@ -157,8 +162,9 @@ export default function AgentView() {
       showToast('That command is already on the allowlist')
       return
     }
-    void persistConfirm([...base, entry])
-    setRuleForm({ pattern: '', argPattern: '' })
+    // Clear the form only on success: a rejected argPattern (400) must leave
+    // what the user typed in place so they can fix it, not retype it.
+    if (await persistConfirm([...base, entry])) setRuleForm({ pattern: '', argPattern: '' })
   }
 
   function removeRule(key: string) {

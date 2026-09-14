@@ -126,6 +126,14 @@ func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.Allowlist
 // rather than a regular expression, so it is only checked for emptiness;
 // ArgPattern is a regular expression compiled by the gateway at match time, so
 // it is compiled here to reject it while the user is still looking at the form.
+//
+// The two grammars are not the same: the gateway compiles ArgPattern as a
+// JavaScript RegExp (new RegExp in the exec-command-resolution module), while
+// this function uses Go's RE2. Lookaround and backreferences are rejected here
+// but valid there, and RE2-only syntax such as \p{L} or [[:alpha:]] is accepted
+// here but misread or thrown on there. The divergence is fail-closed -- a throw
+// at match time is caught and treated as no-match -- so this check is a
+// courtesy to the user, not a guarantee that the gateway accepts the pattern.
 func Validate(r v1alpha1.AllowlistRule) error {
 	if strings.TrimSpace(r.Pattern) == "" {
 		return errors.New("pattern is required")
