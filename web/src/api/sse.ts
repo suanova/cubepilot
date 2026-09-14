@@ -23,9 +23,9 @@ import type { SSEEvent } from './types'
 
 // emitDone is this helper's own terminal -- never a server one -- so it always
 // carries `synthetic: true`. That marker is the only thing that distinguishes
-// it: the empty session_id is incidental, and callers must not infer from it.
+// it: the empty sessionId is incidental, and callers must not infer from it.
 function emitDone(onEvent: (name: string, ev: SSEEvent) => void, error?: string) {
-  onEvent('message_done', { type: 'message_done', session_id: '', error: error || '', synthetic: true })
+  onEvent('message_done', { type: 'message_done', sessionId: '', error: error || '', synthetic: true })
 }
 
 // True when `e` is the error a cancelled fetch / errored stream rejects with.

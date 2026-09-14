@@ -22,7 +22,7 @@ func (r *stubResolver) ResolveApproval(_ context.Context, user, approvalID, deci
 	return r.err
 }
 
-func TestApprovalService_BeginPublishesConfirmPending(t *testing.T) {
+func TestApprovalService_BeginPublishesApprovalPending(t *testing.T) {
 	hub := NewHub()
 	rec := httptest.NewRecorder()
 	if _, err := hub.Open("conv-1", rec, rec); err != nil {
@@ -39,11 +39,11 @@ func TestApprovalService_BeginPublishesConfirmPending(t *testing.T) {
 	})
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "event: confirm_pending") || !strings.Contains(body, `"call_id":"appr-1"`) {
-		t.Fatalf("expected confirm_pending in stream, got %q", body)
+	if !strings.Contains(body, "event: approval_pending") || !strings.Contains(body, `"callId":"appr-1"`) {
+		t.Fatalf("expected approval_pending in stream, got %q", body)
 	}
 	if !strings.Contains(body, `"command":"kubectl delete pod foo"`) {
-		t.Fatalf("expected command in confirm_pending, got %q", body)
+		t.Fatalf("expected command in approval_pending, got %q", body)
 	}
 
 	p, ok := svc.Pending("alice", "conv-1")
@@ -90,8 +90,8 @@ func TestApprovalService_ResolveApproveAndReject(t *testing.T) {
 			t.Error("pending must be cleared after resolve")
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, "event: confirm_resolved") || !strings.Contains(body, `"approved":`+map[bool]string{true: "true", false: "false"}[tc.approved]) {
-			t.Errorf("expected confirm_resolved approved=%v in stream, got %q", tc.approved, body)
+		if !strings.Contains(body, "event: approval_resolved") || !strings.Contains(body, `"approved":`+map[bool]string{true: "true", false: "false"}[tc.approved]) {
+			t.Errorf("expected approval_resolved approved=%v in stream, got %q", tc.approved, body)
 		}
 		audit, _ := st.ListAudit("alice", 0)
 		if len(audit) == 0 || audit[0].Status != map[bool]string{true: "approved", false: "rejected"}[tc.approved] {
@@ -133,7 +133,7 @@ func TestApprovalService_ResolveErrors(t *testing.T) {
 	}
 }
 
-func TestHandleConfirmAndPending(t *testing.T) {
+func TestHandleApprovalAndPending(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -145,40 +145,50 @@ func TestHandleConfirmAndPending(t *testing.T) {
 		ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo",
 	})
 
-	// pending GET
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/confirm/pending", "alice", nil)
+	// pending GET: the pending approval is wrapped in an "approval" envelope.
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "alice", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("pending GET status = %d, body %s", rec.Code, rec.Body.String())
 	}
-	var pend map[string]any
+	var pend struct {
+		Approval *struct {
+			SessionID  string `json:"sessionId"`
+			ApprovalID string `json:"approvalId"`
+			Tool       string `json:"tool"`
+			Command    string `json:"command"`
+		} `json:"approval"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &pend); err != nil {
 		t.Fatal(err)
 	}
-	if pend["approval_id"] != "appr-1" {
-		t.Errorf("pending approval_id = %v", pend["approval_id"])
+	if pend.Approval == nil {
+		t.Fatalf("pending GET body = %s, want an \"approval\" envelope", rec.Body.String())
+	}
+	if pend.Approval.ApprovalID != "appr-1" || pend.Approval.SessionID != "conv-1" || pend.Approval.Command != "kubectl delete pod foo" {
+		t.Errorf("pending approval = %+v, want appr-1 on conv-1", *pend.Approval)
 	}
 
-	// confirm approve
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "alice", map[string]any{"decision": "approve"})
+	// approve
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice", map[string]any{"decision": "approve"})
 	if rec.Code != http.StatusOK {
-		t.Fatalf("confirm status = %d, body %s", rec.Code, rec.Body.String())
+		t.Fatalf("approval status = %d, body %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"approved":true`) {
-		t.Errorf("confirm body = %s", rec.Body.String())
+		t.Errorf("approval body = %s", rec.Body.String())
 	}
 	if len(res.calls) != 1 || res.calls[0] != "alice|appr-1|approve" {
 		t.Errorf("resolver calls = %v", res.calls)
 	}
 
-	// second confirm → 404 (already resolved)
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "alice", map[string]any{"decision": "reject"})
+	// second approval → 404 (already resolved)
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice", map[string]any{"decision": "reject"})
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("second confirm status = %d", rec.Code)
+		t.Fatalf("second approval status = %d", rec.Code)
 	}
 
 	// invalid decision → 400
 	srv.approvals.Begin("alice", pendingApproval{ApprovalID: "appr-2", SessionKey: "conv-2"})
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-2/confirm", "alice", map[string]any{"decision": "maybe"})
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-2/approval", "alice", map[string]any{"decision": "maybe"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid decision status = %d", rec.Code)
 	}
@@ -197,11 +207,11 @@ func TestHandleConfirm_OwnerScoped(t *testing.T) {
 	srv.approvals.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo"})
 
 	// bob (not the owner) cannot read or resolve it.
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/confirm/pending", "bob", nil)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "bob", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("bob pending GET status = %d, want 404", rec.Code)
 	}
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "bob", map[string]any{"decision": "reject"})
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "bob", map[string]any{"decision": "reject"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("bob confirm status = %d, want 404", rec.Code)
 	}
@@ -210,7 +220,7 @@ func TestHandleConfirm_OwnerScoped(t *testing.T) {
 	}
 
 	// The owner still can.
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/sessions/conv-1/confirm", "alice", map[string]any{"decision": "approve"})
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice", map[string]any{"decision": "approve"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("alice confirm status = %d, want 200", rec.Code)
 	}

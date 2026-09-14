@@ -27,28 +27,61 @@
 
 # 1. 架构与接入
 
+CubePilot 有**两条**给客户端用的路径。先确定你的客户端属于哪一类，再决定读哪一节。
+
 ```text
-浏览器 / 客户端
-     │  HTTP + SSE   /api/*
-     ▼
-反向代理（生产 nginx / 开发 vite dev server）
-     │
-     ▼
-cubepilot-api:8080  ──WebSocket──▶  每用户一个 OpenClaw 实例（Pod）
-                                              │
-                                            exec → kubectl → 集群
+                    ┌── 路径 A：REST facade ──┐
+浏览器 / 客户端 ────┤                        ├──▶ cubepilot-api:8080
+                    └── 路径 B：CRD-first ───┘        │  WebSocket
+                              │                      ▼
+                              │            每用户一个 OpenClaw 实例（Pod）
+                              │                      │
+                              └──────────────▶ kubectl → 集群
+                            kube-apiserver
+                        （ai.cubestack.io CRD）
 ```
 
-客户端**只需要访问 `/api/*`**，不需要、也拿不到 Kubernetes API server 的访问权限。
-CRD 资源的读写全部由 `cubepilot-api` 代理。
+## 路径 A：REST facade（`/api/v1/*`）
+
+内置 Portal 走这条路。**只需要访问 `/api/v1/*`**，不需要 Kubernetes API server 的访问权限——
+所有 CRD 资源的读写由 `cubepilot-api` 代理。
+
+反向代理配置见下节。这是本文档的主体。
+
+## 路径 B：CRD-first（直接对 kube-apiserver 操作）
+
+有 kube-apiserver 权限的客户端（例如接入 CubePilot 的 cubeStack 统一 UI）**优先直接操作
+六个平台 CRD**，只在 CRD 无法表达的操作上回退到 REST。
+
+两组端点的划分：
+
+| 组 | 内容 | 能否走 CRD |
+|---|---|---|
+| **REST-only** | 对话/会话历史、审批、问答、审计、技能内容发布 | ❌ 没有 CRD 承载（会话内容在实例运行时里、审计是 API 自己的 PVC 状态、技能包是 API 自己的仓库）|
+| **CRD facade** | `AgentTemplate` / `AgentInstance` / `Skill` / `TaskTemplate` / `Task` / `TaskRun` 的 HTTP 镜像 | ✅ 同样可对 CR 直接操作 |
+
+**CRD-first 客户端应当以 CRD 的字段名为准**——本文档中 REST 的字段名刻意与 CRD 的 json tag
+保持一致（例如 `selectedModel`、`userInstructions`、`approvalPolicy`、`instruction`、`cron`），
+这样同一个概念在两条路径上是同一个名字。
+
+> CRD 是命名空间作用域的，组为 `ai.cubestack.io`，版本 `v1alpha1`。
+> 数据面契约的完整记录见 GitHub issue #148（设计决策记在 issue 里，不在仓库文档里）。
+
+## 版本
+
+客户端端点统一在 **`/api/v1/`** 之下。版本被冻结在此处，将来若有破坏性变更会引入新的前缀
+（`/api/v2/`），而不是就地改动 v1。
+
+集群内部端点 `/internal/*` **不带版本**：它们唯一的消费者是 agent Pod 内的 supervisor，
+随 agent 镜像与 API 一起发布。
 
 ## 反向代理的硬性要求
 
-SSE（`POST /api/messages`）必须**关闭代理缓冲**，否则事件会被攒着一起吐，失去流式效果。
+SSE（`POST /api/v1/messages`）必须**关闭代理缓冲**，否则事件会被攒着一起吐，失去流式效果。
 参考 `web/nginx.conf`：
 
 ```nginx
-location /api/ {
+location /api/v1/ {
     proxy_pass         http://cubepilot-api:8080;
     proxy_http_version 1.1;
     proxy_buffering    off;      # SSE 必需
@@ -73,45 +106,63 @@ X-CubePilot-User: <用户名>
 - **当前没有认证**。这个头是可伪造的，身份由调用方自报；多租户隔离靠后端按此值过滤，
   RBAC 是最终闸门。生产接入前需要在此之上补认证。
 
-## 2.2 响应信封（**不统一，重点**）
+## 2.2 响应形状
 
-多数端点用具名 key 包裹返回值，但**有一批是裸对象或无包裹的原始字节**：
+两条路径共用同一套规则——这也是 §1「以 CRD 字段名为准」在响应结构上的体现：
 
-| 有包裹 | 包裹 key |
+> **返回一个完整的「东西」→ 用具名 key 包起来，key 就是那个东西的名字。**
+> **返回某个东西的若干字段 → 不加信封，字段直接摊平。**
+
+**有信封**（key 命名 payload）：
+
+| 端点 | 包裹 key |
 | --- | --- |
-| `/api/sessions` | `sessions` |
-| `/api/audit` | `entries` |
-| `/api/agent/config` | `config` |
-| `/api/agenttemplates` · `/api/agenttemplates/{name}` | `agentTemplates` · `agentTemplate` |
-| `/api/instances` POST | `instance` |
-| `/api/instances` GET | `instances` |
-| `/api/llms` · `/api/llms/{name}` | `model` · `model`（DELETE 用 `removed`） |
-| `/api/skills` | `skills` |
-| `/api/skills/{name}/install` · `uninstall` | `enabledSkills` |
-| `/api/tasks` GET · POST · `/toggle` · `/run` | `tasks` · `task` · `task` · `{started, task}` |
-| `/api/tasks/{id}/reports` | `reports` |
-| `/api/tasktemplates` | `taskTemplates` |
-| `/api/taskruns` · `/api/taskruns/{name}` | `taskruns` · `taskrun` |
-| `/api/kinds` | `kinds` |
-| `/api/sessions/{key}/question/pending` | `questions` |
+| `/api/v1/sessions` | `sessions` |
+| `/api/v1/audit` | `entries` |
+| `/api/v1/agenttemplates` · `/api/v1/agenttemplates/{name}` | `agentTemplates` · `agentTemplate` |
+| `/api/v1/instances` GET · POST | `instances` · `instance` |
+| `/api/v1/llms` POST · `/api/v1/llms/{name}` PUT | `model` |
+| `/api/v1/llms/{name}` DELETE | `removed`（+ 可选 `warning`）|
+| `/api/v1/skills` · `POST .../publish` | `skills` · `skill` |
+| `/api/v1/skills/{name}/install` · `uninstall` | `enabledSkills` |
+| `/api/v1/tasks` GET · POST · `/toggle` · `/run` | `tasks` · `task` · `task` · `{started, task}` |
+| `/api/v1/tasks/{id}/reports` | `reports` |
+| `/api/v1/tasktemplates` | `taskTemplates` |
+| `/api/v1/taskruns` · `/api/v1/taskruns/{name}` | `taskruns` · `taskrun` |
+| `/api/v1/kinds` | `kinds` |
+| `/api/v1/sessions/{key}/question/pending` · `.../approval/pending` | `questions` · `approval` |
 
-| **无包裹（裸对象 / 原始字节）** | 说明 |
+**扁平**（是某个东西的字段，不是一个独立的东西）：
+
+| 端点 | 说明 |
 | --- | --- |
-| `GET /api/agent/status` | 裸 `AgentStatus` |
-| `GET /api/agent/confirm` · `PUT /api/agent/confirm` | 裸 `confirmView` |
-| `GET /api/sessions/{key}/confirm/pending` | 裸 `PendingConfirm` |
-| `GET /api/sessions/{key}/messages` | **原始 JSON 透传**（运行时历史文档），不重新编码 |
-| `POST /api/skills/{name}/publish` | 裸 `Skill` CR |
-| `POST /api/messages` | SSE 流，不是 JSON |
-| 全部 `/internal/*` | 集群内部端点，见 §6.5 |
+| `GET`·`PUT /api/v1/agent/config` | `{exists, selectedModel, userInstructions}` —— 是实例的两个字段，不是名为 config 的对象 |
+| `GET /api/v1/agent/status` | 实例的状态字段 |
+| `GET`·`PUT /api/v1/agent/approval` | 策略视图的字段 |
+| `POST /api/v1/sessions/{key}/approval` | `{approved, decision, approvalId, allowlisted?}` |
+| `POST /api/v1/sessions/{key}/question` | `{questionId, cancelled}` |
+| `POST /api/v1/sessions/{key}/abort` · `GET .../turn` | `{ok}` · `{active}` |
+| `DELETE /api/v1/tasks/{id}` | `{deleted}` |
+
+**字节透传**（不包——包一层就等于篡改别人的格式）：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/v1/sessions/{key}/messages` | 运行时历史文档，原样转发，不重新编码 |
+| `POST /api/v1/messages` | SSE 流，不是 JSON |
+| `GET /internal/gateway/config/{user}` | 原样转发 `openclaw.json` |
+| `GET /internal/skills/{name}/tar` | 原始 gzip |
 
 ## 2.3 错误与状态码语义
 
-错误体统一为：
+**所有**错误响应都是同一个形状：
 
 ```json
 { "error": "人类可读的原因" }
 ```
+
+不存在第二种形态——未匹配的路径也由 mux 兜底返回这个 JSON，不会出现 Go 默认的纯文本 404。
+客户端可以无条件地按 JSON 解析错误体。
 
 以下状态码**有特定语义**，客户端必须区别处理：
 
@@ -124,28 +175,28 @@ X-CubePilot-User: <用户名>
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（仅 `/abort`） | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
-| **202** | 仅 `POST /api/tasks/{id}/run`，表示已登记手动触发 | 正常成功 |
-| **201** | 仅 `POST /api/instances`（新建）；已存在时返回 200 + `alreadyExists: true` | 正常成功 |
+| **201** | 创建成功：`POST /api/v1/instances`、`POST /api/v1/tasks`、`POST /api/v1/llms`、`POST .../publish` | 正常成功。注意它**不是** 200 |
+| **200** | `POST /api/v1/instances` 在实例已存在时返回 200 + `alreadyExists: true` | 正常成功（幂等重复）|
+| **202** | 仅 `POST /api/v1/tasks/{id}/run`，表示已登记手动触发 | 正常成功 |
 
-**注意**：`404` 有两种形态——JSON 的 `{"error": ...}`（业务意义上的「没有」），
-和 Go `http.NotFound` 的**纯文本** `404 page not found`（路径写错、路径段为空、
-通配路由带尾斜杠）。客户端解析 404 体前要容错。
+## 2.4 方法语义
 
-## 2.4 方法检查不一致
+每个端点都只接受它声明的方法，其他方法一律 `405` + JSON。
 
-绝大多数端点对错误方法返回 `405` + JSON `{"error": "..."}`，但**这四个端点不检查方法**，
-任何 method 都按正常流程返回 200：
+两点需要留意，它们和直觉不同：
 
-- `GET/POST/... /api/sessions`
-- `/api/sessions/{key}/messages`
-- `/api/agent/status`
-- `GET /internal/agents/{user}/config`
+| 端点 | 方法 | 为什么 |
+| --- | --- | --- |
+| `/api/v1/skills/{name}/install` · `uninstall` | **`PUT`** | 这是幂等的集合成员变更（重复调用结果一致），所以用 PUT 而非 POST |
+| `/api/v1/tasks/{id}/run` · `/toggle` | `POST` | 非幂等（触发一次执行 / 翻转状态），POST 正确 |
+| `POST /api/v1/sessions/{key}/approval` | `POST` | 提交一个决定，是动作 |
 
 ## 2.5 路径细节
 
 - `sessionKey` 含冒号（形如 `agent:main:conv-<uuid>`），**必须 URL 编码**。
-- 会话子资源靠**后缀**匹配，所以 `/api/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
-- 通配路由带尾斜杠会落到 mux 的 404（如 `/api/llms/`），不会匹配 `{name}`。
+- 会话子资源靠**后缀**匹配，所以 `/api/v1/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
+- 通配路由带尾斜杠会落到兜底 404（如 `/api/v1/llms/`），不会匹配 `{name}`。
+- `/internal/*` 不带版本前缀（见 §1）。
 
 ---
 
@@ -158,10 +209,10 @@ CubePilot 的 agent 实例是**常驻**的（起来后不回收），但第一�
 
 | 会加热（可能慢、可能 503） |
 | --- |
-| `GET /api/sessions` |
-| `GET /api/sessions/{key}/messages` |
-| `POST /api/messages` |
-| `POST /api/inspect` |
+| `GET /api/v1/sessions` |
+| `GET /api/v1/sessions/{key}/messages` |
+| `POST /api/v1/messages` |
+| `POST /api/v1/inspect` |
 
 **其余所有端点都不加热**——它们直接读 CR 或网关，永远快。
 调用顺序就建立在这条分界上。
@@ -170,15 +221,15 @@ CubePilot 的 agent 实例是**常驻**的（起来后不回收），但第一�
 
 ```ts
 // ── 阶段 0：并行发出，不碰实例，首屏立刻可渲染 ──────────────
-const [status, config, confirm] = await Promise.all([
+const [status, config, approval] = await Promise.all([
   api.agentStatus(),     // 实例存在吗？phase 是什么？
   api.agentConfig(),     // 我选的模型 / 提示词
-  api.agentConfirm(),    // 我的确认策略
+  api.agentConfirm(),    // 我的审批策略
 ])
 
 if (!status.exists) {
-  // 还没实例 → 引导用户去「Agent 配置」页，调 POST /api/instances
-  // 此时不要调 /api/sessions，只会 503
+  // 还没实例 → 引导用户去「Agent 配置」页，调 POST /api/v1/instances
+  // 此时不要调 /api/v1/sessions，只会 503
   return showOnboarding()
 }
 
@@ -197,12 +248,12 @@ try {
 ## 3.3 首次使用（尚无实例）
 
 ```text
-GET  /api/agenttemplates          → 挑模板（默认 cubepilot）
-POST /api/instances               → 创建实例（201；已存在则 200 + alreadyExists）
-       ↑ 此后 /api/sessions 等端点才可用
+GET  /api/v1/agenttemplates          → 挑模板（默认 cubepilot）
+POST /api/v1/instances               → 创建实例（201；已存在则 200 + alreadyExists）
+       ↑ 此后 /api/v1/sessions 等端点才可用
 ```
 
-创建后实例仍需控制器调度，`GET /api/agent/status` 的 `phase` 会经历
+创建后实例仍需控制器调度，`GET /api/v1/agent/status` 的 `phase` 会经历
 `Creating` → `Ready`。`phase` 为 `not provisioned (resident policy)` 表示实例不存在。
 
 ---
@@ -212,14 +263,14 @@ POST /api/instances               → 创建实例（201；已存在则 200 + al
 ## 4.1 发送一条消息（SSE）
 
 ```ts
-const resp = await fetch('/api/messages', {
+const resp = await fetch('/api/v1/messages', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
     'X-CubePilot-User': user,
   },
   body: JSON.stringify({
-    session_id: currentSessionId,  // 新会话传 null / '' / 省略
+    sessionId: currentSessionId,  // 新会话传 null / '' / 省略
     content: text,                 // 必填，空白会被拒
   }),
 })
@@ -230,17 +281,17 @@ const resp = await fetch('/api/messages', {
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `content` | 是 | 用户消息。空或纯空白 → `400 {"error":"content required"}` |
-| `session_id` | 否 | 省略或空 → 后端生成 `conv-<uuid>` |
+| `sessionId` | 否 | 省略或空 → 后端生成 `conv-<uuid>` |
 
 **新会话不要自己编 key。** 后端会生成并**规范化**为 `agent:main:<key>`，
 然后通过第一个事件告知：
 
 ```text
 event: message_start
-data: {"type":"message_start","session_id":"agent:main:conv-9f3a..."}
+data: {"type":"message_start","sessionId":"agent:main:conv-9f3a..."}
 ```
 
-**必须保存这个 `session_id`**，后续所有请求都用它（它就是 `{key}`）。
+**必须保存这个 `sessionId`**，后续所有请求都用它（它就是 `{key}`）。
 
 响应头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`。
 空闲 15 秒会收到注释行 `: ping` 保活（客户端应忽略非 `data:` 行）。
@@ -248,7 +299,7 @@ data: {"type":"message_start","session_id":"agent:main:conv-9f3a..."}
 **请求阶段的失败不走 HTTP 状态码**（流已经打开了），而是以 SSE 事件返回：
 
 ```json
-{"type":"message_done","session_id":"...","error":"instance warming failed: ..."}
+{"type":"message_done","sessionId":"...","error":"instance warming failed: ..."}
 ```
 
 ## 4.2 SSE 帧格式
@@ -257,7 +308,7 @@ data: {"type":"message_start","session_id":"agent:main:conv-9f3a..."}
 
 ```text
 event: message_delta
-data: {"type":"message_delta","session_id":"agent:main:conv-x","delta":"集群里有"}
+data: {"type":"message_delta","sessionId":"agent:main:conv-x","delta":"集群里有"}
 
 ```
 
@@ -273,8 +324,8 @@ data: {"type":"message_delta","session_id":"agent:main:conv-x","delta":"集群�
 ## 4.3 会话列表与历史
 
 ```ts
-GET /api/sessions                        → {"sessions":[{"sessionKey","title"}]}
-GET /api/sessions/{key}/messages
+GET /api/v1/sessions                        → {"sessions":[{"sessionKey","title"}]}
+GET /api/v1/sessions/{key}/messages
                                          → {"items":[HistoryMessage]}   // 原始透传
 ```
 
@@ -293,7 +344,7 @@ GET /api/sessions/{key}/messages
 ## 4.4 停止进行中的回合
 
 ```ts
-POST /api/sessions/{key}/abort   → {"ok":true}
+POST /api/v1/sessions/{key}/abort   → {"ok":true}
 ```
 
 - **幂等**：没有运行中的回合时直接返回 200，不发任何网关 RPC。
@@ -304,7 +355,7 @@ POST /api/sessions/{key}/abort   → {"ok":true}
 ## 4.5 查询回合状态
 
 ```ts
-GET /api/sessions/{key}/turn   → {"active":true|false}
+GET /api/v1/sessions/{key}/turn   → {"active":true|false}
 ```
 
 状态来自网关（不是本地 hub），响应带 `Cache-Control: no-store`。
@@ -314,23 +365,23 @@ GET /api/sessions/{key}/turn   → {"active":true|false}
 
 # 5. 人机协同（HITL）
 
-两条独立的通道，都复用**同一条对话 SSE 流**：审批（写操作确认）和问答（`ask_user`）。
+两条独立的通道，都复用**同一条对话 SSE 流**：审批（写操作放行）和问答（`ask_user`）。
 共同模式是「事件弹出 → 用户决定 → POST 回答 → 收到 resolved 事件」。
 
-## 5.1 写操作确认
+## 5.1 写操作审批（approval）
 
 当 agent 要执行被策略拦截的写操作时，回合在网关侧暂停：
 
 ```text
-event: confirm_pending
-data: {"type":"confirm_pending","session_id":"...","call_id":"<approval id>",
+event: approval_pending
+data: {"type":"approval_pending","sessionId":"...","callId":"<approval id>",
        "name":"exec","command":"kubectl delete pod x","level":"write","message":"..."}
 ```
 
 用户决定后提交：
 
 ```ts
-POST /api/sessions/{key}/confirm
+POST /api/v1/sessions/{key}/approval
 body: {"decision": "approve" | "reject" | "allow-always"}
 ```
 
@@ -340,24 +391,25 @@ body: {"decision": "approve" | "reject" | "allow-always"}
 | `reject` | 拒绝，写操作不执行 |
 | `allow-always` | 本次放行，**并把该命令记入实例 allowlist**，此后自动通过 |
 
-响应：`{"approved":bool,"decision":"...","approval_id":"...","allowlisted"?:bool}`
+响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}`
 
 随后同一流上收到：
 
 ```text
-event: confirm_resolved
-data: {"type":"confirm_resolved","session_id":"...","call_id":"...","approved":true}
+event: approval_resolved
+data: {"type":"approval_resolved","sessionId":"...","callId":"...","approved":true}
 ```
 
 **刷新后恢复卡片**（必需，不是可选）：
 
 ```ts
-GET /api/sessions/{key}/confirm/pending
+GET /api/v1/sessions/{key}/approval/pending
 // 404 {"error":"no pending approval"} → 静默忽略
-// 200 裸对象：{"session_id","approval_id","tool","command","level","message"}
+// 200：{"approval":{"sessionId","approvalId","tool","command","level","message"}}
 ```
 
-**失败关闭语义**：确认策略要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。
+**失败关闭语义**：`approvalPolicy` 要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。
+未知的策略值同样失败关闭——绝不降级成「不拦」。
 因此 `503 {"error":"approval channel unavailable"}` 表示该回合被拒——不要重试成「跳过确认」。
 
 ## 5.2 `ask_user` 问答
@@ -366,39 +418,39 @@ agent 调用 `ask_user` 工具时，回合同样暂停：
 
 ```text
 event: question_pending
-data: {"type":"question_pending","session_id":"...","call_id":"<question id>",
+data: {"type":"question_pending","sessionId":"...","callId":"<question id>",
        "question":{"questions":[{"questionId","header","question",
                                  "options":[{"label","description"?}],"multiSelect"?}],
                    "timeoutSeconds":n}}
 ```
 
-**注意 `call_id` 是问答会话的 id，`question.questions[].questionId` 是每个问题的 id**，
+**注意 `callId` 是问答会话的 id，`question.questions[].questionId` 是每个问题的 id**，
 提交答案时用的是后者。
 
 ```ts
 // 回答
-POST /api/sessions/{key}/question
+POST /api/v1/sessions/{key}/question
 body: {"id": "<call_id>", "answers": {"<questionId>": ["选项 label"]}}
 
 // 或取消（让 agent 继续而不是等到超时）
-POST /api/sessions/{key}/question
+POST /api/v1/sessions/{key}/question
 body: {"id": "<call_id>", "cancel": true}
 ```
 
 `answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400 {"error":"send either answers or cancel"}`。
 
-响应：`{"question_id":"...","cancelled":bool}`
+响应：`{"questionId":"...","cancelled":bool}`
 
 ```text
 event: question_resolved
-data: {"type":"question_resolved","session_id":"...","call_id":"...",
+data: {"type":"question_resolved","sessionId":"...","callId":"...",
        "message":"answered" | "cancelled" | "expired"}
 ```
 
 **刷新后恢复**：
 
 ```ts
-GET /api/sessions/{key}/question/pending
+GET /api/v1/sessions/{key}/question/pending
 // 404 {"error":"no pending question"} → 静默忽略
 // 200 {"questions":[{"id","questions":[QuestionItem],"timeoutSeconds"?}]}
 ```
@@ -428,39 +480,40 @@ GET /api/sessions/{key}/question/pending
 
 | 方法 | 路径 | 请求 | 响应 | 加热 |
 | --- | --- | --- | --- | --- |
-| ANY | `/api/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
-| ANY | `/api/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
-| POST | `/api/messages` | `{"session_id"?,"content"}` | **SSE 流** | 是 |
-| POST | `/api/inspect` | — | `{"report":"<自然语言文本>"}` | 是 |
-| POST | `/api/sessions/{key}/confirm` | `{"decision"}` | `{"approved","decision","approval_id","allowlisted"?}` | 否 |
-| GET | `/api/sessions/{key}/confirm/pending` | — | 裸 `{"session_id","approval_id","tool","command","level","message"}` | 否 |
-| POST | `/api/sessions/{key}/question` | `{"id","answers"\|"cancel"}` | `{"question_id","cancelled"}` | 否 |
-| GET | `/api/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
-| POST | `/api/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
-| GET | `/api/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
+| ANY | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
+| ANY | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
+| POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
+| POST | `/api/v1/inspect` | — | `{"report":"<自然语言文本>"}` | 是 |
+| POST | `/api/v1/sessions/{key}/approval` | `{"decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
+| GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approval":{"sessionId","approvalId","tool","command","level","message"}}` | 否 |
+| POST | `/api/v1/sessions/{key}/question` | `{"id","answers"\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
+| GET | `/api/v1/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
+| POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
+| GET | `/api/v1/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
 
 ## 6.2 Agent 配置与实例
 
 | 方法 | 路径 | 请求 | 响应 | 加热 |
 | --- | --- | --- | --- | --- |
-| GET | `/api/agent/config` | — | `{"config":{"exists","model","systemPrompt"}}` | 否 |
-| PUT | `/api/agent/config` | `{"config":{"model","systemPrompt"}}` | 同上 | 否 |
-| GET | `/api/agent/status` | — | **裸** `{"user","id","exists","phase","gatewayImage","gatewayPort",...}` | 否 |
-| GET | `/api/agent/confirm` | — | **裸** `confirmView`，见下 | 否 |
-| PUT | `/api/agent/confirm` | `{"confirmPolicy","allowlist":[...]}` | **裸** `confirmView` | 否 |
-| GET | `/api/instances` | — | `{"instances":[...]}` | 否 |
-| POST | `/api/instances` | `{"templateRef","selectedModel","enabledSkills","userInstructions"}` | `201 {"instance":{...}}` | 否 |
-| GET | `/api/agenttemplates` | — | `{"agentTemplates":[...]}` | 否 |
-| GET | `/api/agenttemplates/{name}` | — | `{"agentTemplate":{...}}` | 否 |
+| GET | `/api/v1/agent/config` | — | `{"exists","selectedModel","userInstructions"}`（扁平） | 否 |
+| PUT | `/api/v1/agent/config` | `{"selectedModel","userInstructions"}` | 同上 | 否 |
+| GET | `/api/v1/agent/status` | — | **裸** `{"user","id","exists","phase","gatewayImage","gatewayPort",...}` | 否 |
+| GET | `/api/v1/agent/approval` | — | **裸** `approvalView`，见下 | 否 |
+| PUT | `/api/v1/agent/approval` | `{"approvalPolicy","allowlist":[...]}` | **裸** `approvalView` | 否 |
+| GET | `/api/v1/instances` | — | `{"instances":[...]}` | 否 |
+| POST | `/api/v1/instances` | `{"templateRef","selectedModel","enabledSkills","userInstructions"}` | `201 {"instance":{...}}` | 否 |
+| GET | `/api/v1/agenttemplates` | — | `{"agentTemplates":[...]}` | 否 |
+| GET | `/api/v1/agenttemplates/{name}` | — | `{"agentTemplate":{...}}` | 否 |
 
-`PUT /api/agent/config` 的 body **外面多包一层 `config`**——全 API 只有它这么干。
+字段名与 CRD 一致：`selectedModel` ↔ `AgentInstance.spec.selectedModel`，
+`userInstructions` ↔ `spec.userInstructions`。
 
-`confirmView`（裸对象）：
+`approvalView`（裸对象）：
 
 ```json
 {
   "exists": true,
-  "confirmPolicy": "None | Allowlist | AlwaysAsk | \"\"",
+  "approvalPolicy": "None | Allowlist | AlwaysAsk | \"\"",
   "override": "",                       // 实例自身设定，"" = 继承模板
   "templatePolicy": "Allowlist",
   "allowlist":     [{"pattern","argPattern?","label"?}],
@@ -469,7 +522,7 @@ GET /api/sessions/{key}/question/pending
 }
 ```
 
-- `confirmPolicy` 只接受 `""` / `None` / `Allowlist` / `AlwaysAsk`，其他值 → 400。
+- `approvalPolicy` 只接受 `""` / `None` / `Allowlist` / `AlwaysAsk`，其他值 → 400。
 - `label` **只在**规则精确匹配平台内置只读规则时出现；用户自己加的规则没有 `label`，
   界面上不要把它当作只读展示。
 - `channel` 为 `""` 表示策略是 `None` 或实例不存在；`unconfigured` 表示策略要求拦截但
@@ -479,7 +532,7 @@ GET /api/sessions/{key}/question/pending
 **Agent 配置的常见错误**：
 
 - `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
-  —— 模型没进模板的 `spec.models`；空 model 永远允许。
+  —— 模型没进模板的 `spec.models`；空 `selectedModel` 永远允许（表示「用运行时默认」）。
 - `409 no agent instance yet — provision it on the Agent Config page first`
   —— 实例不存在，先去创建。
 
@@ -487,9 +540,9 @@ GET /api/sessions/{key}/question/pending
 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
-| POST | `/api/llms` | `{"name","endpoint","apiKey"?,"public"?}` | `200 {"model":{...}}` |
-| PUT | `/api/llms/{name}` | 同上（`apiKey` 省略 = 保留原凭证） | `200 {"model":{...},"warning"?}` |
-| DELETE | `/api/llms/{name}` | — | `200 {"removed":"<name>","warning"?}` |
+| POST | `/api/v1/llms` | `{"name","endpoint","apiKey"?,"public"?}` | **201** `{"model":{...}}` |
+| PUT | `/api/v1/llms/{name}` | 同上（`apiKey` 省略 = 保留原凭证） | `200 {"model":{...},"warning"?}` |
+| DELETE | `/api/v1/llms/{name}` | — | `200 {"removed":"<name>","warning"?}` |
 
 - `apiKey` 与 `public` **互斥**：公开模型不能带凭证；非公开模型必须给 key。
 - `name` 不可变——改名要删了重建。
@@ -507,32 +560,34 @@ GET /api/sessions/{key}/question/pending
 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
-| GET | `/api/tasks` | — | `{"tasks":[taskDTO]}` |
-| POST | `/api/tasks` | `{"name","prompt"?,"schedule"?,"templateRef"?,"params"?,"state"?}` | `{"task":taskDTO}` |
-| DELETE | `/api/tasks/{id}` | — | `{"deleted":"<id>"}` |
-| POST | `/api/tasks/{id}/run` | — | **202** `{"started":true,"task":taskDTO}` |
-| POST | `/api/tasks/{id}/toggle` | — | `{"task":taskDTO}` |
-| GET | `/api/tasks/{id}/reports` | — | `{"reports":[reportDTO]}` |
-| GET | `/api/tasktemplates` | — | `{"taskTemplates":[...]}` |
-| GET | `/api/taskruns` | `?task=<name>` 可选 | `{"taskruns":[...]}` |
-| GET | `/api/taskruns/{name}` | — | `{"taskrun":{...}}` |
-| GET | `/api/audit` | `?limit=`（默认 400） | `{"entries":[...]}` |
-| GET | `/api/kinds` | — | `{"kinds":[...]}` |
-| GET | `/api/skills` | — | `{"skills":[...]}` |
-| POST | `/api/skills/{name}/publish` | query `displayName`（必填）、`description`；body = gzip tar | 裸 `Skill` CR |
-| POST | `/api/skills/{name}/install` | — | `{"enabledSkills":[...]}` |
-| POST | `/api/skills/{name}/uninstall` | — | `{"enabledSkills":[...]}` |
+| GET | `/api/v1/tasks` | — | `{"tasks":[taskDTO]}` |
+| POST | `/api/v1/tasks` | `{"name","instruction"?,"cron"?,"templateRef"?,"params"?,"state"?}` | **201** `{"task":taskDTO}` |
+| DELETE | `/api/v1/tasks/{id}` | — | `{"deleted":"<id>"}` |
+| POST | `/api/v1/tasks/{id}/run` | — | **202** `{"started":true,"task":taskDTO}` |
+| POST | `/api/v1/tasks/{id}/toggle` | — | `{"task":taskDTO}` |
+| GET | `/api/v1/tasks/{id}/reports` | — | `{"reports":[reportDTO]}` |
+| GET | `/api/v1/tasktemplates` | — | `{"taskTemplates":[...]}` |
+| GET | `/api/v1/taskruns` | `?task=<name>` 可选 | `{"taskruns":[...]}` |
+| GET | `/api/v1/taskruns/{name}` | — | `{"taskrun":{...}}` |
+| GET | `/api/v1/audit` | `?limit=`（默认 400） | `{"entries":[...]}` |
+| GET | `/api/v1/kinds` | — | `{"kinds":[...]}` |
+| GET | `/api/v1/skills` | — | `{"skills":[...]}` |
+| POST | `/api/v1/skills/{name}/publish` | query `displayName`（必填）、`description`；body = gzip tar | **201** `{"skill":{...}}` |
+| PUT | `/api/v1/skills/{name}/install` | — | `{"enabledSkills":[...]}` |
+| PUT | `/api/v1/skills/{name}/uninstall` | — | `{"enabledSkills":[...]}` |
 
-`POST /api/tasks` 的字段规则：
+`POST /api/v1/tasks` 的字段规则：
 
-- `name` 必填；`prompt` 与 `templateRef` **至少一个**。
-- `schedule` 是**指针语义**：省略 ⇒ 用模板的 `defaultCron`（或 Manual）；显式 `""` ⇒ Manual；
+- `name` 必填；`instruction` 与 `templateRef` **至少一个**。
+- `cron` 是**指针语义**：省略 ⇒ 用模板的 `defaultCron`（或 Manual）；显式 `""` ⇒ Manual；
   给值 ⇒ 按 5 字段 cron 解析（按 UTC 求值，非法 → 400）。
 - `params` 必须配合 `templateRef`，否则 400。
 - `state` 为 `Enabled` / `Paused`。
 
-`taskDTO` 字段：`id`（CR 名）、`name`（显示名）、`prompt`、`schedule`、`templateRef?`、
-`state`、`enabled`、`creator`、`createdAt`、`lastRunAt?`、`lastStatus?`、`nextRunAt?`。
+`taskDTO` 字段：`id`（CR 名）、`name`（显示名）、`instruction`、`cron`、`templateRef?`、
+`state`（`Enabled` / `Paused`）、`creator`、`createdAt`、`lastRunAt?`、`lastStatus?`、`nextRunAt?`。
+
+`state` 是**唯一**的启停字段——没有 `enabled` 布尔（两个字段表达同一事实会产生不一致状态）。
 
 `reportDTO` 字段：`id`、`taskId`、`taskName`、`trigger`（`Manual|Cron`）、
 `status`（`success|failed|running`）、`startedAt`、`finishedAt`、`content`、`p0`、`p1`、`p2`。
@@ -560,22 +615,22 @@ GET /api/sessions/{key}/question/pending
 
 # 7. SSE 事件参考
 
-`POST /api/messages` 的全部事件（`event:` 名与 `data.type` 一致）。
+`POST /api/v1/messages` 的全部事件（`event:` 名与 `data.type` 一致）。
 除 `type` 外所有字段都是 `omitempty`——**不出现即缺席**。
 
 | `type` | 载荷字段 | 含义 |
 | --- | --- | --- |
-| `message_start` | `session_id` | 回合开始，**保存 `session_id`** |
-| `agent_thinking` | `session_id` | agent 正在思考 |
-| `message_delta` | `session_id`,`delta` | 追加正文（增量） |
-| `text_replace` | `session_id`,`delta` | **替换**正文（不是追加） |
-| `tool_call` | `session_id`,`name`,`call_id`,`arguments` | 一次工具调用开始 |
-| `tool_result` | `session_id`,`name`,`call_id`,`output` | 该工具的输出 |
-| `confirm_pending` | `session_id`,`call_id`,`name`,`command`,`level`,`message` | 写操作待确认 |
-| `confirm_resolved` | `session_id`,`call_id`,`approved` | 确认已提交 |
-| `question_pending` | `session_id`,`call_id`,`question` | 问答待回答（结构见 §5.2） |
-| `question_resolved` | `session_id`,`call_id`,`message` | `answered`/`cancelled`/`expired` |
-| `message_done` | `session_id`,`error?`,`stopped?` | **唯一的终止事件** |
+| `message_start` | `sessionId` | 回合开始，**保存 `sessionId`** |
+| `agent_thinking` | `sessionId` | agent 正在思考 |
+| `message_delta` | `sessionId`,`delta` | 追加正文（增量） |
+| `text_replace` | `sessionId`,`delta` | **替换**正文（不是追加） |
+| `tool_call` | `sessionId`,`name`,`callId`,`arguments` | 一次工具调用开始 |
+| `tool_result` | `sessionId`,`name`,`callId`,`output` | 该工具的输出 |
+| `approval_pending` | `sessionId`,`callId`,`name`,`command`,`level`,`message` | 写操作待审批 |
+| `approval_resolved` | `sessionId`,`callId`,`approved` | 确认已提交 |
+| `question_pending` | `sessionId`,`callId`,`question` | 问答待回答（结构见 §5.2） |
+| `question_resolved` | `sessionId`,`callId`,`message` | `answered`/`cancelled`/`expired` |
+| `message_done` | `sessionId`,`error?`,`stopped?` | **唯一的终止事件** |
 
 要点：
 
@@ -583,10 +638,10 @@ GET /api/sessions/{key}/question/pending
   客户端要自行合成一个 `message_done` 复位 UI。`error` 与 `stopped:true` 互斥。
 - **`text_replace` 必须替换而非追加**。网关会在工具执行后重写先前的解说文本，
   当成 `message_delta` 追加会出现重复内容。
-- `tool_result` 与 `tool_call` 通过 `call_id` 配对；没有 `call_id` 时按**到达顺序**
+- `tool_result` 与 `tool_call` 通过 `callId` 配对；没有 `callId` 时按**到达顺序**
   与最旧的未完成调用配对（`web/src/views/ChatView.tsx` 的 `attachToolResult`）。
 - 事件可能来自**其他连接**（审批/问答由网关侧广播注入），
-  所以「收到 `confirm_pending` 时不一定正好在你自己那次请求的处理路径上」。
+  所以「收到 `approval_pending` 时不一定正好在你自己那次请求的处理路径上」。
 - 空闲 15 秒会有注释行 `: ping`，不是事件。
 
 ---
@@ -601,13 +656,15 @@ GET /api/sessions/{key}/question/pending
 4. **历史消息的 `content` 有字符串/数组两种形状** —— 必须归一化，否则用户消息消失。
 5. **SSE 必须手写解析**（`EventSource` 不支持 POST），且要处理流提前断开。
 6. **`sessionKey` 必须 URL 编码**（含冒号）。
-7. **信封不统一** —— 见 §2.2 的裸对象清单，不要假设都有包裹 key。
-8. **新会话不要自己编 `session_id`** —— 用 `message_start` 返回的那个。
-9. **`PUT /api/agent/config` 的 body 多一层 `config`**。
-10. **404 可能是纯文本**（Go 的 `404 page not found`），解析前要容错。
-11. **`/api/sessions` 与历史都要求实例是热的** —— 实例不可达时读不到历史，
+7. **先判断信封再解包** —— 端点返回的是「一个东西」还是「若干字段」决定了要不要往下走一层，
+   见 §2.2。取错层不会报错，只会得到 `undefined`（界面显示为空，后端其实有数据）。
+8. **新会话不要自己编 `sessionId`** —— 用 `message_start` 返回的那个。
+9. **创建成功是 `201` 不是 `200`** —— 只判断 `resp.ok` 就没问题；写死 `=== 200` 会误判为失败。
+10. **安装/卸载技能用 `PUT`** —— 幂等的集合成员变更，不是 POST。
+11. **`/api/v1/sessions` 与历史都要求实例是热的** —— 实例不可达时读不到历史，
     不要靠本地缓存假装可用。
-12. **`ask_user` 的 `call_id` 与 `questions[].questionId` 不是一回事**。
+12. **`ask_user` 的 `callId` 与 `questions[].questionId` 不是一回事**。
+13. **任务是 `state` 而不是 `enabled`** —— 没有布尔字段，用 `state === 'Enabled'` 判断。
 
 ---
 

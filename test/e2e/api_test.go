@@ -42,7 +42,7 @@ var _ = Describe("Public API", func() {
 		// cache may lag) -- poll until the builtin appears.
 		var names []string
 		Eventually(func() error {
-			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/agenttemplates", nil)
+			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/v1/agenttemplates", nil)
 			if err != nil {
 				return err
 			}
@@ -72,7 +72,7 @@ var _ = Describe("Public API", func() {
 		// bootstrap (which publishes skills first), so wait until the caller's
 		// own instance appears rather than asserting on the first 200.
 		Eventually(func() error {
-			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/instances",
+			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/v1/instances",
 				map[string]string{"X-CubePilot-User": fw.DefaultUser})
 			if err != nil {
 				return err

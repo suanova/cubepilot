@@ -74,9 +74,13 @@ func (s *Server) handleAgentTemplateByID(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/agenttemplates/"), "/")
-	if name == "" || s.cr == nil {
-		http.NotFound(w, r)
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, apiPrefix+"/agenttemplates/"), "/")
+	if name == "" {
+		writeNotFound(w, "missing agent template name")
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
 		return
 	}
 	var tmpl v1alpha1.AgentTemplate
@@ -262,9 +266,13 @@ func (s *Server) handleTaskRunByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/taskruns/"), "/")
-	if name == "" || s.cr == nil {
-		http.NotFound(w, r)
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, apiPrefix+"/taskruns/"), "/")
+	if name == "" {
+		writeNotFound(w, "missing taskrun name")
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
 		return
 	}
 	var run v1alpha1.TaskRun
@@ -302,10 +310,14 @@ func (s *Server) handleKinds(w http.ResponseWriter, r *http.Request) {
 // The supervisor polls this to render skills and detect reloads; the response
 // is the immutable ResolvedAgentConfig (revision = change signal).
 func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/internal/agents/")
 	user, tail, ok := strings.Cut(rest, "/")
 	if !ok || tail != "config" || user == "" {
-		http.NotFound(w, r)
+		writeNotFound(w, "expected /internal/agents/{user}/config")
 		return
 	}
 	cfg, err := s.mgr.ResolvedConfigForUser(r.Context(), user)
@@ -318,10 +330,9 @@ func (s *Server) handleInternalAgentConfig(w http.ResponseWriter, r *http.Reques
 		// with this user's gateway (issue #20).
 		cfg.DevicePublicKey = s.hitl.DevicePublicKeyFor(user)
 	}
-	writeJSON(w, http.StatusOK, cfg)
+	writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
 }
 
-// handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
 // handleInternalGatewayConfig serves the rendered gateway config (openclaw.json)
 // for one instance's supervisor: GET /internal/gateway/config/{user}. The
 // operator renders the shared config (providers + allowlist; apiKey as file
@@ -337,7 +348,7 @@ func (s *Server) handleInternalGatewayConfig(w http.ResponseWriter, r *http.Requ
 	}
 	user := r.PathValue("user")
 	if user == "" {
-		http.NotFound(w, r)
+		writeNotFound(w, "missing user")
 		return
 	}
 	if s.cr == nil {
@@ -424,7 +435,7 @@ func (s *Server) handleInternalSkillTar(w http.ResponseWriter, r *http.Request) 
 	}
 	name := r.PathValue("name")
 	if name == "" {
-		http.NotFound(w, r)
+		writeNotFound(w, "missing skill name")
 		return
 	}
 	if s.cr == nil {
@@ -512,7 +523,7 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, skillCR)
+	writeJSON(w, http.StatusCreated, map[string]any{"skill": skillCR})
 }
 
 // publishOptions carries the non-body dimensions of a publish: Builtin (seed
@@ -683,13 +694,17 @@ func withoutSkill(names []string, name string) []string {
 // to the caller's enabledSkills. Empty enabledSkills means "all enabled"
 // (resolver baseline), so installing an already-enabled skill is a no-op.
 func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "PUT required"})
 		return
 	}
 	name := r.PathValue("name")
-	if name == "" || s.cr == nil {
-		http.NotFound(w, r)
+	if name == "" {
+		writeNotFound(w, "missing skill name")
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
 		return
 	}
 	var skillCR v1alpha1.Skill
@@ -740,13 +755,17 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 // only the uninstalled skill stops loading and later publishes do not
 // re-enable it.
 func (s *Server) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "PUT required"})
 		return
 	}
 	name := r.PathValue("name")
-	if name == "" || s.cr == nil {
-		http.NotFound(w, r)
+	if name == "" {
+		writeNotFound(w, "missing skill name")
+		return
+	}
+	if s.cr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CRD path disabled"})
 		return
 	}
 	// Reject unknown skills before any allow-list materialization (an unknown

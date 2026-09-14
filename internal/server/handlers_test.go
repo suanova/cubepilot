@@ -104,10 +104,10 @@ func TestLiveTurnDoneIsTheSingleTerminalFrame(t *testing.T) {
 		err     error
 		want    string
 	}{
-		{"completed", agentruntime.TurnOutcome{}, nil, `{"type":"message_done","session_id":"conv-1"}`},
-		{"stopped", agentruntime.TurnOutcome{Stopped: true}, nil, `{"type":"message_done","session_id":"conv-1","stopped":true}`},
-		{"failed", agentruntime.TurnOutcome{}, fmt.Errorf("boom"), `{"type":"message_done","session_id":"conv-1","error":"boom"}`},
-		{"error wins over a stale stop", agentruntime.TurnOutcome{Stopped: true}, fmt.Errorf("boom"), `{"type":"message_done","session_id":"conv-1","error":"boom"}`},
+		{"completed", agentruntime.TurnOutcome{}, nil, `{"type":"message_done","sessionId":"conv-1"}`},
+		{"stopped", agentruntime.TurnOutcome{Stopped: true}, nil, `{"type":"message_done","sessionId":"conv-1","stopped":true}`},
+		{"failed", agentruntime.TurnOutcome{}, fmt.Errorf("boom"), `{"type":"message_done","sessionId":"conv-1","error":"boom"}`},
+		{"error wins over a stale stop", agentruntime.TurnOutcome{Stopped: true}, fmt.Errorf("boom"), `{"type":"message_done","sessionId":"conv-1","error":"boom"}`},
 	}
 	for _, c := range cases {
 		raw, err := json.Marshal(liveTurnDone("conv-1", c.outcome, c.err))

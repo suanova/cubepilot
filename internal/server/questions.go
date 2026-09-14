@@ -253,7 +253,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		s.writeQuestionGatewayError(w, user, "question "+body.ID, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"question_id": body.ID, "cancelled": body.Cancel})
+	writeJSON(w, http.StatusOK, map[string]any{"questionId": body.ID, "cancelled": body.Cancel})
 }
 
 // handlePendingQuestion serves GET /api/sessions/{key}/question/pending --
@@ -346,7 +346,7 @@ func questionErrorStatus(reason string) int {
 // subresourceKey extracts the session key from a subresource path
 // (/api/sessions/{key}<suffix>).
 func subresourceKey(path, suffix string) string {
-	key := strings.TrimSuffix(strings.TrimPrefix(path, "/api/sessions/"), suffix)
+	key := strings.TrimSuffix(strings.TrimPrefix(path, apiPrefix+"/sessions/"), suffix)
 	return strings.Trim(key, "/")
 }
 

@@ -85,12 +85,12 @@ spec:
                   - pattern
                   type: object
                 type: array
-              confirmPolicy:
+              approvalPolicy:
                 default: Allowlist
                 description: |-
-                  ConfirmPolicy is the template's default confirmation intent (default
+                  ApprovalPolicy is the template's default confirmation intent (default
                   Allowlist). Instances inherit it until they override
-                  (AgentInstance.spec.confirmPolicy).
+                  (AgentInstance.spec.approvalPolicy).
                 enum:
                 - None
                 - Allowlist

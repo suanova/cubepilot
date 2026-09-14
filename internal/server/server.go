@@ -43,7 +43,7 @@ type Server struct {
 	cr        client.Client
 	hub       *Hub
 	approvals *ApprovalService
-	hitl      *hitlManager    // nil when HITL is not configured (confirmPolicy stays declarative)
+	hitl      *hitlManager    // nil when HITL is not configured (approvalPolicy stays declarative)
 	qroutes   *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 
@@ -150,49 +150,64 @@ func New(cfg config.Config, mgr *instances.Manager, st *store.Store, catalog *sk
 	return s
 }
 
+// apiPrefix is the versioned base of every client-facing endpoint. The version
+// is frozen here so a future breaking change can be introduced as a new prefix
+// without moving this surface out from under clients that already speak it.
+// The cluster-internal endpoints under /internal/ are deliberately unversioned:
+// their only consumer is the agent-side supervisor, which is versioned together
+// with the API through the agent image.
+const apiPrefix = "/api/v1"
+
 // Handler returns the fully wired HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/metrics", metrics.Handler())
-	mux.HandleFunc("/api/sessions", s.handleSessions)
-	mux.HandleFunc("/api/sessions/", s.handleSessionSubresource)
-	mux.HandleFunc("/api/messages", s.handleMessages)
-	mux.HandleFunc("/api/inspect", s.handleInspect)
-	mux.HandleFunc("/api/tasks", s.handleTasks)
-	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
-	mux.HandleFunc("/api/audit", s.handleAudit)
-	mux.HandleFunc("/api/agent/config", s.handleAgentConfig)
-	mux.HandleFunc("/api/agent/confirm", s.handleAgentConfirm)
-	mux.HandleFunc("/api/agent/status", s.handleAgentStatus)
-	mux.HandleFunc("/api/agenttemplates", s.handleAgentTemplates)
-	mux.HandleFunc("/api/agenttemplates/", s.handleAgentTemplateByID)
-	mux.HandleFunc("/api/instances", s.handleInstances)
-	mux.HandleFunc("/api/llms", s.handleAddLLM)
-	// /api/llms/{name} edits or removes a model the platform admin already
+	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
+	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource)
+	mux.HandleFunc("/api/v1/messages", s.handleMessages)
+	mux.HandleFunc("/api/v1/inspect", s.handleInspect)
+	mux.HandleFunc("/api/v1/tasks", s.handleTasks)
+	mux.HandleFunc("/api/v1/tasks/", s.handleTaskByID)
+	mux.HandleFunc("/api/v1/audit", s.handleAudit)
+	mux.HandleFunc("/api/v1/agent/config", s.handleAgentConfig)
+	mux.HandleFunc("/api/v1/agent/approval", s.handleAgentApproval)
+	mux.HandleFunc("/api/v1/agent/status", s.handleAgentStatus)
+	mux.HandleFunc("/api/v1/agenttemplates", s.handleAgentTemplates)
+	mux.HandleFunc("/api/v1/agenttemplates/", s.handleAgentTemplateByID)
+	mux.HandleFunc("/api/v1/instances", s.handleInstances)
+	mux.HandleFunc("/api/v1/llms", s.handleAddLLM)
+	// /api/v1/llms/{name} edits or removes a model the platform admin already
 	// added; the name is immutable, so every mutation is a PUT or a DELETE on
 	// an existing model (issue #170).
-	mux.HandleFunc("/api/llms/{name}", s.handleLLMByName)
-	mux.HandleFunc("/api/skills", s.handleSkills)
-	mux.HandleFunc("/api/skills/{name}/publish", s.handlePublishSkill)
-	mux.HandleFunc("/api/skills/{name}/install", s.handleInstallSkill)
-	mux.HandleFunc("/api/skills/{name}/uninstall", s.handleUninstallSkill)
-	mux.HandleFunc("/api/tasktemplates", s.handleTaskTemplates)
-	mux.HandleFunc("/api/taskruns", s.handleTaskRuns)
-	mux.HandleFunc("/api/taskruns/", s.handleTaskRunByID)
-	mux.HandleFunc("/api/kinds", s.handleKinds)
+	mux.HandleFunc("/api/v1/llms/{name}", s.handleLLMByName)
+	mux.HandleFunc("/api/v1/skills", s.handleSkills)
+	mux.HandleFunc("/api/v1/skills/{name}/publish", s.handlePublishSkill)
+	mux.HandleFunc("/api/v1/skills/{name}/install", s.handleInstallSkill)
+	mux.HandleFunc("/api/v1/skills/{name}/uninstall", s.handleUninstallSkill)
+	mux.HandleFunc("/api/v1/tasktemplates", s.handleTaskTemplates)
+	mux.HandleFunc("/api/v1/taskruns", s.handleTaskRuns)
+	mux.HandleFunc("/api/v1/taskruns/", s.handleTaskRunByID)
+	mux.HandleFunc("/api/v1/kinds", s.handleKinds)
 	// Internal (cluster-only) endpoints -- the agent-side supervisor pulls
 	// its resolved config and the rendered gateway config here; not exposed
 	// through the Portal.
 	mux.HandleFunc("/internal/agents/", s.handleInternalAgentConfig)
 	mux.HandleFunc("/internal/gateway/config/{user}", s.handleInternalGatewayConfig)
 	mux.HandleFunc("/internal/skills/{name}/tar", s.handleInternalSkillTar)
+	// Catch-all for anything the patterns above do not match. Without it the mux
+	// answers with Go's plain-text "404 page not found", which would be the one
+	// response in this API that a client parsing {"error": ...} cannot read.
+	// Every pattern above is more specific, so this only sees unknown paths.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeNotFound(w, "no such endpoint")
+	})
 	return logRequests(mux)
 }
 
 // handleSessionSubresource routes the per-session subresources under
-// /api/sessions/{key}/: the conversation itself (messages), the
-// human-in-the-loop endpoints (confirm, question), and the turn controls
+// /api/v1/sessions/{key}/: the conversation itself (messages), the
+// human-in-the-loop endpoints (approval, question), and the turn controls
 // (abort, turn). History (messages) is served from the live runtime session --
 // the runtime is the only source of truth for conversation content (design
 // §3.6), so reading it requires the instance to be warm.
@@ -200,10 +215,10 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
 		s.handleHistory(w, r)
-	case strings.HasSuffix(r.URL.Path, "/confirm/pending"):
-		s.handlePendingConfirm(w, r)
-	case strings.HasSuffix(r.URL.Path, "/confirm"):
-		s.handleConfirm(w, r)
+	case strings.HasSuffix(r.URL.Path, "/approval/pending"):
+		s.handlePendingApproval(w, r)
+	case strings.HasSuffix(r.URL.Path, "/approval"):
+		s.handleApproval(w, r)
 	case strings.HasSuffix(r.URL.Path, "/question/pending"):
 		s.handlePendingQuestion(w, r)
 	case strings.HasSuffix(r.URL.Path, "/question"):
@@ -213,7 +228,7 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	case strings.HasSuffix(r.URL.Path, "/turn"):
 		s.handleTurnStatus(w, r)
 	default:
-		http.NotFound(w, r)
+		writeNotFound(w, "unknown session subresource")
 	}
 }
 

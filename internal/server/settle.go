@@ -18,8 +18,8 @@ import (
 // stops resurrecting it. Deleting the records silently, or waiting for the
 // question timeout, are strictly worse.
 func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey string) {
-	// A nil approval service is a real state, not an impossible one: handleConfirm
-	// and handlePendingConfirm both check for it, and a bare Server literal (the
+	// A nil approval service is a real state, not an impossible one: handleApproval
+	// and handlePendingApproval both check for it, and a bare Server literal (the
 	// abort handler's own fixture) leaves it unset. The question half below is
 	// guarded the same way.
 	if s.approvals != nil {
@@ -33,7 +33,7 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 			// record this session owned, but a publish that follows the record
 			// rather than the caller cannot drift from it.
 			s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-				Type:      agentruntime.EventConfirmResolved,
+				Type:      agentruntime.EventApprovalResolved,
 				SessionID: p.SessionKey,
 				CallID:    p.ApprovalID,
 			})

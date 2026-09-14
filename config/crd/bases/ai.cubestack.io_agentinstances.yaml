@@ -88,9 +88,9 @@ spec:
                   - pattern
                   type: object
                 type: array
-              confirmPolicy:
+              approvalPolicy:
                 description: |-
-                  ConfirmPolicy optionally overrides the template's confirmPolicy (issue
+                  ApprovalPolicy optionally overrides the template's approvalPolicy (issue
                   #116, design §3.2 inherit-or-own): empty = follow the template default
                   (live); set = the instance's own posture.
                 enum:

@@ -25,11 +25,12 @@ export interface HistoryMessage {
 export interface Task {
   id: string
   name: string
-  prompt: string
-  schedule: string
+  instruction: string
+  cron: string
   templateRef?: string // bound TaskTemplate name; undefined/'' = free-form
+  // state is the only enablement field: an "enabled" boolean alongside it would
+  // be a second source of truth for the same fact.
   state: 'Enabled' | 'Paused'
-  enabled: boolean
   creator: string
   createdAt: string
   lastRunAt?: string
@@ -37,7 +38,7 @@ export interface Task {
   nextRunAt?: string
 }
 
-// A TaskTemplate as served by GET /api/tasktemplates (raw CR: metadata.name +
+// A TaskTemplate as served by GET /api/v1/tasktemplates (raw CR: metadata.name +
 // spec). Mirrors the Go TaskTemplateSpec json tags.
 export interface TaskParamSchema {
   name: string
@@ -91,14 +92,16 @@ export interface AuditEntry {
   detail?: string
 }
 
-// Agent config served by GET /api/agent/config: the caller's own selections,
-// which live on the AgentInstance CR (design §3.2). exists = the instance is
-// provisioned; model "" = "Runtime Default" (clear the override); systemPrompt
+// Agent config served by GET /api/v1/agent/config: the caller's own selections,
+// which live on the AgentInstance CR (design §3.2). The payload is flat -- it is
+// two fields of the instance, not an object the platform calls "config"; the
+// field names are the CRD's. exists = the instance is provisioned;
+// selectedModel "" = "Runtime Default" (clear the override); userInstructions
 // "" = template instructions only.
 export interface AgentConfig {
   exists: boolean
-  model: string
-  systemPrompt: string
+  selectedModel: string
+  userInstructions: string
 }
 
 export interface AgentStatus {
@@ -125,44 +128,44 @@ export interface PlatformObject {
   status?: Record<string, unknown>
 }
 
-// SSE events from /api/messages
+// SSE events from /api/v1/messages
 export interface SSEMessageStart {
   type: 'message_start'
-  session_id: string
+  sessionId: string
 }
 export interface SSEAgentThinking {
   type: 'agent_thinking'
-  session_id: string
+  sessionId: string
 }
 export interface SSEToolCall {
   type: 'tool_call'
-  session_id: string
+  sessionId: string
   name: string
-  call_id?: string
+  callId?: string
   arguments: string
 }
 export interface SSEToolResult {
   type: 'tool_result'
-  session_id: string
-  call_id?: string
+  sessionId: string
+  callId?: string
   name?: string
   output: string
 }
 export interface SSEMessageDelta {
   type: 'message_delta'
-  session_id: string
+  sessionId: string
   delta: string
 }
 // The gateway rewrote the assistant text (replace:true) -- replace the bubble
 // text with delta instead of appending.
 export interface SSETextReplace {
   type: 'text_replace'
-  session_id: string
+  sessionId: string
   delta: string
 }
 export interface SSEMessageDone {
   type: 'message_done'
-  session_id: string
+  sessionId: string
   error?: string
   // The user stopped this turn (chat.abort or /stop). Mutually exclusive with
   // error: a stopped turn is neither a failure nor a normal completion, and its
@@ -177,26 +180,26 @@ export interface SSEMessageDone {
   // one.
   synthetic?: boolean
 }
-// HITL (issue #20): a matched write paused for the human. call_id is the gateway
+// HITL (issue #20): a matched write paused for the human. callId is the gateway
 // approval id; name/command/level/message describe the gated operation.
-export interface SSEConfirmPending {
-  type: 'confirm_pending'
-  session_id: string
-  call_id?: string
+export interface SSEApprovalPending {
+  type: 'approval_pending'
+  sessionId: string
+  callId?: string
   name?: string
   command?: string
   level?: 'read' | 'write'
   message?: string
 }
-export interface SSEConfirmResolved {
-  type: 'confirm_resolved'
-  session_id: string
-  call_id?: string
+export interface SSEApprovalResolved {
+  type: 'approval_resolved'
+  sessionId: string
+  callId?: string
   approved?: boolean
 }
 
 // Ask-user (issue #161): the agent's ask_user tool is blocked on a human
-// answer. call_id is the gateway question id the answer must be submitted with.
+// answer. callId is the gateway question id the answer must be submitted with.
 export interface QuestionOption {
   label: string
   description?: string
@@ -219,15 +222,15 @@ export interface QuestionPrompt {
 
 export interface SSEQuestionPending {
   type: 'question_pending'
-  session_id: string
-  call_id?: string
+  sessionId: string
+  callId?: string
   question?: QuestionPrompt
 }
 
 export interface SSEQuestionResolved {
   type: 'question_resolved'
-  session_id: string
-  call_id?: string
+  sessionId: string
+  callId?: string
   // Terminal status: answered | cancelled | expired.
   message?: string
 }
@@ -240,32 +243,33 @@ export type SSEEvent =
   | SSEMessageDelta
   | SSETextReplace
   | SSEMessageDone
-  | SSEConfirmPending
-  | SSEConfirmResolved
+  | SSEApprovalPending
+  | SSEApprovalResolved
   | SSEQuestionPending
   | SSEQuestionResolved
 
 // A question awaiting an answer, served by GET
-// /api/sessions/{key}/question/pending (used to restore a question card after a
-// reload). Mirrors the question_pending event payload.
+// /api/v1/sessions/{key}/question/pending (used to restore a question card
+// after a reload). Mirrors the question_pending event payload.
 export interface PendingQuestion {
   id: string
   questions: QuestionItem[]
   timeoutSeconds?: number
 }
 
-// A write awaiting a decision, served by GET /api/sessions/{key}/confirm/pending
-// (used to restore a confirmation card after a reload mid-approval).
-export interface PendingConfirm {
-  session_id: string
-  approval_id: string
+// A write awaiting a decision, served by GET
+// /api/v1/sessions/{key}/approval/pending (used to restore an approval card
+// after a reload mid-approval).
+export interface PendingApproval {
+  sessionId: string
+  approvalId: string
   tool: string
   command: string
   level: 'read' | 'write'
   message?: string
 }
 
-// Confirmations (issue #116)
+// Approvals (issue #116)
 export interface AllowlistRule {
   pattern: string
   argPattern?: string
@@ -274,10 +278,10 @@ export interface AllowlistRule {
   // never presents them as read-only.
   label?: string
 }
-export interface AgentConfirmView {
+export interface AgentApprovalView {
   exists: boolean
   // Effective values (what the runtime enforces).
-  confirmPolicy: string
+  approvalPolicy: string
   allowlist: AllowlistRule[]
   // Instance's own state ('' / [] = inheriting the template default live).
   override: string

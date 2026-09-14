@@ -132,7 +132,7 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"model": model})
+	writeJSON(w, http.StatusCreated, map[string]any{"model": model})
 }
 
 // upsertLLMCredential creates the credential Secret, or refreshes its apiKey
@@ -164,7 +164,7 @@ func upsertLLMCredential(ctx context.Context, s *Server, secretName, apiKey stri
 func (s *Server) handleLLMByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
-		http.NotFound(w, r)
+		writeNotFound(w, "missing model name")
 		return
 	}
 	if s.cr == nil {

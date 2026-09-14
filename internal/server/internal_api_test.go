@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -32,8 +31,8 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 			Models: []v1alpha1.TemplateModelSpec{
 				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
 			},
-			ConfirmPolicy: v1alpha1.ConfirmPolicyAllowlist,
-			Instructions:  "You are the platform assistant.",
+			ApprovalPolicy: v1alpha1.ApprovalPolicyAllowlist,
+			Instructions:   "You are the platform assistant.",
 		},
 	}
 }
@@ -60,6 +59,12 @@ func internalTestCap(name, path string) *v1alpha1.Skill {
 	}
 }
 
+// internalConfigResponse is the {"config": {...}} envelope the cluster-internal
+// endpoint wraps the resolved config in.
+type internalConfigResponse struct {
+	Config resolver.ResolvedAgentConfig `json:"config"`
+}
+
 // TestInternalAgentConfig resolves the merged config for a provisioned user
 // via the internal endpoint.
 func TestInternalAgentConfig(t *testing.T) {
@@ -73,7 +78,7 @@ func TestInternalAgentConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	cfg := decode[resolver.ResolvedAgentConfig](t, rec)
+	cfg := decode[internalConfigResponse](t, rec).Config
 	if cfg.Instance != k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName) {
 		t.Errorf("instance = %q", cfg.Instance)
 	}
@@ -84,8 +89,8 @@ func TestInternalAgentConfig(t *testing.T) {
 	if cfg.SelectedModel != "" {
 		t.Errorf("selectedModel = %q, want empty (no override for default)", cfg.SelectedModel)
 	}
-	if cfg.ConfirmPolicy != v1alpha1.ConfirmPolicyAllowlist {
-		t.Errorf("confirmPolicy = %q", cfg.ConfirmPolicy)
+	if cfg.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
+		t.Errorf("approvalPolicy = %q", cfg.ApprovalPolicy)
 	}
 	if len(cfg.Skills) != 1 || cfg.Skills[0].Name != "cluster-inspection" {
 		t.Errorf("skills = %+v", cfg.Skills)
@@ -103,7 +108,7 @@ func TestInternalAgentConfigNoInstance(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	cfg := decode[resolver.ResolvedAgentConfig](t, rec)
+	cfg := decode[internalConfigResponse](t, rec).Config
 	if !cfg.Empty() {
 		t.Errorf("expected empty config, got %+v", cfg)
 	}
@@ -118,7 +123,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 		internalTestCap("cluster-inspection", "skills/cluster-inspection/v1.tar.gz"),
 	)
 	rec1 := doReq(t, s1.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
-	cfg1 := decode[resolver.ResolvedAgentConfig](t, rec1)
+	cfg1 := decode[internalConfigResponse](t, rec1).Config
 
 	s2 := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
@@ -126,7 +131,7 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 		internalTestCap("cluster-inspection", "skills/cluster-inspection/v2.tar.gz"),
 	)
 	rec2 := doReq(t, s2.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "", nil)
-	cfg2 := decode[resolver.ResolvedAgentConfig](t, rec2)
+	cfg2 := decode[internalConfigResponse](t, rec2).Config
 
 	if cfg1.Revision == cfg2.Revision {
 		t.Errorf("skill change should change revision: %q", cfg1.Revision)
@@ -136,17 +141,17 @@ func TestInternalAgentConfigRevisionChanges(t *testing.T) {
 	}
 }
 
-type configResponse struct {
-	Config agentConfigView `json:"config"`
-}
+// configResponse is the flat agent-config payload (no "config" wrapper: the
+// response is two fields of the instance, not a nested object).
+type configResponse = agentConfigView
 
-// TestAgentConfigWithoutCRClient verifies PUT /api/agent/config answers a
+// TestAgentConfigWithoutCRClient verifies PUT /api/v1/agent/config answers a
 // controlled 503 (not a panic) when no Kubernetes client is configured,
 // mirroring the nil-cr guard the GET path and model validator already have.
 func TestAgentConfigWithoutCRClient(t *testing.T) {
 	s := New(config.Config{DefaultUser: "zhang.wei"}, nil, nil, nil, nil)
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
-		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"selectedModel": "deepseek-v4-flash"})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
@@ -168,29 +173,29 @@ func TestAgentConfigModelOverride(t *testing.T) {
 	)
 
 	// Switch to the template model -> the override is resolved for the next turn.
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "li.ming",
-		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "li.ming",
+		map[string]any{"selectedModel": "deepseek-v4-flash"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	cfg := decode[resolver.ResolvedAgentConfig](t, doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "li.ming", nil))
+	cfg := decode[internalConfigResponse](t, doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "li.ming", nil)).Config
 	if cfg.SelectedModel != "deepseek-v4-flash/deepseek-v4-flash" {
 		t.Errorf("selectedModel = %q, want deepseek-v4-flash/deepseek-v4-flash", cfg.SelectedModel)
 	}
 
 	// Back to "Runtime Default" -> the override is cleared (no header sent).
-	rec = doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "li.ming",
-		map[string]any{"config": map[string]any{"model": ""}})
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "li.ming",
+		map[string]any{"selectedModel": ""})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("clear status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	cfg = decode[resolver.ResolvedAgentConfig](t, doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "li.ming", nil))
+	cfg = decode[internalConfigResponse](t, doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "li.ming", nil)).Config
 	if cfg.SelectedModel != "" {
 		t.Errorf("selectedModel = %q, want empty after Runtime Default", cfg.SelectedModel)
 	}
 }
 
-// TestAgentConfigReadsAndWritesInstance verifies GET/PUT /api/agent/config now
+// TestAgentConfigReadsAndWritesInstance verifies GET/PUT /api/v1/agent/config now
 // serve the caller's AgentInstance CR (design §3.2): a system-prompt edit lands
 // on UserInstructions (the field the resolver actually reads) and the model
 // stays on selectedModel, instead of a global store file.
@@ -206,25 +211,25 @@ func TestAgentConfigReadsAndWritesInstance(t *testing.T) {
 
 	// Fresh instance -> present with empty selections (Runtime Default / template
 	// instructions only).
-	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "", nil))
-	if !resp.Config.Exists || resp.Config.Model != "" || resp.Config.SystemPrompt != "" {
-		t.Fatalf("fresh config = %+v, want exists with empty selections", resp.Config)
+	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "", nil))
+	if !resp.Exists || resp.SelectedModel != "" || resp.UserInstructions != "" {
+		t.Fatalf("fresh config = %+v, want exists with empty selections", resp)
 	}
 
 	// Save model + system prompt -> both land on the instance CR.
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
-		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash", "systemPrompt": "You are helpful."}})
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"selectedModel": "deepseek-v4-flash", "userInstructions": "You are helpful."})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "", nil))
-	if resp.Config.Model != "deepseek-v4-flash" || resp.Config.SystemPrompt != "You are helpful." {
-		t.Fatalf("config after save = %+v", resp.Config)
+	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "", nil))
+	if resp.SelectedModel != "deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
+		t.Fatalf("config after save = %+v", resp)
 	}
 
 	// A user with no instance cannot save (there is no global config to write).
-	rec = doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "nobody",
-		map[string]any{"config": map[string]any{"model": "deepseek-v4-flash"}})
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "nobody",
+		map[string]any{"selectedModel": "deepseek-v4-flash"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("save without instance status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
@@ -241,17 +246,17 @@ func TestAgentConfigRejectsUnsafeInstructions(t *testing.T) {
 		"marker":    "text <!-- cubepilot:system-prompt:end --> text",
 	} {
 		t.Run(name, func(t *testing.T) {
-			rec := doReq(t, s.Handler(), http.MethodPut, "/api/agent/config", "zhang.wei",
-				map[string]any{"config": map[string]any{"systemPrompt": prompt}})
+			rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+				map[string]any{"userInstructions": prompt})
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 			}
 		})
 	}
 
-	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/agent/config", "zhang.wei", nil))
-	if resp.Config.SystemPrompt != "" {
-		t.Fatalf("rejected prompt was persisted: %q", resp.Config.SystemPrompt)
+	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "zhang.wei", nil))
+	if resp.UserInstructions != "" {
+		t.Fatalf("rejected prompt was persisted: %q", resp.UserInstructions)
 	}
 }
 
@@ -405,6 +410,11 @@ func TestInternalSkillTar(t *testing.T) {
 	}
 }
 
+// skillEnvelope is the {"skill": {...}} wrapper the publish endpoint returns.
+type skillEnvelope struct {
+	Skill v1alpha1.Skill `json:"skill"`
+}
+
 // TestPublishSkill verifies the user-facing publish endpoint: it stores the
 // tar atomically (versioned), upserts the Skill CRD (source.path + sha256 +
 // publisher annotation), marks phase Available, and is idempotent per content.
@@ -414,14 +424,11 @@ func TestPublishSkill(t *testing.T) {
 
 	// The identity header is recorded as the publisher on the Skill CR.
 	tar1 := mustPackBytes(t, "# Harbor v1\n")
-	rec := doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("publish #1: status = %d, body = %s", rec.Code, rec.Body.String())
+	rec := doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("publish #1: status = %d, want 201, body = %s", rec.Code, rec.Body.String())
 	}
-	var published v1alpha1.Skill
-	if err := json.Unmarshal(rec.Body.Bytes(), &published); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	published := decode[skillEnvelope](t, rec).Skill
 	if published.Spec.Source.Path != "skills/harbor/v1.tar.gz" {
 		t.Errorf("source.path = %q, want skills/harbor/v1.tar.gz", published.Spec.Source.Path)
 	}
@@ -442,42 +449,40 @@ func TestPublishSkill(t *testing.T) {
 	}
 
 	// Same content -> same version, no rewrite.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("publish #2: status = %d", rec.Code)
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("publish #2: status = %d, want 201", rec.Code)
 	}
-	var again v1alpha1.Skill
-	_ = json.Unmarshal(rec.Body.Bytes(), &again)
+	again := decode[skillEnvelope](t, rec).Skill
 	if again.Spec.Source.Path != "skills/harbor/v1.tar.gz" {
 		t.Errorf("re-publish changed version: %q", again.Spec.Source.Path)
 	}
 
 	// New content -> v2.
 	tar2 := mustPackBytes(t, "# Harbor v2\n")
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar2, "li.ming")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("publish v2: status = %d", rec.Code)
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", tar2, "li.ming")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("publish v2: status = %d, want 201", rec.Code)
 	}
-	var v2 v1alpha1.Skill
-	_ = json.Unmarshal(rec.Body.Bytes(), &v2)
+	v2 := decode[skillEnvelope](t, rec).Skill
 	if v2.Spec.Source.Path != "skills/harbor/v2.tar.gz" {
 		t.Errorf("new content version = %q, want v2", v2.Spec.Source.Path)
 	}
 
 	// Missing displayName -> 400.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish", tar1, "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish", tar1, "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing displayName status = %d, want 400", rec.Code)
 	}
 
 	// A tar without root SKILL.md -> 400, nothing persisted.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", mustPackBytesNoSkill(t, "# scripts only\n"), "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", mustPackBytesNoSkill(t, "# scripts only\n"), "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("no-SKILL.md status = %d, want 400", rec.Code)
 	}
 
 	// Malformed / non-gzip body -> 400, nothing persisted.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", []byte("not a tar"), "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", []byte("not a tar"), "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid tar status = %d, want 400", rec.Code)
 	}
@@ -486,19 +491,19 @@ func TestPublishSkill(t *testing.T) {
 	}
 
 	// Oversized body -> 413.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", make([]byte, maxSkillTarSize+1), "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", make([]byte, maxSkillTarSize+1), "li.ming")
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized status = %d, want 413", rec.Code)
 	}
 
 	// Non-Platform visibility -> 400 (phase 1).
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor&visibility=User", tar1, "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor&visibility=User", tar1, "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("visibility=User status = %d, want 400", rec.Code)
 	}
 
 	// Invalid (non-DNS) skill name -> 400, nothing persisted.
-	rec = doRawPostAs(t, s.Handler(), "/api/skills/Bad_Name/publish?displayName=Bad", tar1, "li.ming")
+	rec = doRawPostAs(t, s.Handler(), "/api/v1/skills/Bad_Name/publish?displayName=Bad", tar1, "li.ming")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid name status = %d, want 400", rec.Code)
 	}
@@ -515,9 +520,9 @@ func TestPublishSkillClearsBuiltinLabel(t *testing.T) {
 		t.Fatalf("seed builtin: %v", err)
 	}
 
-	rec := doRawPostAs(t, s.Handler(), "/api/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("publish: status = %d, body = %s", rec.Code, rec.Body.String())
+	rec := doRawPostAs(t, s.Handler(), "/api/v1/skills/harbor/publish?displayName=Harbor", tar1, "li.ming")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("publish: status = %d, want 201, body = %s", rec.Code, rec.Body.String())
 	}
 	var cr v1alpha1.Skill
 	if err := s.cr.Get(t.Context(), client.ObjectKey{Name: "harbor"}, &cr); err != nil {

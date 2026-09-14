@@ -16,17 +16,36 @@ import (
 const apiDocPath = "../../docs/cubepilot/api.md"
 
 // apiDocExemptRoutes are registered on the mux but deliberately not part of the
-// client-facing contract: liveness, metrics, and the cluster-internal endpoints
-// the agent-side supervisor pulls from.
+// client-facing contract: liveness, metrics, and the catch-all that turns
+// unmatched paths into the API's JSON 404.
 var apiDocExemptRoutes = map[string]bool{
 	"/healthz": true,
 	"/metrics": true,
+	"/":        true, // catch-all 404 handler, not an endpoint
 }
 
 // sessionSubresourceBase is the path prefix the per-session subresource handler
 // matches suffixes against. Its suffixes are real client-facing endpoints even
 // though they never appear as mux patterns.
-const sessionSubresourceBase = "/api/sessions/{key}"
+const sessionSubresourceBase = "/api/v1/sessions/{key}"
+
+// TestClientRoutesAreVersioned fails when a client-facing route is registered
+// outside apiPrefix. The version is the contract's freeze point: a route that
+// quietly lands at /api/... would be outside it, and every client that believes
+// it speaks v1 would have to special-case that one path.
+//
+// Adding a route under a NEW prefix is a deliberate act (a v2 surface) and
+// should update this test alongside it.
+func TestClientRoutesAreVersioned(t *testing.T) {
+	for _, route := range registeredRoutes(t) {
+		if strings.HasPrefix(route, "/internal/") || apiDocExemptRoutes[route] {
+			continue // cluster-internal and liveness routes are deliberately unversioned
+		}
+		if !strings.HasPrefix(route, apiPrefix+"/") {
+			t.Errorf("route %s is outside %s; client routes must carry the version prefix", route, apiPrefix)
+		}
+	}
+}
 
 // TestAPIDocCoversRoutes fails when a route serves clients but is not written
 // down in docs/cubepilot/api.md. The route table is parsed from server.go
@@ -85,7 +104,7 @@ func TestAPIDocHasNoStalePaths(t *testing.T) {
 var docPathCandidateRe = regexp.MustCompile(`/(?:api|internal)/[A-Za-z0-9_{}/.-]*`)
 
 // docPathCandidates extracts every API path the document mentions. Subtree
-// roots ("/api/") and wildcards ("/api/*") are not paths to a route, so they
+// roots ("/api/v1/") and wildcards ("/api/v1/*") are not paths to a route, so they
 // are dropped rather than matched.
 func docPathCandidates(doc string) []string {
 	var out []string
@@ -93,7 +112,7 @@ func docPathCandidates(doc string) []string {
 	for _, loc := range docPathCandidateRe.FindAllStringIndex(doc, -1) {
 		start, end := loc[0], loc[1]
 		// A match inside a longer path is a source-file reference, not an API
-		// path: "web/src/api/types.ts" contains "/api/types.ts".
+		// path: "web/src/api/types.ts" contains "/api/v1/types.ts".
 		if start > 0 && isPathByte(doc[start-1]) {
 			continue
 		}
@@ -120,16 +139,16 @@ func isPathByte(b byte) bool {
 }
 
 // isServed reports whether a documented path is covered by a registered route:
-// either it is the route itself, or the route is a subtree base ("/api/tasks/")
-// that the path sits under ("/api/tasks/{id}/run").
+// either it is the route itself, or the route is a subtree base ("/api/v1/tasks/")
+// that the path sits under ("/api/v1/tasks/{id}/run").
 //
-// Session paths are the exception. "/api/sessions/" is a mux catch-all whose
+// Session paths are the exception. "/api/v1/sessions/" is a mux catch-all whose
 // dispatcher answers 404 for anything that is not one of its known suffixes, so
 // the generic subtree rule would accept a typo such as
-// "/api/sessions/{key}/question/pendng" as documented. Those paths are matched
+// "/api/v1/sessions/{key}/question/pendng" as documented. Those paths are matched
 // against the concrete subresources instead.
 func isServed(known []string, candidate string) bool {
-	if strings.HasPrefix(candidate, "/api/sessions/") {
+	if strings.HasPrefix(candidate, "/api/v1/sessions/") {
 		return hasSessionSuffix(known, candidate)
 	}
 	for _, route := range known {
@@ -146,7 +165,7 @@ func isServed(known []string, candidate string) bool {
 // hasSessionSuffix reports whether candidate names one of the session
 // dispatcher's concrete subresources. Matching is by suffix because that is how
 // handleSessionSubresource routes, so extra segments are absorbed into the
-// session key: "/api/sessions/a/b/messages" is served and reads as session "a/b".
+// session key: "/api/v1/sessions/a/b/messages" is served and reads as session "a/b".
 func hasSessionSuffix(known []string, candidate string) bool {
 	for _, route := range known {
 		suffix, ok := strings.CutPrefix(route, sessionSubresourceBase)
@@ -224,7 +243,7 @@ func stringArg(call *ast.CallExpr, funcName string, i int) string {
 
 // docMentions reports whether the doc names a route. A mux pattern ending in
 // "/" is the base of a subtree whose concrete paths are written out in full
-// (e.g. "/api/sessions/" is documented as "/api/sessions/{key}/messages"), so
+// (e.g. "/api/v1/sessions/" is documented as "/api/v1/sessions/{key}/messages"), so
 // the trimmed base counts as a mention.
 func docMentions(doc, route string) bool {
 	if hasToken(doc, route) {
@@ -238,9 +257,9 @@ func docMentions(doc, route string) bool {
 
 // hasToken reports whether doc contains route as a complete token -- that is,
 // not immediately followed by "/". Without this, a route that is merely the
-// prefix of a longer documented route would count as documented: "/api/llms"
-// is a prefix of "/api/llms/{name}", so a plain strings.Contains would pass
-// even after the bare "/api/llms" entry was deleted.
+// prefix of a longer documented route would count as documented: "/api/v1/llms"
+// is a prefix of "/api/v1/llms/{name}", so a plain strings.Contains would pass
+// even after the bare "/api/v1/llms" entry was deleted.
 func hasToken(doc, route string) bool {
 	for i := 0; ; {
 		j := strings.Index(doc[i:], route)

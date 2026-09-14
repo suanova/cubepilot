@@ -31,7 +31,7 @@ func platformTestServer(t *testing.T, objs ...client.Object) *Server {
 }
 
 // platformTestServerStore is platformTestServer with a JSON store attached, so
-// endpoints that persist agent config (PUT /api/agent/config) can be tested.
+// endpoints that persist agent config (PUT /api/v1/agent/config) can be tested.
 func platformTestServerStore(t *testing.T, st *store.Store, objs ...client.Object) *Server {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -108,7 +108,7 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 	s := platformTestServer(t, li, wang)
 
 	// Filter naming another user must still return only the caller's own.
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/instances?user=wang.wu", "li.ming", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/instances?user=wang.wu", "li.ming", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -120,7 +120,7 @@ func TestHandleInstancesOwnerScoped(t *testing.T) {
 	}
 
 	// No filter: same result.
-	rec = doReq(t, s.Handler(), http.MethodGet, "/api/instances", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodGet, "/api/v1/instances", "li.ming", nil)
 	got = decode[struct {
 		Instances []v1alpha1.AgentInstance `json:"instances"`
 	}](t, rec)
@@ -138,7 +138,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 	h := s.Handler()
 
 	// Create.
-	rec := doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
+	rec := doReq(t, h, http.MethodPost, "/api/v1/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -150,7 +150,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 	}
 
 	// Idempotent repeat.
-	rec = doReq(t, h, http.MethodPost, "/api/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
+	rec = doReq(t, h, http.MethodPost, "/api/v1/instances", "wang.wu", map[string]any{"templateRef": "cubepilot"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("repeat status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -162,7 +162,7 @@ func TestHandleInstancesCreate(t *testing.T) {
 	}
 
 	// Unknown template ref is rejected (no permanently-Failed instance).
-	rec = doReq(t, h, http.MethodPost, "/api/instances", "li.ming", map[string]any{"templateRef": "no-such-template"})
+	rec = doReq(t, h, http.MethodPost, "/api/v1/instances", "li.ming", map[string]any{"templateRef": "no-such-template"})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown template status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
@@ -176,7 +176,7 @@ func TestHandleInstancesCreateValidatesUserInstructions(t *testing.T) {
 		strings.Repeat("x", instructions.MaxChars+1),
 		"before\n" + instructions.ManagedStart + "\nafter",
 	} {
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/instances", "wang.wu", map[string]any{
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/instances", "wang.wu", map[string]any{
 			"templateRef":      "cubepilot",
 			"userInstructions": prompt,
 		})
@@ -209,7 +209,7 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 	s := platformTestServer(t, liTask, wangTask)
 	h := s.Handler()
 
-	rec := doReq(t, h, http.MethodGet, "/api/tasks", "li.ming", nil)
+	rec := doReq(t, h, http.MethodGet, "/api/v1/tasks", "li.ming", nil)
 	got := decode[struct {
 		Tasks []taskDTO `json:"tasks"`
 	}](t, rec)
@@ -218,19 +218,19 @@ func TestHandleTasksOwnerScoped(t *testing.T) {
 	}
 
 	// Delete another user's task -> 403.
-	rec = doReq(t, h, http.MethodDelete, "/api/tasks/wang-wu-task-def", "li.ming", nil)
+	rec = doReq(t, h, http.MethodDelete, "/api/v1/tasks/wang-wu-task-def", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user delete status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 
 	// Run another user's task -> 403.
-	rec = doReq(t, h, http.MethodPost, "/api/tasks/wang-wu-task-def/run", "li.ming", nil)
+	rec = doReq(t, h, http.MethodPost, "/api/v1/tasks/wang-wu-task-def/run", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user run status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 
 	// Reports of another user's task -> 403.
-	rec = doReq(t, h, http.MethodGet, "/api/tasks/wang-wu-task-def/reports", "li.ming", nil)
+	rec = doReq(t, h, http.MethodGet, "/api/v1/tasks/wang-wu-task-def/reports", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user reports status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
@@ -249,7 +249,7 @@ func TestHandleTaskRunsOwnerScoped(t *testing.T) {
 	}
 	s := platformTestServer(t, liRun, wangRun)
 
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/taskruns", "li.ming", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/taskruns", "li.ming", nil)
 	got := decode[struct {
 		TaskRuns []v1alpha1.TaskRun `json:"taskruns"`
 	}](t, rec)
@@ -258,13 +258,13 @@ func TestHandleTaskRunsOwnerScoped(t *testing.T) {
 	}
 
 	// Single-run fetch of another user's run -> 403.
-	rec = doReq(t, s.Handler(), http.MethodGet, "/api/taskruns/wang-wu-task-def-20260820-020000", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodGet, "/api/v1/taskruns/wang-wu-task-def-20260820-020000", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-user taskrun status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// TestInstallSkill verifies POST /api/skills/{name}/install: appends on a
+// TestInstallSkill verifies PUT /api/v1/skills/{name}/install: appends on a
 // non-empty set, is a no-op on the all-enabled baseline, and rejects unknown /
 // unreachable skills and unprovisioned users.
 func TestInstallSkill(t *testing.T) {
@@ -275,7 +275,7 @@ func TestInstallSkill(t *testing.T) {
 		internalTestCap("scan", "skills/scan/v1.tar.gz"))
 
 	// Append to a non-empty set.
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/install", "li.ming", nil)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/scan/install", "li.ming", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("install: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -294,7 +294,7 @@ func TestInstallSkill(t *testing.T) {
 	}
 
 	// Idempotent re-install.
-	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/install", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/scan/install", "li.ming", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("re-install: status = %d", rec.Code)
 	}
@@ -308,7 +308,7 @@ func TestInstallSkill(t *testing.T) {
 	// All-enabled baseline (empty set): installing is a no-op that stays empty.
 	s2 := platformTestServer(t, internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
 		internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
-	rec = doReq(t, s2.Handler(), http.MethodPost, "/api/skills/harbor/install", "zhang.wei", nil)
+	rec = doReq(t, s2.Handler(), http.MethodPut, "/api/v1/skills/harbor/install", "zhang.wei", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("baseline install: status = %d", rec.Code)
 	}
@@ -320,7 +320,7 @@ func TestInstallSkill(t *testing.T) {
 	}
 
 	// Unknown skill -> 404.
-	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/nope/install", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/nope/install", "li.ming", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown skill status = %d, want 404", rec.Code)
 	}
@@ -330,7 +330,7 @@ func TestInstallSkill(t *testing.T) {
 	liUpper := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
 	liUpper.Spec.Owner = "LI.MING"
 	sUpper := platformTestServer(t, liUpper, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
-	rec = doReq(t, sUpper.Handler(), http.MethodPost, "/api/skills/harbor/install", "li.ming", nil)
+	rec = doReq(t, sUpper.Handler(), http.MethodPut, "/api/v1/skills/harbor/install", "li.ming", nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("case-variant owner status = %d, want 403", rec.Code)
 	}
@@ -339,20 +339,20 @@ func TestInstallSkill(t *testing.T) {
 	unreach := internalTestCap("broken", "skills/broken/v1.tar.gz")
 	unreach.Status.Phase = v1alpha1.SkillPhaseUnreachable
 	s3 := platformTestServer(t, li, unreach)
-	rec = doReq(t, s3.Handler(), http.MethodPost, "/api/skills/broken/install", "li.ming", nil)
+	rec = doReq(t, s3.Handler(), http.MethodPut, "/api/v1/skills/broken/install", "li.ming", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unreachable skill status = %d, want 409", rec.Code)
 	}
 
 	// No instance -> 409.
 	s4 := platformTestServer(t, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
-	rec = doReq(t, s4.Handler(), http.MethodPost, "/api/skills/harbor/install", "nobody", nil)
+	rec = doReq(t, s4.Handler(), http.MethodPut, "/api/v1/skills/harbor/install", "nobody", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("no-instance status = %d, want 409", rec.Code)
 	}
 }
 
-// TestUninstallSkill verifies POST /api/skills/{name}/uninstall: removes from a
+// TestUninstallSkill verifies PUT /api/v1/skills/{name}/uninstall: removes from a
 // non-empty set, materializes the allow-list from the all-enabled baseline, is
 // idempotent, and rejects unprovisioned users.
 func TestUninstallSkill(t *testing.T) {
@@ -363,7 +363,7 @@ func TestUninstallSkill(t *testing.T) {
 		internalTestCap("scan", "skills/scan/v1.tar.gz"))
 
 	// Remove one from a non-empty set.
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/uninstall", "li.ming", nil)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/scan/uninstall", "li.ming", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("uninstall: status = %d", rec.Code)
 	}
@@ -375,7 +375,7 @@ func TestUninstallSkill(t *testing.T) {
 	}
 
 	// Idempotent re-uninstall of an absent skill.
-	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/scan/uninstall", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/scan/uninstall", "li.ming", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("re-uninstall: status = %d", rec.Code)
 	}
@@ -385,7 +385,7 @@ func TestUninstallSkill(t *testing.T) {
 	s2 := platformTestServer(t, internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
 		internalTestCap("harbor", "skills/harbor/v1.tar.gz"),
 		internalTestCap("scan", "skills/scan/v1.tar.gz"))
-	rec = doReq(t, s2.Handler(), http.MethodPost, "/api/skills/harbor/uninstall", "zhang.wei", nil)
+	rec = doReq(t, s2.Handler(), http.MethodPut, "/api/v1/skills/harbor/uninstall", "zhang.wei", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("baseline uninstall: status = %d", rec.Code)
 	}
@@ -397,14 +397,14 @@ func TestUninstallSkill(t *testing.T) {
 	}
 
 	// Unknown skill -> 404 (rejected before any allow-list materialization).
-	rec = doReq(t, s.Handler(), http.MethodPost, "/api/skills/nope/uninstall", "li.ming", nil)
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/skills/nope/uninstall", "li.ming", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown skill uninstall status = %d, want 404", rec.Code)
 	}
 
 	// No instance -> 409.
 	s3 := platformTestServer(t, internalTestCap("harbor", "skills/harbor/v1.tar.gz"))
-	rec = doReq(t, s3.Handler(), http.MethodPost, "/api/skills/harbor/uninstall", "nobody", nil)
+	rec = doReq(t, s3.Handler(), http.MethodPut, "/api/v1/skills/harbor/uninstall", "nobody", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("no-instance status = %d, want 409", rec.Code)
 	}

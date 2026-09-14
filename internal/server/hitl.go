@@ -99,7 +99,7 @@ func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string,
 
 // hitlManager owns the per-user approval connections (issue #20). It is inert
 // until the API is configured with a device master key (see ConfiguredHITL);
-// with no device, confirmPolicy stays declarative and chat is unchanged.
+// with no device, approvalPolicy stays declarative and chat is unchanged.
 type hitlManager struct {
 	mgr       *instances.Manager
 	token     string
@@ -119,7 +119,7 @@ type hitlManager struct {
 	// resolved returns the user's confirm policy, effective allowlist and
 	// config revision. Overridable in tests; the default reads the resolved
 	// config via the instance manager.
-	resolved func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error)
+	resolved func(ctx context.Context, user string) (v1alpha1.ApprovalPolicy, []v1alpha1.AllowlistRule, string, error)
 
 	// wsURLOf returns the gateway WS endpoint for a user. Overridable in tests.
 	wsURLOf func(user string) string
@@ -243,7 +243,7 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 	m.newClient = func(url string, dev *ws.Device) hitlGateway {
 		return ws.NewClient(url, token, dev)
 	}
-	m.resolved = func(ctx context.Context, user string) (v1alpha1.ConfirmPolicy, []v1alpha1.AllowlistRule, string, error) {
+	m.resolved = func(ctx context.Context, user string) (v1alpha1.ApprovalPolicy, []v1alpha1.AllowlistRule, string, error) {
 		cfg, err := m.mgr.ResolvedConfigForUser(ctx, user)
 		if err != nil {
 			return "", nil, "", err
@@ -251,7 +251,7 @@ func ConfiguredHITL(mgr *instances.Manager, token string, masterKey []byte, logf
 		if cfg == nil || cfg.Empty() {
 			return "", nil, cfg.Revision, nil
 		}
-		return cfg.ConfirmPolicy, cfg.Allowlist, cfg.Revision, nil
+		return cfg.ApprovalPolicy, cfg.Allowlist, cfg.Revision, nil
 	}
 	m.wsURLOf = func(user string) string {
 		return wsURL(m.mgr.BaseURL(user))
@@ -418,7 +418,7 @@ func (m *hitlManager) conn(ctx context.Context, user string) (hitlGateway, error
 // policy once per config revision. It returns whether the session must be
 // guarded; RunLiveTurn reconciles that state atomically with the model.
 //
-// Both gated policies fail closed (issue #127): confirmPolicy is the single
+// Both gated policies fail closed (issue #127): approvalPolicy is the single
 // authority for whether a turn is guarded, so if the policy cannot be resolved
 // or the approval channel/policy/guard cannot be applied, PreTurn returns an
 // error and the caller must not start the turn. A policy that says "ask" must
@@ -432,9 +432,17 @@ func (m *hitlManager) PreTurn(ctx context.Context, user string) (bool, error) {
 		return false, fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
 	}
 	switch pol {
-	case v1alpha1.ConfirmPolicyAllowlist, v1alpha1.ConfirmPolicyAlwaysAsk:
-	default: // None / empty -> pass-through
-		return false, nil
+	case v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
+		// Gated: the turn may not run unless the approval channel is up.
+	case "", v1alpha1.ApprovalPolicyNone:
+		return false, nil // nothing to gate
+	default:
+		// Fail closed. Reading an unrecognised policy as "nothing asks" would
+		// silently run a write that was meant to be gated. The CRD schema
+		// constrains the enum, so this is reachable only for a value stored
+		// before the schema was applied -- which is exactly when a wrong guess
+		// is most dangerous.
+		return false, fmt.Errorf("hitl %s: unknown approval policy %q", user, pol)
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
@@ -470,7 +478,7 @@ func (m *hitlManager) channelState(ctx context.Context, user string) string {
 	m.mu.Lock()
 	if c, ok := m.conns[user]; ok && c.gw != nil && c.gw.Connected() {
 		m.mu.Unlock()
-		return confirmChannelUp
+		return approvalChannelUp
 	}
 	m.mu.Unlock()
 
@@ -481,12 +489,12 @@ func (m *hitlManager) channelState(ctx context.Context, user string) string {
 	defer cancel()
 	if err := gw.Connect(aCtx); err != nil {
 		if strings.Contains(err.Error(), "NOT_PAIRED") {
-			return confirmChannelPairing
+			return approvalChannelPairing
 		}
 		m.sayf("hitl %s: channel probe: %v", user, err)
-		return confirmChannelDown
+		return approvalChannelDown
 	}
-	return confirmChannelUp
+	return approvalChannelUp
 }
 
 // applyPolicy writes the effective exec-approvals policy into agents."main" of
@@ -497,7 +505,7 @@ func (m *hitlManager) channelState(ctx context.Context, user string) string {
 // asks -- which is the strictest posture and needs no unverified ask:always
 // semantics. It reports failure so the caller can defer advancing the
 // applied-revision watermark.
-func (m *hitlManager) applyPolicy(ctx context.Context, user string, gw hitlGateway, pol v1alpha1.ConfirmPolicy, allow []v1alpha1.AllowlistRule) error {
+func (m *hitlManager) applyPolicy(ctx context.Context, user string, gw hitlGateway, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
 	snap, err := gw.GetApprovalsPolicy(ctx)
 	if err != nil {
 		m.sayf("hitl %s: exec.approvals.get: %v", user, err)
@@ -509,11 +517,11 @@ func (m *hitlManager) applyPolicy(ctx context.Context, user string, gw hitlGatew
 	}
 	agent := file.Agents["main"]
 	switch pol {
-	case v1alpha1.ConfirmPolicyAlwaysAsk:
+	case v1alpha1.ApprovalPolicyAlwaysAsk:
 		// Clear any allowlist a prior Allowlist mode wrote: on-miss with an
 		// empty allowlist asks on everything.
 		agent.Allowlist = nil
-	default: // ConfirmPolicyAllowlist
+	default: // ApprovalPolicyAllowlist
 		agent.Allowlist = toWSEntries(allow)
 	}
 	file.Agents["main"] = agent

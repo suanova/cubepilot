@@ -40,11 +40,11 @@ func TestHandleAddLLM(t *testing.T) {
 	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"My Qwen","endpoint":"https://api.example.com/v1","apiKey":"sk-2"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", w.Code, w.Body.String())
 	}
 
 	// Model appended to the builtin template.
@@ -74,11 +74,11 @@ func TestHandleAddLLMPublicNoKey(t *testing.T) {
 	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"local-ollama","endpoint":"http://localhost:11434/v1","public":true}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", w.Code, w.Body.String())
 	}
 	var tmpl v1alpha1.AgentTemplate
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
@@ -105,11 +105,11 @@ func TestHandleAddLLMNormalizesRequestURL(t *testing.T) {
 	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"qwen","endpoint":"https://api.example.com/v1/chat/completions/","apiKey":"sk-1"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", w.Code, w.Body.String())
 	}
 	var tmpl v1alpha1.AgentTemplate
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
@@ -130,7 +130,7 @@ func TestHandleAddLLMRejectsKeylessWithoutPublicFlag(t *testing.T) {
 	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"forgot-the-key","endpoint":"https://api.example.com/v1"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -153,7 +153,7 @@ func TestHandleAddLLMRejectsPublicWithKey(t *testing.T) {
 	s := addLLMTestServer(t, builtin)
 
 	body := bytes.NewBufferString(`{"name":"both","endpoint":"https://api.example.com/v1","apiKey":"sk-1","public":true}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/llms", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -181,7 +181,7 @@ func keyedModel(name, endpoint string) v1alpha1.TemplateModelSpec {
 
 func putLLM(t *testing.T, s *Server, name, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPut, "/api/llms/"+name, bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/llms/"+name, bytes.NewBufferString(body))
 	req.SetPathValue("name", name)
 	w := httptest.NewRecorder()
 	s.handleLLMByName(w, req)
@@ -328,7 +328,7 @@ func TestHandleUpdateLLMRejectsBadEndpoint(t *testing.T) {
 
 func TestHandleUpdateLLMRejectsGet(t *testing.T) {
 	s := llmTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/llms/my-qwen", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/llms/my-qwen", nil)
 	req.SetPathValue("name", "my-qwen")
 	w := httptest.NewRecorder()
 	s.handleLLMByName(w, req)
@@ -339,7 +339,7 @@ func TestHandleUpdateLLMRejectsGet(t *testing.T) {
 
 func deleteLLM(t *testing.T, s *Server, name string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodDelete, "/api/llms/"+name, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/llms/"+name, nil)
 	req.SetPathValue("name", name)
 	w := httptest.NewRecorder()
 	s.handleLLMByName(w, req)
@@ -499,12 +499,12 @@ func TestHandleDeleteLLMLastModel(t *testing.T) {
 func TestLLMRoutesAreWired(t *testing.T) {
 	s := platformTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash"))
 
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/llms/deepseek-v4-flash", "admin",
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/deepseek-v4-flash", "admin",
 		map[string]any{"endpoint": "https://api.deepseek.com", "apiKey": "sk-1"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	rec = doReq(t, s.Handler(), http.MethodDelete, "/api/llms/deepseek-v4-flash", "admin", nil)
+	rec = doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/deepseek-v4-flash", "admin", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("DELETE /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}

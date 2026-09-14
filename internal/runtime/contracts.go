@@ -9,15 +9,15 @@ import (
 )
 
 const (
-	EventMessageStart    = "message_start"
-	EventAgentThinking   = "agent_thinking"
-	EventToolCall        = "tool_call"
-	EventToolResult      = "tool_result"
-	EventMessageDelta    = "message_delta"
-	EventTextReplace     = "text_replace"
-	EventMessageDone     = "message_done"
-	EventConfirmPending  = "confirm_pending"
-	EventConfirmResolved = "confirm_resolved"
+	EventMessageStart     = "message_start"
+	EventAgentThinking    = "agent_thinking"
+	EventToolCall         = "tool_call"
+	EventToolResult       = "tool_result"
+	EventMessageDelta     = "message_delta"
+	EventTextReplace      = "text_replace"
+	EventMessageDone      = "message_done"
+	EventApprovalPending  = "approval_pending"
+	EventApprovalResolved = "approval_resolved"
 	// EventQuestionPending surfaces an ask_user question the agent is blocked
 	// on; EventQuestionResolved settles its card. message carries the terminal
 	// status (answered / cancelled / expired).
@@ -53,9 +53,9 @@ type QuestionPrompt struct {
 // Event is one runtime-neutral event in CubePilot's streaming contract.
 type Event struct {
 	Type      string `json:"type"`
-	SessionID string `json:"session_id,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
 	Name      string `json:"name,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
+	CallID    string `json:"callId,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Output    string `json:"output,omitempty"`
 	Command   string `json:"command,omitempty"`

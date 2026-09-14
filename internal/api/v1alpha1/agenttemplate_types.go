@@ -111,28 +111,28 @@ type QuotaSpec struct {
 	MaxInstancesPerUser int32 `json:"maxInstancesPerUser,omitempty"`
 }
 
-// ConfirmPolicy is the platform confirmation intent (design §3.1 / issue
+// ApprovalPolicy is the platform confirmation intent (design §3.1 / issue
 // #116). Uniform across runtimes: each value describes which operations
 // require a human on an interactive turn; each runtime adapter enforces the
 // intent with its own mechanism. It lives on the AgentTemplate (with an
 // optional AgentInstance override) -- not on the skill -- so different
 // templates reusing the same skill can have different confirmation rules.
 // +kubebuilder:validation:Enum=None;Allowlist;AlwaysAsk
-type ConfirmPolicy string
+type ApprovalPolicy string
 
 const (
-	// ConfirmPolicyNone means no confirmation is required (reads and writes
+	// ApprovalPolicyNone means no confirmation is required (reads and writes
 	// both pass through, audited).
-	ConfirmPolicyNone ConfirmPolicy = "None"
-	// ConfirmPolicyAllowlist requires confirmation for operations outside the
+	ApprovalPolicyNone ApprovalPolicy = "None"
+	// ApprovalPolicyAllowlist requires confirmation for operations outside the
 	// effective allowlist: entries on the safe allowlist auto-pass, everything
 	// else on an interactive turn asks a human. This is the default (formerly
 	// ConfirmWrites -- its real behavior always was "allowlist-miss asks", not
 	// "writes only").
-	ConfirmPolicyAllowlist ConfirmPolicy = "Allowlist"
-	// ConfirmPolicyAlwaysAsk requires confirmation for every operation on an
+	ApprovalPolicyAllowlist ApprovalPolicy = "Allowlist"
+	// ApprovalPolicyAlwaysAsk requires confirmation for every operation on an
 	// interactive turn (strictest posture; the allowlist does not apply).
-	ConfirmPolicyAlwaysAsk ConfirmPolicy = "AlwaysAsk"
+	ApprovalPolicyAlwaysAsk ApprovalPolicy = "AlwaysAsk"
 )
 
 // AllowlistRule is one entry of a safe-command allowlist (issue #116). The
@@ -173,12 +173,12 @@ type AgentTemplateSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))",message="credentialRef must reference a Secret name"
 	// +optional
 	Models []TemplateModelSpec `json:"models,omitempty"`
-	// ConfirmPolicy is the template's default confirmation intent (default
+	// ApprovalPolicy is the template's default confirmation intent (default
 	// Allowlist). Instances inherit it until they override
-	// (AgentInstance.spec.confirmPolicy).
+	// (AgentInstance.spec.approvalPolicy).
 	// +kubebuilder:default=Allowlist
 	// +optional
-	ConfirmPolicy ConfirmPolicy `json:"confirmPolicy,omitempty"`
+	ApprovalPolicy ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist optionally extends the template's default safe-command
 	// allowlist (issue #116): the effective default is the platform builtin
 	// allowlist ∪ these entries. Instances inherit it until they take ownership

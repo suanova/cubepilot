@@ -53,7 +53,7 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 	done := make(chan int, 1)
 	rec := httptest.NewRecorder()
 	go func() {
-		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 		done <- rec.Code
 	}()
 
@@ -97,7 +97,7 @@ func TestHandleAbortReportsAbortFailure(t *testing.T) {
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rec.Code)
@@ -121,7 +121,7 @@ func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200: the gateway no longer has the run, so the stop landed", rec.Code)
@@ -150,7 +150,7 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rec.Code)
@@ -176,7 +176,7 @@ func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: the gateway aborted nothing and the session is still busy", rec.Code)
@@ -211,7 +211,7 @@ func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200: nothing was aborted because nothing was running", rec.Code)
@@ -233,7 +233,7 @@ func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
@@ -269,7 +269,7 @@ func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: a run is in flight that this Stop cannot name", rec.Code)
@@ -295,7 +295,7 @@ func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: the run's identity is unknown", rec.Code)
@@ -321,7 +321,7 @@ func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200: nothing is running, so the Stop is an idempotent success", rec.Code)
@@ -352,7 +352,7 @@ func TestHandleAbortBusyErrorIsNotIdle(t *testing.T) {
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: an undeterminable busy state must not read as idle", rec.Code)
@@ -379,7 +379,7 @@ func TestHandleAbortTimeoutIsGatewayTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil).WithContext(ctx))
 
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("code = %d, want 504", rec.Code)
@@ -396,10 +396,10 @@ func TestHandleAbortRejectsBadRequests(t *testing.T) {
 		hitl   bool
 		want   int
 	}{
-		{name: "method", method: http.MethodGet, path: "/api/sessions/conv-1/abort", hitl: true, want: http.StatusMethodNotAllowed},
-		{name: "empty key", method: http.MethodPost, path: "/api/sessions//abort", hitl: true, want: http.StatusBadRequest},
-		{name: "main key", method: http.MethodPost, path: "/api/sessions/agent:main:/abort", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodPost, path: "/api/sessions/conv-1/abort", hitl: false, want: http.StatusServiceUnavailable},
+		{name: "method", method: http.MethodGet, path: "/api/v1/sessions/conv-1/abort", hitl: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodPost, path: "/api/v1/sessions//abort", hitl: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodPost, path: "/api/v1/sessions/agent:main:/abort", hitl: true, want: http.StatusBadRequest},
+		{name: "no hitl", method: http.MethodPost, path: "/api/v1/sessions/conv-1/abort", hitl: false, want: http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,7 +448,7 @@ func TestHandleAbortBusyGatewayIsNotSuccess(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 		done <- rec.Code
 	}()
 
@@ -492,7 +492,7 @@ func TestHandleAbortSettleTimeoutIsBounded(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 		done <- rec.Code
 	}()
 
@@ -524,7 +524,7 @@ func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil).WithContext(ctx))
 
 	// The lookup that decides what gets aborted is the first half of the same
 	// command, so it must outlive the client too: on the request context it would
@@ -576,7 +576,7 @@ func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil).WithContext(ctx))
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil).WithContext(ctx))
 
 	if !gw.listed {
 		t.Fatal("the settle never ran: a disconnected client's landed stop left the session's records pending for a reload to resurrect")
@@ -616,7 +616,7 @@ func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/sessions/conv-1/abort", nil))
+		s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
 		done <- rec.Code
 	}()
 
@@ -672,7 +672,7 @@ func TestHandleTurnStatus(t *testing.T) {
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
@@ -710,7 +710,7 @@ func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
@@ -752,7 +752,7 @@ func TestHandleTurnStatusEstablishesTheChannel(t *testing.T) {
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
@@ -797,7 +797,7 @@ func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 
 	s := newAbortTestServer(NewHub(), m)
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: a turn this process started may still be running", rec.Code)
@@ -823,7 +823,7 @@ func TestHandleTurnStatusRedialsUnusableEntry(t *testing.T) {
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: a channel that cannot be established means the busy state is unknown", rec.Code)
@@ -850,7 +850,7 @@ func TestHandleTurnStatusDeadlineIsErrorNotIdle(t *testing.T) {
 	defer cancel()
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil).WithContext(expired))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil).WithContext(expired))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: an expired busy read must not be answered as idle", rec.Code)
@@ -875,10 +875,10 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 		want       int
 		wantActive *bool
 	}{
-		{name: "method", method: http.MethodPost, path: "/api/sessions/conv-1/turn", hitl: true, want: http.StatusMethodNotAllowed},
-		{name: "empty key", method: http.MethodGet, path: "/api/sessions//turn", hitl: true, want: http.StatusBadRequest},
-		{name: "main key", method: http.MethodGet, path: "/api/sessions/agent:main:/turn", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodGet, path: "/api/sessions/conv-1/turn", hitl: false, want: http.StatusOK, wantActive: &activeFalse},
+		{name: "method", method: http.MethodPost, path: "/api/v1/sessions/conv-1/turn", hitl: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodGet, path: "/api/v1/sessions//turn", hitl: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodGet, path: "/api/v1/sessions/agent:main:/turn", hitl: true, want: http.StatusBadRequest},
+		{name: "no hitl", method: http.MethodGet, path: "/api/v1/sessions/conv-1/turn", hitl: false, want: http.StatusOK, wantActive: &activeFalse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -918,7 +918,7 @@ func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
-	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/conv-1/turn", nil))
+	s.handleTurnStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn", nil))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502: an undeterminable busy state must not read as idle", rec.Code)
@@ -934,7 +934,7 @@ func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
 func TestTurnRouteIsWired(t *testing.T) {
 	srv := New(config.Config{DefaultUser: "alice"}, nil, nil, nil, nil)
 
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/turn", "alice", nil)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/turn", "alice", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200: /turn is not wired into handleSessionSubresource", rec.Code)

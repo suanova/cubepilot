@@ -15,7 +15,7 @@ import (
 
 // A stopped turn must not leave a card behind: after settling, the session has
 // no pending confirmation, the record is gone from the recovery lookup, and a
-// confirm_resolved event was published to any attached stream.
+// approval_resolved event was published to any attached stream.
 //
 // Pending() on its own cannot pin this: it reports false for an approval whose
 // byID entry is gone even when bySession still points at it, and bySession is
@@ -72,7 +72,7 @@ func TestSettlePendingForSessionClearsConfirm(t *testing.T) {
 // Resolve takes the approval out of byID/bySession before its gateway round
 // trip, so a settle that runs while the decision is in flight finds nothing in
 // the pending maps. If the gateway call then fails, Resolve.restore puts the
-// record back -- and /confirm/pending hands a card back to a session whose turn
+// record back -- and /approval/pending hands a card back to a session whose turn
 // was stopped, which is exactly what the settle exists to prevent. The claim
 // and the removal therefore share one lock acquisition, and a claim that lands
 // on a reservation marks it so the restore drops it.
@@ -116,9 +116,9 @@ func TestSettlePendingForSessionBeatsReservedResolve(t *testing.T) {
 		t.Fatal("fixture: the resolve must fail for the restore path to be exercised")
 	}
 
-	// Recovery is the surface that matters: /confirm/pending is what a reload
+	// Recovery is the surface that matters: /approval/pending is what a reload
 	// asks, and it must not hand back a card for the stopped turn.
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/sessions/conv-1/confirm/pending", "admin", nil)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "admin", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("recovery after the settle returned %d, want 404: the failed resolve restored the card", rec.Code)
 	}
@@ -224,7 +224,7 @@ func (r *blockingResolver) ResolveApproval(_ context.Context, _, _, _ string) er
 
 // A server built without an approval service must not panic. That is the shape
 // the abort handler's fixture uses (&Server{hub: h, hitl: m}), and both
-// handleConfirm and handlePendingConfirm already treat a nil service as a real
+// handleApproval and handlePendingApproval already treat a nil service as a real
 // state; the settle has to as well.
 func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
 	gw := &fakeHitlGateway{}
@@ -240,10 +240,10 @@ func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
 	}
 }
 
-// Settling publishes confirm_resolved while the turn's stream is still open, so
+// Settling publishes approval_resolved while the turn's stream is still open, so
 // an attached view drops the card at once instead of waiting for a reload that
 // would resurrect it.
-func TestSettlePendingForSessionPublishesConfirmResolved(t *testing.T) {
+func TestSettlePendingForSessionPublishesApprovalResolved(t *testing.T) {
 	h := NewHub()
 	svc := NewApprovalService(h, nil, tLogf)
 	rec := httptest.NewRecorder()
@@ -265,10 +265,10 @@ func TestSettlePendingForSessionPublishesConfirmResolved(t *testing.T) {
 		t.Fatal("no SSE events published")
 	}
 	last := evs[len(evs)-1]
-	if last["type"] != agentruntime.EventConfirmResolved {
-		t.Fatalf("last event = %v, want %s", last["type"], agentruntime.EventConfirmResolved)
+	if last["type"] != agentruntime.EventApprovalResolved {
+		t.Fatalf("last event = %v, want %s", last["type"], agentruntime.EventApprovalResolved)
 	}
-	if last["call_id"] != "ap-1" || last["session_id"] != "conv-1" {
+	if last["callId"] != "ap-1" || last["sessionId"] != "conv-1" {
 		t.Fatalf("resolved event = %v, want call_id ap-1 on conv-1", last)
 	}
 	// A settle is not a decision: no allow/deny is implied.
@@ -300,7 +300,7 @@ func TestSettlePendingForSessionClearsQuestions(t *testing.T) {
 		t.Fatalf("events = %v, want exactly one question_resolved", evs)
 	}
 	if evs[0]["type"] != agentruntime.EventQuestionResolved ||
-		evs[0]["call_id"] != "ask_1" || evs[0]["message"] != "cancelled" {
+		evs[0]["callId"] != "ask_1" || evs[0]["message"] != "cancelled" {
 		t.Fatalf("event = %v, want question_resolved/cancelled for ask_1", evs[0])
 	}
 }
@@ -321,7 +321,7 @@ func TestSettlePendingForSessionMatchesRawRecordKey(t *testing.T) {
 		t.Fatalf("question cancels = %v, want the raw-keyed record cancelled", gw.questionCancels)
 	}
 	evs := sseEvents(t, rec.Body.String())
-	if len(evs) != 1 || evs[0]["call_id"] != "ask_raw" || evs[0]["session_id"] != questionTestSession {
+	if len(evs) != 1 || evs[0]["callId"] != "ask_raw" || evs[0]["sessionId"] != questionTestSession {
 		t.Fatalf("events = %v, want one question_resolved on the canonical session", evs)
 	}
 }
@@ -379,8 +379,8 @@ func TestSettlePendingForSessionListQuestionsError(t *testing.T) {
 		t.Errorf("question cancels = %v, want none on a list failure", gw.questionCancels)
 	}
 	evs := sseEvents(t, rec.Body.String())
-	if eventOfType(evs, agentruntime.EventConfirmResolved) == nil {
-		t.Fatalf("events = %v, want the confirm_resolved", evs)
+	if eventOfType(evs, agentruntime.EventApprovalResolved) == nil {
+		t.Fatalf("events = %v, want the approval_resolved", evs)
 	}
 	if ev := eventOfType(evs, agentruntime.EventQuestionResolved); ev != nil {
 		t.Fatalf("question_resolved published despite the list failure: %v", ev)
