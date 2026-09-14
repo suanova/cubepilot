@@ -4,8 +4,12 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 // TestAgentConfirmRoundTrip covers GET/PUT /api/agent/approval: override
@@ -80,24 +84,32 @@ func TestAgentConfirmNoInstance(t *testing.T) {
 	}
 }
 
-// TestAllowlistAlwaysDoesNotMaterialize verifies allow-always appends only the
-// rule itself. Copying the platform builtin into the spec would let that
+// TestAllowlistAlwaysDoesNotMaterialize verifies allow-always records only the
+// rule itself -- and now records it in the grants store rather than the
+// instance spec. Copying the platform builtin into the spec would let that
 // snapshot outlive a later hardening of Default() (issue #185).
 func TestAllowlistAlwaysDoesNotMaterialize(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
 	)
-	ok, err := s.allowlistAlways(context.Background(), "li.ming", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
+	ok, err := s.allowlistAlways(context.Background(), "li.ming", "helm list", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
 	if err != nil {
 		t.Fatalf("allowlistAlways: %v", err)
 	}
 	if !ok {
 		t.Fatal("allowlistAlways returned false under Allowlist policy")
 	}
+	got, err := s.grantsStore().List(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "helm" {
+		t.Errorf("grants = %+v, want exactly the helm rule", got)
+	}
 	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "li.ming", nil))
-	if len(view.AllowlistOwned) != 1 || view.AllowlistOwned[0].Pattern != "helm" {
-		t.Errorf("owned allowlist = %+v, want exactly the helm rule", view.AllowlistOwned)
+	if len(view.AllowlistOwned) != 0 {
+		t.Errorf("owned allowlist = %+v, want the instance spec untouched", view.AllowlistOwned)
 	}
 }
 
@@ -110,7 +122,7 @@ func TestAllowlistAlwaysSkippedUnderAlwaysAsk(t *testing.T) {
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		inst,
 	)
-	ok, err := s.allowlistAlways(context.Background(), "li.ming", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
+	ok, err := s.allowlistAlways(context.Background(), "li.ming", "helm list", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
 	if err != nil {
 		t.Fatalf("allowlistAlways: %v", err)
 	}
@@ -165,5 +177,101 @@ func TestAgentConfirmRejectsInvalidArgPattern(t *testing.T) {
 		})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAllowAlwaysWritesAGrantNotTheSpec covers issue #185: the machine-written
+// grant must land in the grants store, and the instance spec must stay
+// untouched so a learned rule cannot be mistaken for a hand-authored one.
+func TestAllowAlwaysWritesAGrantNotTheSpec(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, ok := deriveAllowAlwaysRule("kubectl get pods -n foo")
+	if !ok {
+		t.Fatal("deriveAllowAlwaysRule returned !ok")
+	}
+	if _, err := s.allowlistAlways(ctx, "li.ming", "kubectl get pods -n foo", rule); err != nil {
+		t.Fatalf("allowlistAlways: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "kubectl" {
+		t.Fatalf("grants = %+v, want one kubectl grant", got)
+	}
+	if got[0].Command != "kubectl get pods -n foo" {
+		t.Errorf("Command = %q, want the approved invocation", got[0].Command)
+	}
+
+	var inst v1alpha1.AgentInstance
+	name := types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}
+	if err := s.cr.Get(ctx, name, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.Allowlist) != 0 {
+		t.Errorf("instance spec was written: %+v", inst.Spec.Allowlist)
+	}
+}
+
+// TestClearOwnedAllowlistKeepsGrants: the Reset button must not discard what the
+// user approved in chat -- the two stores are separate.
+func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	if err := s.saveConfirm(ctx, "li.ming", v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("saveConfirm: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("Reset discarded learned grants: %+v", got)
+	}
+}
+
+// TestAgentConfirmRevokesLearnedGrant covers the revoke path added in issue
+// #185: a learned grant is dropped from the grants store without the
+// hand-authored list being rewritten.
+func TestAgentConfirmRevokesLearnedGrant(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []any{},
+			"revokeGrants":   []map[string]any{{"pattern": "helm", "argPattern": "^install x$"}},
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("grant not revoked: %+v", got)
 	}
 }

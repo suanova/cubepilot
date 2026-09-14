@@ -36,6 +36,7 @@ type fakeGatewayClient struct {
 	connectSeq   []error // optional per-connect results, consumed in order
 	getErr       error
 	setErr       error
+	setErrs      []error // optional per-call results, consumed in order
 	guardErr     error
 	initialAllow []ws.AllowlistEntry
 
@@ -238,6 +239,15 @@ func (f *fakeGatewayClient) GetApprovalsPolicy(ctx context.Context) (*ws.Approva
 func (f *fakeGatewayClient) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Consume a queued per-call failure first: a test uses one entry to fail the
+	// first attempt and let the retry succeed.
+	if len(f.setErrs) > 0 {
+		err := f.setErrs[0]
+		f.setErrs = f.setErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.setErr != nil {
 		return nil, f.setErr
 	}
@@ -1305,5 +1315,36 @@ func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
 	close(gw.release)
 	if err := <-done2; err != nil {
 		t.Fatalf("re-dial: %v", err)
+	}
+}
+
+// TestHitl_ApplyPolicyRetriesAConcurrentWrite covers issue #185:
+// exec.approvals.set compares the hash from the get, so a write landing in
+// between fails it. That has to be retried rather than surfaced -- the caller
+// treats an applyPolicy error as fatal to the turn, so a lost race would refuse
+// a turn the user is entitled to take.
+func TestHitl_ApplyPolicyRetriesAConcurrentWrite(t *testing.T) {
+	gw := &fakeGatewayClient{
+		setErrs: []error{fmt.Errorf("exec.approvals.set: hash mismatch: stale baseHash")},
+	}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+	if len(gw.policySets) != 1 {
+		t.Errorf("policy sets = %d, want 1 after the retry succeeded", len(gw.policySets))
+	}
+}
+
+// TestHitl_ApplyPolicySurfacesAPersistentFailure: the retry is bounded. A
+// gateway that rejects every attempt must surface the error, not spin.
+func TestHitl_ApplyPolicySurfacesAPersistentFailure(t *testing.T) {
+	gw := &fakeGatewayClient{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err == nil {
+		t.Fatal("applyPolicy should surface a persistent failure")
+	}
+	if len(gw.policySets) != 0 {
+		t.Errorf("policy sets = %d, want 0 (every attempt failed)", len(gw.policySets))
 	}
 }

@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/grants"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -87,11 +89,21 @@ func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ApprovalPolicy v1alpha1.ApprovalPolicy  `json:"approvalPolicy"`
 			Allowlist      []v1alpha1.AllowlistRule `json:"allowlist"`
+			// RevokeGrants drops learned grants (issue #185). Grants are a
+			// separate store, so revoking one cannot be expressed by rewriting
+			// the hand-authored list.
+			RevokeGrants []v1alpha1.AllowlistRule `json:"revokeGrants"`
 		}
 		if !decodeJSONBody(w, r, &body) {
 			return
 		}
 		for _, rule := range body.Allowlist {
+			if err := allowlist.Validate(rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+		for _, rule := range body.RevokeGrants {
 			if err := allowlist.Validate(rule); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 				return
@@ -110,6 +122,17 @@ func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, code, map[string]any{"error": err.Error()})
 			return
+		}
+		// Revoke after the save, not before (issue #185). Both operations are
+		// idempotent, so this order leaves a retryable failure state -- the
+		// policy edit persisted, the grant still present. Revoking first would
+		// instead delete the grant and then answer 500, telling the user
+		// nothing happened while their revocation had in fact landed.
+		for _, rule := range body.RevokeGrants {
+			if err := s.grantsStore().Remove(r.Context(), s.userOf(r), rule); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				return
+			}
 		}
 		view, err := s.approvalView(r.Context(), s.userOf(r))
 		if err != nil {
@@ -177,11 +200,11 @@ func (s *Server) approvalView(ctx context.Context, user string) (approvalView, e
 	return view, nil
 }
 
-// saveConfirm writes the instance's confirmation override and its own
-// hand-authored allowlist rules. An empty approvalPolicy clears the override
-// (inherit the template); an empty allowlist clears the instance's own
-// additions -- the effective list still carries the platform builtin and the
-// template's rules (the union is unconditional), it only stops adding to it.
+// saveConfirm writes the instance's confirmation override and hand-authored
+// allowlist. An empty approvalPolicy clears the override (inherit the
+// template); an empty allowlist clears the hand-authored rules. Learned grants
+// are a separate store and are deliberately untouched (issue #185) -- clearing
+// your own rules must not discard what you approved in chat.
 func (s *Server) saveConfirm(ctx context.Context, user string, pol v1alpha1.ApprovalPolicy, al []v1alpha1.AllowlistRule) error {
 	if s.cr == nil {
 		return nil
@@ -220,12 +243,22 @@ func deriveAllowAlwaysRule(command string) (v1alpha1.AllowlistRule, bool) {
 	return rule, true
 }
 
-// allowlistAlways appends an allow-always entry to the instance's own
-// allowlist. The inherited defaults are deliberately not copied in: the
-// resolver unions them in live, so the append only widens the instance's own
-// rules. No-op (false) when the effective policy is not Allowlist (under
-// AlwaysAsk everything asks anyway).
-func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1.AllowlistRule) (bool, error) {
+// grantsStore returns the learned-grants store. It is derived from the client
+// and namespace on each call rather than held as a field: it is two values, and
+// a lazily-initialised field would be a data race on a Server the HTTP server
+// drives concurrently.
+func (s *Server) grantsStore() *grants.Store {
+	return grants.New(s.cr, s.cfg.Namespace)
+}
+
+// allowlistAlways records an allow-always entry in the user's grants store
+// (issue #185). The grant lives outside AgentInstance.spec: writing it into the
+// spec used to materialize the whole inherited list on first use, freezing that
+// instance off the platform builtin for good. The command text is stored with
+// the grant so a learned rule can be shown as the invocation the user approved.
+// No-op (false) when the effective policy is not Allowlist (under AlwaysAsk
+// everything asks anyway).
+func (s *Server) allowlistAlways(ctx context.Context, user, command string, rule v1alpha1.AllowlistRule) (bool, error) {
 	if s.cr == nil {
 		return false, nil
 	}
@@ -236,18 +269,7 @@ func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1
 			}
 		}
 	}
-	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
-	var inst v1alpha1.AgentInstance
-	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: name}, &inst); err != nil {
-		return false, err
-	}
-	// Append only to the instance's own rules. Deliberately NOT the resolved
-	// effective list: copying that in would write the platform builtin into the
-	// spec, and the union would then faithfully include the snapshot, so a
-	// builtin later removed from Default() -- a hardening -- would keep
-	// auto-passing here. The union supplies the builtin live instead.
-	inst.Spec.Allowlist = allowlist.Merge(inst.Spec.Allowlist, []v1alpha1.AllowlistRule{rule})
-	if err := s.cr.Update(ctx, &inst); err != nil {
+	if err := s.grantsStore().Add(ctx, user, rule, command, time.Now()); err != nil {
 		return false, err
 	}
 	return true, nil
