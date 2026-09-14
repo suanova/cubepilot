@@ -585,8 +585,14 @@ func TestAddTruncatesLongCommand(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d grants, want 1", len(got))
 	}
-	if len(got[0].Command) != maxCommandBytes {
-		t.Errorf("Command length = %d, want %d", len(got[0].Command), maxCommandBytes)
+	// Truncated to the cap, with a visible marker so the UI can tell the text
+	// is incomplete.
+	want := maxCommandBytes + len("…")
+	if len(got[0].Command) != want {
+		t.Errorf("Command length = %d, want %d", len(got[0].Command), want)
+	}
+	if !strings.HasSuffix(got[0].Command, "…") {
+		t.Errorf("truncated command has no marker: %q", got[0].Command)
 	}
 }
 
@@ -705,10 +711,11 @@ import (
 // keeps that per-entry figure honest.
 const (
 	MaxGrants = 1000
-	// maxCommandBytes truncates the stored command text. Without it a single
-	// command carrying a long payload would make the per-entry size unbounded
-	// and the MaxGrants arithmetic meaningless. It is display-only, so a
-	// truncated tail costs nothing.
+	// maxCommandBytes bounds the stored command text, which is display-only and
+	// plays no part in matching. Without a bound a single `bash -c` with a long
+	// heredoc could push the ConfigMap past the 1 MiB API-server ceiling, and
+	// the failure would not be confined to that entry: every later Add for that
+	// user would fail too.
 	maxCommandBytes = 512
 )
 
@@ -722,7 +729,9 @@ type Record struct {
 	Pattern    string    `json:"pattern"`
 	ArgPattern string    `json:"argPattern,omitempty"`
 	// Command is the invocation that produced the grant, kept for the UI so a
-	// learned rule can be shown as something a human recognises.
+	// learned rule can be shown as something a human recognises. It is display
+	// only — matching uses Pattern and ArgPattern — and is truncated by
+	// maxCommandBytes, with a trailing ellipsis when it was.
 	Command   string    `json:"command,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -819,14 +828,16 @@ func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, 
 	})
 }
 
-// truncate bounds s to n bytes, cutting on a byte boundary. The value is
-// display-only, so a split rune at the cut is acceptable and not worth the
-// extra code to avoid.
+// truncate bounds s to about n bytes, cutting on a byte boundary. The value is
+// display-only — matching uses Pattern and ArgPattern — so a split rune at the
+// cut is acceptable and not worth the extra code to avoid. The ellipsis is what
+// matters: a silently shortened command reads as a complete one, and the user
+// would be looking at a rule whose text they cannot trust.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	return s[:n] + "…"
 }
 
 // Remove revokes a grant. It is idempotent: a missing ConfigMap, or a key that
