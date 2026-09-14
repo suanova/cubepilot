@@ -114,10 +114,10 @@ type AgentInstanceSpec struct {
 	// (live); set = the instance's own posture.
 	// +optional
 	ApprovalPolicy ApprovalPolicy `json:"approvalPolicy,omitempty"`
-	// Allowlist is the instance's owned safe-command allowlist (issue #116).
-	// Empty = inherit the template's effective default (live); the first
-	// explicit edit materializes the effective list here, after which it is
-	// authoritative (design §3.2 inherit-or-own).
+	// Allowlist is the instance's own safe-command allowlist: rules the user
+	// added by hand. The effective list is the platform builtin ∪ the template
+	// allowlist ∪ these entries (issue #185) — the instance adds to it and
+	// cannot remove from it.
 	// +optional
 	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// EnabledSkills optionally restricts the skills the AgentTemplate declares
