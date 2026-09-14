@@ -93,14 +93,24 @@ func BuiltinLabel(e v1alpha1.AllowlistRule) string {
 	return ""
 }
 
-// Effective returns the effective allowlist for an instance (issue #116): the
-// instance's owned list when it has taken ownership (non-empty), else the
-// template's effective default (the platform builtin ∪ the template's own
-// allowlist). An owned list is authoritative -- it may drop builtin entries
-// (the result is only that those commands ask again; the safe direction).
-func Effective(owned, templateAllowlist []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule {
-	if len(owned) > 0 {
-		return owned
-	}
-	return Merge(Default(), templateAllowlist)
+// Effective returns the effective allowlist for an instance (issue #185): the
+// platform builtin, the template's additions, the instance's hand-authored
+// additions and the instance's learned grants, unioned.
+//
+// There is deliberately no "the instance owns its list" override. The previous
+// design returned the instance list *instead of* the union whenever that list
+// was non-empty, so the first edit of any kind -- including a removal --
+// materialized the then-current builtin into the instance and froze it there.
+// A later hardening of Default() then could not reach that instance, which is
+// the fail-open direction. A union cannot freeze, for today's writers or any
+// added later.
+//
+// Consequence, accepted deliberately: a builtin entry can no longer be removed
+// per instance. AlwaysAsk is the strict posture.
+func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule {
+	all := make([]v1alpha1.AllowlistRule, 0, len(templateAllowlist)+len(instanceAllowlist)+len(grants))
+	all = append(all, templateAllowlist...)
+	all = append(all, instanceAllowlist...)
+	all = append(all, grants...)
+	return Merge(Default(), all)
 }

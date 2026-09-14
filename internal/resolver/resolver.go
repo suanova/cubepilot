@@ -208,14 +208,14 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		}
 	}
 
-	// Confirmation intent & allowlist (issue #116): an instance override wins
-	// over the template default; the effective allowlist is the platform
-	// builtin ∪ the template allowlist, unless the instance has taken
-	// ownership of its own list.
+	// Confirmation intent & allowlist (issue #185): an instance override wins
+	// over the template default; the effective allowlist is the union of the
+	// platform builtin, the template's additions and the instance's own
+	// additions. Learned grants are added in Task 4.
 	if inst.Spec.ApprovalPolicy != "" {
 		cfg.ApprovalPolicy = inst.Spec.ApprovalPolicy
 	}
-	cfg.Allowlist = allowlist.Effective(inst.Spec.Allowlist, tmplAllowlist)
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, nil)
 
 	// Domain skills visible to this agent (empty Agents = visible to
 	// all; atomic skills are overlays, not skills). The instance may

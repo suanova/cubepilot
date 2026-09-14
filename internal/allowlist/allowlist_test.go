@@ -88,9 +88,9 @@ func TestDefaultExcludesCommandWrappers(t *testing.T) {
 }
 
 func TestEffectiveInheritsTemplateDefault(t *testing.T) {
-	// Empty owned list -> platform builtin ∪ template allowlist.
+	// Empty instance list -> platform builtin ∪ template allowlist.
 	base := v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`}
-	got := Effective(nil, []v1alpha1.AllowlistRule{base})
+	got := Effective([]v1alpha1.AllowlistRule{base}, nil, nil)
 	if len(got) == 0 {
 		t.Fatal("effective empty; want platform builtin + template entries")
 	}
@@ -105,16 +105,6 @@ func TestEffectiveInheritsTemplateDefault(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("template allowlist entry not in effective: %+v", got)
-	}
-}
-
-func TestEffectiveOwnedIsAuthoritative(t *testing.T) {
-	// A non-empty owned list replaces the default entirely (the user may have
-	// dropped builtin reads; that only makes those commands ask again).
-	owned := []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show|status|diff)(\s|$)`}}
-	got := Effective(owned, []v1alpha1.AllowlistRule{{Pattern: "helm"}})
-	if len(got) != 1 || got[0].Pattern != "git" {
-		t.Errorf("owned list not authoritative: %+v", got)
 	}
 }
 
@@ -165,4 +155,58 @@ func TestBuiltinLabelOnlyForBuiltinRules(t *testing.T) {
 	if got := BuiltinLabel(v1alpha1.AllowlistRule{Pattern: "ls", ArgPattern: safeArgPattern}); got == "" {
 		t.Error("builtin ls rule should carry a read-only label")
 	}
+}
+
+// TestEffectiveIsUnionNotOwnership is the regression test for the inherited
+// allowlist being frozen on first edit (issue #185). An instance that has its
+// own entries must still receive the platform builtin: without this, a later
+// hardening of Default() silently does not reach that instance -- which is the
+// fail-open direction.
+func TestEffectiveIsUnionNotOwnership(t *testing.T) {
+	instance := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	got := Effective(nil, instance, nil)
+
+	if !hasPattern(got, "helm") {
+		t.Fatal("instance rule dropped")
+	}
+	for _, b := range Default() {
+		if !hasPattern(got, b.Pattern) {
+			t.Errorf("builtin %q dropped for an instance that owns entries", b.Pattern)
+		}
+	}
+}
+
+// TestEffectiveUnionsAllThreeSources covers the template and grants arms, and
+// the dedup that Merge already provides across them.
+func TestEffectiveUnionsAllThreeSources(t *testing.T) {
+	tmpl := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	instance := []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	grants := []v1alpha1.AllowlistRule{
+		{Pattern: "terraform"}, // duplicate of the instance rule
+		{Pattern: "kubectl", ArgPattern: "^apply -f prod.yaml$"}, // same pattern as a builtin, different argPattern
+	}
+	got := Effective(tmpl, instance, grants)
+
+	for _, want := range []string{"helm", "terraform", "kubectl"} {
+		if !hasPattern(got, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if n := countPattern(got, "terraform"); n != 1 {
+		t.Errorf("terraform appears %d times, want 1", n)
+	}
+}
+
+func hasPattern(rules []v1alpha1.AllowlistRule, pattern string) bool {
+	return countPattern(rules, pattern) > 0
+}
+
+func countPattern(rules []v1alpha1.AllowlistRule, pattern string) int {
+	n := 0
+	for _, r := range rules {
+		if r.Pattern == pattern {
+			n++
+		}
+	}
+	return n
 }

@@ -359,8 +359,36 @@ func TestResolveEffectiveAllowlistInherits(t *testing.T) {
 	}
 }
 
-// TestResolveEffectiveAllowlistOwned verifies an owned instance list replaces
-// the inherited default entirely.
+// TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries is the resolver-level
+// half of the fork regression (issue #185): an instance with its own entries
+// must still resolve the platform builtin.
+func TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	r := testResolver(t, template("t1", nil), inst)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	byPattern := map[string]bool{}
+	for _, rule := range cfg.Allowlist {
+		byPattern[rule.Pattern] = true
+	}
+	if !byPattern["helm"] {
+		t.Error("instance rule missing")
+	}
+	if !byPattern["kubectl"] || !byPattern["ls"] {
+		t.Errorf("platform builtin missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+
+// TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
+// still resolves the builtin and the template's additions (issue #185). This
+// used to assert the opposite — that an owned list replaced the inherited
+// default outright — which is exactly the fork: the instance was frozen off the
+// platform builtin on its first write, so a later hardening of Default() could
+// not reach it.
 func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
 	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show)(\s|$)`}}
@@ -374,7 +402,15 @@ func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if len(cfg.Allowlist) != 1 || cfg.Allowlist[0].Pattern != "git" {
-		t.Errorf("effective allowlist = %+v, want exactly the owned git entry", cfg.Allowlist)
+	want := map[string]bool{"git": false, "helm": false, "kubectl": false}
+	for _, e := range cfg.Allowlist {
+		if _, ok := want[e.Pattern]; ok {
+			want[e.Pattern] = true
+		}
+	}
+	for pattern, found := range want {
+		if !found {
+			t.Errorf("effective allowlist = %+v, missing %q", cfg.Allowlist, pattern)
+		}
 	}
 }
