@@ -234,9 +234,12 @@ func TestValidate(t *testing.T) {
 		// Accepted by RE2, rejected or silently misread by the JavaScript RegExp
 		// the gateway matches with. Each would otherwise be stored, pushed, and
 		// never reported -- the failure this task exists to close, reached from
-		// the other side. Lookaround and backreferences are deliberately absent:
-		// JavaScript supports both (lookbehind since ES2018), so rejecting them
-		// would refuse patterns that work.
+		// the other side.
+		//
+		// Lookaround and backreferences are deliberately absent from the set.
+		// JavaScript supports both (lookbehind since ES2018), so blaming them on
+		// JavaScript would be false; RE2 has neither, so the compile check below
+		// rejects them anyway, with a message that names no engine.
 		{Pattern: "ls", ArgPattern: `(?i)^foo$`},
 		{Pattern: "ls", ArgPattern: `^(?P<x>a)$`},
 		{Pattern: "ls", ArgPattern: `^[[:alpha:]]+$`},
