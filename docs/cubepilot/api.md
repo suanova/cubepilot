@@ -542,6 +542,10 @@ GET /api/v1/sessions/{key}/question/pending
 - `400 argPattern is not a valid regular expression: <detail>` —— `allowlist[].argPattern`
   不是合法正则，整次 PUT 被拒：规则**不会**写进实例，也不会下发给网关（网关按 JavaScript
   `RegExp` 匹配，写入时用 Go 正则先行校验）。
+- `400 argPattern uses <construct>, which JavaScript's new RegExp does not accept: ...` ——
+  同上拒法，但原因是该写法 Go 正则接受、JavaScript `RegExp` 不接受或读法不同：内联 flag
+  如 `(?i)`、命名组写成 `(?P<name>)`（JavaScript 是 `(?<name>)`）、POSIX 字符类
+  `[[:alpha:]]`、以及未加 `u` 标志的 `\p{L}`。写入时按这份清单先行拒绝。
 - `409 no agent instance yet — provision it on the Agent Config page first`
   —— 实例不存在，先去创建。
 

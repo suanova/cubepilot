@@ -154,7 +154,7 @@ status:
   podName: agent-zhang-wei-cubepilot
 ```
 
-可覆盖的字段：模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及审批策略覆盖（`approvalPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`/`allowlist`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
+可覆盖的字段：模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及审批策略覆盖（`approvalPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。**`allowlist` 不是 inherit-or-own**：有效 allowlist = 平台内置 ∪ 模板 `allowlist` ∪ 实例自有条目，恒为并集——实例条目为空表示「不额外增加」，非空也只是增加，实例无法删掉内置项，平台加固内置列表后也不需要用户做任何事；自有条目既含 AgentView 手写的规则，也含聊天里 allow-always 学到的授权。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
 **实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/v1/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
 
