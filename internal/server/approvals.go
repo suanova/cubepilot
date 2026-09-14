@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 	"github.com/suanova/cubepilot/internal/store"
 )
@@ -395,4 +397,154 @@ func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 		"level":      p.Level,
 		"message":    p.Message,
 	}})
+}
+
+// PreTurn is called at the start of an interactive turn. For Allowlist and
+// AlwaysAsk it ensures the approval connection and applies the effective exec
+// policy once per config revision. It returns whether the session must be
+// guarded; RunLiveTurn reconciles that state atomically with the model.
+//
+// Both gated policies fail closed (issue #127): approvalPolicy is the single
+// authority for whether a turn is guarded, so if the policy cannot be resolved
+// or the approval channel/policy/guard cannot be applied, PreTurn returns an
+// error and the caller must not start the turn. A policy that says "ask" must
+// never silently run a turn that cannot ask -- that is the silent downgrade
+// issue #127 exists to remove. Only a resolved None/empty policy passes through
+// (an unresolvable config is treated as gated-unknown and fails closed, not as
+// None).
+func (m *gatewayConns) PreTurn(ctx context.Context, user string) (bool, error) {
+	pol, allow, rev, err := m.resolved(ctx, user)
+	if err != nil {
+		return false, fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
+	}
+	switch pol {
+	case v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
+		// Gated: the turn may not run unless the approval channel is up.
+	case "", v1alpha1.ApprovalPolicyNone:
+		return false, nil // nothing to gate
+	default:
+		// Fail closed. Reading an unrecognised policy as "nothing asks" would
+		// silently run a write that was meant to be gated. The CRD schema
+		// constrains the enum, so this is reachable only for a value stored
+		// before the schema was applied -- which is exactly when a wrong guess
+		// is most dangerous.
+		return false, fmt.Errorf("hitl %s: unknown approval policy %q", user, pol)
+	}
+	gw, err := m.conn(ctx, user)
+	if err != nil {
+		return false, fmt.Errorf("hitl %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
+	}
+	// Apply the effective exec policy when the resolved-config revision changed;
+	// only a successful apply advances revPol so a transient failure is retried
+	// next turn.
+	m.mu.Lock()
+	appliedRev := m.revPol[user]
+	m.mu.Unlock()
+	if rev != "" && rev != appliedRev {
+		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
+			return false, fmt.Errorf("hitl %s: cannot apply %s exec policy: %w", user, pol, err)
+		}
+		m.mu.Lock()
+		m.revPol[user] = rev
+		m.mu.Unlock()
+	}
+	return true, nil
+}
+
+// channelState reports whether the per-user approval channel can currently
+// carry a gated turn (issue #127). An established connection answers "up" from
+// cache; otherwise one bounded connect attempt is made and immediately dropped.
+// A NOT_PAIRED rejection means the supervisor has not yet approved this user's
+// derived device (first use) and reports "pairing" -- the rejected connect
+// seeds the pending device the supervisor auto-approves on its next poll, so
+// the state self-heals. Surfaced on the confirm view so a policy edit is never
+// a silent no-op: with a "down"/"unconfigured" channel a gated turn fails
+// closed rather than running ungated.
+func (m *gatewayConns) channelState(ctx context.Context, user string) string {
+	m.mu.Lock()
+	if c, ok := m.conns[user]; ok && c.gw != nil && c.gw.Connected() {
+		m.mu.Unlock()
+		return approvalChannelUp
+	}
+	m.mu.Unlock()
+
+	dev := m.deviceFor(user)
+	gw := m.newClient(m.wsURLOf(user), dev)
+	defer gw.Close()
+	aCtx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
+	defer cancel()
+	if err := gw.Connect(aCtx); err != nil {
+		if strings.Contains(err.Error(), "NOT_PAIRED") {
+			return approvalChannelPairing
+		}
+		m.sayf("hitl %s: channel probe: %v", user, err)
+		return approvalChannelDown
+	}
+	return approvalChannelUp
+}
+
+// applyPolicy writes the effective exec-approvals policy into agents."main" of
+// the gateway (get -> set, CAS). The allowlist is rewritten wholesale from the
+// resolved config (issue #116): the platform bookkeeping is the instance
+// allowlist, so a removed entry really disappears. AlwaysAsk runs a guarded,
+// on-miss session with an empty allowlist -- every command misses and therefore
+// asks -- which is the strictest posture and needs no unverified ask:always
+// semantics. It reports failure so the caller can defer advancing the
+// applied-revision watermark.
+func (m *gatewayConns) applyPolicy(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
+	snap, err := gw.GetApprovalsPolicy(ctx)
+	if err != nil {
+		m.sayf("hitl %s: exec.approvals.get: %v", user, err)
+		return err
+	}
+	file := snap.File
+	if file.Agents == nil {
+		file.Agents = map[string]ws.ApprovalAgentPolicy{}
+	}
+	agent := file.Agents["main"]
+	switch pol {
+	case v1alpha1.ApprovalPolicyAlwaysAsk:
+		// Clear any allowlist a prior Allowlist mode wrote: on-miss with an
+		// empty allowlist asks on everything.
+		agent.Allowlist = nil
+	default: // ApprovalPolicyAllowlist
+		agent.Allowlist = toWSEntries(allow)
+	}
+	file.Agents["main"] = agent
+	base := ""
+	if snap.Exists {
+		base = snap.Hash
+	}
+	if _, err := gw.SetApprovalsPolicy(ctx, file, base); err != nil {
+		m.sayf("hitl %s: exec.approvals.set: %v", user, err)
+		return err
+	}
+	return nil
+}
+
+// toWSEntries converts the resolved (public-API) allowlist rules into the
+// gateway's exec-approvals entry shape.
+func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
+	out := make([]ws.AllowlistEntry, 0, len(rules))
+	for _, r := range rules {
+		if r.Pattern == "" {
+			continue
+		}
+		out = append(out, ws.AllowlistEntry{Pattern: r.Pattern, ArgPattern: r.ArgPattern})
+	}
+	return out
+}
+
+// ResolveApproval implements ApprovalResolver: the Portal decision is applied
+// to the user's gateway connection.
+func (m *gatewayConns) ResolveApproval(ctx context.Context, user, approvalID, decision string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return fmt.Errorf("no approval connection for %s", user)
+	}
+	gwDecision := "deny"
+	if decision == "approve" {
+		gwDecision = "allow-once"
+	}
+	return gw.ResolveApproval(ctx, approvalID, gwDecision)
 }

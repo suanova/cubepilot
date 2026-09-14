@@ -86,19 +86,19 @@ The reason this is cheap is a Go property, not a coincidence: methods may be
 defined in any file of the same package. A moved method keeps its receiver and
 its callers unchanged, so `RunLiveTurn` calling `m.conn(...)`, and `conn()`
 referencing `m.routeLive`, compile untouched across the move. The diff is a
-`git`-recognisable rename plus a mechanical identifier substitution.
+mechanical identifier substitution plus a file move.
 
 ### Target layout
 
-All under `internal/server/`. Sizes are estimates.
+All under `internal/server/`. Sizes are as built.
 
-| File | Contents | ~lines |
+| File | Contents | lines |
 | --- | --- | --- |
-| `gateway.go` (renamed from `hitl.go`) | Device identity (`deviceFor`, `DevicePublicKeyFor`, `mustDevice`, `wsURL`), connection pool (`conn`, `liveConn`, `gatewayConnected`, `hasConnectedLocked`, `markConnected`), `openClawLiveRunner`, the three injected hooks, `errNoGatewayChannel`, `channelProbeTimeout` | 485 |
-| `live.go` (new) | `liveTurn` and its five methods, `wsRunTail`, `registerLive`, `releaseLive`, `RunLiveTurn`, `routeLive`, `LiveRunID`, `chatTerminalOutcome` | 370 |
-| `approvals.go` (existing, 400) | + `PreTurn`, `channelState`, `applyPolicy`, `toWSEntries`, `ResolveApproval` | 560 |
-| `abort.go` (existing, 418) | + `Abort`, `SessionBusy`, `SessionBusyEstablished`, `connEstablished`, `InFlightRunID` | 520 |
-| `questions.go` (existing, 358) | + `GetQuestion`, `ListQuestions`, `ResolveQuestion`, `CancelQuestion` | 395 |
+| `gateway.go` (renamed from `hitl.go`) | Device identity (`deviceFor`, `DevicePublicKeyFor`, `mustDevice`, `wsURL`), connection pool (`conn`, `liveConn`, `gatewayConnected`, `hasConnectedLocked`, `markConnected`), `openClawLiveRunner`, the three injected hooks, `errNoGatewayChannel`, `channelProbeTimeout` | 412 |
+| `live.go` (new) | `liveTurn` and its five methods, `wsRunTail`, `registerLive`, `releaseLive`, `RunLiveTurn`, `routeLive`, `LiveRunID`, `chatTerminalOutcome` | 314 |
+| `approvals.go` (existing, 400) | + `PreTurn`, `channelState`, `applyPolicy`, `toWSEntries`, `ResolveApproval` | 550 |
+| `abort.go` (existing, 418) | + `Abort`, `SessionBusy`, `SessionBusyEstablished`, `connEstablished`, `InFlightRunID` | 523 |
+| `questions.go` (existing, 358) | + `GetQuestion`, `ListQuestions`, `ResolveQuestion`, `CancelQuestion` | 396 |
 
 Each file ends between 370 and 560 lines. After the split, tracing a chat turn
 runs handler → `live.go` and never enters `gateway.go`.
@@ -115,6 +115,14 @@ are named for the concern, and the methods now live where a reader would look.
 | `userHitlConn` | `userGatewayConn` | 43 |
 | `ConfiguredHITL` | `ConfigureGateway` | 5 |
 | `hitlPairRetryDelay` | `pairRetryDelay` | 7 |
+| `fakeHitlGateway` (test fake) | `fakeGatewayClient` | 96 |
+| `newTestHitl` (test helper) | `newTestGatewayConns` | 42 |
+| `blockingHitlGateway` (test fake) | `blockingGatewayClient` | 5 |
+
+The last three were found during implementation, not in the first pass: a grep
+for `hitl`-prefixed identifiers missed them because they carry `Hitl` mid-name.
+They are reference identifiers -- they name or construct the renamed types -- so
+leaving them would show a `fakeGatewayClient`-shaped hole in the rename.
 
 Occurrences span five files: `hitl.go`, `server.go`, `hitl_test.go`,
 `abort_test.go`, `questions_test.go`. `abort_test.go` constructs
@@ -131,6 +139,11 @@ holds them.
 - **`EnableHITL`** and the `hitl:` log prefix. HITL is a real product concept --
   human-in-the-loop approval -- and those names do not lie. Renaming them would
   spread the diff into `server.go`'s Secret handling and log output for no gain.
+- **`Server.hitl`**, the field `EnableHITL` assigns. It is the binding of that
+  kept concept, so it moves with `EnableHITL` rather than with the type.
+- **`TestHitl_*` test names.** They are scenario labels, not type references, and
+  renaming ~30 of them adds diff noise without helping the reader the issue is
+  about -- someone navigating production code.
 - **One type.** `gatewayConns` holds connection state *and* the approval-policy
   watermark. That is a minor grouping, worth splitting only if a second
   non-connection consumer of `revPol` appears. Splitting it now costs a new mutex
@@ -172,7 +185,15 @@ observable moves:
   beyond identifiers. `hitl_test.go` and `abort_test.go` are the load-bearing
   ones: they cover fail-closed policy gating, the pairing retry, live-turn
   projection, and the abort/stop path.
-- Review with `git diff -M`; the moves should register as renames.
+- **`git` does not recognise the split as a rename.** Only 412 of the original
+  1008 lines stay in `gateway.go`, so the pair scores ~41% similarity and falls
+  under the default 50% threshold: `git diff -M` shows a 1008-line delete plus a
+  412-line add. Lowering the threshold (`git diff -M25%`) or reviewing the five
+  files directly is the way to read it. This is a consequence of the file
+  genuinely shrinking, not of an unclean move.
+- Reviewable by construction instead: each moved block is byte-identical to its
+  original, and the multiset of the original's lines is a subset of the five
+  files' lines. Both were checked mechanically when the change was made.
 - Note for blame: a pure move breaks `git blame` on the moved lines. `git blame
   -C -M` follows them. This is accepted rather than worked around.
 

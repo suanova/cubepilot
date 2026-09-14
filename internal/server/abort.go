@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -11,7 +12,7 @@ import (
 // Bounded on purpose: a stop that cannot settle must report that, not hang the
 // UI forever.
 //
-// A package-level var, in the style of hitlPairRetryDelay, so a test can shorten
+// A package-level var, in the style of pairRetryDelay, so a test can shorten
 // it. As a const the 504 branch was reachable only through a request context
 // that was already cancelled, which left a regression to an unbounded wait
 // undetectable.
@@ -415,4 +416,109 @@ func (s *Server) waitSessionIdle(ctx context.Context, user, sessionKey string) e
 			return ctx.Err()
 		}
 	}
+}
+
+// Abort cancels the session's active run over the user's gateway connection.
+// runID scopes the abort to the run the server believes is live so it cannot
+// kill a run promoted after that one settles; an empty runID falls back to the
+// session-scoped abort, which terminates whatever the session happens to be
+// running.
+//
+// The empty run id stays available here, but /abort -- its only caller -- never
+// passes one: a Stop that cannot name a run is answered as a failure instead of
+// being sent, because the session-scoped form can kill a run the user never
+// meant to stop and the gateway's aborted:true carries nothing that tells the
+// two apart (see handleAbort). Keep it that way: a caller that issues an
+// unscoped abort has to be able to prove the session holds nothing but the run
+// it wants gone, and no caller in this process can.
+//
+// It reports whether the gateway actually aborted a run. A nil error with
+// aborted=false is an RPC that succeeded and stopped nothing -- the run id
+// matched no abortable run -- so the caller must not read it as a stop. It gets
+// no channel of its own: an abort issued over a connection this process had to
+// dial would be a stop racing its own lookup, and the caller treats the failure
+// as it does any other.
+func (m *gatewayConns) Abort(ctx context.Context, user, sessionKey, runID string) (bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return false, fmt.Errorf("abort %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.AbortChat(ctx, sessionKey, runID)
+}
+
+// SessionBusy reports whether the gateway still has an in-flight run for the
+// session, on the user's established channel. Unlike the SSE hub this survives
+// a browser disconnect, so it is the only signal that means anything on the
+// reload-takeover path. Callers that do not already hold a channel -- a status
+// read arriving after an API restart -- want SessionBusyEstablished instead.
+func (m *gatewayConns) SessionBusy(ctx context.Context, user, sessionKey string) (bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return false, fmt.Errorf("session busy %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.SessionBusy(ctx, sessionKey)
+}
+
+// SessionBusyEstablished answers SessionBusy, first establishing the user's
+// gateway channel if this process has none.
+//
+// The channel is dialled lazily on first use, so after an API restart or a pod
+// roll this process has no entry for the user while a run the *previous*
+// process started can still be executing gateway-side. Answering "idle" from
+// the local state then would hide a running turn and take its Stop away, which
+// is the one answer this read must never give; the only way to know is to ask
+// the gateway, which needs the channel.
+//
+// The dial is bounded by channelProbeTimeout. It is a status read, so it must
+// not inherit conn()'s 30s NOT_PAIRED pairing budget: the caller renders a
+// failure as "could not check" with a Retry, and the ordinary case -- a user
+// who has simply never chatted -- dials straight through and gets a true
+// answer. On success the connection is kept, so the Stop that answer offers
+// can actually be issued (Abort uses the established channel).
+func (m *gatewayConns) SessionBusyEstablished(ctx context.Context, user, sessionKey string) (bool, error) {
+	gw, err := m.connEstablished(ctx, user)
+	if err != nil {
+		return false, fmt.Errorf("session busy %q: %w", sessionKey, err)
+	}
+	return gw.SessionBusy(ctx, sessionKey)
+}
+
+// connEstablished returns the user's usable gateway channel, dialling one
+// under a bounded connect when there is none live. A usable connection is
+// returned as it is; a down one is replaced, because the question the callers
+// ask ("is the gateway running something for this user") cannot be answered
+// over a broken socket and a fresh dial is the only way to answer it.
+func (m *gatewayConns) connEstablished(ctx context.Context, user string) (gatewayClient, error) {
+	if gw, ok := m.liveConn(user); ok {
+		return gw, nil
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
+	defer cancel()
+	return m.conn(dialCtx, user)
+}
+
+// InFlightRunID returns the gateway's in-flight run for the session: its run id
+// when the snapshot carries one, and whether a run is in flight at all. It is
+// what an abort on the reload-takeover path is scoped to when LiveRunID has
+// nothing: the local turn is gone (releaseLive removed it when the request
+// driving it ended) while the run it started can still be executing.
+//
+// The two are separate answers because the caller responds to each differently:
+// no run at all makes the Stop an idempotent no-op, while a run with no id is a
+// run that cannot be scoped, which the caller must refuse rather than abort
+// session-wide. A bare id could not tell those apart -- both were "" -- which is
+// what let an unnamed run be stopped by whatever the session happened to be
+// running.
+//
+// It uses the established channel rather than establishing one, unlike /turn:
+// the abort RPC that follows is issued over the same channel and cannot run
+// without it either, so a dial here would only delay the failure. /turn is what
+// puts the channel in place on this path -- the Portal checks it on mount, and
+// the Stop that answer offers then has a channel to be issued over.
+func (m *gatewayConns) InFlightRunID(ctx context.Context, user, sessionKey string) (string, bool, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return "", false, fmt.Errorf("in-flight run %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.SessionInFlightRun(ctx, sessionKey)
 }

@@ -17,7 +17,7 @@ import (
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
-// fakeHitlGateway implements hitlGateway in memory.
+// fakeGatewayClient implements gatewayClient in memory.
 //
 // mu serialises the recorded state against the goroutine running the code under
 // test. Every method that records takes it. A test that inspects the fake while
@@ -25,7 +25,7 @@ import (
 // channel the fake signals orders that read correctly); reading a field
 // directly is only valid once the call under test has returned, which is how
 // the sequential tests use it.
-type fakeHitlGateway struct {
+type fakeGatewayClient struct {
 	mu           sync.Mutex
 	connected    bool
 	guarded      []string
@@ -98,12 +98,12 @@ type fakeHitlGateway struct {
 	connectCtxHasDeadline bool
 }
 
-func (f *fakeHitlGateway) Connected() bool {
+func (f *fakeGatewayClient) Connected() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.connected
 }
-func (f *fakeHitlGateway) Connect(ctx context.Context) error {
+func (f *fakeGatewayClient) Connect(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.connectCtxDeadline, f.connectCtxHasDeadline = ctx.Deadline()
@@ -122,29 +122,29 @@ func (f *fakeHitlGateway) Connect(ctx context.Context) error {
 	f.connected = true
 	return nil
 }
-func (f *fakeHitlGateway) OnApprovalRequested(cb func(ws.ApprovalRequested)) {
+func (f *fakeGatewayClient) OnApprovalRequested(cb func(ws.ApprovalRequested)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onRequested = cb
 }
-func (f *fakeHitlGateway) OnEvent(cb func(evName string, payload []byte)) {
+func (f *fakeGatewayClient) OnEvent(cb func(evName string, payload []byte)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onEvent = cb
 }
-func (f *fakeHitlGateway) SubscribeSessionMessages(ctx context.Context, key string) error {
+func (f *fakeGatewayClient) SubscribeSessionMessages(ctx context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.subscribes = append(f.subscribes, key)
 	return f.subscribeErr
 }
-func (f *fakeHitlGateway) UnsubscribeSessionMessages(ctx context.Context, key string) error {
+func (f *fakeGatewayClient) UnsubscribeSessionMessages(ctx context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unsubscribes = append(f.unsubscribes, key)
 	return nil
 }
-func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message, idempotencyKey string) (string, error) {
+func (f *fakeGatewayClient) SendSessionMessage(ctx context.Context, key, message, idempotencyKey string) (string, error) {
 	f.mu.Lock()
 	f.sends = append(f.sends, key+"|"+message)
 	f.lastIdem = idempotencyKey
@@ -170,13 +170,13 @@ func (f *fakeHitlGateway) SendSessionMessage(ctx context.Context, key, message, 
 	}
 	return idempotencyKey, sendErr
 }
-func (f *fakeHitlGateway) AgentWait(ctx context.Context, runID string) error {
+func (f *fakeGatewayClient) AgentWait(ctx context.Context, runID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.waits = append(f.waits, runID)
 	return f.waitErr
 }
-func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) (ws.SessionState, error) {
+func (f *fakeGatewayClient) CreateSession(ctx context.Context, key string) (ws.SessionState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, key)
@@ -193,7 +193,7 @@ func (f *fakeHitlGateway) CreateSession(ctx context.Context, key string) (ws.Ses
 	}
 	return state, nil
 }
-func (f *fakeHitlGateway) PatchSessionSettings(ctx context.Context, key string, patch ws.SessionSettingsPatch) error {
+func (f *fakeGatewayClient) PatchSessionSettings(ctx context.Context, key string, patch ws.SessionSettingsPatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.modelErr != nil {
@@ -218,7 +218,7 @@ func (f *fakeHitlGateway) PatchSessionSettings(ctx context.Context, key string, 
 	f.states[key] = state
 	return nil
 }
-func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
+func (f *fakeGatewayClient) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.getErr != nil {
@@ -235,7 +235,7 @@ func (f *fakeHitlGateway) GetApprovalsPolicy(ctx context.Context) (*ws.Approvals
 		},
 	}, nil
 }
-func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
+func (f *fakeGatewayClient) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.setErr != nil {
@@ -244,35 +244,35 @@ func (f *fakeHitlGateway) SetApprovalsPolicy(ctx context.Context, file ws.Approv
 	f.policySets = append(f.policySets, file)
 	return &ws.ApprovalsSnapshot{}, nil
 }
-func (f *fakeHitlGateway) ResolveApproval(ctx context.Context, id, decision string) error {
+func (f *fakeGatewayClient) ResolveApproval(ctx context.Context, id, decision string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
 }
-func (f *fakeHitlGateway) OnQuestionRequested(cb func(ws.QuestionRecord)) {
+func (f *fakeGatewayClient) OnQuestionRequested(cb func(ws.QuestionRecord)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onQuestionRequested = cb
 }
-func (f *fakeHitlGateway) OnQuestionResolved(cb func(ws.QuestionResolved)) {
+func (f *fakeGatewayClient) OnQuestionResolved(cb func(ws.QuestionResolved)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onQuestionResolved = cb
 }
-func (f *fakeHitlGateway) ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error {
+func (f *fakeGatewayClient) ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.questionResolves = append(f.questionResolves, id+"|"+resolvedBy+"|"+flattenAnswers(answers))
 	return f.questionResolveErr
 }
-func (f *fakeHitlGateway) CancelQuestion(ctx context.Context, id, resolvedBy string) error {
+func (f *fakeGatewayClient) CancelQuestion(ctx context.Context, id, resolvedBy string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.questionCancels = append(f.questionCancels, id+"|"+resolvedBy)
 	return f.questionResolveErr
 }
-func (f *fakeHitlGateway) GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error) {
+func (f *fakeGatewayClient) GetQuestion(ctx context.Context, id string) (*ws.QuestionRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.getQuestionErr != nil {
@@ -284,7 +284,7 @@ func (f *fakeHitlGateway) GetQuestion(ctx context.Context, id string) (*ws.Quest
 	}
 	return &rec, nil
 }
-func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
+func (f *fakeGatewayClient) ListQuestions(ctx context.Context) ([]ws.QuestionRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listQuestionsErr != nil {
@@ -292,7 +292,7 @@ func (f *fakeHitlGateway) ListQuestions(ctx context.Context) ([]ws.QuestionRecor
 	}
 	return f.pendingQuestions, nil
 }
-func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) (bool, error) {
+func (f *fakeGatewayClient) AbortChat(ctx context.Context, key, runID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborts = append(f.aborts, key+"|"+runID)
@@ -308,13 +308,13 @@ func (f *fakeHitlGateway) AbortChat(ctx context.Context, key, runID string) (boo
 	}
 	return true, nil
 }
-func (f *fakeHitlGateway) SessionBusy(ctx context.Context, key string) (bool, error) {
+func (f *fakeGatewayClient) SessionBusy(ctx context.Context, key string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sessionBuses = append(f.sessionBuses, key)
 	return f.sessionBusy, f.sessionBusyErr
 }
-func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (string, bool, error) {
+func (f *fakeGatewayClient) SessionInFlightRun(ctx context.Context, key string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inFlightReads = append(f.inFlightReads, key)
@@ -323,19 +323,19 @@ func (f *fakeHitlGateway) SessionInFlightRun(ctx context.Context, key string) (s
 	}
 	return f.inFlightRun, f.inFlightActive, nil
 }
-func (f *fakeHitlGateway) Close() {}
+func (f *fakeGatewayClient) Close() {}
 
 // --- accessors for tests that observe the fake while a call is in flight ---
 
 // sentMessages returns a copy of the recorded sends ("sessionKey|message").
-func (f *fakeHitlGateway) sentMessages() []string {
+func (f *fakeGatewayClient) sentMessages() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sends...)
 }
 
 // idempotencyKey returns the key the last send carried.
-func (f *fakeHitlGateway) idempotencyKey() string {
+func (f *fakeGatewayClient) idempotencyKey() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastIdem
@@ -343,14 +343,14 @@ func (f *fakeHitlGateway) idempotencyKey() string {
 
 // eventSink returns the live-stream router the connection registered, or nil
 // before one is installed.
-func (f *fakeHitlGateway) eventSink() func(string, []byte) {
+func (f *fakeGatewayClient) eventSink() func(string, []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.onEvent
 }
 
 // setConnected flips the connection state, for tests that fake the handshake.
-func (f *fakeHitlGateway) setConnected(v bool) {
+func (f *fakeGatewayClient) setConnected(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.connected = v
@@ -370,18 +370,18 @@ func flattenAnswers(answers map[string][]string) string {
 	return strings.Join(parts, ";")
 }
 
-// newTestHitl returns a manager whose gateway is a fresh fake per connect and
+// newTestGatewayConns returns a manager whose gateway is a fresh fake per connect and
 // whose policy resolution is fixed. With no explicit allowlist, Allowlist
 // policy resolves to the platform builtin default (so its entries are
 // non-empty in tests).
-func newTestHitl(pol v1alpha1.ApprovalPolicy, rev string, gw *fakeHitlGateway, allow ...[]v1alpha1.AllowlistRule) *hitlManager {
-	m := &hitlManager{
+func newTestGatewayConns(pol v1alpha1.ApprovalPolicy, rev string, gw *fakeGatewayClient, allow ...[]v1alpha1.AllowlistRule) *gatewayConns {
+	m := &gatewayConns{
 		masterKey: []byte("test-master"),
 		logf:      tLogf,
-		conns:     map[string]*userHitlConn{},
+		conns:     map[string]*userGatewayConn{},
 		revPol:    map[string]string{},
 	}
-	m.newClient = func(url string, dev *ws.Device) hitlGateway { return gw }
+	m.newClient = func(url string, dev *ws.Device) gatewayClient { return gw }
 	m.resolved = func(ctx context.Context, user string) (v1alpha1.ApprovalPolicy, []v1alpha1.AllowlistRule, string, error) {
 		var al []v1alpha1.AllowlistRule
 		if len(allow) > 0 {
@@ -398,8 +398,8 @@ func newTestHitl(pol v1alpha1.ApprovalPolicy, rev string, gw *fakeHitlGateway, a
 var tLogf = func(format string, args ...any) {}
 
 func TestHitl_PreTurnAppliesAllowlistOncePerRevision(t *testing.T) {
-	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 
 	guarded, _ := m.PreTurn(context.Background(), "alice")
 	if !guarded {
@@ -430,12 +430,12 @@ func TestHitl_PreTurnAppliesAllowlistOncePerRevision(t *testing.T) {
 // TestHitl_ConnectRetriesAfterNotPaired verifies a Allowlist turn survives
 // an initial NOT_PAIRED rejection while the supervisor approves the pairing.
 func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
-	old := hitlPairRetryDelay
-	hitlPairRetryDelay = time.Millisecond
-	defer func() { hitlPairRetryDelay = old }()
+	old := pairRetryDelay
+	pairRetryDelay = time.Millisecond
+	defer func() { pairRetryDelay = old }()
 
-	gw := &fakeHitlGateway{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{connectSeq: []error{fmt.Errorf("NOT_PAIRED: device is not approved yet"), nil}}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	guarded, _ := m.PreTurn(context.Background(), "alice")
 	if !guarded {
 		t.Fatal("Allowlist policy must require a guarded session")
@@ -447,8 +447,8 @@ func TestHitl_ConnectRetriesAfterNotPaired(t *testing.T) {
 
 func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 	for _, pol := range []v1alpha1.ApprovalPolicy{"", v1alpha1.ApprovalPolicyNone} {
-		gw := &fakeHitlGateway{}
-		m := newTestHitl(pol, "rev-1", gw)
+		gw := &fakeGatewayClient{}
+		m := newTestGatewayConns(pol, "rev-1", gw)
 		guarded, _ := m.PreTurn(context.Background(), "alice")
 		if guarded {
 			t.Errorf("pol=%q: unexpectedly requested a guarded session", pol)
@@ -460,8 +460,8 @@ func TestHitl_PreTurnNoopWithoutAllowlist(t *testing.T) {
 }
 
 func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
-	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	_, _ = m.PreTurn(context.Background(), "alice") // establishes the conn
 
 	if err := m.ResolveApproval(context.Background(), "alice", "appr-1", "approve"); err != nil {
@@ -482,8 +482,8 @@ func TestHitl_ResolveApprovalMapsDecision(t *testing.T) {
 }
 
 func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
-	gw := &fakeHitlGateway{}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	var fed []string
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		fed = append(fed, user+"|"+ev.ID+"|"+ev.Request.SessionKey+"|"+ev.Request.Command)
@@ -506,8 +506,8 @@ func TestHitl_BridgeFeedsApprovalService(t *testing.T) {
 // error (fail closed) when the exec policy cannot be applied, so the caller
 // does not start a turn that would not ask.
 func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
-	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAlwaysAsk, "rev-1", gw)
+	gw := &fakeGatewayClient{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAlwaysAsk, "rev-1", gw)
 	if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 		t.Fatal("AlwaysAsk PreTurn should fail closed when the policy cannot be applied")
 	}
@@ -518,8 +518,8 @@ func TestHitl_AlwaysAskFailsClosedOnPolicyError(t *testing.T) {
 // the turn must not run on a session that cannot ask, instead of proceeding
 // ungated.
 func TestHitl_AllowlistFailsClosedOnPolicyError(t *testing.T) {
-	gw := &fakeHitlGateway{setErr: fmt.Errorf("exec.approvals.set: boom")}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 		t.Fatal("Allowlist PreTurn should fail closed when the policy cannot be applied")
 	}
@@ -534,8 +534,8 @@ func TestHitl_AllowlistFailsClosedOnPolicyError(t *testing.T) {
 // established (issue #127).
 func TestHitl_GatedPoliciesFailClosedOnChannelDown(t *testing.T) {
 	for _, pol := range []v1alpha1.ApprovalPolicy{v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk} {
-		gw := &fakeHitlGateway{connectErr: fmt.Errorf("ws dial: connection refused")}
-		m := newTestHitl(pol, "rev-1", gw)
+		gw := &fakeGatewayClient{connectErr: fmt.Errorf("ws dial: connection refused")}
+		m := newTestGatewayConns(pol, "rev-1", gw)
 		if _, err := m.PreTurn(context.Background(), "alice"); err == nil {
 			t.Errorf("%s: PreTurn should fail closed when the channel is down", pol)
 		}
@@ -549,7 +549,7 @@ func TestHitl_GatedPoliciesFailClosedOnChannelDown(t *testing.T) {
 // the effective policy cannot be resolved: it must not guess None and start a
 // turn that might need asking (issue #127).
 func TestHitl_FailsClosedOnPolicyResolutionError(t *testing.T) {
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &fakeHitlGateway{})
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &fakeGatewayClient{})
 	m.resolved = func(ctx context.Context, user string) (v1alpha1.ApprovalPolicy, []v1alpha1.AllowlistRule, string, error) {
 		return "", nil, "", fmt.Errorf("resolver: boom")
 	}
@@ -564,30 +564,30 @@ func TestHitl_FailsClosedOnPolicyResolutionError(t *testing.T) {
 // cannot be reached (issue #127).
 func TestHitl_ChannelState(t *testing.T) {
 	t.Run("up when cached connection is live", func(t *testing.T) {
-		gw := &fakeHitlGateway{connected: true}
-		m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
-		m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+		gw := &fakeGatewayClient{connected: true}
+		m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+		m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 		if got := m.channelState(context.Background(), "alice"); got != approvalChannelUp {
 			t.Fatalf("channelState = %q, want %q", got, approvalChannelUp)
 		}
 	})
 	t.Run("up when a fresh connect succeeds", func(t *testing.T) {
-		gw := &fakeHitlGateway{}
-		m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+		gw := &fakeGatewayClient{}
+		m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 		if got := m.channelState(context.Background(), "alice"); got != approvalChannelUp {
 			t.Fatalf("channelState = %q, want %q", got, approvalChannelUp)
 		}
 	})
 	t.Run("pairing while the supervisor approves the device", func(t *testing.T) {
-		gw := &fakeHitlGateway{connectErr: fmt.Errorf("NOT_PAIRED: device is not approved yet")}
-		m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+		gw := &fakeGatewayClient{connectErr: fmt.Errorf("NOT_PAIRED: device is not approved yet")}
+		m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 		if got := m.channelState(context.Background(), "alice"); got != approvalChannelPairing {
 			t.Fatalf("channelState = %q, want %q", got, approvalChannelPairing)
 		}
 	})
 	t.Run("down when the gateway is unreachable", func(t *testing.T) {
-		gw := &fakeHitlGateway{connectErr: fmt.Errorf("ws dial: connection refused")}
-		m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+		gw := &fakeGatewayClient{connectErr: fmt.Errorf("ws dial: connection refused")}
+		m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 		if got := m.channelState(context.Background(), "alice"); got != approvalChannelDown {
 			t.Fatalf("channelState = %q, want %q", got, approvalChannelDown)
 		}
@@ -597,8 +597,8 @@ func TestHitl_ChannelState(t *testing.T) {
 // TestHitl_AlwaysAskRequiresGuardAndClearsAllowlist verifies AlwaysAsk writes
 // an empty allowlist and marks the turn for guarded session reconciliation.
 func TestHitl_AlwaysAskRequiresGuardAndClearsAllowlist(t *testing.T) {
-	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "kubectl", ArgPattern: "^get "}}}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAlwaysAsk, "rev-1", gw)
+	gw := &fakeGatewayClient{initialAllow: []ws.AllowlistEntry{{Pattern: "kubectl", ArgPattern: "^get "}}}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAlwaysAsk, "rev-1", gw)
 
 	guarded, _ := m.PreTurn(context.Background(), "alice")
 	if !guarded {
@@ -620,9 +620,9 @@ func TestHitl_AlwaysAskRequiresGuardAndClearsAllowlist(t *testing.T) {
 // rewritten from the resolved (effective) entries -- not merged with whatever
 // the gateway already held -- so a removed entry really disappears.
 func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
-	gw := &fakeHitlGateway{initialAllow: []ws.AllowlistEntry{{Pattern: "stale"}}}
+	gw := &fakeGatewayClient{initialAllow: []ws.AllowlistEntry{{Pattern: "stale"}}}
 	effective := []v1alpha1.AllowlistRule{{Pattern: "helm", ArgPattern: `^list`}}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw, effective)
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw, effective)
 
 	_, _ = m.PreTurn(context.Background(), "alice")
 	if len(gw.policySets) != 1 {
@@ -638,8 +638,8 @@ func TestHitl_AllowlistRewritesEffectiveEntries(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
-	gw := &fakeHitlGateway{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 
 	var got []openclaw.Event
 	done := make(chan error, 1)
@@ -724,8 +724,8 @@ func TestHitl_RunLiveTurnProjectsTextAndTools(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnSendError(t *testing.T) {
-	gw := &fakeHitlGateway{sendErr: fmt.Errorf("run failed")}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{sendErr: fmt.Errorf("run failed")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	if _, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil }); err == nil {
 		t.Fatal("RunLiveTurn returned nil, want the send error")
 	}
@@ -747,8 +747,8 @@ func TestHitl_RunLiveTurnSendError(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
-	gw := &fakeHitlGateway{modelErr: fmt.Errorf("model unavailable")}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{modelErr: fmt.Errorf("model unavailable")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "model unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want model patch failure", err)
@@ -759,8 +759,8 @@ func TestHitl_RunLiveTurnModelPatchError(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnSurfacesSessionCreateError(t *testing.T) {
-	gw := &fakeHitlGateway{createErr: fmt.Errorf("session store unavailable")}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "rev-1", gw)
+	gw := &fakeGatewayClient{createErr: fmt.Errorf("session store unavailable")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "rev-1", gw)
 	_, err := m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "", false, func(openclaw.Event) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "session store unavailable") {
 		t.Fatalf("RunLiveTurn error = %v, want session creation failure", err)
@@ -771,13 +771,13 @@ func TestHitl_RunLiveTurnSurfacesSessionCreateError(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnClearsStaleGuardForNonePolicy(t *testing.T) {
-	gw := &fakeHitlGateway{
+	gw := &fakeGatewayClient{
 		sendErr: fmt.Errorf("stop after preparation"),
 		states: map[string]ws.SessionState{
 			"conv-1": {PermissionMode: "guarded"},
 		},
 	}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "rev-1", gw)
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "rev-1", gw)
 	runner := &openClawLiveRunner{manager: m, user: "alice"}
 	_, _ = runner.RunLiveTurn(context.Background(), "conv-1", agentruntime.LiveTurnParams{Message: "hi"}, func(openclaw.Event) error { return nil })
 	if len(gw.unguarded) != 1 || gw.unguarded[0] != "conv-1" {
@@ -786,13 +786,13 @@ func TestHitl_RunLiveTurnClearsStaleGuardForNonePolicy(t *testing.T) {
 }
 
 func TestHitl_RunLiveTurnSkipsUnchangedSessionSettings(t *testing.T) {
-	gw := &fakeHitlGateway{
+	gw := &fakeGatewayClient{
 		sendErr: fmt.Errorf("stop after preparation"),
 		states: map[string]ws.SessionState{
 			"conv-1": {Model: "provider/model", PermissionMode: "guarded"},
 		},
 	}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 	_, _ = m.RunLiveTurn(context.Background(), "alice", "conv-1", "hi", "provider/model", true, func(openclaw.Event) error { return nil })
 	if len(gw.models) != 0 || len(gw.guarded) != 0 || len(gw.unguarded) != 0 {
 		t.Fatalf("unchanged session settings were patched: models=%v guarded=%v unguarded=%v", gw.models, gw.guarded, gw.unguarded)
@@ -848,14 +848,14 @@ func TestLiveTurnOutcomeIsOneGuardedRead(t *testing.T) {
 }
 
 // runLiveTurnToTerminalFrame drives one turn through the real call path
-// (openClawLiveRunner -> hitlManager.RunLiveTurn -> routeLive) and feeds it a
+// (openClawLiveRunner -> gatewayConns.RunLiveTurn -> routeLive) and feeds it a
 // single terminal chat frame before releasing the send, returning what
 // RunLiveTurn reported to its caller: the observable result the SSE handler
 // turns into the terminal message_done.
 func runLiveTurnToTerminalFrame(t *testing.T, frame string) (agentruntime.TurnOutcome, error) {
 	t.Helper()
-	gw := &fakeHitlGateway{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
-	m := newTestHitl(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	gw := &fakeGatewayClient{sendBlock: make(chan struct{}), sendRecorded: make(chan struct{}, 1)}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
 
 	type result struct {
 		outcome agentruntime.TurnOutcome
@@ -947,7 +947,7 @@ func TestRunLiveTurnReportsNonRequestAbortAsError(t *testing.T) {
 // one user's /abort pick up another user's run id. routeLive applies the same
 // ownership rule when it routes.
 func TestHitl_LiveRunID(t *testing.T) {
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &fakeHitlGateway{})
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &fakeGatewayClient{})
 	if id, ok := m.LiveRunID("alice", "conv-1"); ok || id != "" {
 		t.Fatalf("LiveRunID with no turn = (%q, %v), want empty", id, ok)
 	}
@@ -976,9 +976,9 @@ func TestHitl_LiveRunID(t *testing.T) {
 // run id the server holds reaches the gateway, and the empty-runID fallback
 // stays empty rather than being filled with something invented.
 func TestHitl_AbortDelegatesToGateway(t *testing.T) {
-	gw := &fakeHitlGateway{connected: true}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err != nil || !aborted {
 		t.Fatalf("Abort = (%v, %v), want (true, nil)", aborted, err)
@@ -998,9 +998,9 @@ func TestHitl_AbortDelegatesToGateway(t *testing.T) {
 // stop: settling on it deletes the records of a run that is still going.
 func TestHitl_AbortReportsAnAbortThatStoppedNothing(t *testing.T) {
 	no := false
-	gw := &fakeHitlGateway{connected: true, abortAborted: &no}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true, abortAborted: &no}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7")
 	if err != nil {
@@ -1012,7 +1012,7 @@ func TestHitl_AbortReportsAnAbortThatStoppedNothing(t *testing.T) {
 }
 
 func TestHitl_AbortRequiresAChannel(t *testing.T) {
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &fakeHitlGateway{})
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &fakeGatewayClient{})
 	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
 		t.Fatal("Abort without a live gateway channel must fail, and must not claim a stop")
 	}
@@ -1025,9 +1025,9 @@ func TestHitl_AbortRequiresAChannel(t *testing.T) {
 // than be handed to the gateway, which would surface as a confusing
 // "ws: not connected" from inside Client.Call.
 func TestHitl_AbortRejectsUnconnectedChannel(t *testing.T) {
-	gw := &fakeHitlGateway{} // connected defaults to false
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{} // connected defaults to false
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); err == nil || aborted {
 		t.Fatal("Abort with a stored but unconnected gateway must fail, and must not claim a stop")
@@ -1042,9 +1042,9 @@ func TestHitl_AbortRejectsUnconnectedChannel(t *testing.T) {
 // into a nil success.
 func TestHitl_AbortPropagatesGatewayError(t *testing.T) {
 	wantErr := errors.New("gateway down")
-	gw := &fakeHitlGateway{connected: true, abortErr: wantErr}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true, abortErr: wantErr}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	if aborted, err := m.Abort(context.Background(), "alice", "conv-1", "run-7"); !errors.Is(err, wantErr) || aborted {
 		t.Fatalf("Abort = (%v, %v), want (false, %v)", aborted, err, wantErr)
@@ -1057,9 +1057,9 @@ func TestHitl_AbortPropagatesGatewayError(t *testing.T) {
 // TestHitl_SessionBusyDelegatesToGateway: the manager must report the gateway's
 // answer untouched, since it is the only busy signal that survives a reload.
 func TestHitl_SessionBusyDelegatesToGateway(t *testing.T) {
-	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true, sessionBusy: true}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
 	if err != nil {
@@ -1074,7 +1074,7 @@ func TestHitl_SessionBusyDelegatesToGateway(t *testing.T) {
 }
 
 func TestHitl_SessionBusyRequiresAChannel(t *testing.T) {
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &fakeHitlGateway{})
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &fakeGatewayClient{})
 	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
 		t.Fatal("SessionBusy without a live gateway channel must fail")
 	}
@@ -1084,9 +1084,9 @@ func TestHitl_SessionBusyRequiresAChannel(t *testing.T) {
 // liveConn returns ok=false: an entry exists but its gateway has not finished
 // connecting. The gateway must not be probed.
 func TestHitl_SessionBusyRejectsUnconnectedChannel(t *testing.T) {
-	gw := &fakeHitlGateway{} // connected defaults to false
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{} // connected defaults to false
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	if _, err := m.SessionBusy(context.Background(), "alice", "conv-1"); err == nil {
 		t.Fatal("SessionBusy with a stored but unconnected gateway must fail")
@@ -1102,8 +1102,8 @@ func TestHitl_SessionBusyRejectsUnconnectedChannel(t *testing.T) {
 // refresh open for half a minute, and the caller's "could not check" would
 // arrive long after the user gave up.
 func TestHitl_SessionBusyEstablishedDialsBounded(t *testing.T) {
-	gw := &fakeHitlGateway{sessionBusy: true}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
+	gw := &fakeGatewayClient{sessionBusy: true}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
 
 	busy, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1")
 	if err != nil {
@@ -1129,9 +1129,9 @@ func TestHitl_SessionBusyEstablishedDialsBounded(t *testing.T) {
 // as it is. Re-dialling on every status read would churn the connection (and
 // possibly the device pairing) that the running turn is observed over.
 func TestHitl_SessionBusyEstablishedKeepsLiveChannel(t *testing.T) {
-	gw := &fakeHitlGateway{connected: true, sessionBusy: true}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw, connected: true}
+	gw := &fakeGatewayClient{connected: true, sessionBusy: true}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw, connected: true}
 
 	if _, err := m.SessionBusyEstablished(context.Background(), "alice", "conv-1"); err != nil {
 		t.Fatalf("SessionBusyEstablished: %v", err)
@@ -1147,9 +1147,9 @@ func TestHitl_SessionBusyEstablishedKeepsLiveChannel(t *testing.T) {
 // bound above is nominal -- the probe would sit behind that dial and only then
 // start its own.
 func TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial(t *testing.T) {
-	blocking := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &blocking.fakeHitlGateway)
-	m.newClient = func(string, *ws.Device) hitlGateway { return blocking }
+	blocking := &blockingGatewayClient{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &blocking.fakeGatewayClient)
+	m.newClient = func(string, *ws.Device) gatewayClient { return blocking }
 
 	first := make(chan struct{})
 	go func() {
@@ -1180,9 +1180,9 @@ func TestHitl_SessionBusyEstablishedDoesNotWaitOutAnotherDial(t *testing.T) {
 // failure. A fixture whose descriptor carries no run id is exactly that last
 // state, and it must not arrive as idle.
 func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
-	gw := &fakeHitlGateway{connected: true, inFlightRun: "run-7", inFlightActive: true}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true, inFlightRun: "run-7", inFlightActive: true}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	id, active, err := m.InFlightRunID(context.Background(), "alice", "conv-1")
 	if err != nil {
@@ -1192,9 +1192,9 @@ func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
 		t.Fatalf("InFlightRunID = (%q, %v), want (run-7, true)", id, active)
 	}
 
-	unnamed := &fakeHitlGateway{connected: true, inFlightActive: true}
-	unnamedM := newTestHitl(v1alpha1.ApprovalPolicyNone, "", unnamed)
-	unnamedM.conns["alice"] = &userHitlConn{user: "alice", gw: unnamed}
+	unnamed := &fakeGatewayClient{connected: true, inFlightActive: true}
+	unnamedM := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", unnamed)
+	unnamedM.conns["alice"] = &userGatewayConn{user: "alice", gw: unnamed}
 	id, active, err = unnamedM.InFlightRunID(context.Background(), "alice", "conv-1")
 	if err != nil {
 		t.Fatalf("InFlightRunID on an unnamed run: %v", err)
@@ -1203,7 +1203,7 @@ func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
 		t.Fatalf("InFlightRunID on an unnamed run = (%q, %v), want (\"\", true): a run with no id is running, not idle", id, active)
 	}
 
-	noChannel := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &fakeHitlGateway{})
+	noChannel := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &fakeGatewayClient{})
 	if _, _, err := noChannel.InFlightRunID(context.Background(), "alice", "conv-1"); !errors.Is(err, errNoGatewayChannel) {
 		t.Fatalf("InFlightRunID without a channel = %v, want errNoGatewayChannel", err)
 	}
@@ -1214,9 +1214,9 @@ func TestHitl_InFlightRunIDDelegatesAndRequiresAChannel(t *testing.T) {
 // (false, nil) here would strand a turn that is still running.
 func TestHitl_SessionBusyDoesNotSwallowError(t *testing.T) {
 	wantErr := errors.New("chat.history failed")
-	gw := &fakeHitlGateway{connected: true, sessionBusyErr: wantErr}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", gw)
-	m.conns["alice"] = &userHitlConn{user: "alice", gw: gw}
+	gw := &fakeGatewayClient{connected: true, sessionBusyErr: wantErr}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", gw)
+	m.conns["alice"] = &userGatewayConn{user: "alice", gw: gw}
 
 	busy, err := m.SessionBusy(context.Background(), "alice", "conv-1")
 	if !errors.Is(err, wantErr) {
@@ -1227,18 +1227,18 @@ func TestHitl_SessionBusyDoesNotSwallowError(t *testing.T) {
 	}
 }
 
-// blockingHitlGateway is a gateway whose handshake parks until the test releases
+// blockingGatewayClient is a gateway whose handshake parks until the test releases
 // it, so the state in the middle of a dial can be observed. That window is the
 // one the Portal used to read as "cannot determine": conn registers the entry
 // before dialling, and the NOT_PAIRED pairing retry can hold it there for up to
 // 30 seconds.
-type blockingHitlGateway struct {
-	fakeHitlGateway
+type blockingGatewayClient struct {
+	fakeGatewayClient
 	entered chan struct{}
 	release chan struct{}
 }
 
-func (f *blockingHitlGateway) Connect(ctx context.Context) error {
+func (f *blockingGatewayClient) Connect(ctx context.Context) error {
 	close(f.entered)
 	<-f.release
 	f.mu.Lock()
@@ -1254,9 +1254,9 @@ func (f *blockingHitlGateway) Connect(ctx context.Context) error {
 // replaced by a re-dial, because a turn started over the old connection can
 // still be running.
 func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
-	gw := &blockingHitlGateway{entered: make(chan struct{}), release: make(chan struct{})}
-	m := newTestHitl(v1alpha1.ApprovalPolicyNone, "", &gw.fakeHitlGateway)
-	m.newClient = func(url string, dev *ws.Device) hitlGateway { return gw }
+	gw := &blockingGatewayClient{entered: make(chan struct{}), release: make(chan struct{})}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyNone, "", &gw.fakeGatewayClient)
+	m.newClient = func(url string, dev *ws.Device) gatewayClient { return gw }
 
 	done := make(chan error, 1)
 	go func() {

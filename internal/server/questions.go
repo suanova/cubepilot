@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -354,3 +355,41 @@ func subresourceKey(path, suffix string) string {
 // connection can trigger a device pairing, which a read-only status request
 // must never do as a side effect.
 var errNoQuestionChannel = errors.New("question channel unavailable")
+
+// GetQuestion reads one question record from the user's gateway (question.get).
+func (m *gatewayConns) GetQuestion(ctx context.Context, user, id string) (*ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.GetQuestion(ctx, id)
+}
+
+// ListQuestions returns the user's gateway's pending questions (question.list).
+func (m *gatewayConns) ListQuestions(ctx context.Context, user string) ([]ws.QuestionRecord, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoQuestionChannel
+	}
+	return gw.ListQuestions(ctx)
+}
+
+// ResolveQuestion answers a pending question on the user's gateway connection.
+// answers maps each question id to the selected option labels.
+func (m *gatewayConns) ResolveQuestion(ctx context.Context, user, id string, answers map[string][]string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.ResolveQuestion(ctx, id, answers, user)
+}
+
+// CancelQuestion dismisses a pending question so the agent continues instead of
+// waiting out its own timeout.
+func (m *gatewayConns) CancelQuestion(ctx context.Context, user, id string) error {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return errNoQuestionChannel
+	}
+	return gw.CancelQuestion(ctx, id, user)
+}

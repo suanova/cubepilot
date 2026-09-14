@@ -35,9 +35,9 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	gw := &fakeAbortGateway{}
-	m := &hitlManager{
-		newClient: func(string, *ws.Device) hitlGateway { return gw },
-		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
+	m := &gatewayConns{
+		newClient: func(string, *ws.Device) gatewayClient { return gw },
+		conns:     map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}},
 	}
 	// A live turn is what supplies the run id; without one the handler reads one
 	// from the gateway, and fails if it cannot.
@@ -93,7 +93,7 @@ func TestHandleAbortWaitsForIdle(t *testing.T) {
 func TestHandleAbortReportsAbortFailure(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{abortErr: errors.New("gateway gone"), busy: true, inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestHandleAbortReportsAbortFailure(t *testing.T) {
 func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{abortErr: errors.New("ws write chat.abort: context deadline exceeded"), inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -145,7 +145,7 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 		busy:        true,
 		inFlightRun: "run-a",
 	}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -171,7 +171,7 @@ func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 	no := false
 	h := NewHub()
 	gw := &fakeAbortGateway{abortAborted: &no, busy: true, inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -206,7 +206,7 @@ func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 	no := false
 	h := NewHub()
 	gw := &fakeAbortGateway{abortAborted: &no, inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -229,7 +229,7 @@ func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{inFlightRun: "run-gateway"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestHandleAbortScopesToGatewaysInFlightRun(t *testing.T) {
 func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{inFlightActive: true} // in flight, but its snapshot carries no runId
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -290,7 +290,7 @@ func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{inFlightErr: errors.New("chat.history: connection closed")}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -316,7 +316,7 @@ func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
 func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{} // no live turn, no run in flight
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -348,7 +348,7 @@ func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
 func TestHandleAbortBusyErrorIsNotIdle(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{busyErr: errors.New("no live gateway channel")}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	rec := httptest.NewRecorder()
@@ -373,7 +373,7 @@ func TestHandleAbortTimeoutIsGatewayTimeout(t *testing.T) {
 	defer stream.Close()
 
 	gw := &fakeAbortGateway{}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -403,9 +403,9 @@ func TestHandleAbortRejectsBadRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var m *hitlManager
+			var m *gatewayConns
 			if tc.hitl {
-				m = &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
+				m = &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
 			}
 			s := newAbortTestServer(NewHub(), m)
 
@@ -442,7 +442,7 @@ func TestHandleAbortBusyGatewayIsNotSuccess(t *testing.T) {
 		}
 		return true, nil // a run that never ends
 	}, inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	done := make(chan int, 1)
@@ -485,7 +485,7 @@ func TestHandleAbortSettleTimeoutIsBounded(t *testing.T) {
 	defer stream.Close()
 
 	gw := &fakeAbortGateway{}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	start := time.Now()
@@ -518,7 +518,7 @@ func TestHandleAbortSettleTimeoutIsBounded(t *testing.T) {
 func TestHandleAbortSettlesAfterClientDisconnect(t *testing.T) {
 	h := NewHub()
 	gw := &fakeAbortGateway{inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -569,7 +569,7 @@ func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
 			return false, nil
 		},
 	}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
 
@@ -610,7 +610,7 @@ func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
 		}
 		return false, nil
 	}, inFlightRun: "run-a"}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
 
 	done := make(chan int, 1)
@@ -668,7 +668,7 @@ func TestHandleAbortRechecksHubAfterIdle(t *testing.T) {
 // and must not be cached: it is per-session liveness, not a shareable resource.
 func TestHandleTurnStatus(t *testing.T) {
 	gw := &fakeAbortGateway{busy: true}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
@@ -706,7 +706,7 @@ func TestHandleTurnStatus(t *testing.T) {
 // unbounded read simply never returns, so no fast test can wait for it).
 func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 	gw := &fakeAbortGateway{busy: true}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
@@ -739,10 +739,10 @@ func TestHandleTurnStatusBoundsGatewayRead(t *testing.T) {
 // determination itself, not just the status code: the pre-fix handler answered
 // 200 {"active": false} here from the absent entry alone.
 func TestHandleTurnStatusEstablishesTheChannel(t *testing.T) {
-	gw := &fakeHitlGateway{sessionBusy: true}
-	m := &hitlManager{
-		conns:     map[string]*userHitlConn{},
-		newClient: func(string, *ws.Device) hitlGateway { return gw },
+	gw := &fakeGatewayClient{sessionBusy: true}
+	m := &gatewayConns{
+		conns:     map[string]*userGatewayConn{},
+		newClient: func(string, *ws.Device) gatewayClient { return gw },
 		wsURLOf:   func(string) string { return "ws://fake/gateway" },
 	}
 	// The state the finding is about: no channel in this process at all.
@@ -785,9 +785,9 @@ func TestHandleTurnStatusEstablishesTheChannel(t *testing.T) {
 // with a Retry.
 func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 	gw := &downAbortGateway{}
-	m := &hitlManager{
-		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw, connected: true}},
-		newClient: func(string, *ws.Device) hitlGateway { return gw },
+	m := &gatewayConns{
+		conns:     map[string]*userGatewayConn{"admin": {user: "admin", gw: gw, connected: true}},
+		newClient: func(string, *ws.Device) gatewayClient { return gw },
 		wsURLOf:   func(string) string { return "ws://fake/gateway" },
 	}
 
@@ -813,11 +813,11 @@ func TestHandleTurnStatusDownChannelIsNotIdle(t *testing.T) {
 // that is an error rather than the idle the pre-fix handler inferred from the
 // unusable entry.
 func TestHandleTurnStatusRedialsUnusableEntry(t *testing.T) {
-	gw := &fakeHitlGateway{connectErr: errors.New("dial: gateway unreachable")}
-	m := &hitlManager{
+	gw := &fakeGatewayClient{connectErr: errors.New("dial: gateway unreachable")}
+	m := &gatewayConns{
 		// Registered, not connected: the handshake has not completed.
-		conns:     map[string]*userHitlConn{"admin": {user: "admin", gw: gw}},
-		newClient: func(string, *ws.Device) hitlGateway { return gw },
+		conns:     map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}},
+		newClient: func(string, *ws.Device) gatewayClient { return gw },
 		wsURLOf:   func(string) string { return "ws://fake/gateway" },
 	}
 	s := newAbortTestServer(NewHub(), m)
@@ -841,7 +841,7 @@ func TestHandleTurnStatusDeadlineIsErrorNotIdle(t *testing.T) {
 		<-ctx.Done()
 		return false, ctx.Err()
 	}}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(NewHub(), m)
 
 	// A request context whose deadline has already passed is the state the
@@ -882,9 +882,9 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var m *hitlManager
+			var m *gatewayConns
 			if tc.hitl {
-				m = &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
+				m = &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
 			}
 			s := newAbortTestServer(NewHub(), m)
 
@@ -914,7 +914,7 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 // UI is supposed to offer. The caller gets an error it can report instead.
 func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
 	gw := &fakeAbortGateway{busyErr: errors.New("no live gateway channel")}
-	m := &hitlManager{conns: map[string]*userHitlConn{"admin": {user: "admin", gw: gw}}}
+	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(NewHub(), m)
 
 	rec := httptest.NewRecorder()
@@ -953,11 +953,11 @@ func TestTurnRouteIsWired(t *testing.T) {
 	}
 }
 
-// fakeAbortGateway is the hitlGateway slice /abort exercises.
+// fakeAbortGateway is the gatewayClient slice /abort exercises.
 type fakeAbortGateway struct {
-	hitlGateway // embed for the methods this test never calls
-	busy        bool
-	busyErr     error
+	gatewayClient // embed for the methods this test never calls
+	busy          bool
+	busyErr       error
 	// busyFunc, when set, replaces the fixed busy/busyErr answer so a test can
 	// hold the handler inside the busy check (see TestHandleAbortRechecksHubAfterIdle).
 	busyFunc         func(context.Context) (bool, error)
@@ -1043,7 +1043,7 @@ func (f *fakeAbortGateway) SessionInFlightRun(ctx context.Context, sessionKey st
 }
 
 // Connected and ListQuestions are not incidental: the settle step reaches the
-// gateway through hitlManager.liveConn, which drops a connection that is not
+// gateway through gatewayConns.liveConn, which drops a connection that is not
 // usable, and then lists its questions. Without an explicit Connected the
 // promoted method would run on the embedded nil interface and panic; without
 // ListQuestions the settle would panic one call later. This session has no open
@@ -1061,7 +1061,7 @@ func (f *fakeAbortGateway) Connected() bool { return true }
 // is also what decides whether the failure is reported as "a channel was once
 // established" in the log -- the distinction the handler no longer branches on,
 // because both end as the same honest "cannot determine".
-type downAbortGateway struct{ fakeHitlGateway }
+type downAbortGateway struct{ fakeGatewayClient }
 
 func (f *downAbortGateway) Connected() bool { return false }
 
@@ -1110,7 +1110,7 @@ func shortenAbortSettleTimeout(t *testing.T, d time.Duration) {
 // userOf resolves the same identity the fixtures register their gateway
 // connection under -- the ownership check on LiveRunID and the connection
 // lookup are both keyed by it.
-func newAbortTestServer(h *Hub, m *hitlManager) *Server {
+func newAbortTestServer(h *Hub, m *gatewayConns) *Server {
 	return &Server{
 		cfg:       config.Config{DefaultUser: "admin"},
 		hub:       h,
