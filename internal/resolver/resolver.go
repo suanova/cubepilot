@@ -21,6 +21,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/grants"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -61,8 +62,10 @@ type ResolvedAgentConfig struct {
 	// default unless the instance overrides it; issue #116).
 	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist is the agent's effective safe-command allowlist (issue #116):
-	// the platform builtin ∪ the template allowlist, or the instance's owned
-	// list when it has taken ownership. Only enforced under Allowlist policy.
+	// the union of the platform builtin, the template's allowlist, the
+	// instance's own hand-authored rules and the instance's learned grants. The
+	// instance adds to it and cannot remove from it, so an empty instance list
+	// means "adds nothing". Only enforced under Allowlist policy.
 	Allowlist []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
 	// DevicePublicKey is the platform's operator device public key for this
 	// agent's gateway (HITL approvals, issue #20). Transport-only: filled by
@@ -109,14 +112,15 @@ func (c *ResolvedAgentConfig) fingerprint() string {
 
 // Resolver resolves ResolvedAgentConfig from CRs.
 type Resolver struct {
-	cr client.Client
-	ns string
+	cr     client.Client
+	ns     string
+	grants *grants.Store
 }
 
 // New returns a Resolver backed by the controller-runtime client, reading
 // platform CRs from namespace (namespaced CRD scope, issue #146).
 func New(cr client.Client, namespace string) *Resolver {
-	return &Resolver{cr: cr, ns: namespace}
+	return &Resolver{cr: cr, ns: namespace, grants: grants.New(cr, namespace)}
 }
 
 // ResolveForUser resolves the default agent instance config for a user. A
@@ -208,14 +212,29 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 		}
 	}
 
-	// Confirmation intent & allowlist (issue #116): an instance override wins
-	// over the template default; the effective allowlist is the platform
-	// builtin ∪ the template allowlist, unless the instance has taken
-	// ownership of its own list.
+	// Confirmation intent & allowlist (issue #185): an instance override wins
+	// over the template default; the effective allowlist is the union of the
+	// platform builtin, the template's additions, the instance's own
+	// additions and the user's learned grants.
 	if inst.Spec.ApprovalPolicy != "" {
 		cfg.ApprovalPolicy = inst.Spec.ApprovalPolicy
 	}
-	cfg.Allowlist = allowlist.Effective(inst.Spec.Allowlist, tmplAllowlist)
+	// A failed grants read is fatal on purpose, not an error to degrade past.
+	// Resolve backs ResolvedConfigForUser (the policy push) but also
+	// SelectedModelFor, which the interactive turn, the one-shot path, the
+	// gateway-config endpoint and every scheduled task call -- so a ConfigMap
+	// fault fails model selection and scheduled runs too. Unioning nothing on a
+	// failed read would be cheaper, but it would enforce a list different from
+	// the one the API shows the user, which is the fail-open direction.
+	records, err := r.grants.List(ctx, user)
+	if err != nil {
+		return nil, fmt.Errorf("list grants for %s: %w", user, err)
+	}
+	learnedRules := make([]v1alpha1.AllowlistRule, 0, len(records))
+	for _, rec := range records {
+		learnedRules = append(learnedRules, rec.Rule())
+	}
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learnedRules)
 
 	// Domain skills visible to this agent (empty Agents = visible to
 	// all; atomic skills are overlays, not skills). The instance may

@@ -277,6 +277,12 @@ export interface AllowlistRule {
   // rules. Absent for user/template rules (which may allow writes) so the UI
   // never presents them as read-only.
   label?: string
+  // Where the rule came from (issue #185). 'learned' rules are recorded from an
+  // allow-always in chat; the rest are declarative.
+  source?: 'builtin' | 'template' | 'user' | 'learned'
+  // The invocation the user approved. Set for learned rules only; the server
+  // omits it otherwise.
+  command?: string
 }
 export interface AgentApprovalView {
   exists: boolean
@@ -286,6 +292,9 @@ export interface AgentApprovalView {
   // Instance's own state ('' / [] = inheriting the template default live).
   override: string
   allowlistOwned: AllowlistRule[]
+  // Learned grants are absent when empty -- the server tags the field
+  // `omitempty` -- so optional, like the value the normalizer already guards.
+  allowlistLearned?: AllowlistRule[]
   templatePolicy: string
   // Approval-channel state (issue #127): "up" | "pairing" | "down" |
   // "unconfigured". A gated policy (Allowlist / AlwaysAsk) is only enforced

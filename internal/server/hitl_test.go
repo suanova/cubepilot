@@ -26,16 +26,22 @@ import (
 // directly is only valid once the call under test has returned, which is how
 // the sequential tests use it.
 type fakeGatewayClient struct {
-	mu           sync.Mutex
-	connected    bool
-	guarded      []string
-	policySets   []ws.ApprovalsFile
+	mu         sync.Mutex
+	connected  bool
+	guarded    []string
+	policySets []ws.ApprovalsFile
+	// policyGets counts exec.approvals.get calls. The CAS write needs the hash
+	// that call returns, so a retry that repeated only the set could never
+	// recover from a lost race; counting the reads is what pins that the retry
+	// repeats both halves.
+	policyGets   int
 	resolves     []string // "id|decision"
 	onRequested  func(ws.ApprovalRequested)
 	connectErr   error
 	connectSeq   []error // optional per-connect results, consumed in order
 	getErr       error
 	setErr       error
+	setErrs      []error // optional per-call results, consumed in order
 	guardErr     error
 	initialAllow []ws.AllowlistEntry
 
@@ -221,6 +227,7 @@ func (f *fakeGatewayClient) PatchSessionSettings(ctx context.Context, key string
 func (f *fakeGatewayClient) GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.policyGets++
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -238,6 +245,15 @@ func (f *fakeGatewayClient) GetApprovalsPolicy(ctx context.Context) (*ws.Approva
 func (f *fakeGatewayClient) SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Consume a queued per-call failure first: a test uses one entry to fail the
+	// first attempt and let the retry succeed.
+	if len(f.setErrs) > 0 {
+		err := f.setErrs[0]
+		f.setErrs = f.setErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.setErr != nil {
 		return nil, f.setErr
 	}
@@ -1305,5 +1321,44 @@ func TestHitlGatewayConnectedNeedsASuccessfulHandshake(t *testing.T) {
 	close(gw.release)
 	if err := <-done2; err != nil {
 		t.Fatalf("re-dial: %v", err)
+	}
+}
+
+// TestHitl_ApplyPolicyRetriesAConcurrentWrite covers issue #185:
+// exec.approvals.set compares the hash from the get, so a write landing in
+// between fails it. That has to be retried rather than surfaced -- the caller
+// treats an applyPolicy error as fatal to the turn, so a lost race would refuse
+// a turn the user is entitled to take.
+//
+// The retry must repeat the get as well as the set: only a fresh read supplies
+// the hash the winner left, so a retry that re-sent the stale baseHash could
+// never recover. The get count is asserted to pin that, since a set-only retry
+// would also satisfy the policy-set count.
+func TestHitl_ApplyPolicyRetriesAConcurrentWrite(t *testing.T) {
+	gw := &fakeGatewayClient{
+		setErrs: []error{fmt.Errorf("exec.approvals.set: hash mismatch: stale baseHash")},
+	}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+	if len(gw.policySets) != 1 {
+		t.Errorf("policy sets = %d, want 1 after the retry succeeded", len(gw.policySets))
+	}
+	if gw.policyGets != 2 {
+		t.Errorf("exec.approvals.get calls = %d, want 2 (one per attempt): a retry that repeated only the set would re-send the hash the failed attempt used and could not recover", gw.policyGets)
+	}
+}
+
+// TestHitl_ApplyPolicySurfacesAPersistentFailure: the retry is bounded. A
+// gateway that rejects every attempt must surface the error, not spin.
+func TestHitl_ApplyPolicySurfacesAPersistentFailure(t *testing.T) {
+	gw := &fakeGatewayClient{setErr: fmt.Errorf("exec.approvals.set: boom")}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	if err := m.applyPolicy(context.Background(), "alice", gw, v1alpha1.ApprovalPolicyAllowlist, nil); err == nil {
+		t.Fatal("applyPolicy should surface a persistent failure")
+	}
+	if len(gw.policySets) != 0 {
+		t.Errorf("policy sets = %d, want 0 (every attempt failed)", len(gw.policySets))
 	}
 }

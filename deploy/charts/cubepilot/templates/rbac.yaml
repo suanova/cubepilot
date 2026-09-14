@@ -57,6 +57,13 @@ rules:
   - apiGroups: [""]
     resources: ["serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Learned allowlist grants (issue #185): the resolver reads the per-user grants
+  # ConfigMap, and the task runner reaches the resolver through
+  # SelectedModelFor -- so the operator needs the read, not only the API server.
+  # The client is the manager's cached one, hence list/watch alongside get.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
   # Platform CRDs are Namespaced (issue #146): full CRUD + status on the
   # ai.cubestack.io objects in this namespace (controllers + builtin bootstrap).
   - apiGroups: ["ai.cubestack.io"]
@@ -225,6 +232,15 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create", "update", "delete"]
+  # Learned allow-always grants (issue #185): the API is the sole writer of the
+  # per-user grants ConfigMap. The verbs are exactly what the store uses -- Get,
+  # Create, Update, and nothing else: a revoked grant deletes its key and leaves
+  # the ConfigMap in place, so there is no Delete, and the store never Patches.
+  # No list/watch either, because the API builds its client with client.New (a
+  # direct, uncached client, cmd/cubepilot-api/main.go), so no informer runs.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

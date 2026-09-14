@@ -354,12 +354,13 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
 		if body.Decision == "allow-always" {
 			// Durable grant (issue #116): approve-once happened above; now record
-			// the command as an instance-owned allowlist entry so it auto-passes
-			// from the next turn on (only under Allowlist policy).
+			// the command in the user's grants ConfigMap (grants.Store, via
+			// allowlistAlways) so it auto-passes from the next turn on (only
+			// under Allowlist policy). The instance spec is not touched.
 			allowlisted := false
 			if rule, ok := deriveAllowAlwaysRule(p.Command); ok {
-				if ok, err := s.allowlistAlways(r.Context(), user, rule); err != nil {
-					s.logf("confirm %s/%s: allow-always append: %v", user, sessionKey, err)
+				if ok, err := s.allowlistAlways(r.Context(), user, p.Command, rule); err != nil {
+					s.logf("confirm %s/%s: allow-always grant: %v", user, sessionKey, err)
 				} else {
 					allowlisted = ok
 				}
@@ -483,15 +484,54 @@ func (m *gatewayConns) channelState(ctx context.Context, user string) string {
 	return approvalChannelUp
 }
 
+// applyPolicyAttempts is how many get-modify-set rounds applyPolicy runs before
+// giving up, and applyPolicyRetryDelay the pause between them.
+const (
+	applyPolicyAttempts   = 3
+	applyPolicyRetryDelay = 50 * time.Millisecond
+)
+
 // applyPolicy writes the effective exec-approvals policy into agents."main" of
 // the gateway (get -> set, CAS). The allowlist is rewritten wholesale from the
-// resolved config (issue #116): the platform bookkeeping is the instance
-// allowlist, so a removed entry really disappears. AlwaysAsk runs a guarded,
+// resolved config (issue #116): the bookkeeping is that resolved list, so a
+// removed entry really disappears -- for the entries a removal can express. An
+// instance's own rule or a revoked grant drops out; a platform builtin cannot be
+// removed at all (issue #185 accepted that loss), so it comes back on the next
+// push. AlwaysAsk runs a guarded,
 // on-miss session with an empty allowlist -- every command misses and therefore
 // asks -- which is the strictest posture and needs no unverified ask:always
 // semantics. It reports failure so the caller can defer advancing the
-// applied-revision watermark.
+// applied-revision watermark, and retries a lost CAS before reporting one
+// (issue #185).
 func (m *gatewayConns) applyPolicy(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
+	// Bounded retry (issue #185): the set is a compare-and-set against the hash
+	// the get returned, so a write landing in between fails it. The caller
+	// treats an error here as fatal to the turn, so a lost race must not be
+	// surfaced. Both halves are repeated, not just the set: the retry needs the
+	// hash the winner left, and re-reading it is also why no error is classified
+	// as a conflict -- the gateway reports a CAS failure as a plain JSON-RPC
+	// error with no typed discriminator to test for. The last error still
+	// surfaces, so a gateway that is down or consistently rejecting is not
+	// retried into a hang.
+	var lastErr error
+	for attempt := 0; attempt < applyPolicyAttempts; attempt++ {
+		lastErr = m.applyPolicyOnce(ctx, user, gw, pol, allow)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < applyPolicyAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(applyPolicyRetryDelay):
+			}
+		}
+	}
+	return lastErr
+}
+
+// applyPolicyOnce is one get-modify-set round of applyPolicy.
+func (m *gatewayConns) applyPolicyOnce(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
 	snap, err := gw.GetApprovalsPolicy(ctx)
 	if err != nil {
 		m.sayf("hitl %s: exec.approvals.get: %v", user, err)

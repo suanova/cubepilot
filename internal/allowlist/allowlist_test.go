@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -88,9 +89,9 @@ func TestDefaultExcludesCommandWrappers(t *testing.T) {
 }
 
 func TestEffectiveInheritsTemplateDefault(t *testing.T) {
-	// Empty owned list -> platform builtin ∪ template allowlist.
+	// Empty instance list -> union of the platform builtin and template allowlist.
 	base := v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`}
-	got := Effective(nil, []v1alpha1.AllowlistRule{base})
+	got := Effective([]v1alpha1.AllowlistRule{base}, nil, nil)
 	if len(got) == 0 {
 		t.Fatal("effective empty; want platform builtin + template entries")
 	}
@@ -105,16 +106,6 @@ func TestEffectiveInheritsTemplateDefault(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("template allowlist entry not in effective: %+v", got)
-	}
-}
-
-func TestEffectiveOwnedIsAuthoritative(t *testing.T) {
-	// A non-empty owned list replaces the default entirely (the user may have
-	// dropped builtin reads; that only makes those commands ask again).
-	owned := []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show|status|diff)(\s|$)`}}
-	got := Effective(owned, []v1alpha1.AllowlistRule{{Pattern: "helm"}})
-	if len(got) != 1 || got[0].Pattern != "git" {
-		t.Errorf("owned list not authoritative: %+v", got)
 	}
 }
 
@@ -165,4 +156,149 @@ func TestBuiltinLabelOnlyForBuiltinRules(t *testing.T) {
 	if got := BuiltinLabel(v1alpha1.AllowlistRule{Pattern: "ls", ArgPattern: safeArgPattern}); got == "" {
 		t.Error("builtin ls rule should carry a read-only label")
 	}
+}
+
+// TestEffectiveIsUnionNotOwnership is the regression test for the inherited
+// allowlist being frozen on first edit (issue #185). An instance that has its
+// own entries must still receive the platform builtin: without this, a later
+// hardening of Default() silently does not reach that instance -- which is the
+// fail-open direction.
+func TestEffectiveIsUnionNotOwnership(t *testing.T) {
+	instance := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	got := Effective(nil, instance, nil)
+
+	if !hasPattern(got, "helm") {
+		t.Fatal("instance rule dropped")
+	}
+	for _, b := range Default() {
+		if !hasPattern(got, b.Pattern) {
+			t.Errorf("builtin %q dropped for an instance that owns entries", b.Pattern)
+		}
+	}
+}
+
+// TestEffectiveUnionsAllThreeSources covers the template and grants arms: each
+// source contributes its own entry, Merge dedupes a grant that repeats an
+// instance rule, and a grant that shares a Pattern with a builtin survives as a
+// separate entry with its own ArgPattern.
+func TestEffectiveUnionsAllThreeSources(t *testing.T) {
+	tmpl := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	instance := []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	grants := []v1alpha1.AllowlistRule{
+		{Pattern: "terraform"}, // duplicate of the instance rule
+		{Pattern: "kubectl", ArgPattern: "^apply -f prod.yaml$"}, // same pattern as a builtin, different argPattern
+	}
+	got := Effective(tmpl, instance, grants)
+
+	for _, want := range []string{"helm", "terraform", "kubectl"} {
+		if !hasPattern(got, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if n := countPattern(got, "terraform"); n != 1 {
+		t.Errorf("terraform appears %d times, want 1", n)
+	}
+	// The grant above is the only entry with this ArgPattern, so Pattern alone
+	// cannot find it: assert on BOTH fields. This is what detects the grants arm
+	// being dropped from Effective -- the other assertions all pass without it.
+	var foundGrant bool
+	for _, r := range got {
+		if r.Pattern == "kubectl" && r.ArgPattern == "^apply -f prod.yaml$" {
+			foundGrant = true
+		}
+	}
+	if !foundGrant {
+		t.Errorf("grant rule missing from the union: %+v", got)
+	}
+}
+
+// TestValidate covers the write-path validation added in issue #185: an
+// argPattern the gateway cannot compile must be rejected here, where the user
+// can see the error, rather than stored and shipped. Pattern is a command
+// name, not a regex, so only emptiness is checked.
+func TestValidate(t *testing.T) {
+	ok := []v1alpha1.AllowlistRule{
+		{Pattern: "ls"},
+		{Pattern: "kubectl", ArgPattern: `^get pods$`},
+		{Pattern: "kubectl", ArgPattern: kubectlReadArgPattern},
+	}
+	for _, r := range ok {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
+		}
+	}
+
+	bad := []v1alpha1.AllowlistRule{
+		{Pattern: ""},
+		{Pattern: "   "},
+		{Pattern: "ls", ArgPattern: `^(.*$`},
+		// Accepted by RE2, rejected or silently misread by the JavaScript RegExp
+		// the gateway matches with. Each would otherwise be stored, pushed, and
+		// never reported -- the failure this task exists to close, reached from
+		// the other side.
+		//
+		// Lookaround and backreferences are deliberately absent from the set.
+		// JavaScript supports both (lookbehind since ES2018), so blaming them on
+		// JavaScript would be false; RE2 has neither, so the compile check below
+		// rejects them anyway, with a message that names no engine.
+		{Pattern: "ls", ArgPattern: `(?i)^foo$`},
+		{Pattern: "ls", ArgPattern: `^(?P<x>a)$`},
+		{Pattern: "ls", ArgPattern: `^[[:alpha:]]+$`},
+		{Pattern: "ls", ArgPattern: `^\p{L}+$`},
+	}
+	for _, r := range bad {
+		if err := Validate(r); err == nil {
+			t.Errorf("Validate(%+v) = nil, want an error", r)
+		}
+	}
+}
+
+// TestValidateAcceptsEscapedLookalikes pins the false-positive side of the
+// denylist: a derived rule is regexp.QuoteMeta'd, so a command that happens to
+// contain `(?i)` or a backslash arrives escaped and must still validate.
+func TestValidateAcceptsEscapedLookalikes(t *testing.T) {
+	for _, r := range []v1alpha1.AllowlistRule{
+		{Pattern: "grep", ArgPattern: `^\(-P\) \\1$`},
+		{Pattern: "grep", ArgPattern: `^\(foo\)\?bar$`},
+	} {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
+		}
+	}
+}
+
+// TestValidateRejectsPipeInPattern pins the fix for the grants identity
+// collision. grants.Key and Merge both key a rule on the single string
+// `pattern + "|" + argPattern`, so a Pattern carrying `|` makes
+// {pattern:"a", argPattern:"b|c"} and {pattern:"a|b", argPattern:"c"} collide:
+// the second Add hits the exists-check and reports success without storing
+// anything -- the false allowlisted: true this task closes. ArgPattern
+// legitimately uses `|` for alternation, so Pattern is the side that refuses it.
+func TestValidateRejectsPipeInPattern(t *testing.T) {
+	err := Validate(v1alpha1.AllowlistRule{Pattern: "a|b", ArgPattern: "c"})
+	if err == nil {
+		t.Fatal("Validate accepted a pattern containing '|'; it collides with the pattern|argPattern identity")
+	}
+	if !strings.Contains(err.Error(), "pattern must not contain") {
+		t.Errorf("error does not explain the rejection: %v", err)
+	}
+	// ArgPattern keeps `|`: it is alternation there, and the builtin's own rules
+	// use it.
+	if err := Validate(v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^(get|list) pods$`}); err != nil {
+		t.Errorf("Validate rejected an argPattern alternation: %v", err)
+	}
+}
+
+func hasPattern(rules []v1alpha1.AllowlistRule, pattern string) bool {
+	return countPattern(rules, pattern) > 0
+}
+
+func countPattern(rules []v1alpha1.AllowlistRule, pattern string) int {
+	n := 0
+	for _, r := range rules {
+		if r.Pattern == pattern {
+			n++
+		}
+	}
+	return n
 }

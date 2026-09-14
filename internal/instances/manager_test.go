@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +24,11 @@ func testManager(t *testing.T, objs ...client.Object) *Manager {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add scheme: %v", err)
+	}
+	// The resolver reads the per-user grants ConfigMap (core type, issue #185),
+	// and the fake client rejects reads of unregistered kinds.
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).

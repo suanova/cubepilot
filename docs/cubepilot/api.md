@@ -395,7 +395,7 @@ body: {"decision": "approve" | "reject" | "allow-always"}
 | --- | --- |
 | `approve` | 本次放行，回合继续 |
 | `reject` | 拒绝，写操作不执行 |
-| `allow-always` | 本次放行，**并把该命令记入实例 allowlist**，此后自动通过 |
+| `allow-always` | 本次放行，**并把该命令记为当前用户的 learned 授权**（进 grants store，**不写实例 spec**），此后自动通过 |
 
 响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}`
 
@@ -505,7 +505,7 @@ GET /api/v1/sessions/{key}/question/pending
 | PUT | `/api/v1/agent/config` | `{"selectedModel","userInstructions"}` | 同上 | 否 |
 | GET | `/api/v1/agent/status` | — | **裸** `{"user","id","exists","phase","gatewayImage","gatewayPort",...}` | 否 |
 | GET | `/api/v1/agent/approval` | — | **裸** `approvalView`，见下 | 否 |
-| PUT | `/api/v1/agent/approval` | `{"approvalPolicy","allowlist":[...]}` | **裸** `approvalView` | 否 |
+| PUT | `/api/v1/agent/approval` | `{"approvalPolicy","allowlist":[...],"revokeGrants"?}` | **裸** `approvalView` | 否 |
 | GET | `/api/v1/instances` | — | `{"instances":[...]}` | 否 |
 | POST | `/api/v1/instances` | `{"templateRef","selectedModel","enabledSkills","userInstructions"}` | `201 {"instance":{...}}` | 否 |
 | GET | `/api/v1/agenttemplates` | — | `{"agentTemplates":[...]}` | 否 |
@@ -522,8 +522,9 @@ GET /api/v1/sessions/{key}/question/pending
   "approvalPolicy": "None | Allowlist | AlwaysAsk | \"\"",
   "override": "",                       // 实例自身设定，"" = 继承模板
   "templatePolicy": "Allowlist",
-  "allowlist":     [{"pattern","argPattern?","label"?}],
-  "allowlistOwned":[...],
+  "allowlist":     [{"pattern","argPattern?","label"?,"source"?,"command"?}],
+  "allowlistOwned":[{"pattern","argPattern?","label"?,"source":"user"}],
+  "allowlistLearned":[{"pattern","argPattern?","label"?,"source":"learned","command"?}],
   "channel": "up | pairing | down | unconfigured | \"\""
 }
 ```
@@ -531,14 +532,37 @@ GET /api/v1/sessions/{key}/question/pending
 - `approvalPolicy` 只接受 `""` / `None` / `Allowlist` / `AlwaysAsk`，其他值 → 400。
 - `label` **只在**规则精确匹配平台内置只读规则时出现；用户自己加的规则没有 `label`，
   界面上不要把它当作只读展示。
+- `allowlist` 每条规则带 `source`，说明它从哪来：`builtin | template | user | learned`
+  —— 分别是平台内置、模板、实例自己加的和聊天里 allow-always 学到的。界面按来源分组，
+  不要再用「是不是自己的」这种标志去猜来源。
+- `allowlistOwned` 和 `allowlistLearned` 的条目**也**带 `source`，分别是 `user` 和 `learned`
+  ——每个分组列表只装自己那一类，`source` 只是让三个列表的条目形状统一，前端不必再记
+  「哪个列表对应哪个来源」。
+- `allowlistLearned` 是**可选**字段，列出 learned 授权，非空时才出现——为空即缺省，
+  规则同 `allowlist` / `allowlistOwned`。
+- **learned 条目**（不管出现在 `allowlist` 还是 `allowlistLearned`）额外带 `command`：
+  用户当时批准的那条命令。learned 分组应该显示它，而不是派生的正则（`pattern` 加上转义过的
+  `argPattern`，人认不出来）。其他来源的条目没有这个字段。
 - `channel` 为 `""` 表示策略是 `None` 或实例不存在；`unconfigured` 表示策略要求拦截但
   HITL 通道未配置（此时拦截会失败关闭）。
-- `allowlist` / `allowlistOwned` 为空时字段**缺省**（不是 `[]`）。
+- `allowlist` / `allowlistOwned` / `allowlistLearned` 为空时字段**缺省**（不是 `[]`）。
 
 **Agent 配置的常见错误**：
 
 - `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
   —— 模型没进模板的 `spec.models`；空 `selectedModel` 永远允许（表示「用运行时默认」）。
+- `400 pattern is required` —— `allowlist[]` 或 `revokeGrants[]` 里的 `pattern` 为空
+  （或只有空白）。以前这种条目被静默丢弃，现在整次 PUT 被拒：规则不会写进实例，也不会下发给
+  网关。同一条校验还拒绝含 `|` 的 `pattern`（错误文是 `pattern must not contain '|'`）：
+  `pattern` 是命令名，而 `|` 是规则身份 `pattern|argPattern` 的分隔符，带上它会让两条不同的
+  规则撞成同一个 key；`argPattern` 里的 `|` 是正则的或运算，不受影响。
+- `400 argPattern is not a valid regular expression: <detail>` —— `allowlist[]` 或
+  `revokeGrants[]` 里的 `argPattern` 不是合法正则，整次 PUT 被拒：规则**不会**写进实例，
+  也不会下发给网关（网关按 JavaScript `RegExp` 匹配，写入时用 Go 正则先行校验）。
+- `400 argPattern uses <construct>, which JavaScript's new RegExp does not accept: ...` ——
+  同上拒法，但原因是该写法 Go 正则接受、JavaScript `RegExp` 不接受或读法不同：内联 flag
+  如 `(?i)`、命名组写成 `(?P<name>)`（JavaScript 是 `(?<name>)`）、POSIX 字符类
+  `[[:alpha:]]`、以及未加 `u` 标志的 `\p{L}`。写入时按这份清单先行拒绝。
 - `409 no agent instance yet — provision it on the Agent Config page first`
   —— 实例不存在，先去创建。
 

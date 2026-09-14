@@ -5,7 +5,14 @@
 // layer on top of it.
 package allowlist
 
-import "github.com/suanova/cubepilot/internal/api/v1alpha1"
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+)
 
 // kubectlGlobalFlag matches one optional kubectl global flag that may precede
 // the subcommand (--kubeconfig=/x, --context prod, -n default, ...). Global
@@ -93,14 +100,86 @@ func BuiltinLabel(e v1alpha1.AllowlistRule) string {
 	return ""
 }
 
-// Effective returns the effective allowlist for an instance (issue #116): the
-// instance's owned list when it has taken ownership (non-empty), else the
-// template's effective default (the platform builtin ∪ the template's own
-// allowlist). An owned list is authoritative -- it may drop builtin entries
-// (the result is only that those commands ask again; the safe direction).
-func Effective(owned, templateAllowlist []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule {
-	if len(owned) > 0 {
-		return owned
+// Effective returns the effective allowlist for an instance (issue #185): the
+// platform builtin, the template's additions, the instance's hand-authored
+// additions and the instance's learned grants, unioned.
+//
+// There is deliberately no "the instance owns its list" override. The previous
+// design returned the instance list *instead of* the union whenever that list
+// was non-empty, so the first edit of any kind -- including a removal --
+// materialized the then-current builtin into the instance and froze it there.
+// A later hardening of Default() then could not reach that instance, which is
+// the fail-open direction. A union cannot freeze, for today's writers or any
+// added later.
+//
+// Consequence, accepted deliberately: a builtin entry can no longer be removed
+// per instance. AlwaysAsk is the strict posture.
+func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.AllowlistRule) []v1alpha1.AllowlistRule {
+	all := make([]v1alpha1.AllowlistRule, 0, len(templateAllowlist)+len(instanceAllowlist)+len(grants))
+	all = append(all, templateAllowlist...)
+	all = append(all, instanceAllowlist...)
+	all = append(all, grants...)
+	return Merge(Default(), all)
+}
+
+// jsIncompatible lists the constructs Go's RE2 accepts that the gateway's
+// JavaScript `new RegExp(argPattern)` does not accept, or reads differently.
+// The gateway passes no `u` flag, so `[[:alpha:]]` and `\p{...}` are not the
+// classes they look like there. Without this check such a pattern validated,
+// was stored and was pushed, and then never matched -- the same "stored, never
+// reported" failure this task closes, reached from the other side.
+//
+// This is a best-effort denylist, not a sound validator: the two engines differ
+// in ways no list of patterns captures, and a shared subset is the most that
+// can be asserted. The residual divergence is fail-closed, because a pattern
+// the gateway cannot compile throws at match time and the runtime catches that
+// and treats it as no-match: the command asks again rather than auto-passing.
+var jsIncompatible = []struct {
+	re   *regexp.Regexp
+	what string
+}{
+	{regexp.MustCompile(`\(\?P<`), "a named group (?P<name>...), which JavaScript spells (?<name>...)"},
+	{regexp.MustCompile(`\(\?[a-zA-Z-]`), "an inline flag group such as (?i); pass flags to RegExp instead"},
+	{regexp.MustCompile(`\[\[:`), "a POSIX class such as [[:alpha:]]"},
+	{regexp.MustCompile(`\\[pP]\{`), "a Unicode property such as \\p{L}, which needs the RegExp u flag"},
+}
+
+// Validate reports whether a rule is well formed. Pattern is a command name
+// rather than a regular expression, so it is only checked for emptiness (plus
+// the `|` exclusion below). ArgPattern is a regular expression compiled by the
+// gateway at match time, so it is checked here against the constructs the
+// gateway's RegExp engine cannot take (jsIncompatible) and then compiled,
+// rejecting it while the user is still looking at the form. The denylist runs
+// first so a construct is reported as the JavaScript incompatibility it is
+// rather than as a bare compile error. It is best-effort; see it for why the
+// gap is safe to leave.
+func Validate(r v1alpha1.AllowlistRule) error {
+	if strings.TrimSpace(r.Pattern) == "" {
+		return errors.New("pattern is required")
 	}
-	return Merge(Default(), templateAllowlist)
+	// Pattern and ArgPattern are keyed together by the identity
+	// `pattern + "|" + argPattern` (allowlist.Merge, grants.Key), so a Pattern
+	// that itself carries `|` makes two different rules collide:
+	// {pattern:"a", argPattern:"b|c"} and {pattern:"a|b", argPattern:"c"} share
+	// one key, and the second one silently reports success without being stored.
+	// The separator cannot simply be kept on both sides: ArgPattern is a
+	// free-form regex in which `|` is ordinary alternation, so escaping or
+	// lengthening the separator would have to reach into a field that legitimately
+	// uses it. Pattern is a bare command name and can never need one, which makes
+	// it the side to constrain.
+	if strings.Contains(r.Pattern, "|") {
+		return errors.New("pattern must not contain '|': it is a command name, and '|' is the separator the allowlist identity joins pattern and argPattern with")
+	}
+	if r.ArgPattern == "" {
+		return nil
+	}
+	for _, c := range jsIncompatible {
+		if c.re.MatchString(r.ArgPattern) {
+			return fmt.Errorf("argPattern uses %s, which JavaScript's new RegExp does not accept: the gateway matches argPattern with new RegExp, not RE2", c.what)
+		}
+	}
+	if _, err := regexp.Compile(r.ArgPattern); err != nil {
+		return fmt.Errorf("argPattern is not a valid regular expression: %w", err)
+	}
+	return nil
 }

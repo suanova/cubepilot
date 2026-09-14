@@ -62,9 +62,9 @@ spec:
               allowlist:
                 description: |-
                   Allowlist optionally extends the template's default safe-command
-                  allowlist (issue #116): the effective default is the platform builtin
-                  allowlist ∪ these entries. Instances inherit it until they take ownership
-                  (AgentInstance.spec.allowlist). Only meaningful under Allowlist policy.
+                  allowlist (issue #116): the effective allowlist is the union of the
+                  platform builtin, these entries and the instance's own (issue #185). Only
+                  meaningful under Allowlist policy.
                 items:
                   description: |-
                     AllowlistRule is one entry of a safe-command allowlist (issue #116). The

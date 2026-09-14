@@ -2,12 +2,15 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -18,6 +21,9 @@ func testResolver(t *testing.T, objs ...client.Object) *Resolver {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -359,8 +365,36 @@ func TestResolveEffectiveAllowlistInherits(t *testing.T) {
 	}
 }
 
-// TestResolveEffectiveAllowlistOwned verifies an owned instance list replaces
-// the inherited default entirely.
+// TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries is the resolver-level
+// half of the fork regression (issue #185): an instance with its own entries
+// must still resolve the platform builtin.
+func TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "helm"}}
+	r := testResolver(t, template("t1", nil), inst)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	byPattern := map[string]bool{}
+	for _, rule := range cfg.Allowlist {
+		byPattern[rule.Pattern] = true
+	}
+	if !byPattern["helm"] {
+		t.Error("instance rule missing")
+	}
+	if !byPattern["kubectl"] || !byPattern["ls"] {
+		t.Errorf("platform builtin missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+
+// TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
+// still resolves the builtin and the template's additions (issue #185). This
+// used to assert the opposite -- that an owned list replaced the inherited
+// default outright -- which is exactly the fork: the instance was frozen off the
+// platform builtin on its first write, so a later hardening of Default() could
+// not reach it.
 func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 	inst := instance("li.ming", v1alpha1.DefaultAgentName, "")
 	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "git", ArgPattern: `^(log|show)(\s|$)`}}
@@ -374,7 +408,120 @@ func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveForUser: %v", err)
 	}
-	if len(cfg.Allowlist) != 1 || cfg.Allowlist[0].Pattern != "git" {
-		t.Errorf("effective allowlist = %+v, want exactly the owned git entry", cfg.Allowlist)
+	want := map[string]bool{"git": false, "helm": false, "kubectl": false}
+	for _, e := range cfg.Allowlist {
+		if _, ok := want[e.Pattern]; ok {
+			want[e.Pattern] = true
+		}
+	}
+	for pattern, found := range want {
+		if !found {
+			t.Errorf("effective allowlist = %+v, missing %q", cfg.Allowlist, pattern)
+		}
+	}
+}
+
+// TestResolvedAllowlistIncludesLearnedGrants covers the fourth arm of the
+// union (issue #185): a recorded grant auto-passes without appearing in
+// AgentInstance.spec.
+func TestResolvedAllowlistIncludesLearnedGrants(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      k8s.ResourceName("cubepilot-grants", "alice"),
+			Namespace: "",
+		},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","argPattern":"^install x$","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	r := testResolver(t, template("t1", nil), inst, cm)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	var found bool
+	for _, rule := range cfg.Allowlist {
+		if rule.Pattern == "helm" && rule.ArgPattern == "^install x$" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("learned grant missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+
+// TestGrantChangesTheRevision: the revision is what gates the gateway push
+// (internal/server/approvals.go, PreTurn), so a grant edit must move it.
+func TestGrantChangesTheRevision(t *testing.T) {
+	r := testResolver(t, template("t1", nil), instance("alice", "t1", ""))
+	before, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.ResourceName("cubepilot-grants", "alice")},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	if err := r.cr.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create grants ConfigMap: %v", err)
+	}
+
+	after, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve after: %v", err)
+	}
+	if before.Revision == after.Revision {
+		t.Errorf("revision did not change after recording a grant (%q)", after.Revision)
+	}
+}
+
+// TestResolveGrantReadFailureIsAnError pins the direction of a failing grants
+// read: it must make Resolve return an error, not silently union an empty list.
+// The two differ only in direction and both are fail-closed, but an empty list
+// quietly drops every learned grant and the user is prompted more, not less,
+// while the error is honest about the failure and refuses the turn.
+func TestResolveGrantReadFailureIsAnError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	grantsName := k8s.ResourceName("cubepilot-grants", "alice")
+	injected := errors.New("injected grants read failure")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
+		WithObjects(
+			template("t1", nil),
+			instance("alice", "t1", ""),
+			// A ConfigMap exists, so the read is reached rather than short-circuited
+			// by a NotFound -- the failure below is the injected one.
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: grantsName}},
+		).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if key.Name == grantsName {
+					return injected
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := New(cl, "")
+	_, err := r.Resolve(context.Background(), "alice", "t1")
+	if err == nil {
+		t.Fatal("a failing grants read must fail the resolve, not union an empty list")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("err = %v, want the injected grants read failure", err)
 	}
 }

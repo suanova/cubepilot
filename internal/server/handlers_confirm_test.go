@@ -4,8 +4,13 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 // TestAgentConfirmRoundTrip covers GET/PUT /api/agent/approval: override
@@ -80,33 +85,32 @@ func TestAgentConfirmNoInstance(t *testing.T) {
 	}
 }
 
-// TestAllowlistAlwaysMaterializes verifies allow-always appends to the instance
-// allowlist, materializing the inherited default on first ownership; and that
-// under AlwaysAsk policy the append is a no-op.
-func TestAllowlistAlwaysMaterializes(t *testing.T) {
+// TestAllowlistAlwaysDoesNotMaterialize verifies allow-always records only the
+// rule itself -- and now records it in the grants store rather than the
+// instance spec. Copying the platform builtin into the spec would let that
+// snapshot outlive a later hardening of Default() (issue #185).
+func TestAllowlistAlwaysDoesNotMaterialize(t *testing.T) {
 	s := platformTestServer(t,
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
 	)
-	ok, err := s.allowlistAlways(context.Background(), "li.ming", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
+	ok, err := s.allowlistAlways(context.Background(), "li.ming", "helm list", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
 	if err != nil {
 		t.Fatalf("allowlistAlways: %v", err)
 	}
 	if !ok {
 		t.Fatal("allowlistAlways returned false under Allowlist policy")
 	}
-	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "li.ming", nil))
-	var sawKubectl, sawHelm bool
-	for _, e := range view.AllowlistOwned {
-		switch e.Pattern {
-		case "kubectl":
-			sawKubectl = true
-		case "helm":
-			sawHelm = true
-		}
+	got, err := s.grantsStore().List(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
 	}
-	if !sawKubectl || !sawHelm {
-		t.Errorf("owned allowlist = %+v, want materialized kubectl default + helm", view.AllowlistOwned)
+	if len(got) != 1 || got[0].Pattern != "helm" {
+		t.Errorf("grants = %+v, want exactly the helm rule", got)
+	}
+	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "li.ming", nil))
+	if len(view.AllowlistOwned) != 0 {
+		t.Errorf("owned allowlist = %+v, want the instance spec untouched", view.AllowlistOwned)
 	}
 }
 
@@ -119,7 +123,7 @@ func TestAllowlistAlwaysSkippedUnderAlwaysAsk(t *testing.T) {
 		internalTestAgent(v1alpha1.DefaultAgentName),
 		inst,
 	)
-	ok, err := s.allowlistAlways(context.Background(), "li.ming", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
+	ok, err := s.allowlistAlways(context.Background(), "li.ming", "helm list", v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`})
 	if err != nil {
 		t.Fatalf("allowlistAlways: %v", err)
 	}
@@ -156,5 +160,271 @@ func TestAgentConfirmUserScoped(t *testing.T) {
 	view := decode[approvalView](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/approval", "zhang.wei", nil))
 	if view.Exists {
 		t.Fatalf("zhang.wei should have no instance, got %+v", view)
+	}
+}
+
+// TestAgentConfirmRejectsInvalidArgPattern covers issue #185: argPattern is free
+// text from the form, shipped to the gateway unvalidated, so a typo was stored
+// and pushed and the user never heard about it.
+func TestAgentConfirmRejectsInvalidArgPattern(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []map[string]any{{"pattern": "ls", "argPattern": "^(.*$"}},
+		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAllowAlwaysWritesAGrantNotTheSpec covers issue #185: the machine-written
+// grant must land in the grants store, and the instance spec must stay
+// untouched so a learned rule cannot be mistaken for a hand-authored one.
+func TestAllowAlwaysWritesAGrantNotTheSpec(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, ok := deriveAllowAlwaysRule("kubectl get pods -n foo")
+	if !ok {
+		t.Fatal("deriveAllowAlwaysRule returned !ok")
+	}
+	if _, err := s.allowlistAlways(ctx, "li.ming", "kubectl get pods -n foo", rule); err != nil {
+		t.Fatalf("allowlistAlways: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "kubectl" {
+		t.Fatalf("grants = %+v, want one kubectl grant", got)
+	}
+	if got[0].Command != "kubectl get pods -n foo" {
+		t.Errorf("Command = %q, want the approved invocation", got[0].Command)
+	}
+
+	var inst v1alpha1.AgentInstance
+	name := types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}
+	if err := s.cr.Get(ctx, name, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.Allowlist) != 0 {
+		t.Errorf("instance spec was written: %+v", inst.Spec.Allowlist)
+	}
+}
+
+// TestClearOwnedAllowlistKeepsGrants: the Reset button must not discard what the
+// user approved in chat -- the two stores are separate.
+func TestClearOwnedAllowlistKeepsGrants(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	if err := s.saveConfirm(ctx, "li.ming", v1alpha1.ApprovalPolicyAllowlist, nil); err != nil {
+		t.Fatalf("saveConfirm: %v", err)
+	}
+
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("Reset discarded learned grants: %+v", got)
+	}
+}
+
+// TestAgentConfirmRejectsInvalidRevokeGrantBeforeWriting covers the validation
+// of revokeGrants (issue #185): an invalid entry must be refused with a 400
+// before anything is stored. Asserting the two stores are untouched is the
+// point -- a handler that wrote first and reported a failure afterwards would
+// still answer 400, but would leave the allowlist rewritten and the grant
+// deleted.
+func TestAgentConfirmRejectsInvalidRevokeGrantBeforeWriting(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	// The allowlist change is valid, so only the revoke entry can reject the
+	// request -- and a write of that allowlist would be visible in the spec.
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []map[string]any{{"pattern": "git", "argPattern": `^status$`}},
+			"revokeGrants":   []map[string]any{{"pattern": "helm", "argPattern": "^(install x$"}},
+		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	var inst v1alpha1.AgentInstance
+	name := types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}
+	if err := s.cr.Get(ctx, name, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	if len(inst.Spec.Allowlist) != 0 {
+		t.Errorf("instance spec was written despite the rejection: %+v", inst.Spec.Allowlist)
+	}
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "helm" {
+		t.Errorf("grants = %+v, want the helm grant still present: the revoke ran before the request was validated", got)
+	}
+}
+
+// TestApprovalViewTagsProvenance covers issue #185: the UI needs to say where a
+// rule came from instead of guessing from an isOwned flag.
+func TestApprovalViewTagsProvenance(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+
+	var inst v1alpha1.AgentInstance
+	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}, &inst); err != nil {
+		t.Fatalf("get instance: %v", err)
+	}
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
+	if err := s.cr.Update(ctx, &inst); err != nil {
+		t.Fatalf("update instance: %v", err)
+	}
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	view, err := s.approvalView(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("approvalView: %v", err)
+	}
+
+	byPattern := map[string]approvalRule{}
+	for _, r := range view.Allowlist {
+		byPattern[r.Pattern] = r
+	}
+	if got := byPattern["kubectl"].Source; got != "builtin" {
+		t.Errorf("kubectl source = %q, want builtin", got)
+	}
+	if got := byPattern["terraform"].Source; got != "user" {
+		t.Errorf("terraform source = %q, want user", got)
+	}
+	if got := byPattern["helm"].Source; got != "learned" {
+		t.Errorf("helm source = %q, want learned", got)
+	}
+	// The learned entry of the EFFECTIVE list carries the invocation too, not
+	// just the allowlistLearned one: the Portal groups that list by source, so a
+	// learned row there would otherwise show a bare pattern plus an escaped
+	// regex. A non-learned entry stays without one.
+	if got := byPattern["helm"].Command; got != "helm install x" {
+		t.Errorf("learned effective command = %q, want the approved invocation", got)
+	}
+	if got := byPattern["terraform"].Command; got != "" {
+		t.Errorf("user rule command = %q, want empty: command is for learned rules only", got)
+	}
+	if len(view.AllowlistLearned) != 1 || view.AllowlistLearned[0].Pattern != "helm" {
+		t.Errorf("allowlistLearned = %+v", view.AllowlistLearned)
+	}
+	// The command the user approved rides along, so the learned group can show
+	// an invocation rather than a bare pattern plus an escaped regex.
+	if len(view.AllowlistLearned) == 1 && view.AllowlistLearned[0].Command != "helm install x" {
+		t.Errorf("learned command = %q, want the approved invocation", view.AllowlistLearned[0].Command)
+	}
+}
+
+// TestApprovalViewTagsTemplateAndCollisionProvenance covers the other half of
+// the provenance tagging (issue #185): a rule the template declares is served as
+// source "template", and a rule declared identically by template and instance is
+// tagged with the more specific declarer. The fixture other tests share declares
+// no allowlist, so without this the last two arguments of toSourcedRules could be
+// transposed -- relabelling template rules as user and the reverse -- and the
+// suite would not notice.
+func TestApprovalViewTagsTemplateAndCollisionProvenance(t *testing.T) {
+	tmpl := internalTestAgent(v1alpha1.DefaultAgentName)
+	tmpl.Spec.Allowlist = []v1alpha1.AllowlistRule{
+		{Pattern: "tflint"},
+		{Pattern: "helm", ArgPattern: `^list$`},
+	}
+	inst := internalTestInstance("li.ming", v1alpha1.DefaultAgentName)
+	inst.Spec.Allowlist = []v1alpha1.AllowlistRule{
+		{Pattern: "terraform"},
+		{Pattern: "helm", ArgPattern: `^list$`},
+	}
+	s := platformTestServer(t, tmpl, inst)
+
+	view, err := s.approvalView(context.Background(), "li.ming")
+	if err != nil {
+		t.Fatalf("approvalView: %v", err)
+	}
+	source := map[string]string{}
+	for _, r := range view.Allowlist {
+		source[r.Pattern] = r.Source
+	}
+	if got := source["tflint"]; got != "template" {
+		t.Errorf("template-only rule source = %q, want template", got)
+	}
+	if got := source["terraform"]; got != "user" {
+		t.Errorf("instance-only rule source = %q, want user", got)
+	}
+	// helm is declared by both, byte for byte. The union keeps the template's
+	// copy (Merge keeps the first occurrence) but the tag names the instance,
+	// the more specific declarer -- the behaviour toSourcedRules documents, and
+	// a rule the union dedupes so it is served exactly once.
+	if got := source["helm"]; got != "user" {
+		t.Errorf("collision rule source = %q, want user (the more specific declarer)", got)
+	}
+	if n := len(view.Allowlist); n != len(allowlist.Effective(tmpl.Spec.Allowlist, inst.Spec.Allowlist, nil)) {
+		t.Errorf("effective allowlist has %d entries, want %d (the collision must not duplicate)", n, len(allowlist.Effective(tmpl.Spec.Allowlist, inst.Spec.Allowlist, nil)))
+	}
+}
+
+// TestAgentConfirmRevokesLearnedGrant covers the revoke path added in issue
+// #185: a learned grant is dropped from the grants store without the
+// hand-authored list being rewritten.
+func TestAgentConfirmRevokesLearnedGrant(t *testing.T) {
+	s := platformTestServer(t,
+		internalTestAgent(v1alpha1.DefaultAgentName),
+		internalTestInstance("li.ming", v1alpha1.DefaultAgentName),
+	)
+	ctx := context.Background()
+	rule, _ := deriveAllowAlwaysRule("helm install x")
+	if err := s.grantsStore().Add(ctx, "li.ming", rule, "helm install x", time.Now()); err != nil {
+		t.Fatalf("Add grant: %v", err)
+	}
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/approval", "li.ming",
+		map[string]any{
+			"approvalPolicy": "Allowlist",
+			"allowlist":      []any{},
+			"revokeGrants":   []map[string]any{{"pattern": "helm", "argPattern": "^install x$"}},
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got, err := s.grantsStore().List(ctx, "li.ming")
+	if err != nil {
+		t.Fatalf("List grants: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("grant not revoked: %+v", got)
 	}
 }

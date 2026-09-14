@@ -16,6 +16,13 @@ import type {
   TaskTemplate,
 } from './types'
 
+// The server decodes request bodies strictly -- an unknown field is a 400
+// "bad JSON body" for the whole request -- and its rule type is only
+// { pattern, argPattern }. A rule read from the approval view also carries
+// label / source / command, so every rule is reduced to the two fields the
+// server knows before it goes on the wire. (issue #185)
+const wireRule = (r: AllowlistRule): AllowlistRule => ({ pattern: r.pattern, argPattern: r.argPattern })
+
 export const api = {
   // Chat / sessions
   listSessions: () =>
@@ -123,11 +130,15 @@ export const api = {
 
   // Approvals (issue #116): effective + owned approval policy / allowlist.
   agentApproval: () => apiFetch<AgentApprovalView>('/api/v1/agent/approval'),
-  saveAgentApproval: (body: { approvalPolicy?: string; allowlist?: AllowlistRule[] }) =>
+  saveAgentApproval: (body: { approvalPolicy?: string; allowlist?: AllowlistRule[]; revokeGrants?: AllowlistRule[] }) =>
     apiFetch<AgentApprovalView>('/api/v1/agent/approval', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        allowlist: (body.allowlist ?? []).map(wireRule),
+        revokeGrants: body.revokeGrants?.map(wireRule),
+      }),
     }),
 
   // Platform objects (read-only CRD views)
