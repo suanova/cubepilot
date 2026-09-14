@@ -114,9 +114,13 @@ func (s *Store) Name(user string) string {
 
 // Key is the stable data key for a rule: a hex digest of the same
 // pattern|argPattern identity allowlist.Merge dedups on. The data keys of the
-// grants ConfigMap are opaque digests; the values are Records. One key per
-// grant makes a write touch a single key, which cannot lose a concurrent write
-// of a different grant.
+// grants ConfigMap are opaque digests; the values are Records.
+//
+// One key per grant does not make a write conflict-free: the update replaces
+// the whole object, so two concurrent Adds do conflict. They are recovered
+// rather than avoided -- RetryOnConflict re-reads the object the winner left and
+// the loser re-adds only its own key, so both grants survive. One key per grant
+// is what keeps that recovery a union instead of a last-writer-wins merge.
 func Key(r v1alpha1.AllowlistRule) string {
 	sum := sha256.Sum256([]byte(r.Pattern + "|" + r.ArgPattern))
 	return hex.EncodeToString(sum[:16])
@@ -194,6 +198,14 @@ func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, 
 			// unreachable for entries this build wrote; it is the backstop for a
 			// ConfigMap written by an older build.
 			return fmt.Errorf("grants for %s would exceed the %d byte payload budget", user, s.maxBytes)
+		}
+		// evict orders by CreatedAt, so the entry just added is itself a
+		// candidate when a caller supplies a `now` older than the entries already
+		// stored. Without this check Add would report success for a grant that
+		// was never stored -- the false "allowlisted: true" this store exists to
+		// avoid.
+		if _, stored := cm.Data[key]; !stored {
+			return fmt.Errorf("grant for %s is older than the grants it would evict and was not stored", user)
 		}
 		return s.cr.Update(ctx, cm)
 	})

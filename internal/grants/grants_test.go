@@ -184,6 +184,36 @@ func TestAddEvictsOldestPastCap(t *testing.T) {
 	}
 }
 
+// TestAddRefusesAnEntryItWouldEvict: evict orders by CreatedAt, so an entry
+// whose caller-supplied `now` sorts older than the entries already stored is
+// itself a candidate for removal. Add must not report success after dropping
+// the grant it was asked to store -- that is the false allowlisted: true the
+// store exists to avoid.
+func TestAddRefusesAnEntryItWouldEvict(t *testing.T) {
+	s := testStoreWithMax(t, 1)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	kept := v1alpha1.AllowlistRule{Pattern: "kept"}
+
+	if err := s.Add(ctx, "alice", kept, "", base.Add(time.Hour)); err != nil {
+		t.Fatalf("Add kept: %v", err)
+	}
+	// The cap is 1 and this entry is older, so evict drops it rather than the
+	// stored one.
+	older := v1alpha1.AllowlistRule{Pattern: "older"}
+	if err := s.Add(ctx, "alice", older, "", base); err == nil {
+		t.Fatal("Add reported success for a grant evict removed")
+	}
+
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Pattern != "kept" {
+		t.Errorf("grants = %+v, want only the kept one", got)
+	}
+}
+
 // TestAddTruncatesLongCommand: the command text is display-only, and leaving it
 // unbounded would make the per-entry size -- and so the MaxGrants arithmetic --
 // meaningless.

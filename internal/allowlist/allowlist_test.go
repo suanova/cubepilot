@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -263,6 +264,28 @@ func TestValidateAcceptsEscapedLookalikes(t *testing.T) {
 		if err := Validate(r); err != nil {
 			t.Errorf("Validate(%+v) = %v, want nil", r, err)
 		}
+	}
+}
+
+// TestValidateRejectsPipeInPattern pins the fix for the grants identity
+// collision. grants.Key and Merge both key a rule on the single string
+// `pattern + "|" + argPattern`, so a Pattern carrying `|` makes
+// {pattern:"a", argPattern:"b|c"} and {pattern:"a|b", argPattern:"c"} collide:
+// the second Add hits the exists-check and reports success without storing
+// anything -- the false allowlisted: true this task closes. ArgPattern
+// legitimately uses `|` for alternation, so Pattern is the side that refuses it.
+func TestValidateRejectsPipeInPattern(t *testing.T) {
+	err := Validate(v1alpha1.AllowlistRule{Pattern: "a|b", ArgPattern: "c"})
+	if err == nil {
+		t.Fatal("Validate accepted a pattern containing '|'; it collides with the pattern|argPattern identity")
+	}
+	if !strings.Contains(err.Error(), "pattern must not contain") {
+		t.Errorf("error does not explain the rejection: %v", err)
+	}
+	// ArgPattern keeps `|`: it is alternation there, and the builtin's own rules
+	// use it.
+	if err := Validate(v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^(get|list) pods$`}); err != nil {
+		t.Errorf("Validate rejected an argPattern alternation: %v", err)
 	}
 }
 

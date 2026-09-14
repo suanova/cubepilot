@@ -145,16 +145,30 @@ var jsIncompatible = []struct {
 }
 
 // Validate reports whether a rule is well formed. Pattern is a command name
-// rather than a regular expression, so it is only checked for emptiness;
-// ArgPattern is a regular expression compiled by the gateway at match time, so
-// it is checked here against the constructs the gateway's RegExp engine cannot
-// take (jsIncompatible) and then compiled, rejecting it while the user is still
-// looking at the form. The denylist runs first so a construct is reported as the
-// JavaScript incompatibility it is rather than as a bare compile error. It is
-// best-effort; see it for why the gap is safe to leave.
+// rather than a regular expression, so it is only checked for emptiness (plus
+// the `|` exclusion below). ArgPattern is a regular expression compiled by the
+// gateway at match time, so it is checked here against the constructs the
+// gateway's RegExp engine cannot take (jsIncompatible) and then compiled,
+// rejecting it while the user is still looking at the form. The denylist runs
+// first so a construct is reported as the JavaScript incompatibility it is
+// rather than as a bare compile error. It is best-effort; see it for why the
+// gap is safe to leave.
 func Validate(r v1alpha1.AllowlistRule) error {
 	if strings.TrimSpace(r.Pattern) == "" {
 		return errors.New("pattern is required")
+	}
+	// Pattern and ArgPattern are keyed together by the identity
+	// `pattern + "|" + argPattern` (allowlist.Merge, grants.Key), so a Pattern
+	// that itself carries `|` makes two different rules collide:
+	// {pattern:"a", argPattern:"b|c"} and {pattern:"a|b", argPattern:"c"} share
+	// one key, and the second one silently reports success without being stored.
+	// The separator cannot simply be kept on both sides: ArgPattern is a
+	// free-form regex in which `|` is ordinary alternation, so escaping or
+	// lengthening the separator would have to reach into a field that legitimately
+	// uses it. Pattern is a bare command name and can never need one, which makes
+	// it the side to constrain.
+	if strings.Contains(r.Pattern, "|") {
+		return errors.New("pattern must not contain '|': it is a command name, and '|' is the separator the allowlist identity joins pattern and argPattern with")
 	}
 	if r.ArgPattern == "" {
 		return nil
