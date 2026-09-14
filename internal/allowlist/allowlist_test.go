@@ -176,8 +176,10 @@ func TestEffectiveIsUnionNotOwnership(t *testing.T) {
 	}
 }
 
-// TestEffectiveUnionsAllThreeSources covers the template and grants arms, and
-// the dedup that Merge already provides across them.
+// TestEffectiveUnionsAllThreeSources covers the template and grants arms: each
+// source contributes its own entry, Merge dedupes a grant that repeats an
+// instance rule, and a grant that shares a Pattern with a builtin survives as a
+// separate entry with its own ArgPattern.
 func TestEffectiveUnionsAllThreeSources(t *testing.T) {
 	tmpl := []v1alpha1.AllowlistRule{{Pattern: "helm"}}
 	instance := []v1alpha1.AllowlistRule{{Pattern: "terraform"}}
@@ -194,6 +196,18 @@ func TestEffectiveUnionsAllThreeSources(t *testing.T) {
 	}
 	if n := countPattern(got, "terraform"); n != 1 {
 		t.Errorf("terraform appears %d times, want 1", n)
+	}
+	// The grant above is the only entry with this ArgPattern, so Pattern alone
+	// cannot find it: assert on BOTH fields. This is what detects the grants arm
+	// being dropped from Effective -- the other assertions all pass without it.
+	var foundGrant bool
+	for _, r := range got {
+		if r.Pattern == "kubectl" && r.ArgPattern == "^apply -f prod.yaml$" {
+			foundGrant = true
+		}
+	}
+	if !foundGrant {
+		t.Errorf("grant rule missing from the union: %+v", got)
 	}
 }
 
