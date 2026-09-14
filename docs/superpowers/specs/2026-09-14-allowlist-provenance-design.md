@@ -66,8 +66,8 @@ field, not to add another special case to it.
 
 - **No validation.** `argPattern` is free text from the UI
   (`web/src/views/AgentView.tsx:152`) shipped verbatim to the gateway
-  (`internal/server/hitl.go:547`). Regex compilation happens in OpenClaw, so an
-  invalid pattern is stored and pushed with no feedback.
+  (`internal/server/approvals.go:533`). Regex compilation happens in OpenClaw,
+  so an invalid pattern is stored and pushed with no feedback.
 - **Unbounded growth, but human-bounded.** No cap, TTL, LRU or subsumption;
   `Merge` dedups on exact `pattern|argPattern` only, and
   `deriveAllowAlwaysRule` anchors the exact argv so `-n a` / `-n b` are separate
@@ -144,6 +144,7 @@ metadata:
     - apiVersion: ai.cubestack.io/v1alpha1
       kind: AgentInstance
       name: <Sanitize(user)>-<agent>
+      uid: <instance UID>                   # GC matches owners by UID
       controller: false
 data:
   <sha256(pattern|argPattern)[:32]>: |
@@ -152,6 +153,12 @@ data:
      "command":"kubectl get pods -n foo",
      "createdAt":"2026-09-14T10:00:00Z"}
 ```
+
+The owner reference has to carry the instance's UID, not just its name:
+Kubernetes garbage collection identifies an owner by UID, and a reference with an
+empty one is dangling -- the dependent is then liable to be deleted rather than
+collected with its owner. With no instance to point at, the ConfigMap is created
+without an owner reference instead of with a broken one.
 
 Why a ConfigMap and not a CRD, `status`, or the runtime:
 
@@ -180,9 +187,15 @@ alternatives".
 if err := s.grants.Add(ctx, user, rule); err != nil { ... }
 ```
 
-`PUT /api/v1/agent/approval` keeps writing `spec.allowlist` and now touches
-grants not at all — so the Reset button no longer discards learned grants as a
-side effect, which it does today.
+`PUT /api/v1/agent/approval` keeps writing `spec.allowlist`. An ordinary PUT
+leaves grants alone -- so the Reset button no longer discards learned grants as a
+side effect, which it does today. A PUT carrying the additive `revokeGrants`
+field is the exception: after the spec change is saved, those grants are removed
+from the store, because a grant no longer lives in `spec.allowlist` and
+rewriting that list cannot express dropping one. The order matters and is
+deliberate -- both operations are idempotent, so saving first leaves a retryable
+state (the policy persisted, the grant still present) where dropping the grant
+first would answer 500 having already deleted it.
 
 `grants.Add` writes one ConfigMap key via a patch. On exceeding `MaxGrants`
 (1000) it deletes the oldest keys by `createdAt` in the same operation. The cap
@@ -190,7 +203,11 @@ is insurance against a pathological click loop, not a response to normal use: it
 sits far above the order-of-300 entries a heavy user accumulates in a year, or
 it would evict grants people still rely on. At roughly 250 bytes per entry
 (32-char key plus the JSON value, with the command text truncated) 1000 entries
-is about a quarter of the 1 MiB ConfigMap ceiling.
+is about a quarter of the 1 MiB ConfigMap ceiling. The cap bounds the entry
+count, not the bytes: the per-entry bounds (512-byte command, 4 KB rule)
+multiplied by 1000 is several MiB, so `Add` also evicts against a payload budget
+well under the ceiling, and refuses a single rule too large to store rather than
+truncating a regex that the gateway matches.
 
 ### Read paths
 
@@ -245,12 +262,12 @@ this design; recorded so it is not rediscovered as a new bug.** It becomes a
 prerequisite the moment the "preserve runtime grants" alternative is revisited.
 
 **`applyPolicy` clobbers runtime-minted grants — intentional, but silent.**
-`agent.Allowlist = toWSEntries(allow)` (`internal/server/hitl.go:518-521`) is a
-wholesale replace and `exec.approvals.set` has no server-side merge keyed on
-`source`, so any grant made through OpenClaw's own surfaces (TUI,
+`agent.Allowlist = toWSEntries(allow)` (`internal/server/approvals.go:505-512`)
+is a wholesale replace and `exec.approvals.set` has no server-side merge keyed
+on `source`, so any grant made through OpenClaw's own surfaces (TUI,
 `openclaw approvals allow-always`, ACP, Slack) is deleted on the next push. That
 is consistent with the deliberate "the platform's bookkeeping is the instance
-allowlist" stance recorded at `internal/server/hitl.go:500-506`, and it is
+allowlist" stance recorded at `internal/server/approvals.go:486-493`, and it is
 fail-closed. The gap is that it is **silent**.
 
 **Decision: keep the wholesale replace, document it.** The Portal is the only
@@ -284,10 +301,11 @@ manage:
   `lastUsedAt`".
 - Effective policy stops being reconstructible from the API server, and an
   admin can no longer audit what a tenant's agent has been allowed to run.
-- **Retracted:** "`AlwaysAsk` writes `nil` (`internal/server/hitl.go:518-520`),
-  which would discard grants on a policy toggle." True as the code stands, but a
-  fixable implementation choice rather than a property of the runtime, so it does
-  not weigh against this option. See "Adjacent fix" below.
+- **Retracted:** "`AlwaysAsk` writes `nil`
+  (`internal/server/approvals.go:506-509`), which would discard grants on a
+  policy toggle." True as the code stands, but a fixable implementation choice
+  rather than a property of the runtime, so it does not weigh against this
+  option. See "Adjacent fix" below.
 
 Also weighed and discarded: the argument that the platform's
 `deriveAllowAlwaysRule` duplicates runtime semantics and will drift. Its rule is
@@ -315,9 +333,22 @@ rather than the fix.
 ## Migration
 
 None. Pre-release, no compatibility promised, and existing `spec` lists cannot
-be split by provenance anyway (the entries carry no marker). Existing learned
-grants are simply lost on upgrade; a user who wants one back clicks
-`allow-always` again.
+be split by provenance anyway (the entries carry no marker).
+
+An earlier draft of this section claimed that "existing learned grants are
+simply lost on upgrade". That is false, and the error is worth recording because
+it points at a migration that does not exist. After this change `spec.allowlist`
+is still unioned into the effective list, so a legacy entry keeps auto-passing;
+it is merely no longer distinguishable from a hand-authored rule. The real
+consequence is on the hardening path: a snapshot of a builtin that `Default()`
+later removes keeps auto-passing until the user Resets, because a snapshot
+cannot be told apart from a rule the user typed. That is the fail-open direction
+this design exists to close, and it is bounded only by the Reset button.
+
+A one-time cleanup of legacy entries cannot make that distinction either -- with
+no marker in the data, "delete the machine-written ones" and "delete the rules
+the user wrote by hand" are the same operation. Doing nothing is the honest
+choice; a user who wants a clean list clicks Reset and re-adds what they meant.
 
 ## Testing
 
@@ -336,7 +367,7 @@ grants are simply lost on upgrade; a user who wants one back clicks
 Not required by this design. Recorded because it concerns the same function and
 because the concern recorded in the code — `applyPolicy` implements `AlwaysAsk`
 by emptying the allowlist "which needs no unverified ask:always semantics"
-(`internal/server/hitl.go:504-506`) — can now be settled with evidence.
+(`internal/server/approvals.go:489-492`) — can now be settled with evidence.
 
 The runtime has a first-class **per-agent** `ask` field, and `ask: "always"` is
 a true "ask about everything" mode:
