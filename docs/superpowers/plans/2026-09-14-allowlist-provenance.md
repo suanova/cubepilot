@@ -411,7 +411,7 @@ A new package owning the per-user learned grants ConfigMap. Self-contained: no w
 **Interfaces:**
 - Consumes: `k8s.ResourceName(prefix, user string) string`, `k8s.InstanceName(user, agent string) string`, `v1alpha1.DefaultAgentName`, `v1alpha1.GroupVersion`.
 - Produces:
-  - `const MaxGrants = 200`
+  - `const MaxGrants = 1000` (and the unexported `maxCommandBytes`)
   - `type Record struct { Pattern, ArgPattern, Command string; CreatedAt time.Time }` with method `Rule() v1alpha1.AllowlistRule`
   - `type Store struct{...}`, `func New(cr client.Client, namespace string) *Store`
   - `func (s *Store) Name(user string) string`
@@ -445,6 +445,13 @@ import (
 
 func testStore(t *testing.T, objs ...client.Object) *Store {
 	t.Helper()
+	return testStoreWithMax(t, MaxGrants, objs...)
+}
+
+// testStoreWithMax builds a Store with an overridden cap, so the eviction test
+// drives three entries instead of a thousand.
+func testStoreWithMax(t *testing.T, max int, objs ...client.Object) *Store {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add core types: %v", err)
@@ -452,7 +459,9 @@ func testStore(t *testing.T, objs ...client.Object) *Store {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add platform types: %v", err)
 	}
-	return New(fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build(), "cubepilot")
+	s := New(fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build(), "cubepilot")
+	s.max = max
+	return s
 }
 
 func TestListMissingConfigMapIsEmpty(t *testing.T) {
@@ -522,13 +531,14 @@ func TestAddIsIdempotent(t *testing.T) {
 }
 
 // TestAddEvictsOldestPastCap: growth is human-driven, so the cap is a safety
-// net against a loop rather than a working limit.
+// net against a loop rather than a working limit. The store's cap is
+// overridden to 3 so this exercises the eviction path in three writes.
 func TestAddEvictsOldestPastCap(t *testing.T) {
-	s := testStore(t)
+	s := testStoreWithMax(t, 3)
 	ctx := context.Background()
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 
-	for i := 0; i < MaxGrants; i++ {
+	for i := 0; i < 3; i++ {
 		rule := v1alpha1.AllowlistRule{Pattern: "cmd", ArgPattern: "arg-" + strconv.Itoa(i)}
 		if err := s.Add(ctx, "alice", rule, "", base.Add(time.Duration(i)*time.Minute)); err != nil {
 			t.Fatalf("Add %d: %v", i, err)
@@ -544,8 +554,8 @@ func TestAddEvictsOldestPastCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != MaxGrants {
-		t.Fatalf("got %d grants, want %d", len(got), MaxGrants)
+	if len(got) != 3 {
+		t.Fatalf("got %d grants, want 3", len(got))
 	}
 	// The very first rule added must be gone, the newest kept.
 	for _, r := range got {
@@ -555,6 +565,28 @@ func TestAddEvictsOldestPastCap(t *testing.T) {
 	}
 	if got[len(got)-1].Pattern != "newest" {
 		t.Errorf("newest grant missing; last = %+v", got[len(got)-1])
+	}
+}
+
+// TestAddTruncatesLongCommand: the command text is display-only, and leaving it
+// unbounded would make the per-entry size — and so the MaxGrants arithmetic —
+// meaningless.
+func TestAddTruncatesLongCommand(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	long := strings.Repeat("a", maxCommandBytes*2)
+	if err := s.Add(ctx, "alice", v1alpha1.AllowlistRule{Pattern: "bash"}, long, time.Now()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got, err := s.List(ctx, "alice")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d grants, want 1", len(got))
+	}
+	if len(got[0].Command) != maxCommandBytes {
+		t.Errorf("Command length = %d, want %d", len(got[0].Command), maxCommandBytes)
 	}
 }
 
@@ -618,7 +650,7 @@ func TestAddSetsOwnerReference(t *testing.T) {
 
 ```
 
-The test file's imports are `context`, `strconv`, `testing`, `time`, `corev1`, `metav1`, `runtime`, `apierrors`, `types`, `client`, `fake`, `v1alpha1`, `k8s`. `Key` is exercised indirectly by `Add`/`List`; import nothing you do not use.
+The test file's imports are `context`, `strconv`, `strings`, `testing`, `time`, `corev1`, `metav1`, `runtime`, `apierrors`, `types`, `client`, `fake`, `v1alpha1`, `k8s`. `Key` is exercised indirectly by `Add`/`List`; import nothing you do not use.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -664,8 +696,21 @@ import (
 
 // MaxGrants bounds a user's learned grants. Growth is driven by human clicks
 // rather than by the agent, so this is a safety net against a pathological
-// loop, not a working limit. The oldest grant by CreatedAt is evicted first.
-const MaxGrants = 200
+// loop, not a working limit — it has to sit far above what a heavy user
+// accumulates in a year (order of 300) or it silently evicts grants people
+// still rely on.
+//
+// Sizing: roughly 250 bytes per entry (32-char key plus the JSON value), so
+// 1000 entries is about a quarter of the 1 MiB ConfigMap ceiling. maxCommandBytes
+// keeps that per-entry figure honest.
+const (
+	MaxGrants = 1000
+	// maxCommandBytes truncates the stored command text. Without it a single
+	// command carrying a long payload would make the per-entry size unbounded
+	// and the MaxGrants arithmetic meaningless. It is display-only, so a
+	// truncated tail costs nothing.
+	maxCommandBytes = 512
+)
 
 // The data keys of the grants ConfigMap are opaque digests; the values are
 // Records. One key per grant makes an add a single-key write that cannot lose
@@ -687,15 +732,18 @@ func (r Record) Rule() v1alpha1.AllowlistRule {
 	return v1alpha1.AllowlistRule{Pattern: r.Pattern, ArgPattern: r.ArgPattern}
 }
 
-// Store reads and writes the per-user grants ConfigMap.
+// Store reads and writes the per-user grants ConfigMap. max is a field rather
+// than the MaxGrants constant directly so the eviction test can drive a small
+// cap instead of looping a thousand times.
 type Store struct {
-	cr client.Client
-	ns string
+	cr  client.Client
+	ns  string
+	max int
 }
 
 // New returns a Store backed by cr in namespace ns.
 func New(cr client.Client, namespace string) *Store {
-	return &Store{cr: cr, ns: namespace}
+	return &Store{cr: cr, ns: namespace, max: MaxGrants}
 }
 
 // Name is the grants ConfigMap name for a user.
@@ -750,7 +798,7 @@ func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, 
 	raw, err := json.Marshal(Record{
 		Pattern:    r.Pattern,
 		ArgPattern: r.ArgPattern,
-		Command:    command,
+		Command:    truncate(command, maxCommandBytes),
 		CreatedAt:  now.UTC(),
 	})
 	if err != nil {
@@ -766,9 +814,19 @@ func (s *Store) Add(ctx context.Context, user string, r v1alpha1.AllowlistRule, 
 			return nil
 		}
 		cm.Data[key] = string(raw)
-		evict(cm, MaxGrants)
+		evict(cm, s.max)
 		return s.cr.Update(ctx, cm)
 	})
+}
+
+// truncate bounds s to n bytes, cutting on a byte boundary. The value is
+// display-only, so a split rune at the cut is acceptable and not worth the
+// extra code to avoid.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // Remove revokes a grant. It is idempotent: a missing ConfigMap, or a key that
@@ -872,7 +930,7 @@ func evict(cm *corev1.ConfigMap, max int) {
 
 Run: `go test ./internal/grants/... -v`
 
-Expected: PASS for all five tests.
+Expected: PASS for all seven tests.
 
 **On concurrency:** `Add` and `Remove` wrap get-modify-update in `retry.RetryOnConflict`, so a concurrent write of a *different* grant retries instead of being lost. There is deliberately no unit test for it — the controller-runtime fake client does not reproduce optimistic-concurrency conflicts, and a test that cannot fail is worse than none. The retry wrapper is the guarantee; say so in the PR body rather than claiming coverage.
 

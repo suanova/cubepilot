@@ -165,9 +165,13 @@ if err := s.grants.Add(ctx, user, rule); err != nil { ... }
 grants not at all — so the Reset button no longer discards learned grants as a
 side effect, which it does today.
 
-`grants.Add` writes one ConfigMap key via a patch. On exceeding `MaxGrants` (200)
-it deletes the oldest keys by `createdAt` in the same operation. The cap is
-insurance against a pathological click loop, not a response to normal use.
+`grants.Add` writes one ConfigMap key via a patch. On exceeding `MaxGrants`
+(1000) it deletes the oldest keys by `createdAt` in the same operation. The cap
+is insurance against a pathological click loop, not a response to normal use: it
+sits far above the order-of-300 entries a heavy user accumulates in a year, or
+it would evict grants people still rely on. At roughly 250 bytes per entry
+(32-char key plus the JSON value, with the command text truncated) 1000 entries
+is about a quarter of the 1 MiB ConfigMap ceiling.
 
 ### Read paths
 
@@ -348,8 +352,17 @@ own PR — see "Out of scope".
 
 ## Open questions
 
-1. `MaxGrants = 200` and eviction by `createdAt` — is oldest-first the right
-   eviction, or should it be "least recently used"? LRU needs a `lastUsedAt`
-   write on every use, which the gateway does not report; oldest-first is free.
-2. Should the learned group be revocable per-entry in the UI (delete one
-   ConfigMap key), or is Clear-all enough for now?
+Both questions this section originally carried were settled while writing the
+implementation plan
+(`docs/superpowers/plans/2026-09-14-allowlist-provenance.md`):
+
+1. **Cap and eviction — `MaxGrants = 1000`, oldest `createdAt` first.** LRU would
+   need a `lastUsedAt` write on every use, and the gateway does not report
+   allowlist hits, so it is not available at any reasonable cost; oldest-first is
+   free. The number is sized against the ConfigMap ceiling, not against expected
+   use, since expected use sits well below it.
+2. **Per-entry revoke — required, not optional.** Moving grants out of
+   `spec.allowlist` removed the only path the Portal had to drop one:
+   `persistConfirm` can only write the hand-authored list. The PUT body therefore
+   gains an additive `revokeGrants` field. Without it the change would silently
+   delete an existing capability.
