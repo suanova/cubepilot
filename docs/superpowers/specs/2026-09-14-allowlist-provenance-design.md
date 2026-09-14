@@ -261,8 +261,10 @@ manage:
   `lastUsedAt`".
 - Effective policy stops being reconstructible from the API server, and an
   admin can no longer audit what a tenant's agent has been allowed to run.
-- `AlwaysAsk` writes `nil` (`internal/server/hitl.go:518-520`), which would
-  discard grants on a policy toggle.
+- **Retracted:** "`AlwaysAsk` writes `nil` (`internal/server/hitl.go:518-520`),
+  which would discard grants on a policy toggle." True as the code stands, but a
+  fixable implementation choice rather than a property of the runtime, so it does
+  not weigh against this option. See "Adjacent fix" below.
 
 Also weighed and discarded: the argument that the platform's
 `deriveAllowAlwaysRule` duplicates runtime semantics and will drift. Its rule is
@@ -306,8 +308,37 @@ grants are simply lost on upgrade; a user who wants one back clicks
   intact (today's Reset wipes them).
 - Resolver: changing a grant changes `cfg.Revision`, so the policy is re-pushed.
 
+## Adjacent fix: express `AlwaysAsk` with `ask: "always"`
+
+Not required by this design. Recorded because it concerns the same function and
+because the concern recorded in the code — `applyPolicy` implements `AlwaysAsk`
+by emptying the allowlist "which needs no unverified ask:always semantics"
+(`internal/server/hitl.go:504-506`) — can now be settled with evidence.
+
+The runtime has a first-class **per-agent** `ask` field, and `ask: "always"` is
+a true "ask about everything" mode:
+
+- `requiresExecApproval` short-circuits at `exec-approvals-policy.ts:18` —
+  `if (params.ask === "always") return true` — **before** reading
+  `allowlistSatisfied` (`:19-28`) and before the `durableApprovalSatisfied`
+  escape (`:21`). Neither an allowlist hit nor a durable grant suppresses the
+  prompt. `docs/tools/exec-approvals.md:206` states the same rule.
+- `ask` is settable per agent through the same `exec.approvals.set` call the
+  platform already issues (`exec-approvals-config.ts:373-374` persists
+  `"always"`; `exec-approvals-resolver.ts:115-147` reads it per agent).
+
+So `agent.Ask = "always"` yields the same strictness **without rewriting the
+list**, which removes the destructive `nil` branch entirely and keeps the
+runtime's allowlist stable across a policy toggle. One companion change is
+needed: the `Allowlist` branch must set `ask` back to `on-miss`, since the
+platform currently never writes `ask` at all and relies on the default.
+
+Worth doing, but it is a behaviour change to an existing gate and belongs in its
+own PR — see "Out of scope".
+
 ## Out of scope
 
+- The `ask: "always"` change above.
 - Cap/TTL policy beyond a fixed `MaxGrants` — the growth numbers above do not
   justify more.
 - A `spec.allowlistDeny` overlay.
