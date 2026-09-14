@@ -231,10 +231,34 @@ func TestValidate(t *testing.T) {
 		{Pattern: ""},
 		{Pattern: "   "},
 		{Pattern: "ls", ArgPattern: `^(.*$`},
+		// Accepted by RE2, rejected or silently misread by the JavaScript RegExp
+		// the gateway matches with. Each would otherwise be stored, pushed, and
+		// never reported -- the failure this task exists to close, reached from
+		// the other side. Lookaround and backreferences are deliberately absent:
+		// JavaScript supports both (lookbehind since ES2018), so rejecting them
+		// would refuse patterns that work.
+		{Pattern: "ls", ArgPattern: `(?i)^foo$`},
+		{Pattern: "ls", ArgPattern: `^(?P<x>a)$`},
+		{Pattern: "ls", ArgPattern: `^[[:alpha:]]+$`},
+		{Pattern: "ls", ArgPattern: `^\p{L}+$`},
 	}
 	for _, r := range bad {
 		if err := Validate(r); err == nil {
 			t.Errorf("Validate(%+v) = nil, want an error", r)
+		}
+	}
+}
+
+// TestValidateAcceptsEscapedLookalikes pins the false-positive side of the
+// denylist: a derived rule is regexp.QuoteMeta'd, so a command that happens to
+// contain `(?i)` or a backslash arrives escaped and must still validate.
+func TestValidateAcceptsEscapedLookalikes(t *testing.T) {
+	for _, r := range []v1alpha1.AllowlistRule{
+		{Pattern: "grep", ArgPattern: `^\(-P\) \\1$`},
+		{Pattern: "grep", ArgPattern: `^\(foo\)\?bar$`},
+	} {
+		if err := Validate(r); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", r, err)
 		}
 	}
 }

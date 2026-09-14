@@ -122,24 +122,47 @@ func Effective(templateAllowlist, instanceAllowlist, grants []v1alpha1.Allowlist
 	return Merge(Default(), all)
 }
 
+// jsIncompatible lists the constructs Go's RE2 accepts that the gateway's
+// JavaScript `new RegExp(argPattern)` does not accept, or reads differently.
+// The gateway passes no `u` flag, so `[[:alpha:]]` and `\p{...}` are not the
+// classes they look like there. Without this check such a pattern validated,
+// was stored and was pushed, and then never matched -- the same "stored, never
+// reported" failure this task closes, reached from the other side.
+//
+// This is a best-effort denylist, not a sound validator: the two engines differ
+// in ways no list of patterns captures, and a shared subset is the most that
+// can be asserted. The residual divergence is fail-closed, because a pattern
+// the gateway cannot compile throws at match time and the runtime catches that
+// and treats it as no-match: the command asks again rather than auto-passing.
+var jsIncompatible = []struct {
+	re   *regexp.Regexp
+	what string
+}{
+	{regexp.MustCompile(`\(\?P<`), "a named group (?P<name>...), which JavaScript spells (?<name>...)"},
+	{regexp.MustCompile(`\(\?[a-zA-Z-]`), "an inline flag group such as (?i); pass flags to RegExp instead"},
+	{regexp.MustCompile(`\[\[:`), "a POSIX class such as [[:alpha:]]"},
+	{regexp.MustCompile(`\\[pP]\{`), "a Unicode property such as \\p{L}, which needs the RegExp u flag"},
+}
+
 // Validate reports whether a rule is well formed. Pattern is a command name
 // rather than a regular expression, so it is only checked for emptiness;
 // ArgPattern is a regular expression compiled by the gateway at match time, so
-// it is compiled here to reject it while the user is still looking at the form.
-//
-// The two grammars are not the same: the gateway compiles ArgPattern as a
-// JavaScript RegExp (new RegExp in the exec-command-resolution module), while
-// this function uses Go's RE2. Lookaround and backreferences are rejected here
-// but valid there, and RE2-only syntax such as \p{L} or [[:alpha:]] is accepted
-// here but misread or thrown on there. The divergence is fail-closed -- a throw
-// at match time is caught and treated as no-match -- so this check is a
-// courtesy to the user, not a guarantee that the gateway accepts the pattern.
+// it is checked here against the constructs the gateway's RegExp engine cannot
+// take (jsIncompatible) and then compiled, rejecting it while the user is still
+// looking at the form. The denylist runs first so a construct is reported as the
+// JavaScript incompatibility it is rather than as a bare compile error. It is
+// best-effort; see it for why the gap is safe to leave.
 func Validate(r v1alpha1.AllowlistRule) error {
 	if strings.TrimSpace(r.Pattern) == "" {
 		return errors.New("pattern is required")
 	}
 	if r.ArgPattern == "" {
 		return nil
+	}
+	for _, c := range jsIncompatible {
+		if c.re.MatchString(r.ArgPattern) {
+			return fmt.Errorf("argPattern uses %s, which JavaScript's new RegExp does not accept: the gateway matches argPattern with new RegExp, not RE2", c.what)
+		}
 	}
 	if _, err := regexp.Compile(r.ArgPattern); err != nil {
 		return fmt.Errorf("argPattern is not a valid regular expression: %w", err)
