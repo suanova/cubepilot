@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -9,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
@@ -475,5 +477,51 @@ func TestGrantChangesTheRevision(t *testing.T) {
 	}
 	if before.Revision == after.Revision {
 		t.Errorf("revision did not change after recording a grant (%q)", after.Revision)
+	}
+}
+
+// TestResolveGrantReadFailureIsAnError pins the direction of a failing grants
+// read: it must make Resolve return an error, not silently union an empty list.
+// The two differ only in direction and both are fail-closed, but an empty list
+// quietly drops every learned grant and the user is prompted more, not less,
+// while the error is honest about the failure and refuses the turn.
+func TestResolveGrantReadFailureIsAnError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	grantsName := k8s.ResourceName("cubepilot-grants", "alice")
+	injected := errors.New("injected grants read failure")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
+		WithObjects(
+			template("t1", nil),
+			instance("alice", "t1", ""),
+			// A ConfigMap exists, so the read is reached rather than short-circuited
+			// by a NotFound -- the failure below is the injected one.
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: grantsName}},
+		).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if key.Name == grantsName {
+					return injected
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := New(cl, "")
+	_, err := r.Resolve(context.Background(), "alice", "t1")
+	if err == nil {
+		t.Fatal("a failing grants read must fail the resolve, not union an empty list")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("err = %v, want the injected grants read failure", err)
 	}
 }
