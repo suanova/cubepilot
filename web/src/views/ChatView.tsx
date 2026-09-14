@@ -1390,9 +1390,15 @@ export default function ChatView() {
     confirm.error = ''
     setBubbles([...bubblesRef.current])
     try {
-      await api.postApproval(session, decision)
+      const res = await api.postApproval(session, decision)
       confirm.resolved = true
       confirm.approved = decision !== 'reject'
+      // The approval itself went through, but recording the durable grant did
+      // not, so this command will ask again. Reporting the plain success the
+      // user is relying on would be a lie (issue #185).
+      if (decision === 'allow-always' && res.allowlisted === false) {
+        showToast('Approved, but the command was not added to your allowlist -- it will ask again.')
+      }
     } catch (e) {
       // 404 is the card having been settled underneath the click: the turn was
       // stopped and the settle deleted the record, or it expired. The click lost

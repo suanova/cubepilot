@@ -19,6 +19,11 @@ function WarnIcon() {
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" /></svg>
 }
 
+// The normalizer below fills allowlistLearned, so the view state types it as
+// required: the server omits the field when there is no learned grant, but no
+// render or handler path should have to guard for that.
+type ConfirmView = AgentApprovalView & { allowlistLearned: AllowlistRule[] }
+
 export default function AgentView() {
   const [cfg, setCfg] = useState<AgentConfig>({ exists: false, selectedModel: '', userInstructions: '' })
   const [status, setStatus] = useState<AgentStatus | null>(null)
@@ -34,7 +39,7 @@ export default function AgentView() {
   const [editingModel, setEditingModel] = useState<string | null>(null)
 
   // Approval posture (issue #116): approvalPolicy override + owned allowlist.
-  const [confirm, setConfirm] = useState<AgentApprovalView | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmView | null>(null)
   const [policySel, setPolicySel] = useState('') // '' = follow the template default
   const [ruleForm, setRuleForm] = useState<{ pattern: string; argPattern: string }>({ pattern: '', argPattern: '' })
   const [confirmBusy, setConfirmBusy] = useState(false)
@@ -92,12 +97,14 @@ export default function AgentView() {
   }
 
   // Approval posture (issue #116) --------------------------------
-  // The API may omit allowlist/allowlistOwned (null); normalize to [] so no
-  // render/handler path calls .some/.length on null (issue #123).
-  const withConfirmDefaults = (v: AgentApprovalView): AgentApprovalView => ({
+  // The API may omit allowlist/allowlistOwned (null) and allowlistLearned
+  // (omitempty); normalize to [] so no render/handler path calls
+  // .some/.length on null (issue #123).
+  const withConfirmDefaults = (v: AgentApprovalView): ConfirmView => ({
     ...v,
     allowlist: v.allowlist ?? [],
     allowlistOwned: v.allowlistOwned ?? [],
+    allowlistLearned: v.allowlistLearned ?? [],
   })
 
   async function loadConfirm() {
@@ -117,20 +124,22 @@ export default function AgentView() {
   // not guess -- a user/template rule with pattern "kubectl" can allow a write.
   // Rules without a label render their raw pattern.
   function allowlistLabel(r: AllowlistRule): string {
-    return r.label || r.pattern || '(empty)'
+    // A learned rule is the invocation the user approved; its pattern plus an
+    // escaped regex is not something anyone recognises (issue #185).
+    return r.command || r.label || r.pattern || '(empty)'
   }
 
-  // Every change PUTs the full desired owned state. The server unions it with
-  // the platform builtin and the template's rules, so an empty list means "this
-  // instance adds nothing" -- not "inherit and take over".
+  // Every change PUTs the full desired owned state; the server treats an empty
+  // list as clearing the hand-authored rules. revokeGrants drops learned
+  // grants, which live in their own store (issue #185).
   // Returns whether the PUT succeeded, so a caller that mutated local form
   // state (addRule) can discard it only once the server accepted the change.
-  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string): Promise<boolean> {
+  async function persistConfirm(owned: AllowlistRule[] | null, policy?: string, revokeGrants?: AllowlistRule[]): Promise<boolean> {
     if (!confirm || confirmBusy) return false
     setConfirmBusy(true)
     try {
       const pol = policy !== undefined ? policy : policySel
-      const v = await api.saveAgentApproval({ approvalPolicy: pol, allowlist: owned ?? [] })
+      const v = await api.saveAgentApproval({ approvalPolicy: pol, allowlist: owned ?? [], revokeGrants })
       setConfirm(withConfirmDefaults(v))
       setPolicySel(v.override || '')
       return true
@@ -169,8 +178,13 @@ export default function AgentView() {
 
   function removeRule(key: string) {
     if (!confirm) return
+    const learned = confirm.allowlistLearned.find((r) => ruleKey(r) === key)
+    if (learned) {
+      void persistConfirm(confirm.allowlistOwned, undefined, [learned])
+      return
+    }
     // Only hand-authored rules are removable: the platform builtin and the
-    // template's rules are a floor, supplied live by the union (issue #185).
+    // template's rules are a floor (issue #185).
     void persistConfirm(confirm.allowlistOwned.filter((r) => ruleKey(r) !== key))
   }
 
@@ -551,32 +565,44 @@ export default function AgentView() {
                   <div className="field">
                     <label className="label">Allowlist — safe commands that auto-pass</label>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
-                      {(confirm.allowlist || []).map((r) => {
-                        const isOwned = confirm.allowlistOwned.some((o) => ruleKey(o) === ruleKey(r))
+                      {(
+                        [
+                          ['Your rules', 'user', true],
+                          ['Learned from Allow always', 'learned', true],
+                          ['From the template', 'template', false],
+                          ['Platform safe commands', 'builtin', false],
+                        ] as const
+                      ).map(([title, source, editable]) => {
+                        const rows = (confirm.allowlist || []).filter((r) => (r.source || 'builtin') === source)
+                        if (!rows.length) return null
                         return (
-                          <div key={ruleKey(r)} className="rule-row" style={{ display: 'block', padding: '8px 12px', marginBottom: 6 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                              <WarnIcon />
-                              <span className="mono" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={allowlistLabel(r)}>
-                                {allowlistLabel(r)}
-                              </span>
-                              <span className={`pill ${isOwned ? 'accent' : 'neutral'}`}>{isOwned ? 'Yours' : 'Platform'}</span>
-                              {isOwned && (
-                                <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
-                                  Remove
-                                </button>
-                              )}
-                            </div>
-                            {r.argPattern ? (
-                              <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                argPattern: {r.argPattern}
+                          <div key={source}>
+                            <div className="label" style={{ marginBottom: 4 }}>{title}</div>
+                            {rows.map((r) => (
+                              <div key={ruleKey(r)} className="rule-row" style={{ display: 'block', padding: '8px 12px', marginBottom: 6 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                                  <WarnIcon />
+                                  <span className="mono" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={allowlistLabel(r)}>
+                                    {allowlistLabel(r)}
+                                  </span>
+                                  {editable && (
+                                    <button className="btn" style={{ padding: '2px 8px', flex: 'none' }} disabled={confirmBusy} onClick={() => removeRule(ruleKey(r))}>
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                                {r.argPattern ? (
+                                  <div className="mono" title={r.argPattern} style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    argPattern: {r.argPattern}
+                                  </div>
+                                ) : null}
                               </div>
-                            ) : null}
+                            ))}
                           </div>
                         )
                       })}
                       {confirm.allowlist.length === 0 && (
-                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist — every command asks.</div>
+                        <div style={{ color: 'var(--muted)', fontSize: 13 }}>Empty allowlist -- every command asks.</div>
                       )}
                     </div>
                   </div>
