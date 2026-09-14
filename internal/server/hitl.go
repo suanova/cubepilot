@@ -929,6 +929,54 @@ func (m *hitlManager) RunLiveTurn(ctx context.Context, user, sessionKey, message
 	}
 }
 
+// attachCap bounds how long a re-attached stream may live. A parked run always
+// ends by itself (the gateway expires the question and the run continues to a
+// terminal frame), so this only catches a run that never terminates -- a gateway
+// restarting under it, say. Without a cap the observer would outlive every reason
+// to keep observing.
+const attachCap = time.Hour
+
+// AttachLiveTurn subscribes the session's live message stream and registers a
+// live turn for it WITHOUT sending a message (issue #167): the caller observes a
+// run that is already in flight and parked on a human decision, so the browser
+// answering a question or confirmation restored after a reload sees the
+// continuation, even though the request that started the turn is long gone.
+//
+// runID is the run the parked decision belongs to (a gateway question carries
+// it); it seeds the run filter so an unrelated run of the same session cannot
+// leak into this stream. An empty runID -- a write confirmation carries no run
+// id -- accepts any run of the session.
+//
+// Unlike RunLiveTurn there is no agent.wait backstop: the run was not started
+// here, and its terminal chat frame is the authoritative end, which the gateway
+// broadcasts to every session subscriber including one that joined late.
+//
+// It reports the same TurnOutcome RunLiveTurn does, so an observing caller
+// terminal-writes through liveTurnDone and cannot report a run another tab
+// stopped as a plain completion.
+func (m *hitlManager) AttachLiveTurn(ctx context.Context, user, sessionKey, runID string, sink func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
+	gw, err := m.conn(ctx, user)
+	if err != nil {
+		return agentruntime.TurnOutcome{}, err
+	}
+	t := m.registerLive(user, sessionKey, sink)
+	defer m.releaseLive(user, sessionKey, gw)
+	t.setRunID(runID)
+	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
+		m.sayf("attach %s: %s: subscribe: %v", user, sessionKey, err)
+		return agentruntime.TurnOutcome{}, err
+	}
+	select {
+	case <-t.done:
+		return t.outcome()
+	case <-time.After(attachCap):
+		m.sayf("attach %s: %s: no terminal event within %s", user, sessionKey, attachCap)
+		return agentruntime.TurnOutcome{}, fmt.Errorf("the parked run did not finish within %s", attachCap)
+	case <-ctx.Done():
+		return agentruntime.TurnOutcome{}, ctx.Err()
+	}
+}
+
 // routeLive fans a gateway session-message event to the active live turn for
 // its session (invoked from the connection's event sink). Events without a
 // session key (heartbeats, ticks) and events for sessions with no active turn

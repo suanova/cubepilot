@@ -168,6 +168,14 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 				return nil, false
 			}
 			call := p.call(o.ToolCallID)
+			// Only a call this projection saw start has a card here. An observer
+			// that attached mid-run (issue #167) sees the tail of calls the
+			// originating stream had already started, and their output has nowhere
+			// to render -- an unknown-named result would surface as a phantom card
+			// entry the browser cannot match.
+			if !call.started {
+				return nil, false
+			}
 			call.sawOutput = true
 			switch {
 			case o.Phase == "end" && o.Output != "":
@@ -311,7 +319,9 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 		// partialResult progress -- no SSE equivalent yet; ignore.
 		return nil
 	case "result":
-		if call.resultOut || call.suppressed {
+		// Same as command_output: a result for a call this projection never saw
+		// start has no card to settle (an observer that attached mid-run).
+		if !call.started || call.resultOut || call.suppressed {
 			return nil
 		}
 		// Only exec/bash-style tools defer to their later command_output (the

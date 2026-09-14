@@ -41,6 +41,11 @@ export async function streamSSE(
   opts: RequestInit,
   onEvent: (name: string, ev: SSEEvent) => void,
   signal?: AbortSignal,
+  // onHttpError takes over a non-OK response instead of the synthetic
+  // message_done below. The session attach stream uses it to treat "another tab
+  // already holds this session's stream" as nothing to do, rather than painting
+  // a failed turn the caller never started.
+  onHttpError?: (status: number, body: string) => void,
 ): Promise<void> {
   // RequestInit already declares `signal`, so a caller may hand one over either
   // positionally or inside `opts`. Prefer the positional one but fall back to
@@ -64,6 +69,10 @@ export async function streamSSE(
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
+    if (onHttpError) {
+      onHttpError(resp.status, text)
+      return
+    }
     emitDone(onEvent, `HTTP ${resp.status} ${text}`)
     return
   }

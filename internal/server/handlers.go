@@ -180,6 +180,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure the instance is running; this may cold-start the Pod.
 	if err := s.mgr.Ensure(r.Context(), user); err != nil {
+		s.logf("chat %s: %s: turn ended: instance warming failed: %v", user, sessionKey, err)
 		_ = stream.Send(agentruntime.Event{Type: agentruntime.EventMessageDone, SessionID: sessionKey, Error: fmt.Sprintf("instance warming failed: %v", err)})
 		return
 	}
@@ -218,6 +219,19 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		metrics.Inc("cubepilot_turns_total", "status=failed", 1)
 	} else {
 		metrics.Inc("cubepilot_turns_total", "status=ok", 1)
+	}
+	// Say how the turn ended. A turn whose browser went away is otherwise
+	// invisible server-side: the run keeps going gateway-side while nothing
+	// observes it, and losing the stream is what leaves a parked question or
+	// confirmation with no way to deliver its continuation (issue #167).
+	took := time.Since(started).Round(time.Millisecond)
+	switch {
+	case streamErr == nil:
+		s.logf("chat %s: %s: turn done in %s", user, sessionKey, took)
+	case r.Context().Err() != nil:
+		s.logf("chat %s: %s: turn ended after %s: request context cancelled (%v)", user, sessionKey, took, r.Context().Err())
+	default:
+		s.logf("chat %s: %s: turn ended after %s: %v", user, sessionKey, took, streamErr)
 	}
 }
 

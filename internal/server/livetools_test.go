@@ -148,6 +148,29 @@ func TestLiveProjector_IgnoresUnrelatedAndMalformed(t *testing.T) {
 	}
 }
 
+// TestLiveProjector_IgnoresTailsOfCallsStartedBeforeAttach: an observer that
+// joins a run already in flight (issue #167 re-attach) sees results for calls
+// whose start it never saw. Those have no card in this projection, and emitting
+// them would put a phantom entry in front of the browser.
+func TestLiveProjector_IgnoresTailsOfCallsStartedBeforeAttach(t *testing.T) {
+	p := newLiveProjector()
+	feed := func(payload string) []openclaw.Event {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		return got
+	}
+	if got := feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"text":"done"},"toolCallId":"call_before"}}`); len(got) != 0 {
+		t.Fatalf("result for an unseen call must not emit, got %+v", got)
+	}
+	if got := feed(`{"sessionKey":"` + conv + `","stream":"command_output","data":{"phase":"end","output":"already ran","toolCallId":"exec_before"}}`); len(got) != 0 {
+		t.Fatalf("command output for an unseen call must not emit, got %+v", got)
+	}
+	// A call this projection did see start still reports normally.
+	feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"start","name":"read","toolCallId":"call_after"}}`)
+	if got := feed(`{"sessionKey":"` + conv + `","stream":"tool","data":{"phase":"result","result":{"text":"seen"},"toolCallId":"call_after"}}`); len(got) != 1 || got[0].CallID != "call_after" {
+		t.Fatalf("result for a seen call = %+v, want it emitted", got)
+	}
+}
+
 func TestLiveProjector_ToolStartDedupAndName(t *testing.T) {
 	p := newLiveProjector()
 	var evs []openclaw.Event
