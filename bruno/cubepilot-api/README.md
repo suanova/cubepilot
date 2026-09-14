@@ -23,16 +23,7 @@
    只有 `2-provision/01-add-llm` 用它。不填的话那条会返回 400 —— 那是**正确的**:
    `apiKey` 与 `public` 二选一,都不给就是 400。
 
-3. **把 `llmName` / `llmEndpoint` 改成你自己的。**
-
-   仓库里的值是占位符（`my-model` / `https://llm.example.com/v1`），**故意不写真实端点**。
-   不改的话 `2-provision/02-select-model` 会报
-   `model "my-model" is not in the cubepilot template` —— 先跑
-   `1-read/04-agenttemplates` 看你那套环境里有哪些模型，再回来填。
-
-   `1-read` 和 `0-health` 不用这两个变量，可以先跑它们确认通道。
-
-4. **（可选）在 Bruno 里选 `local` 环境。**
+3. **（可选）在 Bruno 里选 `local` 环境。**
 
    环境下拉在**请求面板的右上角**，默认显示 `No Environment`。
    ⚠️ 它**只有在你打开了一个请求之后才出现** —— 刚打开集合、左侧只看到目录树时，
@@ -129,9 +120,10 @@ bru run 4-tasks --env local --reporter-html out.html  # 出报告
    那个文件会被改写 —— 它是集合的一部分，`git status` 会脏。
    串联脚本已改成优先 `setEnvVar`、没有环境时退回运行时变量 `setVar`。
 
-   **所以提交前先看一眼 `git diff bruno/`**：跑过一遍之后
-   `environments/*.bru` 里会带上 `sessionId` / `taskId` 的运行时值，
-   不该提交。仓库里的版本这两个键是空的。
+## 完整走一遍对话 / 审批 / 问答
+
+见 **[WALKTHROUGH.md](WALKTHROUGH.md)** —— 用 GUI 逐步走「对话 → 写审批 → ask_user 问答」
+三条流程，含要发什么提示词、会停在哪个事件、以及在**另一个标签页**上怎么解。
 
 ## SSE 怎么看
 

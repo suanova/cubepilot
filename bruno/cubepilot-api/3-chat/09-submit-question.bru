@@ -1,0 +1,51 @@
+meta {
+  name: submit question answer
+  type: http
+  seq: 9
+}
+
+docs {
+  # 回答 ask_user 的问题
+
+  收到 `question_pending` 事件后调它。**在另一条连接上**调用 ——
+  对话 SSE 流仍开着并停在 pending 上。
+
+  body 形状：
+  - `id` = **问答会话 id**（事件里的 `callId`，形如 `ask_<hex>`）
+  - `answers` = `{ "<questionId>": ["选项的 label"] }`
+  - `answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400`
+
+  ⚠️ `id` 和 `questionId` 容易搞混，见 `08-question-pending` 的说明。
+
+  ⚠️ 和 `/approval` 一样，必须用 **canonical 形式的 sessionKey**（问题 #180）。
+
+  回答后主流上出现 `question_resolved`（`answered` / `cancelled` / `expired`）。
+
+  **先跑 `08-question-pending` 拿到 id 填进下面**，或直接用你在
+  `question_pending` 事件里看到的 `callId`。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/question
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "id": "{{questionId}}",
+    "answers": {
+      "{{questionKey}}": ["{{questionAnswer}}"]
+    }
+  }
+}
+
+tests {
+  test("200 answered, or 404/409 if it is gone", function() {
+    expect([200, 404, 409]).to.include(res.status)
+  })
+}

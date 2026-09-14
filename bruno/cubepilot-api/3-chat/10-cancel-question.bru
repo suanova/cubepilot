@@ -1,0 +1,38 @@
+meta {
+  name: cancel question
+  type: http
+  seq: 10
+}
+
+docs {
+  # 取消提问 —— 让 agent 继续，而不是干等到超时
+
+  同一个端点，换成 `{"id": ..., "cancel": true}`。
+  默认超时是 **900 秒**，所以不回答的话这个回合会挂很久。
+
+  响应 `{"questionId":..., "cancelled":true}`；
+  主流上出现 `question_resolved` 且 `message: "cancelled"`。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/question
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "id": "{{questionId}}",
+    "cancel": true
+  }
+}
+
+tests {
+  test("200, or 404/409 if it is gone", function() {
+    expect([200, 404, 409]).to.include(res.status)
+  })
+}
