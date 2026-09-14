@@ -38,6 +38,8 @@ body:json {
 tests {
   test("200", function() { expect(res.status).to.equal(200) })
   test("echoes the selection", function() {
-    expect(res.body.selectedModel).to.equal(bru.getEnvVar("llmName"))
+    // 用 interpolate 而不是 getEnvVar：变量可能来自 collection.bru 的兜底
+    // （No Environment 时），getEnvVar 只读环境作用域、会拿到 undefined。
+    expect(res.body.selectedModel).to.equal(bru.interpolate("{{llmName}}"))
   })
 }
