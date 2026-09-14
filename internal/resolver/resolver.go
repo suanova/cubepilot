@@ -62,10 +62,10 @@ type ResolvedAgentConfig struct {
 	// default unless the instance overrides it; issue #116).
 	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist is the agent's effective safe-command allowlist (issue #116):
-	// the union of the platform builtin, the template's allowlist and the
-	// instance's own hand-authored rules. The instance adds to it and cannot
-	// remove from it, so an empty instance list means "adds nothing". Only
-	// enforced under Allowlist policy.
+	// the union of the platform builtin, the template's allowlist, the
+	// instance's own hand-authored rules and the instance's learned grants. The
+	// instance adds to it and cannot remove from it, so an empty instance list
+	// means "adds nothing". Only enforced under Allowlist policy.
 	Allowlist []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
 	// DevicePublicKey is the platform's operator device public key for this
 	// agent's gateway (HITL approvals, issue #20). Transport-only: filled by
