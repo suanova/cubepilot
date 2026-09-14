@@ -156,7 +156,7 @@ export default function AgentView() {
     }
     const entry: AllowlistRule = { pattern, argPattern: ruleForm.argPattern.trim() || undefined }
     // Only the hand-authored list. Falling back to the effective list copied
-    // the platform builtin into the spec — the freeze this change removes.
+    // the platform builtin into the spec -- the freeze this change removes.
     const base = confirm ? confirm.allowlistOwned : []
     if (base.some((r) => ruleKey(r) === ruleKey(entry))) {
       showToast('That command is already on the allowlist')

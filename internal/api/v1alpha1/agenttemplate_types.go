@@ -180,9 +180,9 @@ type AgentTemplateSpec struct {
 	// +optional
 	ApprovalPolicy ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist optionally extends the template's default safe-command
-	// allowlist (issue #116): the effective allowlist is the platform builtin
-	// ∪ these entries ∪ the instance's own (issue #185). Only meaningful under
-	// Allowlist policy.
+	// allowlist (issue #116): the effective allowlist is the union of the
+	// platform builtin, these entries and the instance's own (issue #185). Only
+	// meaningful under Allowlist policy.
 	// +optional
 	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// Instructions is the default system prompt (definition-level default;

@@ -385,8 +385,8 @@ func TestResolvedAllowlistKeepsBuiltinsWithInstanceEntries(t *testing.T) {
 
 // TestResolveEffectiveAllowlistOwned verifies an instance with its own entries
 // still resolves the builtin and the template's additions (issue #185). This
-// used to assert the opposite — that an owned list replaced the inherited
-// default outright — which is exactly the fork: the instance was frozen off the
+// used to assert the opposite -- that an owned list replaced the inherited
+// default outright -- which is exactly the fork: the instance was frozen off the
 // platform builtin on its first write, so a later hardening of Default() could
 // not reach it.
 func TestResolveEffectiveAllowlistOwned(t *testing.T) {

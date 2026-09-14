@@ -32,8 +32,9 @@ const (
 // caller's default agent instance (issue #116). approvalPolicy/allowlist are
 // the *effective* values (what the runtime enforces); override/allowlistOwned
 // are the instance's own hand-authored state. The effective allowlist is the
-// platform builtin ∪ the template's allowlist ∪ it, so an empty allowlistOwned
-// means "this instance adds nothing" -- not "inherit and take over".
+// union of the platform builtin, the template's allowlist and these rules, so
+// an empty allowlistOwned means "this instance adds nothing" -- not "inherit
+// and take over".
 type approvalView struct {
 	Exists         bool                    `json:"exists"`
 	ApprovalPolicy v1alpha1.ApprovalPolicy `json:"approvalPolicy"`
@@ -69,9 +70,9 @@ func toApprovalRules(rules []v1alpha1.AllowlistRule) []approvalRule {
 // handleAgentApproval serves GET/PUT /api/agent/approval -- the instance owner's
 // confirmation posture: an optional approvalPolicy override ("" = follow the
 // template) and the instance's own hand-authored allowlist rules. The effective
-// allowlist is Default() ∪ the template's rules ∪ those entries: the instance
-// adds to it and cannot remove from it, so [] means "this instance adds
-// nothing", never "inherit and take over".
+// allowlist is the union of Default(), the template's rules and those entries:
+// the instance adds to it and cannot remove from it, so [] means "this instance
+// adds nothing", never "inherit and take over".
 func (s *Server) handleAgentApproval(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -243,7 +244,7 @@ func (s *Server) allowlistAlways(ctx context.Context, user string, rule v1alpha1
 	// Append only to the instance's own rules. Deliberately NOT the resolved
 	// effective list: copying that in would write the platform builtin into the
 	// spec, and the union would then faithfully include the snapshot, so a
-	// builtin later removed from Default() — a hardening — would keep
+	// builtin later removed from Default() -- a hardening -- would keep
 	// auto-passing here. The union supplies the builtin live instead.
 	inst.Spec.Allowlist = allowlist.Merge(inst.Spec.Allowlist, []v1alpha1.AllowlistRule{rule})
 	if err := s.cr.Update(ctx, &inst); err != nil {

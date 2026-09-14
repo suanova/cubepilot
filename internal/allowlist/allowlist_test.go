@@ -88,7 +88,7 @@ func TestDefaultExcludesCommandWrappers(t *testing.T) {
 }
 
 func TestEffectiveInheritsTemplateDefault(t *testing.T) {
-	// Empty instance list -> platform builtin ∪ template allowlist.
+	// Empty instance list -> union of the platform builtin and template allowlist.
 	base := v1alpha1.AllowlistRule{Pattern: "helm", ArgPattern: `^list`}
 	got := Effective([]v1alpha1.AllowlistRule{base}, nil, nil)
 	if len(got) == 0 {
