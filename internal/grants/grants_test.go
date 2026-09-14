@@ -420,9 +420,11 @@ func TestAddEvictsToStayUnderTheSizeBudget(t *testing.T) {
 	}
 	// Measured with json.Marshal rather than dataSize on purpose: dataSize is
 	// the function evict bounds the payload with, so asserting against it would
-	// keep passing if dataSize stopped counting what it should -- dropping
-	// len(k), or returning 0 and disabling size eviction entirely -- which is
-	// exactly the regression this test exists to catch.
+	// keep passing if dataSize stopped measuring what it should -- returning 0
+	// and disabling size eviction entirely, or counting something smaller than
+	// the serialized map -- which is exactly the regression this test exists to
+	// catch. Now that dataSize is the serialized length too, the two agree; the
+	// independent measurement here is what still makes a mutated dataSize fail.
 	marshaled, err := json.Marshal(cm.Data)
 	if err != nil {
 		t.Fatalf("marshal Data: %v", err)

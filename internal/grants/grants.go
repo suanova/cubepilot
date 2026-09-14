@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -324,14 +325,25 @@ func (s *Store) ensure(ctx context.Context, user string) (*corev1.ConfigMap, err
 	return &cm, nil
 }
 
-// dataSize is the serialized size of a ConfigMap's Data, which is the bulk of
-// what the API server counts against its ~1 MiB object ceiling.
+// dataSize is the serialized size of a ConfigMap's Data: the quantity
+// maxDataBytes is documented to bound, and the bulk of what the API server
+// counts against its ~1 MiB object ceiling. Summing the raw key and value
+// lengths instead would under-report any text containing characters JSON
+// escapes, so a payload could serialize past the budget the store believes it
+// enforced.
+//
+// Measuring costs a marshal of the whole map, which is affordable here: Add is
+// the only caller and runs the size check at most once per write, over a map
+// MaxGrants already bounds.
 func dataSize(cm *corev1.ConfigMap) int {
-	n := 0
-	for k, v := range cm.Data {
-		n += len(k) + len(v)
+	raw, err := json.Marshal(cm.Data)
+	if err != nil {
+		// Over-report rather than under: a measurement that comes back low
+		// would let evict keep a payload past its budget. Unreachable for a
+		// map[string]string, but the failure has to lean the safe way.
+		return math.MaxInt
 	}
-	return n
+	return len(raw)
 }
 
 // evict bounds a ConfigMap's payload: it drops the oldest entries until at most
