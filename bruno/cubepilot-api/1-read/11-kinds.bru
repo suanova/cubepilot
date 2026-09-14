@@ -1,0 +1,27 @@
+meta {
+  name: kinds
+  type: http
+  seq: 11
+}
+
+docs {
+  # CRD kind schema
+
+  供前端渲染动态表单。数量随 vendored 的 CubeStack CRD 变化。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/kinds
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped under kinds", function() {
+    expect(res.body).to.have.property("kinds")
+  })
+}

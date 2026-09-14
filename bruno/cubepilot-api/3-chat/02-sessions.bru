@@ -1,0 +1,43 @@
+meta {
+  name: list sessions
+  type: http
+  seq: 2
+}
+
+docs {
+  # 会话列表
+
+  ⚠️ **会加热实例** —— 第一次可能等数十秒,或直接 **503**
+  `instance warming failed`。**503 不是故障,等一会儿重试**。
+
+  只有 4 个端点会加热:`GET /sessions`、`GET /sessions/{key}/messages`,
+  `POST /messages`、`POST /inspect`。其余全部秒回。
+
+  返回的 `sessionKey` 就是后续要用的 `{key}`(已规范化,含冒号)。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/sessions
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+script:post-response {
+  const setVar = (k, v) => { try { bru.setEnvVar(k, v); } catch (e) { bru.setVar(k, v); } };
+  // 兜底：如果 01 没跑（例如你在 gui 里单跑这一条），
+  // 就用列表里最新的那个会话补上 sessionId。
+  if (!bru.getEnvVar("sessionId") && res.body.sessions && res.body.sessions.length) {
+    setVar("sessionId", res.body.sessions[0].sessionKey);
+    console.log("sessionId (from list) ->", res.body.sessions[0].sessionKey);
+  }
+}
+
+tests {
+  test("200, or 503 while warming", function() {
+    expect([200, 503]).to.include(res.status)
+  })
+}

@@ -1,0 +1,35 @@
+meta {
+  name: question pending
+  type: http
+  seq: 8
+}
+
+docs {
+  # 找回未决问答
+
+  刷新页面后恢复问题卡片用，和 `05-approval-pending` 同理。
+
+  ⚠️ 两个 id **不是一回事**：
+  - `questions[].id`（外层）是**问答会话 id** —— 提交答案时用这个当 `id`
+  - `questions[].questions[].questionId` 是**每个问题的 id** —— 答案 map 的键
+
+  内层字段名是复数 `questions`，别取错层。
+
+  `404 {"error":"no pending question"}` 是正常的"没有未决项"，静默忽略。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/question/pending
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200 with questions, or 404 when none pending", function() {
+    expect([200, 404]).to.include(res.status)
+  })
+}

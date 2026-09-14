@@ -1,0 +1,2 @@
+# Local secrets (LLM apiKey). Never commit.
+.env

@@ -1,0 +1,28 @@
+meta {
+  name: tasktemplates
+  type: http
+  seq: 8
+}
+
+docs {
+  # 任务模板
+
+  创建任务时的向导数据源:`spec.paramsSchema` 决定 `params` 能传哪些键,
+  `spec.defaultCron` 是调度默认值。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tasktemplates
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped", function() {
+    expect(res.body).to.have.property("taskTemplates")
+  })
+}

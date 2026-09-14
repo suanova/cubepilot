@@ -1,0 +1,42 @@
+meta {
+  name: edit LLM
+  type: http
+  seq: 1
+}
+
+docs {
+  # 改模型
+
+  `{name}` **不可改** —— 它同时是选择 key、网关 provider key、后端模型名和凭据 Secret 名。
+  改名等价于删了重建。
+
+  - 省略 `apiKey`(或给空)= **保留**原凭据(所以「只改 endpoint」不会清掉 key)。
+  - `apiKey` 非空 → 覆盖凭据。
+  - 模型原本是 public 的,必须显式给 `"public": true`,否则 400。
+  - `"public": true` 且不带 `apiKey` → 清空凭据、删除 Secret。
+
+  删除 Secret 失败时改动**已生效**,响应里附 `warning` 而不是报错。
+}
+
+put {
+  url: {{baseUrl}}/api/v1/llms/{{llmName}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "endpoint": "{{llmEndpoint}}"
+  }
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under model", function() {
+    expect(res.body).to.have.property("model")
+  })
+}

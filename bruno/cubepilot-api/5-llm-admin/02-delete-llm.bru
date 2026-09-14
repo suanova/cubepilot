@@ -1,0 +1,37 @@
+meta {
+  name: delete LLM
+  type: http
+  seq: 2
+}
+
+docs {
+  # 删模型
+
+  只删本 API 为该模型命名的那个 Secret(`llm-<name>`)。
+  若 `credentialRef` 指向别的 Secret(手工改过 CR、多模型共用一个凭据),
+  该 Secret **会被保留**并在响应的 `warning` 里说明。
+
+  若模板的 `defaultModel` 指向它,一并清空。
+
+  ⚠️ 若有实例的 `selectedModel` 正选中它 → **409**,
+  错误体额外带 `instances: [{name, owner}]` —— 这是**唯一**要求客户端解析
+  结构化错误体的地方(Portal 把它渲染成可点击的实例列表)。选择是 fail-closed 的。
+
+  ⚠️ 这条会**真的删掉集合正在用的模型**,跑完记得用 `2-provision/01-add-llm` 加回来。
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/llms/{{llmName}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200 removed, or 409 if a instance selects it", function() {
+    expect([200, 409]).to.include(res.status)
+  })
+}

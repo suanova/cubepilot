@@ -1,0 +1,39 @@
+meta {
+  name: session history
+  type: http
+  seq: 3
+}
+
+docs {
+  # 会话历史(字节透传)
+
+  平台**不存消息副本** —— 会话内容的唯一真相源是实例自身的运行时。
+  所以**实例不热就读不到历史**(是失败,不是"读到旧数据")。
+
+  ⚠️ `sessionId` 要先填进环境变量(从 `message_start` 事件里拿)。
+
+  ## `content` 有两种形状,必须归一化
+
+  | role | content |
+  |---|---|
+  | `user` | **字符串** |
+  | `assistant` / `toolResult` | **内容块数组** `[{type:"text"\|"toolCall",...}]` |
+
+  把字符串当数组遍历会**逐字符拆开**,用户消息整条消失。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/messages
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200, or 503 while warming", function() {
+    expect([200, 503]).to.include(res.status)
+  })
+}

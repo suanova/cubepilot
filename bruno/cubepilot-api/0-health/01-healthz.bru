@@ -1,0 +1,33 @@
+meta {
+  name: healthz
+  type: http
+  seq: 1
+}
+
+docs {
+  # 存活探针
+
+  唯一不在 `/api/v1/` 下的客户端端点。用它确认通道通了 ——
+  连不上时后面每条请求都会是 ECONNREFUSED。
+
+  ⚠️ **`baseUrl` 必须指向 cubepilot-api 本身,不能指向 Portal(nginx)。**
+  nginx 只反代 `/api/`(见 `web/nginx.conf`),`/healthz` 会落到 SPA 兜底
+  —— 返回 **200 + HTML**,而不是探针的空响应。
+
+  所以这条测试断言的是「200 **且**不是 HTML」:
+  只判状态码的话,打 Portal 会**假阳性通过**。
+}
+
+get {
+  url: {{baseUrl}}/healthz
+  body: none
+  auth: none
+}
+
+tests {
+  test("alive (and not the SPA fallback)", function() {
+    expect(res.status).to.equal(200)
+    const b = typeof res.body === "string" ? res.body : JSON.stringify(res.body || "");
+    expect(b.toLowerCase()).to.not.contain("<html")
+  })
+}

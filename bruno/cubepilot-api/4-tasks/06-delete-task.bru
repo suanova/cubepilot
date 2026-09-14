@@ -1,0 +1,39 @@
+meta {
+  name: delete task
+  type: http
+  seq: 6
+}
+
+docs {
+  # 删除任务
+
+  历史 TaskRun **保留**(报告不随任务删除而消失)。
+
+  信封是 `deleted`,值是 id。
+
+  ⚠️ **`{{taskId}}` 由 `01-create-task` 的后置脚本填写 —— 必须先跑它。**
+  没跑就直接发这条,`taskId` 是空的,URL 变成 `/api/v1/tasks//delete`,
+  会被 Go 的 mux 折叠成 `/api/v1/tasks/delete`:于是 `delete` 被当成**任务 id**、
+  `action` 为空,落到只接受 DELETE 的分支,返回一个**误导性的**
+  `{{"error":"DELETE required"}}` **[405]** —— 看起来像方法用错,其实是 id 空着。
+
+  在 GUI 里乱序点击最容易撞上;**命令行 `bru run 4-tasks` 不会**(01 在 04 前面)。
+
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+  test("enveloped under deleted", function() {
+    expect(res.body).to.have.property("deleted")
+  })
+}

@@ -1,0 +1,45 @@
+meta {
+  name: provision instance
+  type: http
+  seq: 3
+}
+
+docs {
+  # 开通实例
+
+  `owner` **不在 body 里** —— 服务端强制取 `X-CubePilot-User`,
+  CR 名由 `{sanitize(owner)}-{templateRef}` 推导。所以你冒充谁就只能给谁开通。
+
+  **幂等**:已存在 → `200 {"instance":{...},"alreadyExists":true}`;
+  首次创建 → **201**。同名但属别人 → 409。
+
+  之后 `phase` 会经 `Creating` → `Ready`(看 `1-read/01-agent-status`)。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/instances
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+body:json {
+  {
+    "templateRef": "cubepilot",
+    "selectedModel": "{{llmName}}",
+    "enabledSkills": [],
+    "userInstructions": "回答用中文,尽量简洁。"
+  }
+}
+
+tests {
+  test("201 created or 200 already exists", function() {
+    expect([200, 201]).to.include(res.status)
+  })
+  test("enveloped under instance", function() {
+    expect(res.body).to.have.property("instance")
+  })
+}

@@ -1,0 +1,26 @@
+meta {
+  name: agent config
+  type: http
+  seq: 2
+}
+
+docs {
+  # Agent 配置(读)
+
+  **扁平** `{exists, selectedModel, userInstructions}`。
+  字段名取自 CRD,所以同时读 CR 的客户端看到同一套词汇。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/config
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("ok", function() { expect(res.status).to.equal(200) })
+}

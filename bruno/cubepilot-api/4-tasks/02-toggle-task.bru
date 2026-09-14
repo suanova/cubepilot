@@ -1,0 +1,34 @@
+meta {
+  name: toggle task
+  type: http
+  seq: 2
+}
+
+docs {
+  # 暂停 / 恢复
+
+  `Enabled` ↔ `Paused` 翻转。**POST**(非幂等 —— 每次调用都翻转)。
+
+  ⚠️ **`{{taskId}}` 由 `01-create-task` 的后置脚本填写 —— 必须先跑它。**
+  没跑就直接发这条,`taskId` 是空的,URL 变成 `/api/v1/tasks//toggle`,
+  会被 Go 的 mux 折叠成 `/api/v1/tasks/toggle`:于是 `toggle` 被当成**任务 id**、
+  `action` 为空,落到只接受 DELETE 的分支,返回一个**误导性的**
+  `{{"error":"DELETE required"}}` **[405]** —— 看起来像方法用错,其实是 id 空着。
+
+  在 GUI 里乱序点击最容易撞上;**命令行 `bru run 4-tasks` 不会**(01 在 04 前面)。
+
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}/toggle
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("200", function() { expect(res.status).to.equal(200) })
+}

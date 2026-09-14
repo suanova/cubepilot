@@ -1,0 +1,42 @@
+meta {
+  name: run task (manual trigger)
+  type: http
+  seq: 3
+}
+
+docs {
+  # 手动触发(**202**,不是 200)
+
+  只写一个 `cubepilot/manual-run` 时间戳 annotation ——
+  **API 从不直接创建 TaskRun**,由 operator 的 scheduler 消费并执行(时间戳即幂等键)。
+
+  ⚠️ 这会**真的跑一次巡检**(真调 LLM、真执行 kubectl),耗时且消耗额度。
+
+  触发后看 `04-task-reports` 和 `05-taskruns`。
+
+  ⚠️ **`{{taskId}}` 由 `01-create-task` 的后置脚本填写 —— 必须先跑它。**
+  没跑就直接发这条,`taskId` 是空的,URL 变成 `/api/v1/tasks//run`,
+  会被 Go 的 mux 折叠成 `/api/v1/tasks/run`:于是 `run` 被当成**任务 id**、
+  `action` 为空,落到只接受 DELETE 的分支,返回一个**误导性的**
+  `{{"error":"DELETE required"}}` **[405]** —— 看起来像方法用错,其实是 id 空着。
+
+  在 GUI 里乱序点击最容易撞上;**命令行 `bru run 4-tasks` 不会**(01 在 04 前面)。
+
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tasks/{{taskId}}/run
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("202 accepted", function() { expect(res.status).to.equal(202) })
+  test("enveloped under started", function() {
+    expect(res.body).to.have.property("started")
+  })
+}

@@ -1,0 +1,69 @@
+meta {
+  name: send message (SSE)
+  type: http
+  seq: 1
+}
+
+docs {
+  # 发一条消息 —— SSE 流
+
+  靠 `Accept: text/event-stream` 头让 Bruno 保持连接并实时追加
+  (gui 里发送按钮会变成「取消」)。
+
+  命令行 `bru run` 也会执行它,但会**等整条流结束**才返回 ——
+  所以它是集合里最慢的一条。想看逐帧增量请用 gui。
+
+  ## 必读
+
+  - 新会话**不要自己编 key**:`sessionId` 传空,服务端生成 `conv-<uuid>`
+    并**规范化**成 `agent:main:<key>`,在第一个 `message_start` 事件里告诉你。
+    **保存它**,后续所有请求都用它。
+    (本请求的后置脚本会自动把返回的 `sessionId` 写进环境变量。)
+  - `message_delta` 是**追加**;`text_replace` 是**替换**(网关会在工具执行后重写先前的解说文本)。
+    把 replace 当 delta 追加会出现重复内容。
+  - `message_done` 是**唯一终态**,`error` 与 `stopped:true` 互斥。
+  - 请求阶段的失败**不走 HTTP 状态码**(流已经开了),而是 `message_done` 带 `error`。
+  - 同一会话并发第二轮 → **409**,不要重试。
+  - 空闲 15 秒会收到 `: ping` 注释行,不是事件。
+}
+
+post {
+  url: {{baseUrl}}/api/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "sessionId": "{{sessionId}}",
+    "content": "用一句话自我介绍,不要调用任何工具"
+  }
+}
+
+script:post-response {
+  const setVar = (k, v) => { try { bru.setEnvVar(k, v); } catch (e) { bru.setVar(k, v); } };
+  // 原始 SSE 文本：从 message_start 事件里取出后端规范化后的 sessionId，
+  // 让后面的 03/04/05/06/07 直接复用。
+  const body = typeof res.body === "string" ? res.body : JSON.stringify(res.body);
+  const m = body.match(/"sessionId"\s*:\s*"([^"]+)"/);
+  if (m && m[1]) {
+    setVar("sessionId", m[1]);
+    console.log("sessionId ->", m[1]);
+  }
+}
+
+tests {
+  test("streamed message_start", function() {
+    const body = typeof res.body === "string" ? res.body : JSON.stringify(res.body);
+    expect(body).to.contain("event: message_start");
+  })
+  test("terminated with message_done", function() {
+    const body = typeof res.body === "string" ? res.body : JSON.stringify(res.body);
+    expect(body).to.contain("event: message_done");
+  })
+}

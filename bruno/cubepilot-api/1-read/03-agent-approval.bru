@@ -1,0 +1,27 @@
+meta {
+  name: agent approval
+  type: http
+  seq: 3
+}
+
+docs {
+  # 审批策略
+
+  **裸返回**(无信封)。`approvalPolicy`: `None | Allowlist | AlwaysAsk`。
+  `channel`: `up | pairing | down | unconfigured | ""` ——
+  `unconfigured` 表示策略要求拦截但 HITL 通道没配好,此时拦截会**失败关闭**。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/approval
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("ok", function() { expect(res.status).to.equal(200) })
+}

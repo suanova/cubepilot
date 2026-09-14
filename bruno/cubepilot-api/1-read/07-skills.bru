@@ -1,0 +1,30 @@
+meta {
+  name: skills
+  type: http
+  seq: 7
+}
+
+docs {
+  # 技能市场
+
+  `status.phase`: `Available | Unreachable`。
+  `spec.visibility` 阶段一只有 `Platform`。
+
+  内置技能带 `metadata.labels["cubepilot/builtin"] = "true"`。
+}
+
+get {
+  url: {{baseUrl}}/api/v1/skills
+  body: none
+  auth: none
+}
+
+headers {
+  X-CubePilot-User: {{user}}
+}
+
+tests {
+  test("enveloped under skills", function() {
+    expect(res.body).to.have.property("skills")
+  })
+}
