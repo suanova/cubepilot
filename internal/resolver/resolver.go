@@ -21,6 +21,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/grants"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -111,14 +112,15 @@ func (c *ResolvedAgentConfig) fingerprint() string {
 
 // Resolver resolves ResolvedAgentConfig from CRs.
 type Resolver struct {
-	cr client.Client
-	ns string
+	cr     client.Client
+	ns     string
+	grants *grants.Store
 }
 
 // New returns a Resolver backed by the controller-runtime client, reading
 // platform CRs from namespace (namespaced CRD scope, issue #146).
 func New(cr client.Client, namespace string) *Resolver {
-	return &Resolver{cr: cr, ns: namespace}
+	return &Resolver{cr: cr, ns: namespace, grants: grants.New(cr, namespace)}
 }
 
 // ResolveForUser resolves the default agent instance config for a user. A
@@ -212,12 +214,20 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 
 	// Confirmation intent & allowlist (issue #185): an instance override wins
 	// over the template default; the effective allowlist is the union of the
-	// platform builtin, the template's additions and the instance's own
-	// additions. Learned grants are added in Task 4.
+	// platform builtin, the template's additions, the instance's own
+	// additions and the user's learned grants.
 	if inst.Spec.ApprovalPolicy != "" {
 		cfg.ApprovalPolicy = inst.Spec.ApprovalPolicy
 	}
-	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, nil)
+	records, err := r.grants.List(ctx, user)
+	if err != nil {
+		return nil, fmt.Errorf("list grants for %s: %w", user, err)
+	}
+	learnedRules := make([]v1alpha1.AllowlistRule, 0, len(records))
+	for _, rec := range records {
+		learnedRules = append(learnedRules, rec.Rule())
+	}
+	cfg.Allowlist = allowlist.Effective(tmplAllowlist, inst.Spec.Allowlist, learnedRules)
 
 	// Domain skills visible to this agent (empty Agents = visible to
 	// all; atomic skills are overlays, not skills). The instance may

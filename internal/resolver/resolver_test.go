@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +19,9 @@ func testResolver(t *testing.T, objs ...client.Object) *Resolver {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
 	}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -412,5 +416,64 @@ func TestResolveEffectiveAllowlistOwned(t *testing.T) {
 		if !found {
 			t.Errorf("effective allowlist = %+v, missing %q", cfg.Allowlist, pattern)
 		}
+	}
+}
+
+// TestResolvedAllowlistIncludesLearnedGrants covers the fourth arm of the
+// union (issue #185): a recorded grant auto-passes without appearing in
+// AgentInstance.spec.
+func TestResolvedAllowlistIncludesLearnedGrants(t *testing.T) {
+	inst := instance("alice", "t1", "")
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      k8s.ResourceName("cubepilot-grants", "alice"),
+			Namespace: "",
+		},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","argPattern":"^install x$","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	r := testResolver(t, template("t1", nil), inst, cm)
+
+	cfg, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	var found bool
+	for _, rule := range cfg.Allowlist {
+		if rule.Pattern == "helm" && rule.ArgPattern == "^install x$" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("learned grant missing from the resolved allowlist: %v", cfg.Allowlist)
+	}
+}
+
+// TestGrantChangesTheRevision: the revision is what gates the gateway push
+// (internal/server/approvals.go, PreTurn), so a grant edit must move it.
+func TestGrantChangesTheRevision(t *testing.T) {
+	r := testResolver(t, template("t1", nil), instance("alice", "t1", ""))
+	before, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.ResourceName("cubepilot-grants", "alice")},
+		Data: map[string]string{
+			"deadbeef": `{"pattern":"helm","createdAt":"2026-09-14T10:00:00Z"}`,
+		},
+	}
+	if err := r.cr.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create grants ConfigMap: %v", err)
+	}
+
+	after, err := r.Resolve(context.Background(), "alice", "t1")
+	if err != nil {
+		t.Fatalf("Resolve after: %v", err)
+	}
+	if before.Revision == after.Revision {
+		t.Errorf("revision did not change after recording a grant (%q)", after.Revision)
 	}
 }
