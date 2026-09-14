@@ -629,11 +629,18 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var cfg resolver.ResolvedAgentConfig
-	if err := json.Unmarshal(body, &cfg); err != nil {
+	// The payload is enveloped under "config" (the documented shape of this
+	// endpoint); a bare ResolvedAgentConfig here would decode to a zero value,
+	// and a zero config silently skips the device pairing that gates the
+	// approval channel -- so the failure would surface much later, as an
+	// unrelated-looking NOT_PAIRED on the first gated chat turn.
+	var envelope struct {
+		Config resolver.ResolvedAgentConfig `json:"config"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
-	return &cfg, nil
+	return &envelope.Config, nil
 }
 
 // syncSkills pulls the enabled skills' tars from the internal API and

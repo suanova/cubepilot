@@ -32,7 +32,10 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir st
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/agents/"+user+"/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(cfg); err != nil {
+		// Enveloped, like the real API: serving a bare ResolvedAgentConfig here
+		// would let the fake disagree with production and hide a client that
+		// stopped unwrapping.
+		if err := json.NewEncoder(w).Encode(map[string]any{"config": cfg}); err != nil {
 			t.Errorf("encode: %v", err)
 		}
 	})
@@ -636,5 +639,41 @@ func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "do not read") {
 		t.Errorf("symlink target content was read and copied:\n%s", raw)
+	}
+}
+
+// TestFetchConfigUnwrapsEnvelope pins the wire shape of the internal config
+// endpoint. The API serves it under a "config" key; a client that decoded the
+// body straight into ResolvedAgentConfig would get a zero value instead of an
+// error, and a zero config skips the device pairing that gates the approval
+// channel -- surfacing later as an unrelated NOT_PAIRED on the first gated
+// turn, which is exactly what end-to-end caught once.
+func TestFetchConfigUnwrapsEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/agents/li.ming/config" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{"revision":"rev-1","agent":"cubepilot",` +
+			`"instance":"li-ming-cubepilot","devicePublicKey":"PUBKEY"}}`))
+	}))
+	defer srv.Close()
+
+	s := New(Config{APIURL: srv.URL, User: "li.ming"})
+	s.http = srv.Client()
+
+	cfg, err := s.fetchConfig(context.Background())
+	if err != nil {
+		t.Fatalf("fetchConfig: %v", err)
+	}
+	if cfg.Revision != "rev-1" || cfg.Instance != "li-ming-cubepilot" {
+		t.Fatalf("decoded %+v, want the enveloped config", cfg)
+	}
+	// The pairing path silently no-ops on an empty key, so assert it survived:
+	// losing it is the failure that only showed up at the first gated turn.
+	if cfg.DevicePublicKey != "PUBKEY" {
+		t.Fatalf("devicePublicKey = %q, want PUBKEY", cfg.DevicePublicKey)
 	}
 }
