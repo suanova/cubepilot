@@ -41,6 +41,7 @@ export interface ChatThreadApi {
   autoGrow(): void
   switchSession(id: string): Promise<void>
   newChat(): void
+  refresh(): void
   sendMessage(): Promise<void>
   stopTurn(): Promise<boolean>
   stopElsewhere(): Promise<void>
@@ -190,9 +191,14 @@ export function useChatThread({
   }
 
 
-  async function loadHistory(id: string) {
+  // keepVisible holds the current thread on screen until the reload replaces
+  // it. A switch must not (the old session's messages under a new session's
+  // header would be a lie), but a refresh of the session already on screen must
+  // -- blanking and refilling is a visible flash on every reopen, and the
+  // content is about to be the same conversation.
+  async function loadHistory(id: string, keepVisible = false) {
     setLoadingHistory(true)
-    setBubbles([])
+    if (!keepVisible) setBubbles([])
     try {
       const items = await api.sessionHistory(id)
       renderHistory(items, id)
@@ -525,6 +531,26 @@ export function useChatThread({
     void checkTurnElsewhere(id, gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // refresh re-reads the conversation from the server. The widget calls it when
+  // it is reopened: it shares its conversation with the Chat view, so anything
+  // sent from there is not something this view can know about on its own, and a
+  // panel that reopened onto a stale thread would be quietly wrong.
+  //
+  // Skipped while this view is streaming -- the live thread is ahead of what
+  // the server would return -- and skipped with no session, which is a
+  // conversation that has not started and therefore has nothing to re-read.
+  function refresh() {
+    if (streaming) return
+    const id = currentSessionId
+    if (!id) return
+    activeSessionRef.current = id
+    void loadHistory(id, true)
+    // A turn may have started elsewhere while the panel was shut; asking is the
+    // only way to find out, and the banner's Stop is then the only control that
+    // can end it.
+    void checkTurnElsewhere(id, streamGenRef.current)
+  }
 
   function newChat() {
     dropStream()
@@ -1146,6 +1172,7 @@ export function useChatThread({
     autoGrow,
     switchSession,
     newChat,
+    refresh,
     sendMessage,
     stopTurn,
     stopElsewhere,

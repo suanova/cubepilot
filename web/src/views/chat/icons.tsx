@@ -82,3 +82,15 @@ export function ToolIcon() {
   )
 }
 
+
+// AssistantIcon is the floating widget's button: a spark, not a speech bubble,
+// because the bubble is already the Chat nav item and the two entries lead to
+// the same conversation.
+export function AssistantIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" />
+      <path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" />
+    </svg>
+  )
+}
