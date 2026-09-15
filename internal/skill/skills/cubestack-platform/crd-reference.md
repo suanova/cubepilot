@@ -21,7 +21,7 @@ stale.
 - `spec.ports[].type` — string · enum: http, tcp, udp · default: http
 - `spec.resources` — object · required
 - `spec.resources.cpu` — string
-- `spec.resources.gpuCount` — integer (int32) · default: 1 · min 1
+- `spec.resources.gpuCount` — integer (int32) · default: 1 · min 0
 - `spec.resources.gpuType` — string · enum: nvidia, metax · default: nvidia
 - `spec.resources.memory` — string
 - `spec.running` — boolean · default: false
@@ -30,14 +30,14 @@ stale.
 - `spec.runtime.command` — array
 - `spec.runtime.env` — array
 - `spec.runtime.securityContext` — object
+- `spec.runtime.user` — string
 - `spec.ssh` — object
 - `spec.ssh.enabled` — boolean · default: false
 - `spec.ssh.keysSecret` — object
 - `spec.storage` — object
-- `spec.storage.mountPath` — string · default: /workspace
-- `spec.storage.pvcRetention` — string · enum: retain, delete · default: retain
+- `spec.storage.mountPath` — string
+- `spec.storage.pvcRetention` — string · enum: retain, delete · default: delete
 - `spec.storage.size` — string · default: 10Gi
-- `spec.storage.storageClassName` — string
 - `spec.type` — string · enum: jupyter, ssh, vscode · default: ssh
 - `spec.volumes` — array
 - `spec.volumes[].mountPath` — string · required
@@ -75,6 +75,8 @@ stale.
 - `spec.overrides[].min` — integer (int64)
 - `spec.overrides[].name` — string · required
 - `spec.overrides[].type` — string · required · enum: integer, string, boolean
+- `spec.podAntiAffinity` — object
+- `spec.podAntiAffinity.topologyKey` — string · required
 - `spec.readinessPolicy` — object
 - `spec.readinessPolicy.requireAllRoles` — boolean · required · default: true
 - `spec.roles` — array · required
@@ -106,8 +108,10 @@ stale.
 - `spec.model` — string · required
 - `spec.quantization` — string · required
 - `spec.storage` — object · required
+- `spec.storage.dynamic` — object
 - `spec.storage.hostPath` — object
-- `spec.storage.pvc` — object
-- `spec.storage.strategy` — string · required · enum: HostPath, PVC
+- `spec.storage.s3` — object
+- `spec.storage.static` — object
+- `spec.storage.strategy` — string · required · enum: HostPath, Dynamic, Static, S3
 - `spec.version` — string · required
 
