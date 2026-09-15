@@ -2,11 +2,30 @@ package openclaw
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
+
+// A conversation that has not started yet is not a failure. The gateway says so
+// with a 404, and a caller has to be able to tell that apart from a gateway it
+// could not reach: the two are the same to a user whose history looks gone.
+func TestClient_GetHistory_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"ok":false,"error":{"type":"not_found","message":"Session not found: conv-abc"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "secret").GetHistory(t.Context(), "conv-abc", 50)
+	if !errors.Is(err, agentruntime.ErrSessionNotFound) {
+		t.Fatalf("error = %v, want ErrSessionNotFound", err)
+	}
+}
 
 func TestClient_ListSessions(t *testing.T) {
 	// The gateway nests the sessions under result.details; a missing title

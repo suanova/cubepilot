@@ -9,6 +9,7 @@ import PublishView from '@/views/PublishView'
 import { useToast } from '@/stores/toast'
 import { api } from '@/api'
 import { getCurrentUser } from '@/api/client'
+import AssistantWidget from './AssistantWidget'
 
 const VIEW_TITLES: Record<string, string> = {
   chat: 'Chat',
@@ -213,6 +214,11 @@ export default function App() {
           </Routes>
         </main>
       </div>
+
+      {/* Outside <Routes> on purpose: a route change must not unmount the
+          assistant, because that is what makes "keep talking after the page
+          changes" work without persisting anything. */}
+      <AssistantWidget />
 
       <div className={`toast ${toastVisible ? 'show' : ''}`} role="status">
         <CheckIcon />
