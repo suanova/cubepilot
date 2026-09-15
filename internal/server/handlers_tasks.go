@@ -36,6 +36,7 @@ type taskDTO struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastRunAt   *time.Time `json:"lastRunAt,omitempty"`
 	LastStatus  string     `json:"lastStatus,omitempty"`
+	LastRunID   string     `json:"lastRunId,omitempty"` // most recent TaskRun ("" = never ran)
 	NextRunAt   *time.Time `json:"nextRunAt,omitempty"`
 }
 
@@ -67,6 +68,7 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 		CreatedAt:   t.CreationTimestamp.Time,
 		LastRunAt:   taskTimePtr(t.Status.LastRunTime),
 		LastStatus:  string(t.Status.LastStatus),
+		LastRunID:   t.Status.LastTaskRunName,
 	}
 	if dto.Name == "" {
 		dto.Name = t.Name

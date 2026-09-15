@@ -648,7 +648,7 @@ GET /api/v1/sessions/{key}/question/pending
 - `state` 为 `Enabled` / `Paused`。
 
 `taskDTO` 字段：`id`（CR 名）、`name`（显示名）、`instruction`、`cron`、`templateRef?`、
-`state`（`Enabled` / `Paused`）、`creator`、`createdAt`、`lastRunAt?`、`lastStatus?`、`nextRunAt?`。
+`state`（`Enabled` / `Paused`）、`creator`、`createdAt`、`lastRunAt?`、`lastStatus?`、`lastRunId?`、`nextRunAt?`。
 
 `state` 是**唯一**的启停字段——没有 `enabled` 布尔（两个字段表达同一事实会产生不一致状态）。
 

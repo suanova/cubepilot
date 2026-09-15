@@ -35,6 +35,8 @@ export interface Task {
   createdAt: string
   lastRunAt?: string
   lastStatus?: string
+  // Most recent TaskRun name; absent for a task that has never run.
+  lastRunId?: string
   nextRunAt?: string
 }
 

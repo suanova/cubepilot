@@ -137,9 +137,9 @@ export default function TasksView() {
     }
   }
 
-  async function selectTask(id: string) {
+  async function selectTask(id: string, preferReportId?: string) {
     setSelectedTaskId(id)
-    await loadReports(id)
+    await loadReports(id, preferReportId)
   }
 
   async function toggleTask(t: Task) {
@@ -184,12 +184,14 @@ export default function TasksView() {
     }
   }
 
-  async function loadReports(id: string) {
+  async function loadReports(id: string, preferReportId?: string) {
     try {
       const list = await api.taskReports(id)
       setReports(list)
-      setReportIndex((prev) => Math.max(0, Math.min(prev, list.length - 1)))
-      setSelectedReport(list[Math.min(reportIndex, list.length - 1)] ?? null)
+      const preferred = preferReportId ? list.findIndex((r) => r.id === preferReportId) : -1
+      const next = preferred >= 0 ? preferred : Math.min(reportIndex, list.length - 1)
+      setReportIndex(Math.max(0, next))
+      setSelectedReport(list[next] ?? null)
     } catch {
       setReports([])
       setSelectedReport(null)
@@ -354,7 +356,7 @@ export default function TasksView() {
                     <tr
                       key={t.id}
                       className={`task-row ${selectedTaskId === t.id ? 'selected' : ''}`}
-                      onClick={() => selectTask(t.id)}
+                      onClick={() => selectTask(t.id, t.lastRunId)}
                     >
                       <td>
                         <span className="task-radio" />
