@@ -530,11 +530,6 @@ export default function TasksView() {
                       </td>
                       <td style={{ fontSize: 12.5, color: 'var(--muted)' }}>
                         {tpl.spec?.description || (tpl.spec?.paramsSchema || []).map((p) => p.name).join(', ')}
-                        {(tpl.spec?.requiredPermissions?.note || tpl.spec?.requiredPermissions?.level) && (
-                          <div style={{ marginTop: 4 }}>
-                            {tpl.spec?.requiredPermissions?.note || `Requires: ${tpl.spec?.requiredPermissions?.level}`}
-                          </div>
-                        )}
                       </td>
                       <td className="mono">{tpl.spec?.defaultCron || '-'}</td>
                       <td>
@@ -591,6 +586,13 @@ export default function TasksView() {
                     </option>
                   ))}
                 </select>
+                {activeTemplate?.spec?.requiredPermissions &&
+                  (activeTemplate.spec.requiredPermissions.note || activeTemplate.spec.requiredPermissions.level) && (
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                      {activeTemplate.spec.requiredPermissions.note ||
+                        `Requires: ${activeTemplate.spec.requiredPermissions.level}`}
+                    </div>
+                  )}
                 {templatesError && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>Templates unavailable: {templatesError}</div>
                 )}
