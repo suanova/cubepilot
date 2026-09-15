@@ -9,7 +9,8 @@ docs {
 
   **扁平 body**(与 GET 同一形状),字段名取自 CRD。
 
-  `selectedModel` 必须是模板 `spec.models` 里有的,否则 400;
+  `selectedModel` 是一个 **provider/modelId ref**(如 `my-model/qwen3-32b`),
+  必须能在模板的 `spec.providers[].models` 里解析到,否则 400;
   传空串 = 「用运行时默认」(清掉覆盖)。
 
   旧形状 `{"config": {...}}` 现在返回 **400** —— 服务端开了
@@ -30,7 +31,7 @@ headers {
 
 body:json {
   {
-    "selectedModel": "{{llmName}}",
+    "selectedModel": "{{llmName}}/{{llmModel}}",
     "userInstructions": "回答用中文,尽量简洁。"
   }
 }
@@ -40,6 +41,6 @@ tests {
   test("echoes the selection", function() {
     // 用 interpolate 而不是 getEnvVar：变量可能来自 collection.bru 的兜底
     // （No Environment 时），getEnvVar 只读环境作用域、会拿到 undefined。
-    expect(res.body.selectedModel).to.equal(bru.interpolate("{{llmName}}"))
+    expect(res.body.selectedModel).to.equal(bru.interpolate("{{llmName}}/{{llmModel}}"))
   })
 }

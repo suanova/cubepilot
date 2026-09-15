@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,36 +38,111 @@ const (
 	IdentityModeService IdentityMode = "service"
 )
 
-// TemplateModelSpec is one entry of the inline model list of an AgentTemplate
-// (design §3.3: models are inlined -- no standalone Model CRD). Name is the
-// catalog name, the selection key (selectedModel), the gateway provider key
-// and the backend model id sent to the endpoint. Every model is a concrete
-// OpenAI-compatible endpoint; a public model simply omits CredentialRef.
-type TemplateModelSpec struct {
-	// Name is the model name: the key for selectedModel on instances, the
-	// gateway provider key, and the model id passed to the LLM endpoint.
+// TemplateProviderSpec is one OpenAI-compatible LLM provider of an
+// AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
+// A provider owns the endpoint and the credential once, and lists the backend
+// model ids reachable through it, so a gateway that serves many models behind
+// one base URL and one key is described once rather than once per model.
+type TemplateProviderSpec struct {
+	// Name is the provider key: the OpenClaw models.providers key and the
+	// prefix of every model ref (<name>/<modelId>). A DNS-1123 label, because
+	// it is both a ref segment (refs split on the first "/" and have no
+	// escaping) and a resource-name segment.
+	//
+	// The credential Secret named llm-<name> is a rule of that write API
+	// (/api/v1/llms) alone, not of this field: credentialRef is an arbitrary
+	// Secret reference, and the platform's own provider is named "platform"
+	// while pointing at the Secret "cubepilot-llm".
+	//
+	// A name that exactly matches an OpenClaw built-in provider key
+	// (anthropic, nvidia, xai, google, ...) inherits that provider's model-id
+	// normalization, which can rewrite the id sent to the endpoint. Prefer a
+	// distinct name such as nvidia-proxy unless that rewrite is intended.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
-	// Endpoint is the OpenAI-compatible base URL; required for every model.
+	// Endpoint is the OpenAI-compatible base URL.
+	// +kubebuilder:validation:MaxLength=2048
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
-	// holding the apiKey; public models omit it (nil). References only -- never
-	// the key itself (design §4.4).
+	// holding the apiKey; a provider that needs no credentials omits it (nil).
+	// References only -- never the key itself (design §4.4).
 	// +optional
 	CredentialRef *corev1.LocalObjectReference `json:"credentialRef,omitempty"`
+	// Models are the backend model ids served through this endpoint. Each id is
+	// sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
+	// "anthropic/claude-sonnet-4.5").
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	Models []string `json:"models"`
 }
 
-// Validate enforces the inline-model invariants (design §3.3): every model
-// needs an endpoint; a present credentialRef must carry a name. The same rules
-// are enforced on the API server by the CEL XValidations on Models.
-func (m TemplateModelSpec) Validate() error {
-	if m.Name == "" {
-		return fmt.Errorf("model name is required")
+// providerNameRE is the DNS-1123 label grammar, mirroring the Pattern marker on
+// TemplateProviderSpec.Name.
+var providerNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// Validate enforces the provider invariants. The same rules are enforced on the
+// API server by the markers on the type and the CEL XValidations on Providers.
+// The structural rules -- the bounds and the +listType=set uniqueness of Models
+// -- are mirrored too, so a request this validator accepts cannot be refused by
+// the API server afterwards and surface as a 500.
+func (p TemplateProviderSpec) Validate() error {
+	if p.Name == "" {
+		return fmt.Errorf("provider name is required")
 	}
-	if m.Endpoint == "" {
-		return fmt.Errorf("model %q requires an endpoint", m.Name)
+	if len(p.Name) > 63 || !providerNameRE.MatchString(p.Name) {
+		return fmt.Errorf("provider %q must be a lowercase DNS-1123 label of at most 63 characters", p.Name)
 	}
-	if m.CredentialRef != nil && m.CredentialRef.Name == "" {
-		return fmt.Errorf("model %q credentialRef must reference a Secret name", m.Name)
+	if p.Endpoint == "" {
+		return fmt.Errorf("provider %q requires an endpoint", p.Name)
+	}
+	if len(p.Endpoint) > 2048 {
+		return fmt.Errorf("provider %q endpoint must be at most 2048 characters", p.Name)
+	}
+	if p.CredentialRef != nil && p.CredentialRef.Name == "" {
+		return fmt.Errorf("provider %q credentialRef must reference a Secret name", p.Name)
+	}
+	if len(p.Models) == 0 {
+		return fmt.Errorf("provider %q requires at least one model", p.Name)
+	}
+	if len(p.Models) > 64 {
+		return fmt.Errorf("provider %q must list at most 64 models", p.Name)
+	}
+	// Models is +listType=set, so the API server rejects a repeated id outright.
+	// This is the Go mirror of that structural rule; the HTTP handlers
+	// de-duplicate before they get here (normalizeModels), so it is a hand-written
+	// caller that this catches.
+	seen := make(map[string]struct{}, len(p.Models))
+	for _, id := range p.Models {
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("provider %q lists the model id %q more than once", p.Name, id)
+		}
+		seen[id] = struct{}{}
+		if len(id) > 256 {
+			return fmt.Errorf("provider %q model id must be at most 256 characters", p.Name)
+		}
+		if err := validateModelID(id); err != nil {
+			return fmt.Errorf("provider %q: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateModelID rejects the ids that would not survive being used as a model
+// ref. Everything else is data sent to the endpoint, so the grammar is
+// deliberately loose: ids routinely contain "/".
+func validateModelID(id string) error {
+	switch {
+	case id == "":
+		return fmt.Errorf("model id must not be empty")
+	case id == "*":
+		return fmt.Errorf("model id %q is reserved for allowlist wildcards", id)
+	case strings.TrimSpace(id) != id || strings.ContainsAny(id, " \t\n\r"):
+		return fmt.Errorf("model id %q must not contain whitespace", id)
+	case strings.HasPrefix(id, "/"), strings.HasSuffix(id, "/"), strings.Contains(id, "//"):
+		return fmt.Errorf("model id %q must not contain an empty path segment", id)
 	}
 	return nil
 }
@@ -102,7 +179,7 @@ type AgentRegistrySpec struct {
 	Visibility string `json:"visibility,omitempty"`
 }
 
-// QuotaSpec caps resource usage of an agent (design §3.1 / NFR-015).
+// QuotaSpec caps resource usage of an agent (design §3.1).
 type QuotaSpec struct {
 	// MaxInstancesPerUser caps instances per user for this template
 	// (default 1).
@@ -152,6 +229,32 @@ type AllowlistRule struct {
 // tools (skill refs), memory, identity, policy and registry metadata
 // (design §3.1). It is the "class": shared by all instances, versioned,
 // user-independent.
+//
+// Like gateway.ModelKey, the rule below leaves an id that already starts with
+// "<provider>/" unprefixed, and it tests that prefix case-insensitively
+// (lowerAscii) because ModelKey lowercases both sides. Without that the two
+// diverge: provider "vllm" serving the id "VLLM/x" makes ModelKey return
+// "VLLM/x" -- the ref the renderer writes as the allowlist key and as the
+// primary -- while CEL computed "vllm/VLLM/x" and rejected the only ref the
+// platform has for that id. Provider names are lowercase by the Pattern on
+// Name, so lowercasing the id alone is enough. ModelKey also trims, which is a
+// no-op on the ids the rule ranges over: the XValidation on Providers rejects
+// whitespace, exactly as validateModelID does.
+//
+// Both fields this rule reads are omitempty, so either key can be absent from
+// the serialized object: DefaultModel whenever it is cleared (which is exactly
+// what the API's clear-the-default writes do) and Providers for a provider-less
+// template. CEL errors on a missing key rather than treating it as empty, so
+// the rule guards both with has(). The guards are load-bearing, not defensive:
+// without them a fresh install with no LLM configured cannot create the
+// builtin template at all. When defaultModel is set but providers is absent the
+// guard makes the rule false -- the ref names nothing, so the write is rejected
+// with the message rather than erroring.
+//
+// The two XValidations on Providers need no such guard: the API server does not
+// evaluate field-level rules on an absent field (verified against a live
+// cluster -- an object with no providers key passes them untouched).
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, p.models.exists(m, (m.lowerAscii().startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel)))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`
@@ -161,18 +264,23 @@ type AgentTemplateSpec struct {
 	// +kubebuilder:default=OpenClaw
 	// +optional
 	Runtime AgentRuntime `json:"runtime,omitempty"`
-	// DefaultModel is the model name from Models used when an instance does
-	// not select a model explicitly. Empty = no default / runtime default.
+	// DefaultModel is the model ref (<provider>/<modelId>) used when an
+	// instance does not select one explicitly. Empty = no default / runtime
+	// default.
+	// +kubebuilder:validation:MaxLength=320
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
-	// Models is the inline model list (design §3.3: models are inlined in the
-	// template -- no standalone Model CRD). The first entry is the primary;
-	// instances select within this list. Every model requires an endpoint;
-	// credentialRef is optional (a public model has none).
-	// +kubebuilder:validation:XValidation:rule="self.all(m, has(m.endpoint))",message="every model requires an endpoint"
-	// +kubebuilder:validation:XValidation:rule="self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))",message="credentialRef must reference a Secret name"
+	// Providers is the inline provider list (design §3.3: models are inlined in
+	// the template -- no standalone Model CRD). Each provider declares an
+	// endpoint, an optional credential and the model ids it serves; an instance
+	// selects a <provider>/<modelId> ref within this list.
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || p.credentialRef.name != \"\")",message="credentialRef must reference a Secret name"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/') && !m.matches('.*\\\\s.*')))",message="every model id must be non-empty, without an empty path segment, without whitespace, and not the wildcard"
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	Models []TemplateModelSpec `json:"models,omitempty"`
+	Providers []TemplateProviderSpec `json:"providers,omitempty"`
 	// ApprovalPolicy is the template's default confirmation intent (default
 	// Allowlist). Instances inherit it until they override
 	// (AgentInstance.spec.approvalPolicy).
@@ -206,7 +314,7 @@ type AgentTemplateSpec struct {
 	// Registry carries publish / visibility metadata.
 	// +optional
 	Registry *AgentRegistrySpec `json:"registry,omitempty"`
-	// Quotas caps instances per user (NFR-015).
+	// Quotas caps instances per user.
 	// +optional
 	Quotas *QuotaSpec `json:"quotas,omitempty"`
 }

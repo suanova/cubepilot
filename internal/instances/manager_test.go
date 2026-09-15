@@ -56,9 +56,9 @@ func TestSelectedModelForResolvesDefault(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DefaultModel: "deepseek-v4-flash",
-			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
+			DefaultModel: "platform/deepseek-v4-flash",
+			Providers: []v1alpha1.TemplateProviderSpec{
+				{Name: "platform", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash"}},
 			},
 		},
 	}
@@ -79,40 +79,39 @@ func TestSelectedModelForExplicit(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DefaultModel: "deepseek-v4-flash",
-			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
-				{Name: "deepseek-chat", Endpoint: "https://api.deepseek.com"},
+			DefaultModel: "platform/deepseek-v4-flash",
+			Providers: []v1alpha1.TemplateProviderSpec{
+				{Name: "platform", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash", "deepseek-chat"}},
 			},
 		},
 	}
-	m := testManager(t, agent, instance("li.ming", "deepseek-chat"))
+	m := testManager(t, agent, instance("li.ming", "platform/deepseek-chat"))
 
 	got, err := m.SelectedModelFor(context.Background(), "li.ming")
 	if err != nil {
 		t.Fatalf("SelectedModelFor: %v", err)
 	}
-	if got != "deepseek-chat/deepseek-chat" {
-		t.Errorf("model = %q, want deepseek-chat/deepseek-chat", got)
+	if got != "platform/deepseek-chat" {
+		t.Errorf("model = %q, want platform/deepseek-chat", got)
 	}
 }
 
 // TestSelectedModelForOutsideAllowlist verifies fail-closed: a selection
-// outside the agent's inline models is an error, never a silent fallback.
+// outside the agent's inline providers is an error, never a silent fallback.
 func TestSelectedModelForOutsideAllowlist(t *testing.T) {
 	agent := &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: v1alpha1.DefaultAgentName},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DefaultModel: "deepseek-v4-flash",
-			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
+			DefaultModel: "platform/deepseek-v4-flash",
+			Providers: []v1alpha1.TemplateProviderSpec{
+				{Name: "platform", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash"}},
 			},
 		},
 	}
-	m := testManager(t, agent, instance("li.ming", "glm-5.2"))
+	m := testManager(t, agent, instance("li.ming", "platform/glm-5.2"))
 
 	if _, err := m.SelectedModelFor(context.Background(), "li.ming"); err == nil {
-		t.Error("selection outside inline models should fail (fail-closed)")
+		t.Error("selection outside inline providers should fail (fail-closed)")
 	}
 }
 

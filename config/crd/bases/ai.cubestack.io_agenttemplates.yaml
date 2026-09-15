@@ -58,6 +58,31 @@ spec:
               tools (skill refs), memory, identity, policy and registry metadata
               (design §3.1). It is the "class": shared by all instances, versioned,
               user-independent.
+
+              Like gateway.ModelKey, the rule below leaves an id that already starts with
+              "<provider>/" unprefixed, and it tests that prefix case-insensitively
+              (lowerAscii) because ModelKey lowercases both sides. Without that the two
+              diverge: provider "vllm" serving the id "VLLM/x" makes ModelKey return
+              "VLLM/x" -- the ref the renderer writes as the allowlist key and as the
+              primary -- while CEL computed "vllm/VLLM/x" and rejected the only ref the
+              platform has for that id. Provider names are lowercase by the Pattern on
+              Name, so lowercasing the id alone is enough. ModelKey also trims, which is a
+              no-op on the ids the rule ranges over: the XValidation on Providers rejects
+              whitespace, exactly as validateModelID does.
+
+              Both fields this rule reads are omitempty, so either key can be absent from
+              the serialized object: DefaultModel whenever it is cleared (which is exactly
+              what the API's clear-the-default writes do) and Providers for a provider-less
+              template. CEL errors on a missing key rather than treating it as empty, so
+              the rule guards both with has(). The guards are load-bearing, not defensive:
+              without them a fresh install with no LLM configured cannot create the
+              builtin template at all. When defaultModel is set but providers is absent the
+              guard makes the rule false -- the ref names nothing, so the write is rejected
+              with the message rather than erroring.
+
+              The two XValidations on Providers need no such guard: the API server does not
+              evaluate field-level rules on an absent field (verified against a live
+              cluster -- an object with no providers key passes them untouched).
             properties:
               allowlist:
                 description: |-
@@ -98,8 +123,10 @@ spec:
                 type: string
               defaultModel:
                 description: |-
-                  DefaultModel is the model name from Models used when an instance does
-                  not select a model explicitly. Empty = no default / runtime default.
+                  DefaultModel is the model ref (<provider>/<modelId>) used when an
+                  instance does not select one explicitly. Empty = no default / runtime
+                  default.
+                maxLength: 320
                 type: string
               description:
                 description: Description explains what the template does.
@@ -131,25 +158,31 @@ spec:
                       this template.
                     type: boolean
                 type: object
-              models:
+              policyRefs:
+                description: PolicyRefs references confirmation-rule policies (E3,
+                  phase 2).
+                items:
+                  type: string
+                type: array
+              providers:
                 description: |-
-                  Models is the inline model list (design §3.3: models are inlined in the
-                  template -- no standalone Model CRD). The first entry is the primary;
-                  instances select within this list. Every model requires an endpoint;
-                  credentialRef is optional (a public model has none).
+                  Providers is the inline provider list (design §3.3: models are inlined in
+                  the template -- no standalone Model CRD). Each provider declares an
+                  endpoint, an optional credential and the model ids it serves; an instance
+                  selects a <provider>/<modelId> ref within this list.
                 items:
                   description: |-
-                    TemplateModelSpec is one entry of the inline model list of an AgentTemplate
-                    (design §3.3: models are inlined -- no standalone Model CRD). Name is the
-                    catalog name, the selection key (selectedModel), the gateway provider key
-                    and the backend model id sent to the endpoint. Every model is a concrete
-                    OpenAI-compatible endpoint; a public model simply omits CredentialRef.
+                    TemplateProviderSpec is one OpenAI-compatible LLM provider of an
+                    AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
+                    A provider owns the endpoint and the credential once, and lists the backend
+                    model ids reachable through it, so a gateway that serves many models behind
+                    one base URL and one key is described once rather than once per model.
                   properties:
                     credentialRef:
                       description: |-
                         CredentialRef optionally references a platform-managed Secret (name)
-                        holding the apiKey; public models omit it (nil). References only -- never
-                        the key itself (design §4.4).
+                        holding the apiKey; a provider that needs no credentials omits it (nil).
+                        References only -- never the key itself (design §4.4).
                       properties:
                         name:
                           default: ""
@@ -163,32 +196,60 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     endpoint:
-                      description: Endpoint is the OpenAI-compatible base URL; required
-                        for every model.
+                      description: Endpoint is the OpenAI-compatible base URL.
+                      maxLength: 2048
                       type: string
+                    models:
+                      description: |-
+                        Models are the backend model ids served through this endpoint. Each id is
+                        sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
+                        "anthropic/claude-sonnet-4.5").
+                      items:
+                        maxLength: 256
+                        type: string
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
                     name:
                       description: |-
-                        Name is the model name: the key for selectedModel on instances, the
-                        gateway provider key, and the model id passed to the LLM endpoint.
+                        Name is the provider key: the OpenClaw models.providers key and the
+                        prefix of every model ref (<name>/<modelId>). A DNS-1123 label, because
+                        it is both a ref segment (refs split on the first "/" and have no
+                        escaping) and a resource-name segment.
+
+                        The credential Secret named llm-<name> is a rule of that write API
+                        (/api/v1/llms) alone, not of this field: credentialRef is an arbitrary
+                        Secret reference, and the platform's own provider is named "platform"
+                        while pointing at the Secret "cubepilot-llm".
+
+                        A name that exactly matches an OpenClaw built-in provider key
+                        (anthropic, nvidia, xai, google, ...) inherits that provider's model-id
+                        normalization, which can rewrite the id sent to the endpoint. Prefer a
+                        distinct name such as nvidia-proxy unless that rewrite is intended.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                   required:
                   - endpoint
+                  - models
                   - name
                   type: object
+                maxItems: 32
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
                 x-kubernetes-validations:
-                - message: every model requires an endpoint
-                  rule: self.all(m, has(m.endpoint))
                 - message: credentialRef must reference a Secret name
-                  rule: self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))
-              policyRefs:
-                description: PolicyRefs references confirmation-rule policies (E3,
-                  phase 2).
-                items:
-                  type: string
-                type: array
+                  rule: self.all(p, !has(p.credentialRef) || p.credentialRef.name
+                    != "")
+                - message: every model id must be non-empty, without an empty path
+                    segment, without whitespace, and not the wildcard
+                  rule: self.all(p, p.models.all(m, m != "" && m != '*' && !m.contains('//')
+                    && !m.startsWith('/') && !m.endsWith('/') && !m.matches('.*\\s.*')))
               quotas:
-                description: Quotas caps instances per user (NFR-015).
+                description: Quotas caps instances per user.
                 properties:
                   maxInstancesPerUser:
                     default: 1
@@ -229,6 +290,11 @@ spec:
                   type: string
                 type: array
             type: object
+            x-kubernetes-validations:
+            - message: defaultModel must name a provider/model listed in providers
+              rule: '!has(self.defaultModel) || self.defaultModel == "" || (has(self.providers)
+                && self.providers.exists(p, p.models.exists(m, (m.lowerAscii().startsWith(p.name
+                + ''/'') ? m : p.name + ''/'' + m) == self.defaultModel)))'
           status:
             description: |-
               AgentTemplateStatus is the observed state of an AgentTemplate definition

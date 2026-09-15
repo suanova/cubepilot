@@ -45,8 +45,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "persistentvolumeclaims", "services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Secrets: the operator resolves credentialRef for models inlined in
-  # AgentTemplate.spec.models (design §3.3: no standalone Model CRD;
+  # Secrets: the operator resolves credentialRef for the providers inlined in
+  # AgentTemplate.spec.providers (design §3.3: no standalone Model CRD;
   # credentials are platform-managed Secret references) and reconciles the
   # openclaw-config Secret (rendered gateway config).
   - apiGroups: [""]

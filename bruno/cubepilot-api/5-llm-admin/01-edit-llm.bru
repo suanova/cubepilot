@@ -5,14 +5,18 @@ meta {
 }
 
 docs {
-  # 改模型
+  # 改 provider
 
-  `{name}` **不可改** —— 它同时是选择 key、网关 provider key、后端模型名和凭据 Secret 名。
+  `{name}` **不可改** —— 它同时是网关 provider key、模型 ref 的前缀和凭据 Secret 名后缀。
   改名等价于删了重建。
+
+  `models` 是**整体替换**的:增删单个 id 就是把完整列表再 PUT 一次
+  (列表为空或缺失 → 400,provider 不能没有 id)。
+  改 `models` 只动 CR,**不会碰凭据 Secret** —— 只有删掉整个 provider 才会。
 
   - 省略 `apiKey`(或给空)= **保留**原凭据(所以「只改 endpoint」不会清掉 key)。
   - `apiKey` 非空 → 覆盖凭据。
-  - 模型原本是 public 的,必须显式给 `"public": true`,否则 400。
+  - provider 原本是 public 的,必须显式给 `"public": true`,否则 400。
   - `"public": true` 且不带 `apiKey` → 清空凭据、删除 Secret。
 
   删除 Secret 失败时改动**已生效**,响应里附 `warning` 而不是报错。
@@ -30,13 +34,14 @@ headers {
 
 body:json {
   {
-    "endpoint": "{{llmEndpoint}}"
+    "endpoint": "{{llmEndpoint}}",
+    "models": ["{{llmModel}}"]
   }
 }
 
 tests {
   test("200", function() { expect(res.status).to.equal(200) })
-  test("enveloped under model", function() {
-    expect(res.body).to.have.property("model")
+  test("enveloped under provider", function() {
+    expect(res.body).to.have.property("provider")
   })
 }

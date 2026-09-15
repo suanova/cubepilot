@@ -7,7 +7,8 @@ meta {
 docs {
   # Agent 模板
 
-  `spec.models` 是**内联**的模型清单(没有独立的 Model CRD)。
+  `spec.providers` 是**内联**的 provider 清单(没有独立的 Model CRD):每个 provider 一份
+  endpoint + 一份凭据 + 它服务的 model id 列表。实例选择的是 `<provider>/<modelId>` ref。
   `spec.skills` 是可启用技能;`spec.approvalPolicy` 决定对话中会不会出现 `approval_pending`。
 }
 

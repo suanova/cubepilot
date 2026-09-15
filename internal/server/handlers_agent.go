@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
@@ -90,7 +91,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		} else if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not in the cubepilot template (add it under Agent Config -> LLM Config first)", model)})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not served by any provider of the cubepilot template (add it under Agent Config -> LLM Config first)", model)})
 			return
 		}
 		name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
@@ -133,10 +134,10 @@ func (s *Server) agentConfig(ctx context.Context, user string) agentConfigView {
 	return v
 }
 
-// agentTemplateHasModel reports whether model is an inline model of the builtin
-// cubepilot template (the template every AgentConfig applies to). Empty
-// is always allowed ("Runtime Default"). With the CRD path disabled there is no
-// template to validate against, so anything is accepted.
+// agentTemplateHasModel reports whether model is a <provider>/<modelId> ref
+// served by the builtin cubepilot template (the template every AgentConfig
+// applies to). Empty is always allowed ("Runtime Default"). With the CRD path
+// disabled there is no template to validate against, so anything is accepted.
 func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool, error) {
 	if model == "" || s.cr == nil {
 		return true, nil
@@ -148,9 +149,11 @@ func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool,
 		}
 		return false, err
 	}
-	for _, m := range tmpl.Spec.Models {
-		if m.Name == model {
-			return true, nil
+	for _, pr := range tmpl.Spec.Providers {
+		for _, id := range pr.Models {
+			if gateway.ModelKey(pr.Name, id) == model {
+				return true, nil
+			}
 		}
 	}
 	return false, nil

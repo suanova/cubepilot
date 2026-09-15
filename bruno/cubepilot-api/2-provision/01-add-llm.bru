@@ -5,19 +5,27 @@ meta {
 }
 
 docs {
-  # 加一个模型(201)
+  # 加一个 provider(201)
 
-  往内置 `cubepilot` 模板追加一个 OpenAI 兼容模型。operator 会把它渲染进网关配置,
+  往内置 `cubepilot` 模板追加一个 OpenAI 兼容 provider。operator 会把它渲染进网关配置,
   并创建 `llm-<name>` 凭据 Secret。
 
+  `models` 是**这个 endpoint 提供的后端模型 id 列表**,至少一个:一个 endpoint + 一份 key
+  服务多个 id 时写**一条**记录,而不是每个 id 一条。id 按原样发给 endpoint,可以含 `/`。
+  服务端会 trim 并去重。
+
+  `name` 是 **provider 名**(DNS-1123 label,≤63 字符),不可变:它同时是网关 provider key、
+  模型 ref 的前缀(`<name>/<modelId>`)和凭据 Secret 名后缀(`llm-<name>`)。
+  它和 `models` 里的 id **无关**。
+
   **`apiKey` 与 `public` 二选一**:需要鉴权的给 key;确实不需要鉴权的给 `"public": true`。
-  都不给或都给 → 400。
+  都不给或都给 → 400。凭据按 provider 建一次,不是每个 id 一个。
 
   `endpoint` 是 **API root**(OpenAI SDK 自己追加 `/chat/completions`)。
   传完整 URL(结尾 `/chat/completions`)时服务端会剥掉后缀。
 
   **重名 → 409**,所以这里同时接受 201 和 409。
-  要改已存在的模型用 `5-llm-admin/01-edit-llm`。
+  要改已存在的 provider 用 `5-llm-admin/01-edit-llm`。
 
   ⚠️ 需要先在集合根目录的 `.env` 里填 `llmApiKey`。
 }
@@ -36,12 +44,18 @@ body:json {
   {
     "name": "{{llmName}}",
     "endpoint": "{{llmEndpoint}}",
-    "apiKey": "{{process.env.llmApiKey}}"
+    "apiKey": "{{process.env.llmApiKey}}",
+    "models": ["{{llmModel}}"]
   }
 }
 
 tests {
   test("201 created, or 409 already exists", function() {
     expect([201, 409]).to.include(res.status)
+  })
+  test("enveloped under provider", function() {
+    if (res.status === 201) {
+      expect(res.body).to.have.property("provider")
+    }
   })
 }

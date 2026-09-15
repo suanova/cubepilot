@@ -27,9 +27,9 @@ func internalTestAgent(name string) *v1alpha1.AgentTemplate {
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: v1alpha1.AgentTemplateSpec{
-			DefaultModel: "deepseek-v4-flash",
-			Models: []v1alpha1.TemplateModelSpec{
-				{Name: "deepseek-v4-flash", Endpoint: "https://api.deepseek.com"},
+			DefaultModel: "platform/deepseek-v4-flash",
+			Providers: []v1alpha1.TemplateProviderSpec{
+				{Name: "platform", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash"}},
 			},
 			ApprovalPolicy: v1alpha1.ApprovalPolicyAllowlist,
 			Instructions:   "You are the platform assistant.",
@@ -151,7 +151,7 @@ type configResponse = agentConfigView
 func TestAgentConfigWithoutCRClient(t *testing.T) {
 	s := New(config.Config{DefaultUser: "zhang.wei"}, nil, nil, nil, nil)
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
-		map[string]any{"selectedModel": "deepseek-v4-flash"})
+		map[string]any{"selectedModel": "platform/deepseek-v4-flash"})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
@@ -174,13 +174,13 @@ func TestAgentConfigModelOverride(t *testing.T) {
 
 	// Switch to the template model -> the override is resolved for the next turn.
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "li.ming",
-		map[string]any{"selectedModel": "deepseek-v4-flash"})
+		map[string]any{"selectedModel": "platform/deepseek-v4-flash"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cfg := decode[internalConfigResponse](t, doReq(t, s.Handler(), http.MethodGet, "/internal/agents/li.ming/config", "li.ming", nil)).Config
-	if cfg.SelectedModel != "deepseek-v4-flash/deepseek-v4-flash" {
-		t.Errorf("selectedModel = %q, want deepseek-v4-flash/deepseek-v4-flash", cfg.SelectedModel)
+	if cfg.SelectedModel != "platform/deepseek-v4-flash" {
+		t.Errorf("selectedModel = %q, want platform/deepseek-v4-flash", cfg.SelectedModel)
 	}
 
 	// Back to "Runtime Default" -> the override is cleared (no header sent).
@@ -218,18 +218,18 @@ func TestAgentConfigReadsAndWritesInstance(t *testing.T) {
 
 	// Save model + system prompt -> both land on the instance CR.
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
-		map[string]any{"selectedModel": "deepseek-v4-flash", "userInstructions": "You are helpful."})
+		map[string]any{"selectedModel": "platform/deepseek-v4-flash", "userInstructions": "You are helpful."})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "", nil))
-	if resp.SelectedModel != "deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
+	if resp.SelectedModel != "platform/deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
 		t.Fatalf("config after save = %+v", resp)
 	}
 
 	// A user with no instance cannot save (there is no global config to write).
 	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "nobody",
-		map[string]any{"selectedModel": "deepseek-v4-flash"})
+		map[string]any{"selectedModel": "platform/deepseek-v4-flash"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("save without instance status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
@@ -252,7 +252,7 @@ func TestAgentConfigRejectsSupersededShape(t *testing.T) {
 
 	// Save a real configuration first, so a wipe would be observable.
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
-		map[string]any{"selectedModel": "deepseek-v4-flash", "userInstructions": "You are helpful."})
+		map[string]any{"selectedModel": "platform/deepseek-v4-flash", "userInstructions": "You are helpful."})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -264,7 +264,7 @@ func TestAgentConfigRejectsSupersededShape(t *testing.T) {
 	}
 
 	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "", nil))
-	if resp.SelectedModel != "deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
+	if resp.SelectedModel != "platform/deepseek-v4-flash" || resp.UserInstructions != "You are helpful." {
 		t.Fatalf("a rejected payload altered the stored config: %+v", resp)
 	}
 }
@@ -331,25 +331,25 @@ func TestInternalGatewayConfigPerUserPrimary(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName},
 			Data:       map[string][]byte{"openclaw.json": raw, "gatewayToken": []byte("tok")},
 		},
-		// The template the instance references (must contain the selected model).
+		// The template the instance references (must serve the selected ref).
 		&v1alpha1.AgentTemplate{
 			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 			Spec: v1alpha1.AgentTemplateSpec{
-				DefaultModel: "deepseek-v4-flash-0731",
-				Models: []v1alpha1.TemplateModelSpec{
-					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com"},
-					{Name: "deepseek-v4-pro-0813", Endpoint: "https://api.deepseek.com"},
+				DefaultModel: "deepseek-v4-flash-0731/deepseek-v4-flash-0731",
+				Providers: []v1alpha1.TemplateProviderSpec{
+					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash-0731"}},
+					{Name: "deepseek-v4-pro-0813", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-pro-0813"}},
 				},
 			},
 		},
 		// An instance with an explicit selectedModel (resolver looks it up by
-		// name without a namespace).
+		// ref without a namespace).
 		&v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: "li-ming-cubepilot"},
 			Spec: v1alpha1.AgentInstanceSpec{
 				Owner:         "li.ming",
 				TemplateRef:   "cubepilot",
-				SelectedModel: "deepseek-v4-pro-0813",
+				SelectedModel: "deepseek-v4-pro-0813/deepseek-v4-pro-0813",
 			},
 		},
 	)
@@ -376,16 +376,16 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName},
 			Data:       map[string][]byte{"openclaw.json": raw, "gatewayToken": []byte("tok")},
 		},
-		// The dropped model IS in the template (so the resolver accepts the
+		// The dropped provider IS in the template (so the resolver accepts the
 		// selection) but has an empty endpoint, so the operator's renderer never
-		// puts it in the allowlist.
+		// puts its ref in the allowlist.
 		&v1alpha1.AgentTemplate{
 			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot"},
 			Spec: v1alpha1.AgentTemplateSpec{
-				DefaultModel: "deepseek-v4-flash-0731",
-				Models: []v1alpha1.TemplateModelSpec{
-					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com"},
-					{Name: "deepseek-v4-dropped", Endpoint: ""},
+				DefaultModel: "deepseek-v4-flash-0731/deepseek-v4-flash-0731",
+				Providers: []v1alpha1.TemplateProviderSpec{
+					{Name: "deepseek-v4-flash-0731", Endpoint: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash-0731"}},
+					{Name: "deepseek-v4-dropped", Endpoint: "", Models: []string{"deepseek-v4-dropped"}},
 				},
 			},
 		},
@@ -394,7 +394,7 @@ func TestInternalGatewayConfigPrimaryNotInAllowlist(t *testing.T) {
 			Spec: v1alpha1.AgentInstanceSpec{
 				Owner:         "li.ming",
 				TemplateRef:   "cubepilot",
-				SelectedModel: "deepseek-v4-dropped",
+				SelectedModel: "deepseek-v4-dropped/deepseek-v4-dropped",
 			},
 		},
 	)

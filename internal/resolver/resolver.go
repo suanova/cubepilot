@@ -21,6 +21,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/allowlist"
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/grants"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
@@ -54,9 +55,8 @@ type ResolvedAgentConfig struct {
 	// explicitly selected a model (empty = no override; the runtime uses its
 	// configured primary).
 	SelectedModel string `json:"selectedModel,omitempty"`
-	// ModelName is the catalog model name backing SelectedModel, or the
-	// template default model name when nothing was explicitly selected
-	// (display only).
+	// ModelName is the model ref backing SelectedModel, or the template
+	// default model ref when nothing was explicitly selected (display only).
 	ModelName string `json:"modelName,omitempty"`
 	// ApprovalPolicy is the agent's effective confirmation intent (template
 	// default unless the instance overrides it; issue #116).
@@ -83,8 +83,8 @@ type ResolvedAgentConfig struct {
 	Credentials []ResolvedCredential `json:"credentials,omitempty"`
 }
 
-// ResolvedCredential maps a rendered apiKey key name (k8s.EnvNameForModel, the
-// keys.json JSON key) to the Secret holding its value.
+// ResolvedCredential maps a rendered apiKey key name (k8s.EnvNameForProvider,
+// the keys.json JSON key) to the Secret holding its value.
 type ResolvedCredential struct {
 	Env        string `json:"env"`
 	SecretName string `json:"secretName"`
@@ -129,11 +129,10 @@ func (r *Resolver) ResolveForUser(ctx context.Context, user string) (*ResolvedAg
 	return r.Resolve(ctx, user, v1alpha1.DefaultAgentName)
 }
 
-// Resolve merges AgentTemplate + AgentInstance + Model catalog + Skills
-// for (user, agent). Fail-closed: an explicit selection that is outside the
-// agent's availableModels, missing from the catalog, or Unreachable is an
-// error -- never a silent fallback. An empty selection (no instance, no
-// explicit selection, no agent default) is not an error.
+// Resolve merges AgentTemplate + AgentInstance + Skills for (user, agent).
+// Fail-closed: an explicit selection that no provider of the agent definition
+// serves is an error -- never a silent fallback. An empty selection (no
+// instance, no explicit selection, no agent default) is not an error.
 func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAgentConfig, error) {
 	instanceName := k8s.InstanceName(user, agent)
 
@@ -163,20 +162,23 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			cfg.ApprovalPolicy = def.Spec.ApprovalPolicy
 			tmplAllowlist = def.Spec.Allowlist
 			cfg.Instructions = def.Spec.Instructions
-			// Credential mapping for the gateway's file secret provider: the
-			// supervisor reads these Secrets and writes keys.json into the
-			// pod's emptyDir (design §6).
-			for _, m := range def.Spec.Models {
-				// Match the renderer's eligibility rule: models with an empty
-				// endpoint are dropped from the rendered config, so their
-				// credentials must not appear either (a missing Secret on an
-				// ineligible model would otherwise block valid ones).
-				if m.Endpoint == "" || m.CredentialRef == nil || m.CredentialRef.Name == "" {
+			// Credential mapping for the gateway's file secret provider:
+			// the supervisor reads these Secrets and writes keys.json into
+			// the pod's emptyDir (design §6). One entry per provider -- the
+			// credential is the provider's, not the model's.
+			for _, pr := range def.Spec.Providers {
+				// Match the renderer's eligibility rule: providers with an
+				// empty endpoint (or no models) are dropped from the
+				// rendered config, so their credentials must not appear
+				// either (a missing Secret on an ineligible provider would
+				// otherwise block valid ones).
+				if pr.Endpoint == "" || len(pr.Models) == 0 ||
+					pr.CredentialRef == nil || pr.CredentialRef.Name == "" {
 					continue
 				}
 				cfg.Credentials = append(cfg.Credentials, ResolvedCredential{
-					Env:        k8s.EnvNameForModel(m.Name),
-					SecretName: m.CredentialRef.Name,
+					Env:        k8s.EnvNameForProvider(pr.Name),
+					SecretName: pr.CredentialRef.Name,
 				})
 			}
 			// User instructions append after the template instructions
@@ -195,7 +197,7 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 			// agent's default model is whatever the runtime's configured primary
 			// is -- no provider-key naming convention is required. The template
 			// default is kept as the display name only. Fail-closed still
-			// applies to explicit selections (outside the template models ->
+			// applies to explicit selections (outside the template providers ->
 			// error).
 			if selected := strings.TrimSpace(inst.Spec.SelectedModel); selected != "" {
 				modelID, err := r.resolveModel(selected, def)
@@ -272,15 +274,17 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 	return cfg, nil
 }
 
-// resolveModel validates the selection against the template's inline models
-// list and returns the effective override ref. Fail-closed: not in models
-// list -> error. The returned ref is the full gateway ref `<name>/<name>` --
-// the same string the gateway renderer puts in the allowlist, so the override
-// always matches (the coupling issue #6 removes).
+// resolveModel validates the selection ref against the template's providers and
+// returns the effective override ref. Fail-closed: an unknown provider, or an
+// id the named provider does not serve, is an error. The returned ref is the
+// same <provider>/<modelId> string the renderer puts in the allowlist, so the
+// override always matches.
 func (r *Resolver) resolveModel(selected string, def v1alpha1.AgentTemplate) (string, error) {
-	for _, m := range def.Spec.Models {
-		if m.Name == selected {
-			return m.Name + "/" + m.Name, nil
+	for _, pr := range def.Spec.Providers {
+		for _, id := range pr.Models {
+			if ref := gateway.ModelKey(pr.Name, id); ref == selected {
+				return ref, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("model %q is not available in template %q (add it under Agent config -> LLM Config, then select it again)", selected, def.Name)

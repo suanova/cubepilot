@@ -42,7 +42,7 @@ var _ = Describe("Builtin bootstrap", func() {
 		}).Should(Succeed())
 		Expect(tpl.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
 		Expect(tpl.Spec.DefaultModel).NotTo(BeEmpty())
-		Expect(tpl.Spec.Models).NotTo(BeEmpty())
+		Expect(tpl.Spec.Providers).NotTo(BeEmpty())
 	})
 
 	It("bootstraps builtin skills and the daily-inspection task template", func() {

@@ -227,16 +227,17 @@ func makeReadyPod(t *testing.T, r *AgentInstanceReconciler, cl client.Client) {
 
 // TestModelConfiguredCondition verifies the ModelConfigured status condition
 // (issue #117): it is decoupled from the pod lifecycle -- a Ready instance
-// reports False while its template has no usable model, and True once a keyed
-// model's credential Secret exists. A keyed model without its Secret (or an
-// empty model list) reports False with a user-facing message.
+// reports False while its template has no usable provider, and True once a keyed
+// provider's credential Secret exists. A keyed provider without its Secret (or
+// an empty provider list) reports False with a user-facing message.
 func TestModelConfiguredCondition(t *testing.T) {
 	keyedModel := func() *v1alpha1.AgentTemplate {
 		tpl := testTemplate()
-		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{
-			Name:          "deepseek-v4-flash",
+		tpl.Spec.Providers = []v1alpha1.TemplateProviderSpec{{
+			Name:          "platform",
 			Endpoint:      "https://api.deepseek.com",
 			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
+			Models:        []string{"deepseek-v4-flash"},
 		}}
 		return tpl
 	}
@@ -303,13 +304,14 @@ func TestModelConfiguredCondition(t *testing.T) {
 		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "cubepilot"}, &tpl); err != nil {
 			t.Fatal(err)
 		}
-		tpl.Spec.Models = []v1alpha1.TemplateModelSpec{{
-			Name:          "deepseek-v4-flash",
+		tpl.Spec.Providers = []v1alpha1.TemplateProviderSpec{{
+			Name:          "platform",
 			Endpoint:      "https://api.deepseek.com",
 			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
+			Models:        []string{"deepseek-v4-flash"},
 		}}
 		if err := cl.Update(context.Background(), &tpl); err != nil {
-			t.Fatalf("update template with model: %v", err)
+			t.Fatalf("update template with provider: %v", err)
 		}
 		cred := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: testNamespace},

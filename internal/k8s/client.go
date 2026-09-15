@@ -159,16 +159,17 @@ func InstanceName(user, agent string) string {
 	return Sanitize(user) + "-" + Sanitize(agent)
 }
 
-// EnvNameForModel derives the stable identifier used for a model credential's
-// apiKey across the credential-delivery path: the file SecretRef id rendered
-// into openclaw.json ("/"+name) and the matching key in the emptyDir keys.json
-// the supervisor writes. The operator render, the resolver's credential list
-// and the supervisor must all derive the same name.
+// EnvNameForProvider derives the stable identifier used for a provider
+// credential's apiKey across the credential-delivery path: the file SecretRef
+// id rendered into openclaw.json ("/"+name) and the matching key in the
+// emptyDir keys.json the supervisor writes. The operator render, the
+// resolver's credential list and the supervisor must all derive the same name.
 //
-// A short hash of the original model name is appended so distinct names that
-// sanitize identically (e.g. "foo-bar" vs "foo_bar", or case variants) still
-// map to distinct keys instead of one model's apiKey silently serving another.
-func EnvNameForModel(name string) string {
+// A short hash of the original provider name is appended so distinct names
+// that sanitize identically (e.g. "foo-bar" vs "foo_bar", or case variants)
+// still map to distinct keys instead of one provider's apiKey silently serving
+// another.
+func EnvNameForProvider(name string) string {
 	const prefix = "CUBEPILOT_LLM_"
 	var b strings.Builder
 	b.Grow(len(name) + len(prefix) + 5)

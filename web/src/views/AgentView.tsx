@@ -6,10 +6,11 @@ import { esc, fmtUptime } from '@/utils/format'
 import { enabledSkillsFromInstances, skillSpecStr } from '@/utils/skills'
 import { showToast } from '@/stores/toast'
 
-interface TemplateModel {
+interface TemplateProvider {
   name: string
   endpoint: string
   credentialRef?: { name: string }
+  models: string[]
 }
 
 function CheckIcon() {
@@ -30,13 +31,16 @@ export default function AgentView() {
   const [skills, setSkills] = useState<Array<{ sk: PlatformObject; enabled: boolean }>>([])
   const [hasInstance, setHasInstance] = useState(false)
   const [provisioning, setProvisioning] = useState(false)
-  const [templateModels, setTemplateModels] = useState<TemplateModel[]>([])
+  const [templateProviders, setTemplateProviders] = useState<TemplateProvider[]>([])
   const [defaultModel, setDefaultModel] = useState('')
-  const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '', public: false })
+  const [llmForm, setLLMForm] = useState({ name: '', endpoint: '', apiKey: '', public: false, models: '' })
   const [llmBusy, setLLMBusy] = useState(false)
-  // The model the card form is currently editing; null means the form adds a
+  // The provider the card form is currently editing; null means the form adds a
   // new one. The form is shared, so only one of the two is ever in flight.
-  const [editingModel, setEditingModel] = useState<string | null>(null)
+  const [editingProvider, setEditingProvider] = useState<string | null>(null)
+  // One draft model id per provider, for the inline "Add model" field. Adding an
+  // id is the most frequent operation, so it must not go through the full form.
+  const [newModel, setNewModel] = useState<Record<string, string>>({})
 
   // Approval posture (issue #116): approvalPolicy override + owned allowlist.
   const [confirm, setConfirm] = useState<ConfirmView | null>(null)
@@ -49,12 +53,13 @@ export default function AgentView() {
       const list = await api.listAgentTemplates()
       const tmpl = list[0]
       if (!tmpl) return
-      const models: TemplateModel[] = ((tmpl.spec?.models || []) as Array<Record<string, string | { name: string }>>).map((m) => ({
-        name: String(m.name ?? ''),
-        endpoint: String(m.endpoint ?? ''),
-        credentialRef: (m.credentialRef as { name: string } | undefined) ?? undefined,
+      const providers: TemplateProvider[] = ((tmpl.spec?.providers || []) as Array<Record<string, unknown>>).map((p) => ({
+        name: String(p.name ?? ''),
+        endpoint: String(p.endpoint ?? ''),
+        credentialRef: (p.credentialRef as { name: string } | undefined) ?? undefined,
+        models: ((p.models || []) as unknown[]).map((m) => String(m)),
       }))
-      setTemplateModels(models)
+      setTemplateProviders(providers)
       setDefaultModel(String(tmpl.spec?.defaultModel ?? ''))
     } catch (e) {
       console.error('loadTemplate', e)
@@ -252,31 +257,116 @@ export default function AgentView() {
   }
 
   function resetLLMForm() {
-    setLLMForm({ name: '', endpoint: '', apiKey: '', public: false })
-    setEditingModel(null)
+    setLLMForm({ name: '', endpoint: '', apiKey: '', public: false, models: '' })
+    setEditingProvider(null)
   }
 
-  function startEditLLM(m: TemplateModel) {
+  // splitModels reads the textarea/input as one id per line and drops blanks, so
+  // a trailing newline does not become an empty model id.
+  function splitModels(raw: string): string[] {
+    return raw.split('\n').map((s) => s.trim()).filter(Boolean)
+  }
+
+  // modelRef mirrors gateway.ModelKey: both arguments are trimmed, an empty one
+  // falls back to the other, and an id that already names its provider is its
+  // own ref and must not be prefixed a second time. Keep in step with
+  // internal/gateway/modelkey.go.
+  function modelRef(provider: string, id: string): string {
+    const p = provider.trim()
+    const m = id.trim()
+    if (!p) return m
+    if (!m) return p
+    if (m.toLowerCase().startsWith(p.toLowerCase() + '/')) return m
+    return `${p}/${m}`
+  }
+
+  // modelOptions pairs each id of a provider with its ref, dropping every id
+  // after the first that yields the same one: under provider "vllm", the ids
+  // "qwen3-8b" and "vllm/qwen3-8b" both yield the ref "vllm/qwen3-8b", and two
+  // options with the same key and value are one choice rendered twice (React
+  // also warns about the duplicate key). The ref is what a selection stores,
+  // so the dropped id is not a second choice.
+  function modelOptions(p: TemplateProvider): Array<{ ref: string; id: string }> {
+    const seen = new Set<string>()
+    const out: Array<{ ref: string; id: string }> = []
+    for (const id of p.models) {
+      const ref = modelRef(p.name, id)
+      if (seen.has(ref)) continue
+      seen.add(ref)
+      out.push({ ref, id })
+    }
+    return out
+  }
+
+  function startEditProvider(p: TemplateProvider) {
     // The stored key is never sent to the browser, so the field starts blank --
     // and a blank key on edit means "keep the current credential".
-    setLLMForm({ name: m.name, endpoint: m.endpoint, apiKey: '', public: !m.credentialRef })
-    setEditingModel(m.name)
+    setLLMForm({
+      name: p.name,
+      endpoint: p.endpoint,
+      apiKey: '',
+      public: !p.credentialRef,
+      models: p.models.join('\n'),
+    })
+    setEditingProvider(p.name)
   }
 
-  async function removeLLM(name: string) {
+  async function removeProvider(p: TemplateProvider) {
     if (llmBusy) return
     // window.confirm: the `confirm` state in this view is the confirmation
     // posture, not the browser dialog.
-    if (!window.confirm(`Remove model "${name}"? Its credential is deleted too.`)) return
+    const n = p.models.length
+    if (!window.confirm(`Remove provider "${p.name}" and its ${n} model${n === 1 ? '' : 's'}? Its credential is deleted too.`)) return
     setLLMBusy(true)
     try {
-      const res = await api.deleteLLM(name)
-      showToast(res.warning || `Model "${name}" removed`)
-      if (editingModel === name) resetLLMForm()
+      const res = await api.deleteLLM(p.name)
+      showToast(res.warning || `Provider "${p.name}" removed`)
+      if (editingProvider === p.name) resetLLMForm()
       await loadTemplate()
     } catch (e) {
-      // A model an instance still selects is refused with the instances named.
+      // A provider any of whose models an instance selects is refused with the
+      // instances named.
       showToast('Remove failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setLLMBusy(false)
+    }
+  }
+
+  // Adding or dropping one id PUTs the full list -- the server replaces the list
+  // wholesale, so this is the same request the form makes, minus the fields the
+  // edit does not touch. public restates the provider's credential posture: a
+  // PUT that carries neither a key nor public=true is refused for a provider
+  // that has no credential, which is the inline path's case for a public one.
+  async function addModelToProvider(p: TemplateProvider, id: string) {
+    if (llmBusy) return
+    const trimmed = id.trim()
+    if (!trimmed || p.models.includes(trimmed)) return
+    setLLMBusy(true)
+    try {
+      await api.updateLLM(p.name, { endpoint: p.endpoint, public: !p.credentialRef, models: [...p.models, trimmed] })
+      showToast(`Model "${trimmed}" added`)
+      setNewModel((m) => ({ ...m, [p.name]: '' }))
+      await loadTemplate()
+    } catch (e) {
+      showToast('Add model failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setLLMBusy(false)
+    }
+  }
+
+  async function removeModelFromProvider(p: TemplateProvider, id: string) {
+    if (llmBusy) return
+    if (p.models.length === 1) {
+      showToast('A provider needs at least one model -- remove the provider instead')
+      return
+    }
+    setLLMBusy(true)
+    try {
+      await api.updateLLM(p.name, { endpoint: p.endpoint, public: !p.credentialRef, models: p.models.filter((m) => m !== id) })
+      showToast(`Model "${id}" removed`)
+      await loadTemplate()
+    } catch (e) {
+      showToast('Remove model failed: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setLLMBusy(false)
     }
@@ -284,43 +374,50 @@ export default function AgentView() {
 
   // Saves the card form: an add when no edit is in flight, otherwise a PUT.
   // Only an add needs a name and a credential decision -- an edit keeps the
-  // stored name and, with a blank key, the stored credential.
+  // stored name and, with a blank key, the stored credential. Both carry the
+  // full model list, because a PUT replaces it rather than merging into it.
   async function submitLLM() {
     if (llmBusy) return
     if (!llmForm.endpoint.trim()) {
       showToast('Endpoint is required')
       return
     }
-    if (!editingModel && !llmForm.name.trim()) {
-      showToast('Name is required')
+    if (!editingProvider && !llmForm.name.trim()) {
+      showToast('Provider name is required')
       return
     }
-    if (!editingModel && !llmForm.apiKey && !llmForm.public) {
+    if (!editingProvider && splitModels(llmForm.models).length === 0) {
+      showToast('Enter at least one model id')
+      return
+    }
+    if (!editingProvider && !llmForm.apiKey && !llmForm.public) {
       showToast('Enter the apiKey, or mark the endpoint public')
       return
     }
     setLLMBusy(true)
     try {
-      if (editingModel) {
-        const res = await api.updateLLM(editingModel, {
+      if (editingProvider) {
+        const res = await api.updateLLM(editingProvider, {
           endpoint: llmForm.endpoint,
           apiKey: llmForm.apiKey || undefined,
           public: llmForm.public,
+          models: splitModels(llmForm.models),
         })
-        showToast(res.warning || 'LLM updated - the operator will re-render the gateway')
+        showToast(res.warning || 'Provider updated - the operator will re-render the gateway')
       } else {
         await api.addLLM({
           name: llmForm.name,
           endpoint: llmForm.endpoint,
           apiKey: llmForm.apiKey || undefined,
           public: llmForm.public,
+          models: splitModels(llmForm.models),
         })
-        showToast('LLM added - the operator will wire it into the gateway')
+        showToast('Provider added - the operator will wire it into the gateway')
       }
       resetLLMForm()
       await loadTemplate()
     } catch (e) {
-      showToast((editingModel ? 'Update' : 'Add') + ' LLM failed: ' + (e instanceof Error ? e.message : String(e)))
+      showToast((editingProvider ? 'Update' : 'Add') + ' provider failed: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setLLMBusy(false)
     }
@@ -344,7 +441,7 @@ export default function AgentView() {
           <div className="card">
             <div className="card-head">
               <span className="card-title">Model & Runtime</span>
-              <span className="card-hint">Models are inlined in the AgentTemplate - select from the template's models list</span>
+              <span className="card-hint">Models come from the template's providers - select the one your assistant runs on</span>
             </div>
             <div className="card-pad">
               <div className="field">
@@ -356,15 +453,17 @@ export default function AgentView() {
                   onChange={(e) => setCfg((c) => ({ ...c, selectedModel: e.target.value }))}
                 >
                   <option value="" disabled>-- Select a model --</option>
-                  {templateModels.map((m) => (
-                    <option key={m.name} value={m.name}>
-                      {m.name}
-                    </option>
+                  {templateProviders.map((p) => (
+                    <optgroup key={p.name} label={p.name}>
+                      {modelOptions(p).map(({ ref, id }) => (
+                        <option key={ref} value={ref}>{id}</option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
-                {templateModels.length === 0 && (
+                {templateProviders.length === 0 && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>
-                    No models yet — add one in the LLM Config card below
+                    No providers yet -- add one in the LLM Config card below
                   </div>
                 )}
                 {defaultModel && (
@@ -400,33 +499,56 @@ export default function AgentView() {
           <div className="card" style={{ order: 1 }}>
             <div className="card-head">
               <span className="card-title">LLM Config</span>
-              <span className="card-hint">Add an OpenAI-compatible model to the platform catalog, or edit one already in it</span>
+              <span className="card-hint">A provider owns one endpoint and the model ids it serves - add one, or edit one already in the catalog</span>
             </div>
             <div className="card-pad">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                {templateModels.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No models yet.</div>}
-                {templateModels.map((m) => (
-                  <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                    <span className="mono">{m.name}</span>
+              {templateProviders.length === 0 && <div className="muted" style={{ fontSize: 13 }}>No providers yet.</div>}
+              {templateProviders.map((p) => (
+                <div key={p.name} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 10, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span className="mono" style={{ fontSize: 13 }}>{p.name}</span>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span className="pill neutral">{m.credentialRef ? 'keyed' : 'public'}</span>
-                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => startEditLLM(m)}>Edit</button>
-                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => removeLLM(m.name)}>Remove</button>
+                      <span className="pill neutral">{p.credentialRef ? 'keyed' : 'public'}</span>
+                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => startEditProvider(p)}>Edit</button>
+                      <button className="btn sm ghost" disabled={llmBusy} onClick={() => removeProvider(p)}>Remove provider</button>
                     </span>
                   </div>
-                ))}
-              </div>
+                  <div className="muted" style={{ fontSize: 12, margin: '4px 0 8px', wordBreak: 'break-all' }}>{p.endpoint}</div>
+                  {p.models.map((id) => (
+                    <div key={id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                      <span className="mono">{id}</span>
+                      <button
+                        className="btn sm ghost"
+                        disabled={llmBusy || p.models.length === 1}
+                        title={p.models.length === 1 ? 'A provider needs at least one model -- remove the provider instead' : undefined}
+                        onClick={() => removeModelFromProvider(p, id)}
+                      >Remove</button>
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <input
+                      className="input"
+                      placeholder="Model id (sent to the endpoint)"
+                      value={newModel[p.name] ?? ''}
+                      onChange={(e) => setNewModel((m) => ({ ...m, [p.name]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void addModelToProvider(p, newModel[p.name] ?? '') }}
+                    />
+                    <button className="btn sm" disabled={llmBusy} onClick={() => addModelToProvider(p, newModel[p.name] ?? '')}>Add model</button>
+                  </div>
+                </div>
+              ))}
               {/* One form serves both paths: the name is read-only while editing
-                  because it is the model's identity downstream (provider key,
-                  model id, credential name) -- renaming is Remove + Add. */}
-              {editingModel ? (
+                  because it is the provider's identity downstream (the gateway
+                  provider key, the ref prefix, the credential name) -- renaming
+                  is Remove + Add. */}
+              {editingProvider ? (
                 <div className="field" style={{ marginBottom: 8 }}>
-                  <label className="label">Editing {editingModel}</label>
+                  <label className="label">Editing {editingProvider}</label>
                 </div>
               ) : (
                 <input
                   className="input"
-                  placeholder="Model name (sent to the endpoint)"
+                  placeholder="Provider name (a short label, e.g. vllm)"
                   value={llmForm.name}
                   onChange={(e) => setLLMForm((f) => ({ ...f, name: e.target.value }))}
                 />
@@ -440,11 +562,22 @@ export default function AgentView() {
               <div style={{ margin: '-6px 0 8px', fontSize: 12, color: 'var(--muted)' }}>
                 Use the API root -- do not include /chat/completions.
               </div>
+              <textarea
+                className="input"
+                rows={3}
+                aria-label="Model ids, one per line"
+                placeholder="Model ids, one per line (sent to the endpoint verbatim)"
+                value={llmForm.models}
+                onChange={(e) => setLLMForm((f) => ({ ...f, models: e.target.value }))}
+              />
+              <div style={{ margin: '-6px 0 8px', fontSize: 12, color: 'var(--muted)' }}>
+                One id per line -- a save replaces the provider's whole list.
+              </div>
               <input
                 className="input"
                 type="password"
                 disabled={llmForm.public}
-                placeholder={editingModel ? 'apiKey (leave empty to keep the current one)' : 'apiKey'}
+                placeholder={editingProvider ? 'apiKey (leave empty to keep the current one)' : 'apiKey'}
                 value={llmForm.apiKey}
                 onChange={(e) => setLLMForm((f) => ({ ...f, apiKey: e.target.value }))}
               />
@@ -457,9 +590,9 @@ export default function AgentView() {
                 Public endpoint -- requires no API key
               </label>
               <button className="btn primary" style={{ width: '100%' }} disabled={llmBusy} onClick={submitLLM}>
-                {llmBusy ? 'Saving...' : editingModel ? 'Save Changes' : 'Add LLM'}
+                {llmBusy ? 'Saving...' : editingProvider ? 'Save Changes' : 'Add provider'}
               </button>
-              {editingModel && (
+              {editingProvider && (
                 <button className="btn" style={{ width: '100%', marginTop: 6 }} disabled={llmBusy} onClick={resetLLMForm}>
                   Cancel
                 </button>

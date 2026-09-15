@@ -45,23 +45,23 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Spec.Registry == nil || !agent.Spec.Registry.Builtin {
 		t.Error("builtin flag missing")
 	}
-	if agent.Spec.DefaultModel != "deepseek-v4-flash" {
-		t.Errorf("defaultModel = %q, want deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
+	if agent.Spec.DefaultModel != "platform/deepseek-v4-flash" {
+		t.Errorf("defaultModel = %q, want platform/deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
 	}
-	if len(agent.Spec.Models) != 1 || agent.Spec.Models[0].Name != "deepseek-v4-flash" {
-		t.Errorf("inline models = %v, want [deepseek-v4-flash]", agent.Spec.Models)
+	if len(agent.Spec.Providers) != 1 || agent.Spec.Providers[0].Name != BuiltinProviderName {
+		t.Errorf("inline providers = %v, want [%s]", agent.Spec.Providers, BuiltinProviderName)
 	}
-	if agent.Spec.Models[0].Endpoint != config.DefaultLLMEndpoint {
-		t.Errorf("builtin model endpoint = %q, want %q", agent.Spec.Models[0].Endpoint, config.DefaultLLMEndpoint)
+	if len(agent.Spec.Providers[0].Models) != 1 || agent.Spec.Providers[0].Models[0] != "deepseek-v4-flash" {
+		t.Errorf("builtin model ids = %v, want [deepseek-v4-flash]", agent.Spec.Providers[0].Models)
 	}
-	if agent.Spec.Models[0].CredentialRef == nil || agent.Spec.Models[0].CredentialRef.Name != "cubepilot-llm" {
-		t.Errorf("builtin model credentialRef = %+v, want cubepilot-llm", agent.Spec.Models[0].CredentialRef)
+	if agent.Spec.Providers[0].Endpoint != config.DefaultLLMEndpoint {
+		t.Errorf("builtin provider endpoint = %q, want %q", agent.Spec.Providers[0].Endpoint, config.DefaultLLMEndpoint)
+	}
+	if agent.Spec.Providers[0].CredentialRef == nil || agent.Spec.Providers[0].CredentialRef.Name != "cubepilot-llm" {
+		t.Errorf("builtin provider credentialRef = %+v, want cubepilot-llm", agent.Spec.Providers[0].CredentialRef)
 	}
 	if agent.Spec.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
 		t.Errorf("approvalPolicy = %q, want Allowlist (design §3.1)", agent.Spec.ApprovalPolicy)
-	}
-	if len(agent.Spec.Models) == 0 || agent.Spec.Models[0].Name == "" {
-		t.Error("primary model missing")
 	}
 	if agent.Spec.Identity == nil || agent.Spec.Identity.Mode != v1alpha1.IdentityModeUser {
 		t.Error("identity mode should default to user")
@@ -165,14 +165,14 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Fatalf("daily-inspection template not created: %v", err)
 	}
 
-	// Models are inlined in the template (design §3.3): the builtin template
-	// carries the preset inline model entries.
+	// Providers are inlined in the template (design §3.3): the builtin template
+	// carries the preset inline provider entries.
 	tmpl := v1alpha1.AgentTemplate{}
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "cubepilot", Namespace: "cubepilot"}, &tmpl); err != nil {
 		t.Fatalf("cubepilot template not found: %v", err)
 	}
-	if len(tmpl.Spec.Models) != len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)) {
-		t.Errorf("inline models = %d, want %d", len(tmpl.Spec.Models), len(BuiltinModels(config.DefaultLLMEndpoint, config.DefaultLLMModel)))
+	if len(tmpl.Spec.Providers) != len(BuiltinProviders(config.DefaultLLMEndpoint, config.DefaultLLMModel)) {
+		t.Errorf("inline providers = %d, want %d", len(tmpl.Spec.Providers), len(BuiltinProviders(config.DefaultLLMEndpoint, config.DefaultLLMModel)))
 	}
 
 	// Per-user instances exist (auto-instantiated per user).
@@ -224,8 +224,8 @@ func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "cubepilot", Namespace: "cubepilot"}, &agent); err != nil {
 		t.Fatalf("cubepilot not created: %v", err)
 	}
-	if len(agent.Spec.Models) != 0 {
-		t.Errorf("models = %v, want none when no LLM configured", agent.Spec.Models)
+	if len(agent.Spec.Providers) != 0 {
+		t.Errorf("providers = %v, want none when no LLM configured", agent.Spec.Providers)
 	}
 	if agent.Spec.DefaultModel != "" {
 		t.Errorf("defaultModel = %q, want empty when no LLM configured", agent.Spec.DefaultModel)

@@ -111,17 +111,6 @@ spec:
                     downstreams).
                     The actual secret is platform-managed; refs only, never plaintext.
                   properties:
-                    endpoint:
-                      description: |-
-                        Endpoint optionally binds an llm credential by endpoint (matches
-                        the model's endpoint). Mutually exclusive with ModelRef.
-                      type: string
-                    modelRef:
-                      description: |-
-                        ModelRef optionally binds an llm credential to a model entry in the
-                        AgentTemplate models list (by name). Required when multiple external
-                        models exist; implicit when exactly one (design §4.4, fail-closed).
-                      type: string
                     ref:
                       description: Ref is the platform-managed Secret reference (namespace/name
                         or name).
@@ -195,8 +184,9 @@ spec:
                 type: string
               selectedModel:
                 description: |-
-                  SelectedModel optionally selects a model within the template's inline
-                  models list (overrides defaultModel). FR-M2-005 / design §3.2.
+                  SelectedModel optionally selects a model by its ref
+                  "<provider>/<modelId>", one of the model ids of the providers inlined in
+                  the template (overrides defaultModel). Design §3.2.
                 type: string
               templateRef:
                 description: |-

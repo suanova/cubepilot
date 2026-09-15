@@ -277,25 +277,25 @@ func (r *AgentInstanceReconciler) templateFor(ctx context.Context, name string) 
 }
 
 // modelAvailable reports whether the instance's AgentTemplate offers at least
-// one usable model: a non-empty endpoint, and either no credentialRef (a
-// public/keyless model) or an existing credential Secret. A missing template
-// or an empty model list yields false (nothing to serve yet).
+// one usable provider: a non-empty endpoint, and either no credentialRef (a
+// public/keyless provider) or an existing credential Secret. A missing template
+// or an empty provider list yields false (nothing to serve yet).
 func (r *AgentInstanceReconciler) modelAvailable(ctx context.Context, agent *v1alpha1.AgentTemplate) (bool, error) {
 	if agent == nil {
 		return false, nil
 	}
-	for i := range agent.Spec.Models {
-		m := &agent.Spec.Models[i]
-		if m.Endpoint == "" {
+	for i := range agent.Spec.Providers {
+		p := &agent.Spec.Providers[i]
+		if p.Endpoint == "" || len(p.Models) == 0 {
 			continue
 		}
-		if m.CredentialRef == nil || m.CredentialRef.Name == "" {
+		if p.CredentialRef == nil || p.CredentialRef.Name == "" {
 			return true, nil
 		}
 		var sec corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: m.CredentialRef.Name}, &sec); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: p.CredentialRef.Name}, &sec); err != nil {
 			if apierrors.IsNotFound(err) {
-				continue // keyed model whose credential is not created yet
+				continue // keyed provider whose credential is not created yet
 			}
 			return false, err
 		}
