@@ -27,36 +27,12 @@ type TaskRef struct {
 	UID  string `json:"uid,omitempty"`
 }
 
-// FindingItem is one structured finding of an inspection-style report
-// (design §3.3.4: category / level / finding / evidence chain).
-type FindingItem struct {
-	// Category is the finding category (pod / node / gpu / storage / ...).
-	Category string `json:"category,omitempty"`
-	// Level is P0 / P1 / P2.
-	Level string `json:"level,omitempty"`
-	// Finding is the human-readable finding text.
-	Finding string `json:"finding,omitempty"`
-	// Evidence is the evidence chain (command + output excerpt + ts).
-	// +optional
-	Evidence []EvidenceEntry `json:"evidence,omitempty"`
-}
-
-// EvidenceEntry is one piece of evidence (design §3.3.4: evidence chain).
-type EvidenceEntry struct {
-	Command string `json:"command,omitempty"`
-	Output  string `json:"output,omitempty"`
-	TS      string `json:"ts,omitempty"`
-}
-
 // TaskRunStatus is the execution report written by the scheduler with the
 // platform identity (design §3.3.4: written with the platform identity;
 // Agent instances and user credentials never write CRDs directly).
 type TaskRunStatus struct {
 	// Phase is Pending / Running / Completed / Failed / Cancelled.
 	Phase TaskRunPhase `json:"phase,omitempty"`
-	// Items are the structured findings.
-	// +optional
-	Items []FindingItem `json:"items,omitempty"`
 	// Content is the full natural-language report text.
 	// +optional
 	Content string `json:"content,omitempty"`
@@ -68,9 +44,6 @@ type TaskRunStatus struct {
 	// (design §3.5: resolved at run time, recorded for audit/rollback).
 	// +optional
 	SkillRevision string `json:"skillRevision,omitempty"`
-	// Conditions carries detail (Inspected=True etc).
-	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// StartedAt / FinishedAt bound the run.
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
@@ -98,7 +71,7 @@ type TaskRunSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type"
+// +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.trigger"
 // +kubebuilder:printcolumn:name="Task",type="string",JSONPath=".spec.creatorTaskRef.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
