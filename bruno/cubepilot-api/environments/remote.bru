@@ -6,8 +6,10 @@ vars {
   # 你在那套环境里的身份。阶段一无认证,这个头是自报的。
   user: admin
 
-  # 模型 —— 远端的模板里得已经有这个名字
+  # provider 名 + 它服务的一个 model id —— 远端的模板里得已经有这个 provider,
+  # 且它服务的 id 里有这个 llmModel。选择用的 ref 是 {{llmName}}/{{llmModel}}。
   llmName: my-model
+  llmModel: qwen3-32b
   llmEndpoint: https://llm.example.com/v1
   sessionId:
   taskId:

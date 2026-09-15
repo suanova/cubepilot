@@ -124,7 +124,7 @@ X-CubePilot-User: <用户名>
 | `/api/v1/audit` | `entries` |
 | `/api/v1/agenttemplates` · `/api/v1/agenttemplates/{name}` | `agentTemplates` · `agentTemplate` |
 | `/api/v1/instances` GET · POST | `instances` · `instance` |
-| `/api/v1/llms` POST · `/api/v1/llms/{name}` PUT | `model` |
+| `/api/v1/llms` POST · `/api/v1/llms/{name}` PUT | `provider` |
 | `/api/v1/llms/{name}` DELETE | `removed`（+ 可选 `warning`）|
 | `/api/v1/skills` · `POST .../publish` | `skills` · `skill` |
 | `/api/v1/skills/{name}/install` · `uninstall` | `enabledSkills` |
@@ -570,19 +570,35 @@ GET /api/v1/sessions/{key}/question/pending
 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
-| POST | `/api/v1/llms` | `{"name","endpoint","apiKey"?,"public"?}` | **201** `{"model":{...}}` |
-| PUT | `/api/v1/llms/{name}` | 同上（`apiKey` 省略 = 保留原凭证） | `200 {"model":{...},"warning"?}` |
+| POST | `/api/v1/llms` | `{"name","endpoint","models","apiKey"?,"public"?}` | **201** `{"provider":{...}}` |
+| PUT | `/api/v1/llms/{name}` | 同上（`apiKey` 省略 = 保留原凭证） | `200 {"provider":{...},"warning"?}` |
 | DELETE | `/api/v1/llms/{name}` | — | `200 {"removed":"<name>","warning"?}` |
 
-- `apiKey` 与 `public` **互斥**：公开模型不能带凭证；非公开模型必须给 key。
-- `name` 不可变——改名要删了重建。
-- `PUT` 时省略 `apiKey` = 保留已存凭证；`public:true` 会清掉凭证。
-- `DELETE` 若该模型正被实例选用 → `409`，错误体会**额外带一个 `instances` 数组**：
+- 一个 **provider** = 一份 endpoint + 一份凭证 + 它服务的若干 model id。所以「一个有多个 id 的
+  网关」写一条记录，而不是每个 id 一条。
+- `name` 是**provider 名**：DNS-1123 label（小写字母数字和 `-`，≤63 字符），不可变——
+  改名要删了重建。它同时是网关 provider key、每个模型 ref 的前缀（`<name>/<modelId>`）
+  和凭据 Secret 名后缀（`llm-<name>`），与 `models` 里的 id **无关**。
+- `models` 是**后端模型 id 列表**，至少一个：id 按原样发给 endpoint，可含 `/`
+  （如 OpenRouter 的 `anthropic/claude-sonnet-4.5`），但不能含空白、不以 `/` 开头或结尾、
+  不含 `//`，也不能是 `*`（allowlist 通配符保留字）。服务端会 trim 并去重；
+  空或缺失 → `400`（provider 没有 id 就什么都渲染不出来，也选不中）。
+- `PUT` **整体替换** endpoint、凭证和 `models`：增删单个 id 就是同一次 PUT 带上全量列表
+  （PUT 不带 `models` 不是「保持不变」，是 `400`）。
+- 凭据按 provider 建**一次**（`llm-<name>`），不是每个 id 一个。
+- `apiKey` 与 `public` **互斥**：公开 provider 不能带凭证；非公开 provider 必须给 key。
+- `PUT` 时省略 `apiKey` = 保留已存凭证；`public:true` 会清掉凭证并删掉该 Secret。
+- `DELETE` 删掉整个 provider 以及它服务的**所有** id；只要**其中任何一个**正被实例选用 → `409`，
+  错误体会**额外带一个 `instances` 数组**：
 
 ```json
-{"error":"model \"x\" is selected by alice, bob; select another model there first",
+{"error":"provider \"x\" serves a model selected by alice, bob; select another model there first",
  "instances":[{"name":"...","owner":"alice"}]}
 ```
+
+- `DELETE` 只删本 API 为这个 provider 命名的那个 Secret（`llm-<name>`）。若 `credentialRef`
+  指向别的 Secret（手工改过 CR、多个 provider 共用一个凭据），该 Secret **会被保留**并在响应的
+  `warning` 里说明。删单个 id 走 `PUT`，永远不会动 Secret。
 
 这是**唯一**要求客户端解析结构化错误体的地方（Portal 会把它渲染成可点击的实例列表）。
 

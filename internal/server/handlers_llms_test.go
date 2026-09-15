@@ -40,7 +40,7 @@ func TestHandleAddLLM(t *testing.T) {
 	builtin.Namespace = "cubepilot"
 	s := addLLMTestServer(t, builtin)
 
-	body := bytes.NewBufferString(`{"name":"My Qwen","endpoint":"https://api.example.com/v1","apiKey":"sk-2"}`)
+	body := bytes.NewBufferString(`{"name":"My Qwen","endpoint":"https://api.example.com/v1","apiKey":"sk-2","models":["qwen3-32b"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
@@ -48,7 +48,7 @@ func TestHandleAddLLM(t *testing.T) {
 		t.Fatalf("status = %d, want 201, body = %s", w.Code, w.Body.String())
 	}
 
-	// Model appended to the builtin template.
+	// Provider appended to the builtin template.
 	var tmpl v1alpha1.AgentTemplate
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
@@ -74,7 +74,7 @@ func TestHandleAddLLMPublicNoKey(t *testing.T) {
 	builtin.Namespace = "cubepilot"
 	s := addLLMTestServer(t, builtin)
 
-	body := bytes.NewBufferString(`{"name":"local-ollama","endpoint":"http://localhost:11434/v1","public":true}`)
+	body := bytes.NewBufferString(`{"name":"local-ollama","endpoint":"http://localhost:11434/v1","public":true,"models":["llama3"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
@@ -105,7 +105,7 @@ func TestHandleAddLLMNormalizesRequestURL(t *testing.T) {
 	builtin.Namespace = "cubepilot"
 	s := addLLMTestServer(t, builtin)
 
-	body := bytes.NewBufferString(`{"name":"qwen","endpoint":"https://api.example.com/v1/chat/completions/","apiKey":"sk-1"}`)
+	body := bytes.NewBufferString(`{"name":"qwen","endpoint":"https://api.example.com/v1/chat/completions/","apiKey":"sk-1","models":["qwen3-32b"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/llms", body)
 	w := httptest.NewRecorder()
 	s.handleAddLLM(w, req)
@@ -162,6 +162,38 @@ func TestHandleAddLLMRejectsPublicWithKey(t *testing.T) {
 	}
 }
 
+// TestHandleAddLLMProviderWithModels: one endpoint and one key serving several
+// model ids is the case the flat list could not express. The credential is
+// created once, for the provider, not once per id.
+func TestHandleAddLLMProviderWithModels(t *testing.T) {
+	s := llmTestServer(t)
+	body := map[string]any{
+		"name":     "vllm",
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"apiKey":   "sk-vllm",
+		"models":   []string{"qwen3-32b", "deepseek-v4-flash"},
+	}
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/llms", "", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	providers := templateProviders(t, s)
+	last := providers[len(providers)-1]
+	if last.Name != "vllm" || len(last.Models) != 2 {
+		t.Fatalf("provider = %+v, want vllm with two ids", last)
+	}
+	var sec corev1.Secret
+	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-vllm"}, &sec); err != nil {
+		t.Fatalf("credential Secret: %v", err)
+	}
+	// One Secret for the provider, none per model.
+	for _, id := range last.Models {
+		if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-" + id}, &corev1.Secret{}); err == nil {
+			t.Errorf("model %q should not get its own credential Secret", id)
+		}
+	}
+}
+
 // llmTestServer builds a server whose builtin template carries the given extra
 // providers on top of the platform default.
 func llmTestServer(t *testing.T, providers ...v1alpha1.TemplateProviderSpec) *Server {
@@ -210,7 +242,7 @@ func TestHandleUpdateLLMEndpointKeepsKey(t *testing.T) {
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://other.example.com/v1/chat/completions"}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://other.example.com/v1/chat/completions","models":["my-qwen"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -238,7 +270,7 @@ func TestHandleUpdateLLMRotatesKey(t *testing.T) {
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-new"}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-new","models":["my-qwen"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -256,7 +288,7 @@ func TestHandleUpdateLLMRotatesKey(t *testing.T) {
 func TestHandleUpdateLLMPublicToKeyed(t *testing.T) {
 	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
-	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1"}`)
+	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1","models":["pub"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -279,7 +311,7 @@ func TestHandleUpdateLLMKeyedToPublic(t *testing.T) {
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","public":true}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","public":true,"models":["my-qwen"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -297,7 +329,7 @@ func TestHandleUpdateLLMKeyedToPublic(t *testing.T) {
 func TestHandleUpdateLLMKeylessWithoutFlag(t *testing.T) {
 	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
-	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1"}`)
+	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1","models":["pub"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 	}
@@ -306,7 +338,7 @@ func TestHandleUpdateLLMKeylessWithoutFlag(t *testing.T) {
 func TestHandleUpdateLLMPublicWithKey(t *testing.T) {
 	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1","public":true}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1","public":true,"models":["my-qwen"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 	}
@@ -315,7 +347,7 @@ func TestHandleUpdateLLMPublicWithKey(t *testing.T) {
 func TestHandleUpdateLLMUnknownModel(t *testing.T) {
 	s := llmTestServer(t)
 
-	w := putLLM(t, s, "nope", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1"}`)
+	w := putLLM(t, s, "nope", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1","models":["nope"]}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404, body = %s", w.Code, w.Body.String())
 	}
@@ -324,9 +356,48 @@ func TestHandleUpdateLLMUnknownModel(t *testing.T) {
 func TestHandleUpdateLLMRejectsBadEndpoint(t *testing.T) {
 	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"not-a-url","apiKey":"sk-1"}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"not-a-url","apiKey":"sk-1","models":["my-qwen"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleUpdateLLMReplacesModels: adding and removing a single id is a PUT
+// with the full list, which keeps the route surface unchanged.
+func TestHandleUpdateLLMReplacesModels(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b"},
+	})
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{"qwen3-32b", "qwen3-8b"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	for _, p := range templateProviders(t, s) {
+		if p.Name == "vllm" && (len(p.Models) != 2 || p.Models[1] != "qwen3-8b") {
+			t.Errorf("models = %v, want [qwen3-32b qwen3-8b]", p.Models)
+		}
+	}
+}
+
+// TestHandleUpdateLLMRefusesEmptyModels: a provider with no model ids renders
+// nothing and is unselectable, so the list can never be emptied.
+func TestHandleUpdateLLMRefusesEmptyModels(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b"},
+	})
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -486,6 +557,21 @@ func TestHandleDeleteLLMRefusesSelectedProvider(t *testing.T) {
 	}
 }
 
+// TestHandleDeleteLLMRefusesWhileAnyModelIsSelected: the refusal covers every id
+// the provider serves, not just one.
+func TestHandleDeleteLLMRefusesWhileAnyModelIsSelected(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b", "qwen3-8b"},
+	})
+	seedInstanceSelecting(t, s, "vllm/qwen3-8b") // the second id, not the first
+	rec := doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/vllm", "", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestHandleDeleteLLMIgnoresOtherTemplateSelection: the selection only matters
 // for the builtin template, so an instance pointing elsewhere must not block --
 // even when it selects a ref this provider serves.
@@ -545,7 +631,7 @@ func TestLLMRoutesAreWired(t *testing.T) {
 	s := platformTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash"))
 
 	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/"+controller.BuiltinProviderName, "admin",
-		map[string]any{"endpoint": "https://api.deepseek.com", "apiKey": "sk-1"})
+		map[string]any{"endpoint": "https://api.deepseek.com", "apiKey": "sk-1", "models": []string{"deepseek-v4-flash"}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -604,7 +690,7 @@ func TestHandleUpdateLLMKeepsSharedCredential(t *testing.T) {
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","public":true}`)
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","public":true,"models":["my-qwen"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}

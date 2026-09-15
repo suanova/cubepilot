@@ -79,6 +79,7 @@ var _ = Describe("LLM model lifecycle", func() {
 		body, code, err := fw.SendJSON(ctx, http.MethodPost, fw.APIBase+"/api/v1/llms", map[string]any{
 			"name":     modelName,
 			"endpoint": remoteBase,
+			"models":   []string{modelName},
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusBadRequest), "%v", body)
@@ -90,12 +91,13 @@ var _ = Describe("LLM model lifecycle", func() {
 			"name":     modelName,
 			"endpoint": remoteBase + "/chat/completions",
 			"public":   true,
+			"models":   []string{modelName},
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusCreated), "%v", body)
 		// The SDK appends /chat/completions itself; storing the request URL
 		// would double it and 404.
-		Expect(nestedString(body, "model", "endpoint")).To(Equal(remoteBase))
+		Expect(nestedString(body, "provider", "endpoint")).To(Equal(remoteBase))
 		Expect(credentialExists()).To(BeFalse(), "a public model has no credential")
 
 		Eventually(func() error {
@@ -120,6 +122,7 @@ var _ = Describe("LLM model lifecycle", func() {
 			"name":     modelName,
 			"endpoint": remoteBase,
 			"apiKey":   "sk-e2e-original",
+			"models":   []string{modelName},
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusCreated))
@@ -129,6 +132,7 @@ var _ = Describe("LLM model lifecycle", func() {
 		_, code, err = fw.SendJSON(ctx, http.MethodPut, fw.APIBase+modelPath, map[string]any{
 			"endpoint": remoteBase,
 			"apiKey":   "sk-e2e-rotated",
+			"models":   []string{modelName},
 		}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusOK))
