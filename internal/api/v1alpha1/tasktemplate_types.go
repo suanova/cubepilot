@@ -17,10 +17,13 @@ const (
 
 // ParamSchema describes one task parameter (design §3.3.2 paramsSchema).
 type ParamSchema struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type,omitempty"`
-	Default string   `json:"default,omitempty"`
-	Enum    []string `json:"enum,omitempty"`
+	Name string `json:"name"`
+	// Default is the value used when the Task does not override this parameter.
+	// +optional
+	Default string `json:"default,omitempty"`
+	// Enum, when set, restricts the accepted values.
+	// +optional
+	Enum []string `json:"enum,omitempty"`
 }
 
 // RequiredPermissions is the permission hint of a task template

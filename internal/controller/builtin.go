@@ -133,7 +133,7 @@ func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
 5. Check platform component health (Harbor / Keycloak / Prometheus)
 Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
-				{Name: "scope", Type: "string", Default: "all", Enum: []string{"all", "node-pool", "project"}},
+				{Name: "scope", Default: "all", Enum: []string{"all", "node-pool", "project"}},
 			},
 			RequiredPermissions: &v1alpha1.RequiredPermissions{
 				Level: "cluster-read",

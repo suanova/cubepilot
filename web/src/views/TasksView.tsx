@@ -530,6 +530,11 @@ export default function TasksView() {
                       </td>
                       <td style={{ fontSize: 12.5, color: 'var(--muted)' }}>
                         {tpl.spec?.description || (tpl.spec?.paramsSchema || []).map((p) => p.name).join(', ')}
+                        {(tpl.spec?.requiredPermissions?.note || tpl.spec?.requiredPermissions?.level) && (
+                          <div style={{ marginTop: 4 }}>
+                            Requires: {tpl.spec.requiredPermissions.note || tpl.spec.requiredPermissions.level}
+                          </div>
+                        )}
                       </td>
                       <td className="mono">{tpl.spec?.defaultCron || '-'}</td>
                       <td>

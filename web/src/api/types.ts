@@ -44,7 +44,6 @@ export interface Task {
 // spec). Mirrors the Go TaskTemplateSpec json tags.
 export interface TaskParamSchema {
   name: string
-  type?: string
   default?: string
   enum?: string[]
 }
@@ -61,6 +60,7 @@ export interface TaskTemplate {
     description?: string
     instruction?: string
     paramsSchema?: TaskParamSchema[]
+    requiredPermissions?: { level?: string; note?: string }
     defaultCron?: string
     skills?: string[]
   }

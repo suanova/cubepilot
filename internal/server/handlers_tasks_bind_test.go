@@ -20,7 +20,7 @@ func inspectionTemplate() *v1alpha1.TaskTemplate {
 			Instruction: "Inspect the cluster read-only, scope {{scope}}",
 			DefaultCron: "0 2 * * *",
 			ParamsSchema: []v1alpha1.ParamSchema{
-				{Name: "scope", Type: "string", Default: "all", Enum: []string{"all", "node-pool", "project"}},
+				{Name: "scope", Default: "all", Enum: []string{"all", "node-pool", "project"}},
 			},
 		},
 	}
