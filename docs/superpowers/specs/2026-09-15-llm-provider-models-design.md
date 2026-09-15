@@ -127,7 +127,7 @@ Validation is split so that each rule lands where it is cheapest to enforce:
 | `models` non-empty | `MinItems=1` |
 | `credentialRef`, when present, carries a Secret name | CEL `XValidation` (moved from the model list) |
 | model id has no whitespace, no leading/trailing `/`, no `//`, is not `*` | CEL `XValidation` |
-| `defaultModel` names an existing `<provider>/<modelId>` | CEL `XValidation` |
+| `defaultModel`, when non-empty, names an existing `<provider>/<modelId>` | CEL `XValidation` (guarded by `has()` on both fields, which are `omitempty`) |
 | endpoint is a valid URL | CEL, plus the existing `normalizeEndpoint` in the handler |
 
 Of the two CEL rules on `Models` at [agenttemplate_types.go:172-173](../../../internal/api/v1alpha1/agenttemplate_types.go),

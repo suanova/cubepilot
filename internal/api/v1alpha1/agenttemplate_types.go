@@ -229,7 +229,21 @@ type AllowlistRule struct {
 // is exactly the ref the renderer writes as the allowlist key and as the
 // primary, while CEL computes "vllm/VLLM/x" and rejects the only ref the
 // platform has for that id.
-// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
+//
+// Both fields this rule reads are omitempty, so either key can be absent from
+// the serialized object: DefaultModel whenever it is cleared (which is exactly
+// what the API's clear-the-default writes do) and Providers for a provider-less
+// template. CEL errors on a missing key rather than treating it as empty, so
+// the rule guards both with has(). The guards are load-bearing, not defensive:
+// without them a fresh install with no LLM configured cannot create the
+// builtin template at all. When defaultModel is set but providers is absent the
+// guard makes the rule false -- the ref names nothing, so the write is rejected
+// with the message rather than erroring.
+//
+// The two XValidations on Providers need no such guard: the API server does not
+// evaluate field-level rules on an absent field (verified against a live
+// cluster -- an object with no providers key passes them untouched).
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel)))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`

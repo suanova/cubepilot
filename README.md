@@ -167,9 +167,8 @@ empty with no error.
 An existing `cubepilot` template then still carries its old bare `defaultModel`
 with an empty `providers` list, which the new rule refuses; every write through
 the API re-validates it, so the API cannot repair it either. Empty `defaultModel`
-and add a provider in the same edit -- leave the key in place with an empty
-value (`defaultModel: ""`); deleting the line drops the field from the write
-and the rule then rejects it as unreadable:
+and add a provider in the same edit -- deleting the line, or setting it to `""`,
+both work:
 
 ```bash
 kubectl -n cubepilot edit agenttemplate cubepilot

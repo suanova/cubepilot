@@ -618,14 +618,15 @@ In the same file, replace `DefaultModel` and `Models` (lines 164-175) with:
 Then add a cross-field rule above the `AgentTemplateSpec` type declaration, alongside the existing type-level comment:
 
 ```go
-// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel)))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 ```
 
-Two things about that rule are load-bearing:
+Three things about that rule are load-bearing:
 
 - The ternary mirrors `gateway.ModelKey`. Plain `p.name + '/' + m` is wrong: an id that already names its provider (`vllm` serving `vllm/qwen3-32b`) is its own ref, and the naive concatenation would reject the only ref the renderer accepts.
 - The empty string is written `\"\"`, not `''`. gofmt rewrites `''` inside a doc comment (and a kubebuilder marker lives in one) into a typographic quote, which breaks the rule and fails the format gate.
+- Both `has()` guards are load-bearing, not defensive. `DefaultModel` and `Providers` are `omitempty`, so their keys are absent from the serialized object when empty, and CEL errors with `no such key` on a missing key instead of treating it as empty -- the write fails with a 500 or an unreadable object rather than taking the `== ""` branch. Without the `defaultModel` guard the builtin provider-less template cannot be created at all (a fresh `helm install` with no LLM fails); without the `providers` guard, a non-empty `defaultModel` with no providers errors instead of being rejected. With the guards, `defaultModel` set and `providers` absent is rejected with the message -- a ref that names nothing is invalid, and that keeps the rule at full strength.
 
 Residual difference from `ModelKey`, worth knowing rather than fixing: `ModelKey` compares the self-prefix case-insensitively, CEL's `startsWith` does not, so an id like `VLLM/x` under provider `vllm` passes Go validation and is rejected by CEL. Provider names are constrained to lowercase, so reaching it needs a deliberately odd model id.
 
@@ -671,7 +672,7 @@ Expected: `customresourcedefinition.apiextensions.k8s.io/agenttemplates.ai.cubes
 If it reports `estimated rule cost exceeds budget`, the bounds are not tight enough -- Kubernetes sizes an unbounded array optimistically, and the nested `exists` over providers x models is what blows the static budget. Tighten rather than drop: first lower `Providers` to `MaxItems=16` and `Models` to `MaxItems=32`; if a rule is still over, replace the `defaultModel` rule with the cheaper prefix check
 
 ```
-// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, self.defaultModel.startsWith(p.name + '/'))",message="defaultModel must name a provider/model listed in providers"
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, self.defaultModel.startsWith(p.name + '/')))",message="defaultModel must name a provider/model listed in providers"
 ```
 
 which no longer verifies the id itself -- `resolveModel`'s fail-closed check and Go `Validate()` are then the only gates on it. That is a real weakening, so record in the report which form you landed and why the next reviewer should see it.
