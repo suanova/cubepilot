@@ -21,8 +21,9 @@ import (
 )
 
 // OpenClawConfigReconciler renders the shared openclaw.json from the
-// AgentTemplate inline models (+ referenced credential Secrets) and reconciles
-// it into the openclaw-config Secret, preserving the gateway token (issue #6).
+// AgentTemplate inline providers (+ referenced credential Secrets) and
+// reconciles it into the openclaw-config Secret, preserving the gateway token
+// (issue #6).
 type OpenClawConfigReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -42,32 +43,38 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 	var primary string
 	for i := range tpls.Items {
 		t := &tpls.Items[i]
-		for _, m := range t.Spec.Models {
-			if m.Endpoint == "" {
+		for _, pr := range t.Spec.Providers {
+			if pr.Endpoint == "" || len(pr.Models) == 0 {
 				continue
 			}
-			// One CR entry is still one provider here; Task 2 turns the loop
-			// into a per-provider fan-out.
-			p := gateway.Provider{Key: m.Name, BaseURL: m.Endpoint, Models: []string{m.Name}}
-			if m.CredentialRef != nil && m.CredentialRef.Name != "" {
+			p := gateway.Provider{Key: pr.Name, BaseURL: pr.Endpoint, Models: pr.Models}
+			if pr.CredentialRef != nil && pr.CredentialRef.Name != "" {
 				var sec corev1.Secret
-				if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: m.CredentialRef.Name}, &sec); err != nil {
-					log.Printf("openclaw-config: model %q credential %q not ready (%v), skipping", m.Name, m.CredentialRef.Name, err)
+				if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: pr.CredentialRef.Name}, &sec); err != nil {
+					log.Printf("openclaw-config: provider %q credential %q not ready (%v), skipping", pr.Name, pr.CredentialRef.Name, err)
 					continue
 				}
 				// Reference the credential by name only: the rendered config
 				// carries a file SecretRef into the emptyDir keys.json the
 				// supervisor writes from the Secret. The literal key never lands
 				// in the config or the PVC.
-				p.APIKey = k8s.EnvNameForModel(m.Name)
+				p.APIKey = k8s.EnvNameForProvider(pr.Name)
 			}
-			if t.Spec.DefaultModel == m.Name && primary == "" {
-				primary = gateway.ModelKey(m.Name, m.Name)
+			if primary == "" {
+				for _, id := range pr.Models {
+					if gateway.ModelKey(pr.Name, id) == t.Spec.DefaultModel {
+						primary = t.Spec.DefaultModel
+						break
+					}
+				}
 			}
 			providers = append(providers, p)
 		}
 	}
-	if primary == "" && len(providers) > 0 {
+	// The Models guard is not redundant with the loop's skip: the skip makes it
+	// unreachable today, but the field is a slice now, so an index without the
+	// guard is a panic waiting for the next caller.
+	if primary == "" && len(providers) > 0 && len(providers[0].Models) > 0 {
 		primary = gateway.ModelKey(providers[0].Key, providers[0].Models[0])
 	}
 

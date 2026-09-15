@@ -52,11 +52,11 @@ func TestHandleAddLLM(t *testing.T) {
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
-	if len(tmpl.Spec.Models) != 2 || tmpl.Spec.Models[1].Name != "my-qwen" {
-		t.Fatalf("models = %+v", tmpl.Spec.Models)
+	if len(tmpl.Spec.Providers) != 2 || tmpl.Spec.Providers[1].Name != "my-qwen" {
+		t.Fatalf("providers = %+v", tmpl.Spec.Providers)
 	}
-	if tmpl.Spec.Models[1].CredentialRef.Name != "llm-my-qwen" {
-		t.Errorf("credentialRef = %q", tmpl.Spec.Models[1].CredentialRef.Name)
+	if tmpl.Spec.Providers[1].CredentialRef.Name != "llm-my-qwen" {
+		t.Errorf("credentialRef = %q", tmpl.Spec.Providers[1].CredentialRef.Name)
 	}
 	// Credential Secret created.
 	var sec corev1.Secret
@@ -84,7 +84,7 @@ func TestHandleAddLLMPublicNoKey(t *testing.T) {
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
-	m := tmpl.Spec.Models[len(tmpl.Spec.Models)-1]
+	m := tmpl.Spec.Providers[len(tmpl.Spec.Providers)-1]
 	if m.CredentialRef != nil {
 		t.Errorf("public model should carry no credentialRef: %+v", m)
 	}
@@ -115,7 +115,7 @@ func TestHandleAddLLMNormalizesRequestURL(t *testing.T) {
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
-	if got := tmpl.Spec.Models[len(tmpl.Spec.Models)-1].Endpoint; got != "https://api.example.com/v1" {
+	if got := tmpl.Spec.Providers[len(tmpl.Spec.Providers)-1].Endpoint; got != "https://api.example.com/v1" {
 		t.Errorf("endpoint = %q, want https://api.example.com/v1", got)
 	}
 }
@@ -140,8 +140,8 @@ func TestHandleAddLLMRejectsKeylessWithoutPublicFlag(t *testing.T) {
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
-	if len(tmpl.Spec.Models) != 1 {
-		t.Errorf("nothing should be written on a rejected add: %+v", tmpl.Spec.Models)
+	if len(tmpl.Spec.Providers) != 1 {
+		t.Errorf("nothing should be written on a rejected add: %+v", tmpl.Spec.Providers)
 	}
 }
 
@@ -162,20 +162,23 @@ func TestHandleAddLLMRejectsPublicWithKey(t *testing.T) {
 }
 
 // llmTestServer builds a server whose builtin template carries the given extra
-// models on top of the platform default.
-func llmTestServer(t *testing.T, models ...v1alpha1.TemplateModelSpec) *Server {
+// providers on top of the platform default.
+func llmTestServer(t *testing.T, providers ...v1alpha1.TemplateProviderSpec) *Server {
 	t.Helper()
 	builtin := controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash")
 	builtin.Namespace = "cubepilot"
-	builtin.Spec.Models = append(builtin.Spec.Models, models...)
+	builtin.Spec.Providers = append(builtin.Spec.Providers, providers...)
 	return addLLMTestServer(t, builtin)
 }
 
-func keyedModel(name, endpoint string) v1alpha1.TemplateModelSpec {
-	return v1alpha1.TemplateModelSpec{
+// keyedModel is a one-model provider with a credential, the shape this task's
+// write API produces.
+func keyedModel(name, endpoint string) v1alpha1.TemplateProviderSpec {
+	return v1alpha1.TemplateProviderSpec{
 		Name:          name,
 		Endpoint:      endpoint,
 		CredentialRef: &corev1.LocalObjectReference{Name: "llm-" + name},
+		Models:        []string{name},
 	}
 }
 
@@ -188,13 +191,13 @@ func putLLM(t *testing.T, s *Server, name, body string) *httptest.ResponseRecord
 	return w
 }
 
-func templateModels(t *testing.T, s *Server) []v1alpha1.TemplateModelSpec {
+func templateProviders(t *testing.T, s *Server) []v1alpha1.TemplateProviderSpec {
 	t.Helper()
 	var tmpl v1alpha1.AgentTemplate
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		t.Fatalf("get template: %v", err)
 	}
-	return tmpl.Spec.Models
+	return tmpl.Spec.Providers
 }
 
 // TestHandleUpdateLLMEndpointKeepsKey is the "fix a typo'd endpoint" journey:
@@ -210,8 +213,8 @@ func TestHandleUpdateLLMEndpointKeepsKey(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	models := templateModels(t, s)
-	m := models[len(models)-1]
+	providers := templateProviders(t, s)
+	m := providers[len(providers)-1]
 	if m.Endpoint != "https://other.example.com/v1" {
 		t.Errorf("endpoint = %q, want the normalized root", m.Endpoint)
 	}
@@ -250,14 +253,14 @@ func TestHandleUpdateLLMRotatesKey(t *testing.T) {
 // TestHandleUpdateLLMPublicToKeyed promotes a public model once its endpoint
 // turns out to need a key.
 func TestHandleUpdateLLMPublicToKeyed(t *testing.T) {
-	s := llmTestServer(t, v1alpha1.TemplateModelSpec{Name: "pub", Endpoint: "https://api.example.com/v1"})
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
 	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	models := templateModels(t, s)
-	m := models[len(models)-1]
+	providers := templateProviders(t, s)
+	m := providers[len(providers)-1]
 	if m.CredentialRef == nil || m.CredentialRef.Name != "llm-pub" {
 		t.Fatalf("credentialRef should be set: %+v", m.CredentialRef)
 	}
@@ -279,8 +282,8 @@ func TestHandleUpdateLLMKeyedToPublic(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	models := templateModels(t, s)
-	if m := models[len(models)-1]; m.CredentialRef != nil {
+	providers := templateProviders(t, s)
+	if m := providers[len(providers)-1]; m.CredentialRef != nil {
 		t.Errorf("credentialRef should be cleared: %+v", m.CredentialRef)
 	}
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-my-qwen"}, &corev1.Secret{}); err == nil {
@@ -291,7 +294,7 @@ func TestHandleUpdateLLMKeyedToPublic(t *testing.T) {
 // TestHandleUpdateLLMKeylessWithoutFlag keeps the add-time guard on the edit
 // path too: a public model cannot be left public by accident.
 func TestHandleUpdateLLMKeylessWithoutFlag(t *testing.T) {
-	s := llmTestServer(t, v1alpha1.TemplateModelSpec{Name: "pub", Endpoint: "https://api.example.com/v1"})
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
 	w := putLLM(t, s, "pub", `{"endpoint":"https://api.example.com/v1"}`)
 	if w.Code != http.StatusBadRequest {
@@ -367,9 +370,9 @@ func TestHandleDeleteLLM(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	for _, m := range builtinTemplate(t, s).Spec.Models {
-		if m.Name == "my-qwen" {
-			t.Errorf("model should be gone: %+v", m)
+	for _, p := range builtinTemplate(t, s).Spec.Providers {
+		if p.Name == "my-qwen" {
+			t.Errorf("provider should be gone: %+v", p)
 		}
 	}
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-my-qwen"}, &corev1.Secret{}); err == nil {
@@ -379,7 +382,7 @@ func TestHandleDeleteLLM(t *testing.T) {
 
 // TestHandleDeleteLLMPublicModel covers a model that never had a Secret.
 func TestHandleDeleteLLMPublicModel(t *testing.T) {
-	s := llmTestServer(t, v1alpha1.TemplateModelSpec{Name: "pub", Endpoint: "https://api.example.com/v1"})
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
 	if w := deleteLLM(t, s, "pub"); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -432,8 +435,8 @@ func TestHandleDeleteLLMRefusesSelectedModel(t *testing.T) {
 	}
 	// The model must survive the refusal.
 	found := false
-	for _, m := range builtinTemplate(t, s).Spec.Models {
-		if m.Name == "my-qwen" {
+	for _, p := range builtinTemplate(t, s).Spec.Providers {
+		if p.Name == "my-qwen" {
 			found = true
 		}
 	}
@@ -463,16 +466,16 @@ func TestHandleDeleteLLMIgnoresOtherTemplateSelection(t *testing.T) {
 	}
 }
 
-// TestHandleDeleteLLMClearsDefaultModel: the deleted model may be the gateway's
-// primary. The renderer falls back to the first remaining provider, so the
-// dangling name must be cleared rather than left in the CR.
+// TestHandleDeleteLLMClearsDefaultModel: the deleted provider may serve the
+// gateway's primary. The renderer falls back to the first remaining provider,
+// so the dangling ref must be cleared rather than left in the CR.
 func TestHandleDeleteLLMClearsDefaultModel(t *testing.T) {
 	s := llmTestServer(t)
-	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "deepseek-v4-flash" {
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
 		t.Fatalf("fixture defaultModel = %q", got)
 	}
 
-	if w := deleteLLM(t, s, "deepseek-v4-flash"); w.Code != http.StatusOK {
+	if w := deleteLLM(t, s, controller.BuiltinProviderName); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "" {
@@ -485,11 +488,11 @@ func TestHandleDeleteLLMClearsDefaultModel(t *testing.T) {
 func TestHandleDeleteLLMLastModel(t *testing.T) {
 	s := llmTestServer(t)
 
-	if w := deleteLLM(t, s, "deepseek-v4-flash"); w.Code != http.StatusOK {
+	if w := deleteLLM(t, s, controller.BuiltinProviderName); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if models := builtinTemplate(t, s).Spec.Models; len(models) != 0 {
-		t.Errorf("models = %+v, want empty", models)
+	if providers := builtinTemplate(t, s).Spec.Providers; len(providers) != 0 {
+		t.Errorf("providers = %+v, want empty", providers)
 	}
 }
 
@@ -499,26 +502,26 @@ func TestHandleDeleteLLMLastModel(t *testing.T) {
 func TestLLMRoutesAreWired(t *testing.T) {
 	s := platformTestServer(t, controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash"))
 
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/deepseek-v4-flash", "admin",
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/"+controller.BuiltinProviderName, "admin",
 		map[string]any{"endpoint": "https://api.deepseek.com", "apiKey": "sk-1"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	rec = doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/deepseek-v4-flash", "admin", nil)
+	rec = doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/"+controller.BuiltinProviderName, "admin", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("DELETE /api/llms/{name} = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
-// shareCredentialWith points one of the template's models at an existing
+// shareCredentialWith points one of the template's providers at an existing
 // credential Secret instead of the one this API would have named for it -- the
 // state a hand-edited CR can be in.
-func shareCredentialWith(t *testing.T, s *Server, model, secret string) {
+func shareCredentialWith(t *testing.T, s *Server, provider, secret string) {
 	t.Helper()
 	tmpl := builtinTemplate(t, s)
-	for i := range tmpl.Spec.Models {
-		if tmpl.Spec.Models[i].Name == model {
-			tmpl.Spec.Models[i].CredentialRef = &corev1.LocalObjectReference{Name: secret}
+	for i := range tmpl.Spec.Providers {
+		if tmpl.Spec.Providers[i].Name == provider {
+			tmpl.Spec.Providers[i].CredentialRef = &corev1.LocalObjectReference{Name: secret}
 		}
 	}
 	if err := s.cr.Update(context.Background(), &tmpl); err != nil {

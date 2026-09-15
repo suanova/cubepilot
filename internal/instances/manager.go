@@ -186,13 +186,13 @@ func (m *Manager) crReady(ctx context.Context, instanceName string) bool {
 
 // SelectedModelFor resolves the per-turn model override for a user's agent
 // instance (design §3.2/§3.3). It is non-empty only when the instance
-// explicitly set selectedModel (instance.spec.selectedModel -> Agent
-// definition models -> spec.modelId). Empty means "no override -- use the
-// runtime's configured primary model", so the deployer's provider config
-// decides the default and no provider-key naming convention is required.
-// An explicitly selected model that is missing from the catalog or outside
-// the agent's availableModels is an error (fail-closed, never a silent
-// fallback); an empty selection is not an error.
+// explicitly set selectedModel, and then it is the <provider>/<modelId> ref
+// some provider of the agent definition serves. Empty means "no override --
+// use the runtime's configured primary model", so the deployer's provider
+// config decides the default and no provider-key naming convention is
+// required. An explicitly selected ref the definition does not serve is an
+// error (fail-closed, never a silent fallback); an empty selection is not an
+// error.
 func (m *Manager) SelectedModelFor(ctx context.Context, user string) (string, error) {
 	cfg, err := m.resolve.ResolveForUser(ctx, user)
 	if err != nil {

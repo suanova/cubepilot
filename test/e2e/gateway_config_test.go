@@ -14,6 +14,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -22,12 +23,16 @@ var _ = Describe("Gateway config", func() {
 
 	It("renders the shared openclaw-config secret", func() {
 		// Derive the expected primary from the live template so model overrides
-		// in CI stay robust.
+		// in CI stay robust: the renderer keys a provider by its name and the
+		// primary ref is the provider/model key.
 		tpl := &v1alpha1.AgentTemplate{}
 		Eventually(func() error {
 			return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: controller.BuiltinAgentName}, tpl)
 		}).Should(Succeed())
-		expectedPrimary := tpl.Spec.DefaultModel + "/" + tpl.Spec.DefaultModel
+		Expect(tpl.Spec.Providers).NotTo(BeEmpty())
+		Expect(tpl.Spec.Providers[0].Models).NotTo(BeEmpty())
+		providerName := tpl.Spec.Providers[0].Name
+		expectedPrimary := gateway.ModelKey(providerName, tpl.Spec.Providers[0].Models[0])
 
 		// The operator creates the Secret with the gatewayToken first and writes
 		// openclaw.json on a later reconcile, so poll until both are present.
@@ -64,8 +69,8 @@ var _ = Describe("Gateway config", func() {
 		// keys.json -- never a literal in the config.
 		providers, ok := cfg["models"].(map[string]any)["providers"].(map[string]any)
 		Expect(ok).To(BeTrue())
-		prov, ok := providers[tpl.Spec.DefaultModel].(map[string]any)
-		Expect(ok).To(BeTrue(), "provider %s should be rendered", tpl.Spec.DefaultModel)
+		prov, ok := providers[providerName].(map[string]any)
+		Expect(ok).To(BeTrue(), "provider %s should be rendered", providerName)
 		apiKey, ok := prov["apiKey"].(map[string]any)
 		Expect(ok).To(BeTrue())
 		Expect(apiKey["source"]).To(Equal("file"))

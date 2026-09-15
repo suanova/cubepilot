@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,36 +38,83 @@ const (
 	IdentityModeService IdentityMode = "service"
 )
 
-// TemplateModelSpec is one entry of the inline model list of an AgentTemplate
-// (design §3.3: models are inlined -- no standalone Model CRD). Name is the
-// catalog name, the selection key (selectedModel), the gateway provider key
-// and the backend model id sent to the endpoint. Every model is a concrete
-// OpenAI-compatible endpoint; a public model simply omits CredentialRef.
-type TemplateModelSpec struct {
-	// Name is the model name: the key for selectedModel on instances, the
-	// gateway provider key, and the model id passed to the LLM endpoint.
+// TemplateProviderSpec is one OpenAI-compatible LLM provider of an
+// AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
+// A provider owns the endpoint and the credential once, and lists the backend
+// model ids reachable through it, so a gateway that serves many models behind
+// one base URL and one key is described once rather than once per model.
+type TemplateProviderSpec struct {
+	// Name is the provider key: the OpenClaw models.providers key, the prefix
+	// of every model ref (<name>/<modelId>) and the suffix of the credential
+	// Secret name llm-<name>. A DNS-1123 label, because it is both a ref
+	// segment (refs split on the first "/" and have no escaping) and a
+	// resource-name segment.
+	//
+	// A name that exactly matches an OpenClaw built-in provider key
+	// (anthropic, nvidia, xai, google, ...) inherits that provider's model-id
+	// normalization, which can rewrite the id sent to the endpoint. Prefer a
+	// distinct name such as nvidia-proxy unless that rewrite is intended.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
-	// Endpoint is the OpenAI-compatible base URL; required for every model.
+	// Endpoint is the OpenAI-compatible base URL.
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
-	// holding the apiKey; public models omit it (nil). References only -- never
-	// the key itself (design §4.4).
+	// holding the apiKey; a provider that needs no credentials omits it (nil).
+	// References only -- never the key itself (design §4.4).
 	// +optional
 	CredentialRef *corev1.LocalObjectReference `json:"credentialRef,omitempty"`
+	// Models are the backend model ids served through this endpoint. Each id is
+	// sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
+	// "anthropic/claude-sonnet-4.5").
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	Models []string `json:"models"`
 }
 
-// Validate enforces the inline-model invariants (design §3.3): every model
-// needs an endpoint; a present credentialRef must carry a name. The same rules
-// are enforced on the API server by the CEL XValidations on Models.
-func (m TemplateModelSpec) Validate() error {
-	if m.Name == "" {
-		return fmt.Errorf("model name is required")
+// providerNameRE is the DNS-1123 label grammar, mirroring the Pattern marker on
+// TemplateProviderSpec.Name.
+var providerNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// Validate enforces the provider invariants. The same rules are enforced on the
+// API server by the markers on the type and the CEL XValidations on Providers.
+func (p TemplateProviderSpec) Validate() error {
+	if p.Name == "" {
+		return fmt.Errorf("provider name is required")
 	}
-	if m.Endpoint == "" {
-		return fmt.Errorf("model %q requires an endpoint", m.Name)
+	if len(p.Name) > 63 || !providerNameRE.MatchString(p.Name) {
+		return fmt.Errorf("provider %q must be a lowercase DNS-1123 label of at most 63 characters", p.Name)
 	}
-	if m.CredentialRef != nil && m.CredentialRef.Name == "" {
-		return fmt.Errorf("model %q credentialRef must reference a Secret name", m.Name)
+	if p.Endpoint == "" {
+		return fmt.Errorf("provider %q requires an endpoint", p.Name)
+	}
+	if p.CredentialRef != nil && p.CredentialRef.Name == "" {
+		return fmt.Errorf("provider %q credentialRef must reference a Secret name", p.Name)
+	}
+	if len(p.Models) == 0 {
+		return fmt.Errorf("provider %q requires at least one model", p.Name)
+	}
+	for _, id := range p.Models {
+		if err := validateModelID(id); err != nil {
+			return fmt.Errorf("provider %q: %w", p.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateModelID rejects the ids that would not survive being used as a model
+// ref. Everything else is data sent to the endpoint, so the grammar is
+// deliberately loose: ids routinely contain "/".
+func validateModelID(id string) error {
+	switch {
+	case id == "":
+		return fmt.Errorf("model id must not be empty")
+	case id == "*":
+		return fmt.Errorf("model id %q is reserved for allowlist wildcards", id)
+	case strings.TrimSpace(id) != id || strings.ContainsAny(id, " \t\n\r"):
+		return fmt.Errorf("model id %q must not contain whitespace", id)
+	case strings.HasPrefix(id, "/"), strings.HasSuffix(id, "/"), strings.Contains(id, "//"):
+		return fmt.Errorf("model id %q must not contain an empty path segment", id)
 	}
 	return nil
 }
@@ -152,6 +201,7 @@ type AllowlistRule struct {
 // tools (skill refs), memory, identity, policy and registry metadata
 // (design §3.1). It is the "class": shared by all instances, versioned,
 // user-independent.
+// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, p.name + '/' + m == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`
@@ -161,18 +211,21 @@ type AgentTemplateSpec struct {
 	// +kubebuilder:default=OpenClaw
 	// +optional
 	Runtime AgentRuntime `json:"runtime,omitempty"`
-	// DefaultModel is the model name from Models used when an instance does
-	// not select a model explicitly. Empty = no default / runtime default.
+	// DefaultModel is the model ref (<provider>/<modelId>) used when an
+	// instance does not select one explicitly. Empty = no default / runtime
+	// default.
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
-	// Models is the inline model list (design §3.3: models are inlined in the
-	// template -- no standalone Model CRD). The first entry is the primary;
-	// instances select within this list. Every model requires an endpoint;
-	// credentialRef is optional (a public model has none).
-	// +kubebuilder:validation:XValidation:rule="self.all(m, has(m.endpoint))",message="every model requires an endpoint"
-	// +kubebuilder:validation:XValidation:rule="self.all(m, !has(m.credentialRef) || has(m.credentialRef.name))",message="credentialRef must reference a Secret name"
+	// Providers is the inline provider list (design §3.3: models are inlined in
+	// the template -- no standalone Model CRD). Each provider declares an
+	// endpoint, an optional credential and the model ids it serves; an instance
+	// selects a <provider>/<modelId> ref within this list.
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || has(p.credentialRef.name))",message="credentialRef must reference a Secret name"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	Models []TemplateModelSpec `json:"models,omitempty"`
+	Providers []TemplateProviderSpec `json:"providers,omitempty"`
 	// ApprovalPolicy is the template's default confirmation intent (default
 	// Allowlist). Instances inherit it until they override
 	// (AgentInstance.spec.approvalPolicy).

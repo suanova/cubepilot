@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
@@ -66,10 +68,11 @@ func credentialChoiceError(apiKey string, public bool) string {
 }
 
 // handleAddLLM serves POST /api/llms -- the platform admin adds an LLM by
-// giving a name, an OpenAI-compatible endpoint and (for non-public models) an
-// apiKey. The handler appends a model to the builtin AgentTemplate and creates
-// a credential Secret when keyed; the operator renders it into the gateway
-// config (issue #6). No credentials are ever stored in the CR.
+// giving a name, an OpenAI-compatible endpoint and (for non-public providers)
+// an apiKey. The handler appends a provider serving that one model id to the
+// builtin AgentTemplate and creates a credential Secret when keyed; the
+// operator renders it into the gateway config (issue #6). No credentials are
+// ever stored in the CR.
 func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
@@ -104,22 +107,22 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("builtin template: %v", err)})
 		return
 	}
-	for _, m := range tmpl.Spec.Models {
-		if m.Name == name {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": fmt.Sprintf("model %q already exists", name)})
+	for _, pr := range tmpl.Spec.Providers {
+		if pr.Name == name {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": fmt.Sprintf("provider %q already exists", name)})
 			return
 		}
 	}
 
-	// Commit the model to the template BEFORE creating the credential Secret:
-	// a failed template update leaves no orphaned key Secret, and a re-add with
-	// a new key never keeps the old one (the operator skips a model whose
-	// Secret is missing and re-renders once it appears).
-	model := v1alpha1.TemplateModelSpec{Name: name, Endpoint: endpoint}
+	// Commit the provider to the template BEFORE creating the credential
+	// Secret: a failed template update leaves no orphaned key Secret, and a
+	// re-add with a new key never keeps the old one (the operator skips a
+	// provider whose Secret is missing and re-renders once it appears).
+	provider := v1alpha1.TemplateProviderSpec{Name: name, Endpoint: endpoint, Models: []string{name}}
 	if body.APIKey != "" {
-		model.CredentialRef = &corev1.LocalObjectReference{Name: llmCredentialName(name)}
+		provider.CredentialRef = &corev1.LocalObjectReference{Name: llmCredentialName(name)}
 	}
-	tmpl.Spec.Models = append(tmpl.Spec.Models, model)
+	tmpl.Spec.Providers = append(tmpl.Spec.Providers, provider)
 	if err := s.cr.Update(r.Context(), &tmpl); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update template: %v", err)})
 		return
@@ -130,7 +133,7 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"model": model})
+	writeJSON(w, http.StatusCreated, map[string]any{"provider": provider})
 }
 
 // upsertLLMCredential creates the credential Secret, or refreshes its apiKey
@@ -205,8 +208,8 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	idx := -1
-	for i := range tmpl.Spec.Models {
-		if tmpl.Spec.Models[i].Name == name {
+	for i := range tmpl.Spec.Providers {
+		if tmpl.Spec.Providers[i].Name == name {
 			idx = i
 			break
 		}
@@ -215,7 +218,7 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": fmt.Sprintf("model %q not found", name)})
 		return
 	}
-	current := tmpl.Spec.Models[idx]
+	current := tmpl.Spec.Providers[idx]
 	if body.APIKey == "" && !body.Public && current.CredentialRef == nil {
 		// Neither a key to keep nor a declaration that none is wanted. Refuse,
 		// exactly as an add would: a model with no credential fails every turn
@@ -224,25 +227,25 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	model := current
-	model.Endpoint = endpoint
+	provider := current
+	provider.Endpoint = endpoint
 	if body.APIKey != "" {
-		// Reuse the model's own reference so a credential Secret that was not
+		// Reuse the provider's own reference so a credential Secret that was not
 		// named by this API (a hand-edited CR) keeps working.
 		if current.CredentialRef != nil && current.CredentialRef.Name != "" {
-			model.CredentialRef = current.CredentialRef
+			provider.CredentialRef = current.CredentialRef
 		} else {
-			model.CredentialRef = &corev1.LocalObjectReference{Name: llmCredentialName(name)}
+			provider.CredentialRef = &corev1.LocalObjectReference{Name: llmCredentialName(name)}
 		}
 	} else if body.Public {
-		model.CredentialRef = nil
+		provider.CredentialRef = nil
 	}
 
 	// Template first, then the Secret -- the same ordering as handleAddLLM:
 	// the template decides whether the model exists at all, so a failure after
 	// it leaves a recoverable state (an orphaned Secret) rather than a model
 	// the operator skips for a missing credential.
-	tmpl.Spec.Models[idx] = model
+	tmpl.Spec.Providers[idx] = provider
 	if err := s.cr.Update(r.Context(), &tmpl); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update template: %v", err)})
 		return
@@ -250,7 +253,7 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 	warning := ""
 	switch {
 	case body.APIKey != "":
-		if err := upsertLLMCredential(r.Context(), s, model.CredentialRef.Name, body.APIKey); err != nil {
+		if err := upsertLLMCredential(r.Context(), s, provider.CredentialRef.Name, body.APIKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("update credential Secret: %v", err)})
 			return
 		}
@@ -261,17 +264,17 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 			warning = "model updated, but its " + w
 		}
 	}
-	resp := map[string]any{"model": model}
+	resp := map[string]any{"model": provider}
 	if warning != "" {
 		resp["warning"] = warning
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// llmCredentialName is the credential Secret name for a model. The name is
-// derived from the model name, which is immutable, so it never drifts.
-func llmCredentialName(modelName string) string {
-	return "llm-" + modelName
+// llmCredentialName is the credential Secret name for a provider. The name is
+// derived from the provider name, which is immutable, so it never drifts.
+func llmCredentialName(providerName string) string {
+	return "llm-" + providerName
 }
 
 // removeModelCredential deletes the credential Secret a model owns, and returns
@@ -348,8 +351,8 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	idx := -1
-	for i := range tmpl.Spec.Models {
-		if tmpl.Spec.Models[i].Name == name {
+	for i := range tmpl.Spec.Providers {
+		if tmpl.Spec.Providers[i].Name == name {
 			idx = i
 			break
 		}
@@ -383,12 +386,15 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	model := tmpl.Spec.Models[idx]
-	tmpl.Spec.Models = append(tmpl.Spec.Models[:idx], tmpl.Spec.Models[idx+1:]...)
-	if tmpl.Spec.DefaultModel == name {
-		// The deleted model may be the gateway's primary. Clearing the name is
-		// defined: the renderer falls back to the first remaining provider. A
-		// dangling name would leave the CR referencing a model that is gone.
+	removed := tmpl.Spec.Providers[idx]
+	tmpl.Spec.Providers = append(tmpl.Spec.Providers[:idx], tmpl.Spec.Providers[idx+1:]...)
+	if tmpl.Spec.DefaultModel != "" && slices.ContainsFunc(removed.Models, func(id string) bool {
+		return gateway.ModelKey(removed.Name, id) == tmpl.Spec.DefaultModel
+	}) {
+		// The deleted provider may serve the gateway's primary. Clearing the
+		// ref is defined: the renderer falls back to the first remaining
+		// provider. A dangling ref would leave the CR referencing a model that
+		// is gone.
 		tmpl.Spec.DefaultModel = ""
 	}
 	if err := s.cr.Update(r.Context(), &tmpl); err != nil {
@@ -396,7 +402,7 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	warning := ""
-	if w := removeModelCredential(r.Context(), s, name, model.CredentialRef); w != "" {
+	if w := removeModelCredential(r.Context(), s, name, removed.CredentialRef); w != "" {
 		warning = "model removed, but its " + w
 	}
 	resp := map[string]any{"removed": name}

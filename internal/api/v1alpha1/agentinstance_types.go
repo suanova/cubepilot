@@ -29,15 +29,6 @@ type CredentialSpec struct {
 	Type string `json:"type"`
 	// Ref is the platform-managed Secret reference (namespace/name or name).
 	Ref string `json:"ref"`
-	// ModelRef optionally binds an llm credential to a model entry in the
-	// AgentTemplate models list (by name). Required when multiple external
-	// models exist; implicit when exactly one (design §4.4, fail-closed).
-	// +optional
-	ModelRef string `json:"modelRef,omitempty"`
-	// Endpoint optionally binds an llm credential by endpoint (matches
-	// the model's endpoint). Mutually exclusive with ModelRef.
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // PrincipalRef binds the instance to a concrete principal (design §3.2:
@@ -217,8 +208,7 @@ func (in *AgentInstance) ReadyCondition() (metav1.Condition, bool) {
 	return metav1.Condition{}, false
 }
 
-// CredentialFor returns the first credential matching target (and optional
-// modelRef/endpoint), or nil.
+// CredentialFor returns the first credential matching target, or nil.
 func (in *AgentInstance) CredentialFor(target string) *CredentialSpec {
 	for i := range in.Spec.Credentials {
 		if in.Spec.Credentials[i].Target == target {

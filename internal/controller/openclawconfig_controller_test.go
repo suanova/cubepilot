@@ -35,10 +35,10 @@ func TestOpenClawConfigReconcile(t *testing.T) {
 		t.Fatalf("openclaw-config not created: %v", err)
 	}
 	jsonData := string(sec.Data["openclaw.json"])
-	if !strings.Contains(jsonData, `"deepseek-v4-flash/deepseek-v4-flash"`) {
+	if !strings.Contains(jsonData, `"platform/deepseek-v4-flash"`) {
 		t.Errorf("openclaw.json missing primary ref: %s", jsonData)
 	}
-	expectedID := "/" + k8s.EnvNameForModel("deepseek-v4-flash")
+	expectedID := "/" + k8s.EnvNameForProvider(BuiltinProviderName)
 	if !strings.Contains(jsonData, `"id": "`+expectedID+`"`) {
 		t.Errorf("openclaw.json apiKey should be a file SecretRef (cubepilot-keys %s): %s", expectedID, jsonData)
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/skill"
 )
@@ -30,6 +31,11 @@ const BuiltinAgentName = "cubepilot"
 // BuiltinTaskTemplateName is the preset inspection task template
 // (design §3.3.2 the preset inspection template daily-inspection).
 const BuiltinTaskTemplateName = "daily-inspection"
+
+// BuiltinProviderName is the provider key of the platform's own LLM. It is a
+// name, not a model id: the platform default is one provider serving one model,
+// and an admin can add more model ids to it or add providers beside it.
+const BuiltinProviderName = "platform"
 
 // Per-user identity ClusterRoles the platform binds each user's ServiceAccount
 // to (issue #19): `view` is the built-in read-only ClusterRole (deliberately
@@ -61,18 +67,19 @@ func userCRBName(user, role string) string {
 // CRDs at startup.
 var BuiltinSkills = skill.BuiltinSkillNames()
 
-// BuiltinModels returns the preset inline model entries for the builtin
-// AgentTemplate (design §3.3: models are inlined in the template -- no
-// standalone Model CRD). The platform default model references the
-// cubepilot-llm credential Secret created by setup.sh; its endpoint and model
-// name come from the operator config (config.LLMEndpoint / config.LLMModel)
-// and can be edited on the CR after install.
-func BuiltinModels(endpoint, modelName string) []v1alpha1.TemplateModelSpec {
-	return []v1alpha1.TemplateModelSpec{
+// BuiltinProviders returns the preset provider for the builtin AgentTemplate
+// (design §3.3: models are inlined in the template -- no standalone Model CRD).
+// The platform default provider references the cubepilot-llm credential Secret
+// created by setup.sh; its endpoint and model name come from the operator
+// config (config.LLMEndpoint / config.LLMModel) and can be edited on the CR
+// after install.
+func BuiltinProviders(endpoint, modelName string) []v1alpha1.TemplateProviderSpec {
+	return []v1alpha1.TemplateProviderSpec{
 		{
-			Name:          modelName,
+			Name:          BuiltinProviderName,
 			Endpoint:      endpoint,
 			CredentialRef: &corev1.LocalObjectReference{Name: "cubepilot-llm"},
+			Models:        []string{modelName},
 		},
 	}
 }
@@ -94,8 +101,8 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 			DisplayName:    "Platform Management Assistant",
 			Description:    "Default assistant for managing the CubeStack platform (ChatOps + inspection + reporting)",
 			Runtime:        v1alpha1.RuntimeOpenClaw,
-			DefaultModel:   modelName,
-			Models:         BuiltinModels(endpoint, modelName),
+			DefaultModel:   gateway.ModelKey(BuiltinProviderName, modelName),
+			Providers:      BuiltinProviders(endpoint, modelName),
 			ApprovalPolicy: v1alpha1.ApprovalPolicyAllowlist,
 			Instructions: "You are the intelligent assistant of the CubeStack platform (CubePilot)." +
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
@@ -183,15 +190,15 @@ func (r *BuiltinBootstrapReconciler) Ensure(ctx context.Context) error {
 }
 
 func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
-	// 1. AgentTemplate definition (with inline models, design §3.1/§3.3). The
-	// platform default model is included only when an endpoint AND model name
-	// are configured (CUBEPILOT_LLM_ENDPOINT / CUBEPILOT_LLM_MODEL); an empty
-	// pair ships the template model-less and LLMs are added from the Portal
-	// (Agent Config -> LLM Config). "有就是有，没有就是没有": the model list is
-	// fixed at template creation and never re-synced afterwards.
+	// 1. AgentTemplate definition (with inline providers, design §3.1/§3.3).
+	// The platform default provider is included only when an endpoint AND model
+	// name are configured (CUBEPILOT_LLM_ENDPOINT / CUBEPILOT_LLM_MODEL); an
+	// empty pair ships the template provider-less and LLMs are added from the
+	// Portal (Agent Config -> LLM Config). "有就是有，没有就是没有": the provider
+	// list is fixed at template creation and never re-synced afterwards.
 	agent := BuiltinAgentTemplate(r.Cfg.LLMEndpoint, r.Cfg.LLMModel)
 	if r.Cfg.LLMEndpoint == "" || r.Cfg.LLMModel == "" {
-		agent.Spec.Models = nil
+		agent.Spec.Providers = nil
 		agent.Spec.DefaultModel = ""
 	}
 	agent.Namespace = r.Cfg.Namespace
