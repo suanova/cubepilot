@@ -269,7 +269,7 @@ handler tests.
 
 ## Sequencing
 
-Four changes, each landing green on its own:
+One PR, four commits in dependency order:
 
 1. `test(web)`: introduce the runner and the first turn-level tests. No product
    change.
@@ -278,8 +278,10 @@ Four changes, each landing green on its own:
 3. `fix(api)`: map the gateway's 404 on session history to a typed 404.
 4. `feat(web)`: the widget itself, on top of 1-3.
 
-Steps 1 and 2 are separable on purpose: without 1, a bug in 2 is invisible, and
-without 2, 4 would duplicate the machinery 2 exists to share.
+The ordering is load-bearing and belongs in the commits, not in separate PRs:
+without 1 a bug in 2 is invisible, and without 2 the widget would duplicate the
+machinery 2 exists to share. No piece has to reach `main` before the next can
+be written, so none of them is a PR of its own.
 
 ## Out of scope
 

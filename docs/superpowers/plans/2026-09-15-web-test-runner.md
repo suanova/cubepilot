@@ -19,7 +19,15 @@
 
 ## Scope
 
-This is **step 1 of 4** in the design (`docs/superpowers/specs/2026-09-15-floating-assistant-widget-design.md`), and its own PR. Steps 2-4 (`refactor` the thread out of ChatView, `fix` the history 404, `feat` the widget) get their own plans, because step 2's exact code cannot be planned honestly until this harness exists to verify it against.
+This is **commit group 1 of 4** in the design
+(`docs/superpowers/specs/2026-09-15-floating-assistant-widget-design.md`). All
+four land in one PR, in commit order; this group goes first because the
+extraction that follows cannot be verified without it.
+
+Groups 2-4 (`refactor` the thread out of ChatView, `fix` the history 404,
+`feat` the widget) get their own plans written as each is reached, because
+group 2's exact code cannot be planned honestly until this harness exists to
+verify it against.
 
 ## File Structure
 
