@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ChatView from './ChatView'
 import { installFakeGateway, type FakeGateway } from '@/test/gateway'
+import type { SSEEvent } from '@/api/types'
 
 let gateway: FakeGateway | undefined
 
@@ -72,5 +73,99 @@ describe('ChatView turn', () => {
 
     expect(await screen.findByText(/kubectl_get/)).toBeInTheDocument()
     expect(await screen.findByText(/pod\/nginx Running/)).toBeInTheDocument()
+  })
+})
+
+const APPROVAL = [
+  { type: 'message_start', sessionId: 'agent:main:conv-1' },
+  {
+    type: 'approval_pending',
+    sessionId: 'agent:main:conv-1',
+    callId: 'a1',
+    name: 'kubectl_apply',
+    command: 'kubectl apply -f dev.yaml',
+    level: 'write',
+  },
+] satisfies SSEEvent[]
+
+describe('ChatView write confirmation', () => {
+  it('posts the approval the user picked', async () => {
+    gateway!.setTurn(APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Approve' }))
+
+    expect(gateway!.decisions).toHaveLength(1)
+    expect(gateway!.decisions[0]).toMatchObject({
+      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      body: { decision: 'approve' },
+    })
+  })
+
+  it('posts a rejection when the user picks Reject', async () => {
+    gateway!.setTurn(APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Reject' }))
+
+    expect(gateway!.decisions[0]).toMatchObject({
+      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      body: { decision: 'reject' },
+    })
+  })
+
+  it('renders the resolved decision rather than leaving live buttons', async () => {
+    gateway!.setTurn([
+      ...APPROVAL,
+      { type: 'approval_resolved', sessionId: 'agent:main:conv-1', callId: 'a1', approved: true },
+      { type: 'message_done', sessionId: 'agent:main:conv-1' },
+    ])
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    expect(await screen.findByText('Approved')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatView question', () => {
+  it('posts the option the user picked and submitted', async () => {
+    gateway!.setTurn([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      {
+        type: 'question_pending',
+        sessionId: 'agent:main:conv-1',
+        callId: 'q1',
+        question: {
+          questions: [
+            {
+              questionId: 'env',
+              header: 'Environment',
+              question: 'Which environment?',
+              options: [{ label: 'dev' }, { label: 'prod' }],
+            },
+          ],
+        },
+      },
+    ])
+
+    render(<ChatView />)
+    await send('deploy something')
+
+    // Picking is not answering: the option only toggles the selection, and
+    // Submit stays disabled until something is picked.
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'dev' }))
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+
+    expect(gateway!.decisions[0]).toMatchObject({
+      path: '/api/v1/sessions/agent:main:conv-1/question',
+      body: { id: 'q1', answers: { env: ['dev'] } },
+    })
   })
 })

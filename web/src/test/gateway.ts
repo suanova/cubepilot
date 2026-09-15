@@ -75,7 +75,16 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
 
   const handler = async (input: RequestInfo | URL, opts: RequestInit = {}): Promise<Response> => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    const path = new URL(raw, 'http://localhost').pathname
+    // Decoded, because every session key carries colons and every caller
+    // percent-encodes them -- `agent%3Amain%3Aconv-1` in an assertion says
+    // nothing that `agent:main:conv-1` does not, and it is the decoded form the
+    // Go handlers see (`r.URL.Path` arrives decoded).
+    let path = new URL(raw, 'http://localhost').pathname
+    try {
+      path = decodeURIComponent(path)
+    } catch {
+      /* a malformed escape is left as it arrived */
+    }
     const method = (opts.method ?? 'GET').toUpperCase()
     const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined
     const record: RecordedRequest = { path, method, body }
@@ -91,7 +100,7 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     }
     const sub = /^\/api\/v1\/sessions\/([^/]+)\/(.+)$/.exec(path)
     if (sub) {
-      const key = decodeURIComponent(sub[1] ?? '')
+      const key = sub[1] ?? ''
       const known = sessions.some((s) => s.sessionKey === key)
       switch (sub[2]) {
         case 'messages':
