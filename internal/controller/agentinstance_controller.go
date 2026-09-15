@@ -1,12 +1,11 @@
-// Package controller implements the CubePilot platform controllers
-// (design doc CubePilot-Cloud-for-Agents-Design.md §4.1): the AgentInstance
-// controller (the Instance Manager, controller-based) and the builtin-resource
-// bootstrap.
+// Package controller implements the CubePilot platform controllers: the
+// AgentInstance controller (the Instance Manager, controller-based) and the
+// builtin-resource bootstrap.
 //
-// Design §4.1: the Instance Manager is controller-based -- AgentInstance CRD +
-// controller-runtime (v0.2 §13 chosen implementation); spec.runtime
-// distinguishes multiple runtimes and the resident lifecycle policy is
-// declared by the CR spec.
+// The Instance Manager is controller-based -- AgentInstance CRD +
+// controller-runtime. spec.runtime distinguishes multiple runtimes. Instances
+// are resident: they stay up once started and are never idle-reclaimed, which
+// is a fixed property of the platform rather than something the CR declares.
 package controller
 
 import (
