@@ -54,9 +54,18 @@ export interface ChatThreadApi {
 
 const user = getCurrentUser()
 
-export function useChatThread({ onSessionStarted }: { onSessionStarted: () => void }): ChatThreadApi {
+export function useChatThread({
+  initialSessionKey,
+  onSessionStarted,
+}: {
+  // The conversation to open with. Omitted by the Chat view, which starts on a
+  // new conversation and learns the key the server mints from `message_start`;
+  // supplied by the widget, which is bound to the same one every time it opens.
+  initialSessionKey?: string
+  onSessionStarted: () => void
+}): ChatThreadApi {
 
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(initialSessionKey ?? null)
   const [bubbles, setBubbles] = useState<BubbleMsg[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [streaming, setStreaming] = useState(false)
@@ -137,6 +146,24 @@ export function useChatThread({ onSessionStarted }: { onSessionStarted: () => vo
     return () => clearInterval(ticker)
   }, [])
 
+  // Open the conversation a caller named. The Chat view never names one (it
+  // starts on a new conversation), so this is the widget's path: it is bound to
+  // one conversation, and it has to be showing that conversation's history --
+  // and know whether a turn is still running in it -- before the user says
+  // anything. Same capture-then-re-check as `switchSession`: the answer is only
+  // applied while this view still holds the generation it asked under.
+  useEffect(() => {
+    if (!initialSessionKey) return
+    const gen = streamGenRef.current
+    activeSessionRef.current = initialSessionKey
+    void loadHistory(initialSessionKey)
+    if (streamGenRef.current !== gen) return
+    void checkTurnElsewhere(initialSessionKey, gen)
+    // Runs once, for the key the caller opened with: re-running it on a later
+    // render would reload history over a turn the hook is already streaming.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // The without-a-stream banner is on screen: a turn this view holds no stream
   // for, so the banner's Stop is the direct way to end it -- and a send while it
   // is up is a redirect, which `sendMessage` runs through its own
@@ -171,7 +198,16 @@ export function useChatThread({ onSessionStarted }: { onSessionStarted: () => vo
       renderHistory(items, id)
       void recoverPending(id)
     } catch (e) {
-      setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
+      // A 404 is "this conversation has not started", which is not a failure:
+      // every conversation is in that state until its first message reaches the
+      // server. Painting it as one would make a brand-new conversation look
+      // like an erased one -- and the distinction only works if a genuinely
+      // unreachable runtime keeps looking like the failure it is.
+      if (e instanceof ApiError && e.status === 404) {
+        setBubbles([])
+      } else {
+        setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
+      }
     } finally {
       setLoadingHistory(false)
       requestAnimationFrame(scrollThread)

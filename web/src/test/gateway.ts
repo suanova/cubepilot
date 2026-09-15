@@ -135,8 +135,11 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
       const key = sub[1] ?? ''
       const known = sessions.some((s) => s.sessionKey === key)
       switch (sub[2]) {
+        // Nested under `items`, which is the wire shape and not a detail: the
+        // client unwraps it, so serving the array directly would test a
+        // client that does not exist.
         case 'messages':
-          return known ? json(history) : json(NOT_FOUND, 404)
+          return known ? json({ items: history }) : json(NOT_FOUND, 404)
         case 'turn':
           return json({ active: init.turnActive ?? false })
         // In production `/abort` does not answer until the session has settled;
@@ -148,9 +151,15 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'question':
           decisions.push(record)
           return json({})
+        // Nothing parked answers 404, not an empty object: the client unwraps
+        // `d.approval` / `d.questions`, so a bare `{}` would hand the caller
+        // `undefined` and make it read a field off nothing. This is the shape
+        // the API documents (`no pending approval`), and the only one a caller
+        // can be written against.
         case 'approval/pending':
+          return json({ error: 'no pending approval' }, 404)
         case 'question/pending':
-          return json({})
+          return json({ questions: [] })
         default:
           break
       }
