@@ -10,8 +10,8 @@ docs {
   ⚠️ **会加热实例** —— 第一次可能等数十秒,或直接 **503**
   `instance warming failed`。**503 不是故障,等一会儿重试**。
 
-  只有 4 个端点会加热:`GET /sessions`、`GET /sessions/{key}/messages`,
-  `POST /messages`、`POST /inspect`。其余全部秒回。
+  只有 3 个端点会加热:`GET /sessions`、`GET /sessions/{key}/messages`,
+  `POST /messages`。其余全部秒回。
 
   返回的 `sessionKey` 就是后续要用的 `{key}`(已规范化,含冒号)。
 }

@@ -90,8 +90,8 @@ bru run 1-read --env local                            # 只跑一组(推荐:先�
 bru run 4-tasks --env local --reporter-html out.html  # 出报告
 ```
 
-**只有 4 个端点会「加热」实例**(冷启动一个 Pod,可能数十秒或直接 503):
-`GET /sessions`、`GET /sessions/{key}/messages`、`POST /messages`、`POST /inspect`。
+**只有 3 个端点会「加热」实例**(冷启动一个 Pod,可能数十秒或直接 503):
+`GET /sessions`、`GET /sessions/{key}/messages`、`POST /messages`。
 其余全部秒回 —— 所以 `1-read` 可以在实例还没 Ready 时先跑。
 
 > **503 `instance warming failed` 不是故障**,等一会儿重试即可。

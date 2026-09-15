@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/suanova/cubepilot/internal/audit"
-	"github.com/suanova/cubepilot/internal/inspect"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/openclaw"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
@@ -56,18 +54,6 @@ func (s *Server) agentRuntimeFor(user string) agentruntime.AgentRuntime {
 // and history. Model selection never affects these endpoints.
 func (s *Server) sessionReaderFor(user string) agentruntime.SessionReader {
 	return s.agentRuntimeFor(user)
-}
-
-// oneShotRunnerFor returns the HTTP adapter for non-interactive turns, with the
-// selected model applied as a per-request override. Interactive Portal chat
-// must use RunLiveTurn and the gateway WebSocket protocol instead.
-func (s *Server) oneShotRunnerFor(ctx context.Context, user string) (agentruntime.OneShotRunner, string, error) {
-	rt := s.agentRuntimeFor(user)
-	if model, err := s.mgr.SelectedModelFor(ctx, user); err != nil {
-		return rt, "", err
-	} else {
-		return rt, model, nil
-	}
 }
 
 // handleSessions lists the OpenClaw sessions for the current user.
@@ -260,106 +246,6 @@ func liveTurnDone(sessionKey string, outcome agentruntime.TurnOutcome, err error
 	return ev
 }
 
-// extractToolEvents reconstructs tool_call / tool_result events for a just
-// finished turn from the session transcript, and records them for audit (M5).
-// The gateway's /v1/chat/completions stream does not expose tool calls, so the
-// transcript is the authoritative source. Retries briefly to let the gateway
-// flush the transcript file after the turn ends.
-func (s *Server) extractToolEvents(ctx context.Context, user, sessionKey string, seen map[string]bool) []agentruntime.Event {
-	var out []agentruntime.Event
-	for attempt := 0; attempt < 4; attempt++ {
-		client := s.sessionReaderFor(user)
-		raw, err := client.GetHistory(ctx, sessionKey, 50)
-		if err == nil {
-			for _, ev := range parseHistoryTools(sessionKey, raw) {
-				key := ev.Type + ":" + ev.CallID
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				out = append(out, ev)
-			}
-			if len(out) > 0 {
-				break
-			}
-		}
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-ctx.Done():
-			return nil
-		}
-	}
-	return out
-}
-
-type historyItem struct {
-	Role    string `json:"role"`
-	Content []struct {
-		Type      string          `json:"type"`
-		ID        string          `json:"id"`
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-		Text      string          `json:"text"`
-	} `json:"content"`
-}
-
-func parseHistoryTools(sessionKey string, raw []byte) []agentruntime.Event {
-	var h struct {
-		Items []historyItem `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &h); err != nil {
-		return nil
-	}
-	// Pair tool calls with their results by linear order: an assistant item
-	// carries N toolCall content blocks, and the following toolResult item
-	// carries N text blocks (the gateway transcript shape). The queue maps
-	// each result text back to the call that produced it, so events carry the
-	// real tool name and a stable callID (used for dedup on the SSE stream).
-	type pendingCall struct {
-		id, name string
-		args     json.RawMessage
-	}
-	var out []agentruntime.Event
-	var pending []pendingCall
-	for _, it := range h.Items {
-		for _, c := range it.Content {
-			switch c.Type {
-			case "toolCall":
-				pending = append(pending, pendingCall{id: c.ID, name: c.Name, args: c.Arguments})
-				out = append(out, agentruntime.Event{
-					Type:      agentruntime.EventToolCall,
-					SessionID: sessionKey,
-					Name:      c.Name,
-					CallID:    c.ID,
-					Arguments: string(c.Arguments),
-				})
-			case "toolResult":
-				out = append(out, agentruntime.Event{
-					Type:      agentruntime.EventToolResult,
-					SessionID: sessionKey,
-					Name:      "exec",
-					Output:    c.Text,
-				})
-			case "text":
-				// toolResult items carry their output as plain text blocks;
-				// pair each with the oldest unmatched tool call.
-				if it.Role == "toolResult" && len(pending) > 0 {
-					pc := pending[0]
-					pending = pending[1:]
-					out = append(out, agentruntime.Event{
-						Type:      agentruntime.EventToolResult,
-						SessionID: sessionKey,
-						Name:      pc.name,
-						CallID:    pc.id,
-						Output:    c.Text,
-					})
-				}
-			}
-		}
-	}
-	return out
-}
-
 // recordToolCall writes an M5 audit entry for each observed tool_call event.
 func (s *Server) recordToolCall(user string, ev agentruntime.Event) {
 	if ev.Type != agentruntime.EventToolCall || s.store == nil {
@@ -372,47 +258,6 @@ func (s *Server) recordToolCall(user string, ev agentruntime.Event) {
 		_ = err
 	}
 	metrics.Inc("cubepilot_tool_calls_total", "level="+entry.Level, 1)
-}
-
-// handleInspect runs a basic cluster inspection and returns the report as JSON.
-// The run's tool calls are still recorded to the caller's audit ledger; the
-// report body itself is only returned inline (scheduled-task reports are TaskRun
-// CRs). Run the inspection with the creator's identity and the creator's
-// permissions (design §5.4 authorization contract): read-only is enforced by the
-// inspection template's behavior plus RBAC as the backstop; a dedicated
-// read-only instance is no longer used.
-func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
-		return
-	}
-	user := s.userOf(r)
-	if err := s.mgr.Ensure(r.Context(), user); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("instance warming failed: %v", err)})
-		return
-	}
-	sessionKey := "inspect-" + uuid.NewString()[:8]
-	client, model, cerr := s.oneShotRunnerFor(r.Context(), user)
-	if cerr != nil {
-		// Fail-closed: an inspection must run with the user's selected model,
-		// never silently with a different one.
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": cerr.Error()})
-		return
-	}
-	content, err := inspect.Run(r.Context(), client, sessionKey, model, func(ev agentruntime.Event) {
-		s.recordToolCall(user, ev)
-	})
-	// Tool calls are not on the stream; replay the transcript for audit.
-	for _, ev := range s.extractToolEvents(r.Context(), user, sessionKey, map[string]bool{}) {
-		if ev.Type == agentruntime.EventToolCall {
-			s.recordToolCall(user, ev)
-		}
-	}
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"report": content})
 }
 
 func writeSSE(w http.ResponseWriter, ev agentruntime.Event) error {
