@@ -6,21 +6,28 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// Provider is one OpenClaw models.providers entry derived from a template model.
+// Provider is one OpenClaw models.providers entry derived from a template
+// provider: an endpoint, the credential it is reached with, and the backend
+// model ids available through it.
 type Provider struct {
-	Key     string // provider key = model Name
+	Key     string // provider name = models.providers key
 	BaseURL string // endpoint
-	// APIKey is the credential key name (k8s.EnvNameForModel) rendered as a
+	// APIKey is the credential key name (k8s.EnvNameForProvider) rendered as a
 	// file SecretRef ({source:"file", provider:cubepilot-keys, id:"/<name>"})
 	// into the emptyDir JSON file the supervisor writes. The literal key never
 	// lands in the config file, the PVC, or the network response. Empty for
-	// public models: those render PublicModelAPIKey instead.
+	// providers that need no credential: those render PublicModelAPIKey
+	// instead.
 	APIKey string
-	Model  string // model name = backend id
+	// Models are the backend model ids served through this endpoint, sent
+	// verbatim. An id may contain "/" (OpenRouter's
+	// "anthropic/claude-sonnet-4.5").
+	Models []string
 }
 
 // PublicModelAPIKey is the apiKey rendered for a model that has no credential
@@ -44,11 +51,34 @@ const PublicModelAPIKey = "cubepilot-no-auth"
 func Render(token, primary string, providers []Provider) ([]byte, error) {
 	providersOut := map[string]any{}
 	modelsOut := map[string]any{}
+	// A bare model id is usable as an alias only while it is unique across the
+	// template. Two providers serving the same id would both claim it and the
+	// alias index resolves an alias to one ref with no defined winner, so an
+	// ambiguous id gets its entry without an alias. The ref stays selectable
+	// through modelPolicy.allow either way.
+	idCount := map[string]int{}
 	for _, p := range providers {
+		for _, id := range p.Models {
+			idCount[id]++
+		}
+	}
+	allowOut := []string{}
+	for _, p := range providers {
+		modelEntries := make([]any, 0, len(p.Models))
+		for _, id := range p.Models {
+			modelEntries = append(modelEntries, map[string]any{"id": id, "name": id})
+			key := ModelKey(p.Key, id)
+			entry := map[string]any{}
+			if idCount[id] == 1 {
+				entry["alias"] = id
+			}
+			modelsOut[key] = entry
+			allowOut = append(allowOut, key)
+		}
 		pv := map[string]any{
 			"api":     "openai-completions",
 			"baseUrl": p.BaseURL,
-			"models":  []any{map[string]any{"id": p.Model, "name": p.Model}},
+			"models":  modelEntries,
 		}
 		if p.APIKey != "" {
 			// File SecretRef into the supervisor-written keys.json; OpenClaw
@@ -63,18 +93,22 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			pv["apiKey"] = PublicModelAPIKey
 		}
 		providersOut[p.Key] = pv
-		modelsOut[p.Key+"/"+p.Model] = map[string]any{"alias": p.Model}
 	}
+	// Sorted for byte-stable output (TestRenderDeterministic); the map above
+	// marshals sorted by key already, but this array does not.
+	sort.Strings(allowOut)
 	cfg := map[string]any{
 		"models": map[string]any{"providers": providersOut},
 		"agents": map[string]any{
 			"defaults": map[string]any{
 				"workspace": "/home/node/.openclaw/workspace",
-				// model = the primary ref; models = the allowlist (siblings,
-				// matching the OpenClaw agents.defaults schema).
-				"model":   map[string]any{"primary": primary},
-				"models":  modelsOut,
-				"sandbox": map[string]any{"mode": "off"},
+				"model":     map[string]any{"primary": primary},
+				"models":    modelsOut,
+				// The allowlist is stated explicitly rather than left to the
+				// legacy reading of the agents.defaults.models keys, which stops
+				// applying once OpenClaw stamps meta.migrations.modelPolicyAllowlist.
+				"modelPolicy": map[string]any{"allow": allowOut},
+				"sandbox":     map[string]any{"mode": "off"},
 			},
 		},
 		"gateway": map[string]any{

@@ -46,7 +46,9 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 			if m.Endpoint == "" {
 				continue
 			}
-			p := gateway.Provider{Key: m.Name, BaseURL: m.Endpoint, Model: m.Name}
+			// One CR entry is still one provider here; Task 2 turns the loop
+			// into a per-provider fan-out.
+			p := gateway.Provider{Key: m.Name, BaseURL: m.Endpoint, Models: []string{m.Name}}
 			if m.CredentialRef != nil && m.CredentialRef.Name != "" {
 				var sec corev1.Secret
 				if err := r.Get(ctx, types.NamespacedName{Namespace: r.Cfg.Namespace, Name: m.CredentialRef.Name}, &sec); err != nil {
@@ -60,13 +62,13 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 				p.APIKey = k8s.EnvNameForModel(m.Name)
 			}
 			if t.Spec.DefaultModel == m.Name && primary == "" {
-				primary = m.Name + "/" + m.Name
+				primary = gateway.ModelKey(m.Name, m.Name)
 			}
 			providers = append(providers, p)
 		}
 	}
 	if primary == "" && len(providers) > 0 {
-		primary = providers[0].Key + "/" + providers[0].Model
+		primary = gateway.ModelKey(providers[0].Key, providers[0].Models[0])
 	}
 
 	token, err := gateway.EnsureGatewayToken(ctx, r.Client, r.Cfg.Namespace)

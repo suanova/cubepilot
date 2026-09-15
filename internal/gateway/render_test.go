@@ -8,8 +8,8 @@ import (
 
 func TestRender(t *testing.T) {
 	providers := []Provider{
-		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "CUBEPILOT_LLM_DEEPSEEK_V4_FLASH", Model: "deepseek-v4-flash"},
-		{Key: "qwen", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5-72b"}, // public, no key
+		{Key: "deepseek-v4-flash", BaseURL: "https://api.deepseek.com", APIKey: "CUBEPILOT_LLM_DEEPSEEK_V4_FLASH", Models: []string{"deepseek-v4-flash"}},
+		{Key: "qwen", BaseURL: "http://localhost:11434/v1", Models: []string{"qwen2.5-72b"}}, // public, no key
 	}
 	b, err := Render("tok", "deepseek-v4-flash/deepseek-v4-flash", providers)
 	if err != nil {
@@ -28,8 +28,11 @@ func TestRender(t *testing.T) {
 		} `json:"models"`
 		Agents struct {
 			Defaults struct {
-				Model  map[string]any `json:"model"`
-				Models map[string]any `json:"models"`
+				Model       map[string]any `json:"model"`
+				Models      map[string]any `json:"models"`
+				ModelPolicy struct {
+					Allow []string `json:"allow"`
+				} `json:"modelPolicy"`
 			} `json:"defaults"`
 		} `json:"agents"`
 		Secrets struct {
@@ -98,8 +101,9 @@ func TestRender(t *testing.T) {
 	if cfg.Memory.Search.Store.FTS.Tokenizer != "trigram" {
 		t.Errorf("memory.search.store.fts.tokenizer = %q, want trigram", cfg.Memory.Search.Store.FTS.Tokenizer)
 	}
-	// model = {primary} and the allowlist lives at agents.defaults.models
-	// (siblings) -- this is the OpenClaw schema the old jq produced.
+	// model = {primary}, models = the per-ref entries, and modelPolicy.allow is
+	// the explicit allowlist -- siblings, matching the OpenClaw
+	// agents.defaults schema.
 	if cfg.Agents.Defaults.Model["primary"] != "deepseek-v4-flash/deepseek-v4-flash" {
 		t.Errorf("primary = %v", cfg.Agents.Defaults.Model["primary"])
 	}
@@ -108,6 +112,11 @@ func TestRender(t *testing.T) {
 	}
 	if _, ok := cfg.Agents.Defaults.Models["qwen/qwen2.5-72b"]; !ok {
 		t.Error("allowlist missing public ref")
+	}
+	if len(cfg.Agents.Defaults.ModelPolicy.Allow) != 2 ||
+		cfg.Agents.Defaults.ModelPolicy.Allow[0] != "deepseek-v4-flash/deepseek-v4-flash" ||
+		cfg.Agents.Defaults.ModelPolicy.Allow[1] != "qwen/qwen2.5-72b" {
+		t.Errorf("modelPolicy.allow = %v, want both refs sorted", cfg.Agents.Defaults.ModelPolicy.Allow)
 	}
 }
 
@@ -118,7 +127,7 @@ func TestRender(t *testing.T) {
 // The renderer must give such a provider a value it can resolve.
 func TestRenderPublicModelRemoteEndpoint(t *testing.T) {
 	b, err := Render("tok", "pub/pub", []Provider{
-		{Key: "pub", BaseURL: "http://106.75.230.113:15910/v1", Model: "pub"},
+		{Key: "pub", BaseURL: "http://106.75.230.113:15910/v1", Models: []string{"pub"}},
 	})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
@@ -152,10 +161,131 @@ func TestRenderEmpty(t *testing.T) {
 	}
 }
 
+// TestRenderProviderWithMultipleModels covers one provider -- one endpoint and
+// one credential -- serving several model ids, which is what a self-hosted
+// gateway or an aggregator looks like. The provider body's models array is what
+// OpenClaw registers, and modelPolicy.allow is what authorizes selection of
+// each id.
+func TestRenderProviderWithMultipleModels(t *testing.T) {
+	b, err := Render("tok", "vllm/qwen3-32b", []Provider{
+		{Key: "vllm", BaseURL: "http://vllm.ai.svc:8000/v1", APIKey: "CUBEPILOT_LLM_VLLM", Models: []string{"qwen3-32b", "deepseek-v4-flash"}},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Models struct {
+			Providers map[string]struct {
+				Models []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"providers"`
+		} `json:"models"`
+		Agents struct {
+			Defaults struct {
+				Models      map[string]any `json:"models"`
+				ModelPolicy struct {
+					Allow []string `json:"allow"`
+				} `json:"modelPolicy"`
+			} `json:"defaults"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	pv := cfg.Models.Providers["vllm"]
+	if len(pv.Models) != 2 || pv.Models[0].ID != "qwen3-32b" || pv.Models[1].ID != "deepseek-v4-flash" {
+		t.Errorf("provider models = %+v, want both ids", pv.Models)
+	}
+	want := []string{"vllm/deepseek-v4-flash", "vllm/qwen3-32b"} // sorted
+	got := cfg.Agents.Defaults.ModelPolicy.Allow
+	if len(got) != len(want) {
+		t.Fatalf("modelPolicy.allow = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("modelPolicy.allow[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	for _, ref := range want {
+		if _, ok := cfg.Agents.Defaults.Models[ref]; !ok {
+			t.Errorf("agents.defaults.models missing %q", ref)
+		}
+	}
+}
+
+// TestRenderDuplicateModelIDOmitsAlias: the same bare id can be served by two
+// providers, and the alias index resolves an alias to exactly one ref with no
+// defined winner. Omitting the alias keeps the ambiguity out of the config;
+// the refs stay selectable through modelPolicy.allow either way.
+func TestRenderDuplicateModelIDOmitsAlias(t *testing.T) {
+	b, err := Render("tok", "a/qwen3-32b", []Provider{
+		{Key: "a", BaseURL: "https://a", Models: []string{"qwen3-32b"}},
+		{Key: "b", BaseURL: "https://b", Models: []string{"qwen3-32b", "solo"}},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Agents struct {
+			Defaults struct {
+				Models map[string]map[string]any `json:"models"`
+			} `json:"defaults"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, ref := range []string{"a/qwen3-32b", "b/qwen3-32b"} {
+		entry, ok := cfg.Agents.Defaults.Models[ref]
+		if !ok {
+			t.Fatalf("agents.defaults.models missing %q", ref)
+		}
+		if _, dup := entry["alias"]; dup {
+			t.Errorf("%q should carry no alias while the id is ambiguous: %+v", ref, entry)
+		}
+	}
+	if got := cfg.Agents.Defaults.Models["b/solo"]["alias"]; got != "solo" {
+		t.Errorf("unambiguous id alias = %v, want solo", got)
+	}
+}
+
+// TestRenderIDCarryingItsOwnProviderPrefix pins the self-prefix rule end to
+// end: the allowlist key must be the id itself, and the primary ref must match
+// it, or the selection would be rejected as not-allowed.
+func TestRenderIDCarryingItsOwnProviderPrefix(t *testing.T) {
+	b, err := Render("tok", "openrouter/auto", []Provider{
+		{Key: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKey: "CUBEPILOT_LLM_OPENROUTER", Models: []string{"openrouter/auto"}},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Agents struct {
+			Defaults struct {
+				Models      map[string]any `json:"models"`
+				ModelPolicy struct {
+					Allow []string `json:"allow"`
+				} `json:"modelPolicy"`
+			} `json:"defaults"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := cfg.Agents.Defaults.Models["openrouter/auto"]; !ok {
+		t.Errorf("allowlist should hold the id as-is: %+v", cfg.Agents.Defaults.Models)
+	}
+	if len(cfg.Agents.Defaults.ModelPolicy.Allow) != 1 || cfg.Agents.Defaults.ModelPolicy.Allow[0] != "openrouter/auto" {
+		t.Errorf("modelPolicy.allow = %v, want [openrouter/auto]", cfg.Agents.Defaults.ModelPolicy.Allow)
+	}
+}
+
 // TestRenderDeterministic verifies the render output is byte-stable for the
 // same input (sorted keys) and still human-readable (indented).
 func TestRenderDeterministic(t *testing.T) {
-	providers := []Provider{{Key: "a", BaseURL: "https://x", Model: "a"}, {Key: "b", BaseURL: "https://y", Model: "b", APIKey: "CUBEPILOT_LLM_B"}}
+	providers := []Provider{{Key: "a", BaseURL: "https://x", Models: []string{"a"}}, {Key: "b", BaseURL: "https://y", Models: []string{"b"}, APIKey: "CUBEPILOT_LLM_B"}}
 	b1, err := Render("tok", "a/a", providers)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
