@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +13,15 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 )
+
+// uniqueName makes an object name distinct per run. These specs assert that a
+// create is REJECTED, so an object they create must not outlive the run: with a
+// fixed name, a create that wrongly succeeded (a missing validation) would
+// leave the object behind and every later run would pass on AlreadyExists --
+// the spec would silently stop testing the rule it exists for.
+func uniqueName(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
 
 // Task CRD enum validation: spec.state (Enabled | Paused) and TaskRun's
 // spec.trigger (Manual | Cron) carry kubebuilder validation:Enum on the shipped
@@ -29,7 +40,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("rejects an out-of-enum spec.state", func() {
 		bad := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-task-state", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("bad-task-state"), Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:       "zhang.wei",
 				Instruction: "list the pods",
@@ -42,7 +53,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("rejects an out-of-enum spec.trigger on a TaskRun", func() {
 		bad := &v1alpha1.TaskRun{
-			ObjectMeta: metav1.ObjectMeta{Name: "bad-run-trigger", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("bad-run-trigger"), Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskRunSpec{
 				Owner:          "zhang.wei",
 				CreatorTaskRef: v1alpha1.TaskRef{Name: "some-task"},
@@ -55,7 +66,7 @@ var _ = Describe("Task CRD enum validation", func() {
 
 	It("accepts valid enums (state Enabled)", func() {
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-enums", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("good-task-enums"), Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:       "zhang.wei",
 				Instruction: "list the pods",
@@ -83,13 +94,15 @@ var taskGVR = schema.GroupVersionResource{
 }
 
 // rawTask builds a Task from an explicit spec map, keeping empty-string keys on
-// the wire; owner is filled in because spec.owner is required.
-func rawTask(name string, spec map[string]any) *unstructured.Unstructured {
+// the wire; owner is filled in because spec.owner is required. The name is
+// suffixed per run so a create that should have been rejected cannot pass a
+// later run by colliding with an object an earlier one left behind.
+func rawTask(prefix string, spec map[string]any) *unstructured.Unstructured {
 	spec["owner"] = "zhang.wei"
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "ai.cubestack.io/v1alpha1",
 		"kind":       "Task",
-		"metadata":   map[string]any{"name": name, "namespace": fw.Namespace},
+		"metadata":   map[string]any{"name": uniqueName(prefix), "namespace": fw.Namespace},
 		"spec":       spec,
 	}}
 }
@@ -97,7 +110,7 @@ func rawTask(name string, spec map[string]any) *unstructured.Unstructured {
 // taskTemplateForCEL creates the TaskTemplate the templateRef cases point at,
 // so they do not assert that a dangling reference is admissible.
 func taskTemplateForCEL(ctx context.Context) string {
-	const name = "e2e-task-cel-template"
+	name := uniqueName("e2e-task-cel-template")
 	tpl := &v1alpha1.TaskTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: fw.Namespace},
 		Spec:       v1alpha1.TaskTemplateSpec{DisplayName: "E2E task CEL", Instruction: "list the pods"},
@@ -151,7 +164,7 @@ var _ = Describe("Task CEL validation", func() {
 
 	It("accepts a real instruction", func() {
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-instruction", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("good-task-instruction"), Namespace: fw.Namespace},
 			Spec:       v1alpha1.TaskSpec{Owner: "zhang.wei", Instruction: "list the pods"},
 		}
 		Expect(fw.CtrlClient.Create(ctx, good)).To(Succeed(), "a free-form task must be accepted")
@@ -161,7 +174,7 @@ var _ = Describe("Task CEL validation", func() {
 	It("accepts a real templateRef", func() {
 		name := taskTemplateForCEL(ctx)
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-templateref", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("good-task-templateref"), Namespace: fw.Namespace},
 			Spec:       v1alpha1.TaskSpec{Owner: "zhang.wei", TemplateRef: name},
 		}
 		Expect(fw.CtrlClient.Create(ctx, good)).To(Succeed(), "a template-bound task must be accepted")
@@ -171,7 +184,7 @@ var _ = Describe("Task CEL validation", func() {
 	It("accepts both (the stored instruction is the rendered snapshot)", func() {
 		name := taskTemplateForCEL(ctx)
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-both", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("good-task-both"), Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:       "zhang.wei",
 				TemplateRef: name,
@@ -186,7 +199,7 @@ var _ = Describe("Task CEL validation", func() {
 	It("accepts params with a real templateRef", func() {
 		name := taskTemplateForCEL(ctx)
 		good := &v1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{Name: "good-task-params", Namespace: fw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName("good-task-params"), Namespace: fw.Namespace},
 			Spec: v1alpha1.TaskSpec{
 				Owner:       "zhang.wei",
 				TemplateRef: name,
