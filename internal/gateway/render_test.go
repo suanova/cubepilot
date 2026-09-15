@@ -151,6 +151,54 @@ func TestRenderPublicModelRemoteEndpoint(t *testing.T) {
 	}
 }
 
+// TestRenderProviderWithNoModels covers a Provider with an empty Models slice.
+// The input is unreachable through the API -- spec.providers requires at least
+// one id -- so this guards the renderer against it rather than defining a
+// product rule. Render builds its entries by iterating the ids and never
+// indexes them, so it writes the provider through with an empty models array
+// and contributes no ref: models.providers carries the entry (OpenClaw's schema
+// requires a custom provider to declare models, and an empty array satisfies
+// that -- it checks the value is an array, not that it is non-empty), while
+// agents.defaults.models and modelPolicy.allow are both built from the ids and
+// stay empty.
+func TestRenderProviderWithNoModels(t *testing.T) {
+	b, err := Render("tok", "", []Provider{
+		{Key: "empty", BaseURL: "http://vllm.ai.svc:8000/v1", APIKey: "CUBEPILOT_LLM_EMPTY"},
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Models struct {
+			Providers map[string]struct {
+				Models json.RawMessage `json:"models"`
+			} `json:"providers"`
+		} `json:"models"`
+		Agents struct {
+			Defaults struct {
+				Models      map[string]any `json:"models"`
+				ModelPolicy struct {
+					Allow []string `json:"allow"`
+				} `json:"modelPolicy"`
+			} `json:"defaults"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	pv, ok := cfg.Models.Providers["empty"]
+	if !ok {
+		t.Fatal("models.providers.empty missing")
+	}
+	if got := string(pv.Models); got != "[]" {
+		t.Errorf("models = %s, want an empty array", got)
+	}
+	if len(cfg.Agents.Defaults.Models) != 0 || len(cfg.Agents.Defaults.ModelPolicy.Allow) != 0 {
+		t.Errorf("an id-less provider must contribute no ref: models = %v, allow = %v",
+			cfg.Agents.Defaults.Models, cfg.Agents.Defaults.ModelPolicy.Allow)
+	}
+}
+
 func TestRenderEmpty(t *testing.T) {
 	b, err := Render("tok", "", nil)
 	if err != nil {

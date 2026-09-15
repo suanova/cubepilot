@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,6 +229,33 @@ func TestHandleAddLLMRefusesNoModels(t *testing.T) {
 				t.Errorf("nothing should be written on a rejected add: %+v", providers)
 			}
 		})
+	}
+}
+
+// TestHandleAddLLMRefusesBeyondProviderLimit: spec.providers carries a
+// MaxItems of 32, a bound the per-provider validator cannot see (it is handed
+// one provider). An add that would make it 33 must be refused here, before the
+// write -- the API server rejects it inside s.cr.Update, which the handler can
+// only report as a 500.
+func TestHandleAddLLMRefusesBeyondProviderLimit(t *testing.T) {
+	extra := make([]v1alpha1.TemplateProviderSpec, 0, 31)
+	for i := 0; i < 31; i++ {
+		extra = append(extra, keyedModel(fmt.Sprintf("filler-%d", i), "https://api.example.com/v1"))
+	}
+	s := llmTestServer(t, extra...) // the builtin provider plus the fillers = 32
+	if got := len(templateProviders(t, s)); got != 32 {
+		t.Fatalf("fixture providers = %d, want 32", got)
+	}
+
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/llms", "", map[string]any{
+		"name": "one-more", "endpoint": "https://api.example.com/v1",
+		"apiKey": "sk-1", "models": []string{"qwen3-32b"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if providers := templateProviders(t, s); len(providers) != 32 {
+		t.Errorf("a refused add must write nothing: %d providers", len(providers))
 	}
 }
 
@@ -632,6 +660,30 @@ func TestHandleUpdateLLMKeepsOtherProvidersDefaultModel(t *testing.T) {
 	}
 	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
 		t.Errorf("defaultModel = %q, want the untouched platform default", got)
+	}
+}
+
+// TestHandleUpdateLLMKeepsDefaultModelItStillNames: the ref is cleared only
+// when the edit drops the id it names. The provider here is the one the default
+// names and still serves that id, so "that provider no longer offers it" is
+// false and the default must survive -- clearing it would silently move the
+// gateway's primary on an endpoint-only edit. The assertion is what pins the
+// `!kept[...]` half of the guard; without it the serving provider alone would
+// clear the ref.
+func TestHandleUpdateLLMKeepsDefaultModelItStillNames(t *testing.T) {
+	s := llmTestServer(t)
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
+		t.Fatalf("fixture defaultModel = %q", got)
+	}
+
+	// A corrected endpoint with the same id back: the only edit the fixture
+	// provider can take without dropping the id the default names.
+	w := putLLM(t, s, controller.BuiltinProviderName, `{"endpoint":"https://api.deepseek.com/v1","models":["deepseek-v4-flash"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
+		t.Errorf("defaultModel = %q, want kept while the provider still serves the id it names", got)
 	}
 }
 

@@ -44,11 +44,15 @@ const (
 // model ids reachable through it, so a gateway that serves many models behind
 // one base URL and one key is described once rather than once per model.
 type TemplateProviderSpec struct {
-	// Name is the provider key: the OpenClaw models.providers key, the prefix
-	// of every model ref (<name>/<modelId>) and the suffix of the credential
-	// Secret name llm-<name>. A DNS-1123 label, because it is both a ref
-	// segment (refs split on the first "/" and have no escaping) and a
-	// resource-name segment.
+	// Name is the provider key: the OpenClaw models.providers key and the
+	// prefix of every model ref (<name>/<modelId>). A DNS-1123 label, because
+	// it is both a ref segment (refs split on the first "/" and have no
+	// escaping) and a resource-name segment.
+	//
+	// The credential Secret named llm-<name> is a rule of that write API
+	// (/api/v1/llms) alone, not of this field: credentialRef is an arbitrary
+	// Secret reference, and the platform's own provider is named "platform"
+	// while pointing at the Secret "cubepilot-llm".
 	//
 	// A name that exactly matches an OpenClaw built-in provider key
 	// (anthropic, nvidia, xai, google, ...) inherits that provider's model-id

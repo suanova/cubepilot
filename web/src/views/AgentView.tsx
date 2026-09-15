@@ -267,12 +267,35 @@ export default function AgentView() {
     return raw.split('\n').map((s) => s.trim()).filter(Boolean)
   }
 
-  // modelRef mirrors gateway.ModelKey: an id that already names its provider is
-  // its own ref and must not be prefixed a second time. Keep in step with
+  // modelRef mirrors gateway.ModelKey: both arguments are trimmed, an empty one
+  // falls back to the other, and an id that already names its provider is its
+  // own ref and must not be prefixed a second time. Keep in step with
   // internal/gateway/modelkey.go.
   function modelRef(provider: string, id: string): string {
-    if (id.toLowerCase().startsWith(provider.toLowerCase() + '/')) return id
-    return `${provider}/${id}`
+    const p = provider.trim()
+    const m = id.trim()
+    if (!p) return m
+    if (!m) return p
+    if (m.toLowerCase().startsWith(p.toLowerCase() + '/')) return m
+    return `${p}/${m}`
+  }
+
+  // modelOptions pairs each id of a provider with its ref, dropping every id
+  // after the first that yields the same one: under provider "vllm", the ids
+  // "qwen3-8b" and "vllm/qwen3-8b" both yield the ref "vllm/qwen3-8b", and two
+  // options with the same key and value are one choice rendered twice (React
+  // also warns about the duplicate key). The ref is what a selection stores,
+  // so the dropped id is not a second choice.
+  function modelOptions(p: TemplateProvider): Array<{ ref: string; id: string }> {
+    const seen = new Set<string>()
+    const out: Array<{ ref: string; id: string }> = []
+    for (const id of p.models) {
+      const ref = modelRef(p.name, id)
+      if (seen.has(ref)) continue
+      seen.add(ref)
+      out.push({ ref, id })
+    }
+    return out
   }
 
   function startEditProvider(p: TemplateProvider) {
@@ -432,10 +455,9 @@ export default function AgentView() {
                   <option value="" disabled>-- Select a model --</option>
                   {templateProviders.map((p) => (
                     <optgroup key={p.name} label={p.name}>
-                      {p.models.map((id) => {
-                        const ref = modelRef(p.name, id)
-                        return <option key={ref} value={ref}>{id}</option>
-                      })}
+                      {modelOptions(p).map(({ ref, id }) => (
+                        <option key={ref} value={ref}>{id}</option>
+                      ))}
                     </optgroup>
                   ))}
                 </select>

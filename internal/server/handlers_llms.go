@@ -150,6 +150,15 @@ func (s *Server) handleAddLLM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// spec.providers caps the list at 32 (MaxItems). The bound cannot live in
+	// TemplateProviderSpec.Validate -- that validator is handed one provider --
+	// so it is enforced here, before the write: the 33rd provider passes the
+	// validation below and is refused by the API server inside s.cr.Update,
+	// which the handler can only report as a 500.
+	if len(tmpl.Spec.Providers) >= 32 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the template must carry at most 32 providers"})
+		return
+	}
 
 	// Commit the provider to the template BEFORE creating the credential
 	// Secret: a failed template update leaves no orphaned key Secret, and a
@@ -408,11 +417,20 @@ func providerModelRefs(p v1alpha1.TemplateProviderSpec) map[string]bool {
 // droppedModelRefs is the set of refs an edit to providers[edited] takes out of
 // the catalog: a ref that provider served before (served), that its new list no
 // longer serves (kept), and that no other provider of the same template serves
-// either. A dropped ref another provider still serves is deliberately left out
-// of the set: resolveModel scans every provider of the template, so a user
-// selecting that ref keeps resolving and the edit strands nobody. Only a ref
-// that is nowhere left to be found can break a selection, so only that one is
-// ever worth refusing.
+// either. A dropped ref another provider still serves is left out of the set:
+// resolveModel scans every provider of the template, so a user selecting that
+// ref keeps resolving and the edit strands nobody. Only a ref that is nowhere
+// left to be found can break a selection, so only that one is ever worth
+// refusing.
+//
+// The "another provider still serves it" exclusion is unreachable through this
+// API: a ref's first segment is the lowercased provider name, provider names
+// are unique within the template and are DNS-1123 labels, so no two providers
+// of one template can serve the same ref. The branch is kept anyway, because a
+// hand-written object in that state (two entries sharing a name, which the
+// listMapKey on spec.providers forbids) must not have a harmless edit turned
+// into a refusal by it. The test that covers the branch seeds that state
+// directly -- the API server cannot produce it.
 func droppedModelRefs(providers []v1alpha1.TemplateProviderSpec, edited int, served, kept map[string]bool) map[string]bool {
 	other := map[string]bool{}
 	for i := range providers {

@@ -584,6 +584,9 @@ GET /api/v1/sessions/{key}/question/pending
   （如 OpenRouter 的 `anthropic/claude-sonnet-4.5`），但不能含空白、不以 `/` 开头或结尾、
   不含 `//`，也不能是 `*`（allowlist 通配符保留字）。服务端会 trim 并去重；
   空或缺失 → `400`（provider 没有 id 就什么都渲染不出来，也选不中）。
+  「按原样」有一个例外：provider 名与 OpenClaw 内置 provider key 同名时会继承该内置 provider
+  的 model id 归一化，发给 endpoint 的 id 可能被改写。见
+  [cubepilot-design.md](./cubepilot-design.md) §3.3。
 - `PUT` **整体替换** endpoint、凭证和 `models`：增删单个 id 就是同一次 PUT 带上全量列表
   （PUT 不带 `models` 不是「保持不变」，是 `400`）。
 - 凭据按 provider 建**一次**（`llm-<name>`），不是每个 id 一个。
