@@ -30,8 +30,23 @@
    右上角是没有这个控件的。先点开任意一个请求，比如说 `1-read/01-agent-status`。
 
    **不选也能用**：集合根目录的 `collection.bru` 用 `vars:pre-request` 定义了同一组
-   变量作为兜底，所以只读请求在 `No Environment` 状态下照常工作
-   （`environments/local.bru` 里的值优先级更高，要改配置改那边）。
+   变量作为兜底，所以只读请求在 `No Environment` 状态下照常工作。
+
+4. **要改 endpoint / 模型 / 身份，建一个自己的环境 —— 不要改 `local`。**
+
+   `environments/local.bru` 和 `environments/remote.bru` 是**提交进仓库的共享文件**，
+   里面是占位值。直接在 UI 里改它们，git 工作区就脏了；而且那些值（内网地址、
+   session key）本来就不该进版本库。
+
+   在环境下拉里**新建一个环境**（名字建议 `local-<你的名字>`），值填在里面，然后选中
+   它。个人环境文件已被 `.gitignore` 忽略，随便改都不影响仓库。
+
+   ⚠️ 新建时**别用带空格的名字** —— Bruno 识别不了（[usebruno/bruno#294](https://github.com/usebruno/bruno/issues/294)）。
+   另外它在 UI 里不一定立刻出现在下拉里，重开集合或重启应用即可。
+
+   要覆盖的变量和 `local.bru` 一样：`baseUrl` / `user` / `llmName` / `llmModel` /
+   `llmEndpoint`。注意 `llmName` 是 **provider 名**（小写 DNS-1123 label），`llmModel`
+   才是发给 endpoint 的 model id —— 选择用的 ref 是 `{{llmName}}/{{llmModel}}`。
 
 ## 打远端
 
