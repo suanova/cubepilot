@@ -519,6 +519,7 @@ type TemplateProviderSpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 	// Endpoint is the OpenAI-compatible base URL.
+	// +kubebuilder:validation:MaxLength=2048
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
 	// holding the apiKey; a provider that needs no credentials omits it (nil).
@@ -529,9 +530,16 @@ type TemplateProviderSpec struct {
 	// sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
 	// "anthropic/claude-sonnet-4.5").
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Models []string `json:"models"`
 }
+```
+
+The `MaxItems` and `MaxLength` bounds are not decoration. Kubernetes estimates a CEL rule's cost statically, and an unbounded array is assumed to be large: without them, the validation rules on `Providers` exceed the API server's cost budget and the **CRD becomes uninstallable** -- `kubectl apply` rejects it outright, which `make test` cannot see because it never talks to an API server. Confirmed with `kubectl apply --dry-run=server`, which reports the offending rules by index and names the remedy ("adding maxItems, maxProperties, and maxLength where arrays, maps, and strings are declared"). The numbers are a guess at a sane ceiling, not a measured threshold; Step 7 verifies they are enough and says what to do if they are not.
+
+```go
 
 // providerNameRE is the DNS-1123 label grammar, mirroring the Pattern marker on
 // TemplateProviderSpec.Name.
@@ -591,6 +599,7 @@ In the same file, replace `DefaultModel` and `Models` (lines 164-175) with:
 	// DefaultModel is the model ref (<provider>/<modelId>) used when an
 	// instance does not select one explicitly. Empty = no default / runtime
 	// default.
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Providers is the inline provider list (design §3.3: models are inlined in
@@ -599,6 +608,7 @@ In the same file, replace `DefaultModel` and `Models` (lines 164-175) with:
 	// selects a <provider>/<modelId> ref within this list.
 	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || has(p.credentialRef.name))",message="credentialRef must reference a Secret name"
 	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != '' && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
+	// +kubebuilder:validation:MaxItems=32
 	// +listType=map
 	// +listMapKey=name
 	// +optional
@@ -649,6 +659,22 @@ grep -n "defaultModel must name\|empty path segment\|x-kubernetes-list-map-keys\
 ```
 
 Expected: the `defaultModel must name a provider/model` message (on the spec), the model-id rule message and `x-kubernetes-list-type: set` (on the provider's models array), and `x-kubernetes-list-map-keys` with `name` plus `x-kubernetes-list-type: map` (on providers).
+
+Then **apply it against a real API server**. This is the only check that validates the CEL rules at all -- `make test` never talks to one, so a rule the API server refuses passes every local gate:
+
+```bash
+kubectl apply --dry-run=server -f deploy/charts/cubepilot/crds/ai.cubestack.io_agenttemplates.yaml
+```
+
+Expected: `customresourcedefinition.apiextensions.k8s.io/agenttemplates.ai.cubestack.io configured (server dry run)`. The same command on `main` succeeds, so any failure here is this change's.
+
+If it reports `estimated rule cost exceeds budget`, the bounds are not tight enough -- Kubernetes sizes an unbounded array optimistically, and the nested `exists` over providers x models is what blows the static budget. Tighten rather than drop: first lower `Providers` to `MaxItems=16` and `Models` to `MaxItems=32`; if a rule is still over, replace the `defaultModel` rule with the cheaper prefix check
+
+```
+// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, self.defaultModel.startsWith(p.name + '/'))",message="defaultModel must name a provider/model listed in providers"
+```
+
+which no longer verifies the id itself -- `resolveModel`'s fail-closed check and Go `Validate()` are then the only gates on it. That is a real weakening, so record in the report which form you landed and why the next reviewer should see it.
 
 - [ ] **Step 8: Rename the credential key derivation**
 
@@ -957,11 +983,11 @@ EOF
 - Modify: `internal/server/handlers_llms.go` (`llmRequest` at :25-34, `handleAddLLM`, `handleUpdateLLM`, `handleDeleteLLM`, `removeModelCredential` at :277-299)
 - Modify: `internal/server/handlers_llms_test.go`
 - Modify: `docs/cubepilot/api.md` (section 6.3)
-- Modify: `docs/bruno/` collection entries for `/api/llms` (the collection added for the /api/v1 surface)
+- Modify: `docs/bruno/` collection entries for `/api/v1/llms` (the collection added for the /api/v1 surface)
 
 **Interfaces:**
 - Consumes: `v1alpha1.TemplateProviderSpec` from Task 2.
-- Produces: `llmRequest{Name, Endpoint, APIKey string; Public bool; Models []string}`; `POST /api/llms` creates a provider; `PUT /api/llms/{name}` replaces endpoint, credential and the model list; `DELETE /api/llms/{name}` removes the provider and its credential. Routes are unchanged, so `apidoc_test.go`'s path assertions still hold -- but the documented request shape must be updated.
+- Produces: `llmRequest{Name, Endpoint, APIKey string; Public bool; Models []string}`; `POST /api/v1/llms` creates a provider; `PUT /api/v1/llms/{name}` replaces endpoint, credential and the model list; `DELETE /api/v1/llms/{name}` removes the provider and its credential. Routes are unchanged, so `apidoc_test.go`'s path assertions still hold -- but the documented request shape must be updated.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -979,7 +1005,7 @@ func TestHandleAddLLMProviderWithModels(t *testing.T) {
 		"apiKey":   "sk-vllm",
 		"models":   []string{"qwen3-32b", "deepseek-v4-flash"},
 	}
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/llms", "", body)
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/llms", "", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -1008,7 +1034,7 @@ func TestHandleUpdateLLMReplacesModels(t *testing.T) {
 		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
 		Models:        []string{"qwen3-32b"},
 	})
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/llms/vllm", "", map[string]any{
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
 		"endpoint": "http://vllm.ai.svc:8000/v1",
 		"models":   []string{"qwen3-32b", "qwen3-8b"},
 	})
@@ -1030,7 +1056,7 @@ func TestHandleUpdateLLMRefusesEmptyModels(t *testing.T) {
 		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
 		Models:        []string{"qwen3-32b"},
 	})
-	rec := doReq(t, s.Handler(), http.MethodPut, "/api/llms/vllm", "", map[string]any{
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
 		"endpoint": "http://vllm.ai.svc:8000/v1",
 		"models":   []string{},
 	})
@@ -1048,7 +1074,7 @@ func TestHandleDeleteLLMRefusesWhileAnyModelIsSelected(t *testing.T) {
 		Models:        []string{"qwen3-32b", "qwen3-8b"},
 	})
 	seedInstanceSelecting(t, s, "vllm/qwen3-8b") // the second id, not the first
-	rec := doReq(t, s.Handler(), http.MethodDelete, "/api/llms/vllm", "", nil)
+	rec := doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/vllm", "", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
@@ -1145,7 +1171,7 @@ Then the duplicate-provider check runs against `tmpl.Spec.Providers`, the provid
 
 and then store it: `tmpl.Spec.Providers[idx] = provider`. A PUT always carries the full list, so an absent or empty `models` is a client error rather than "keep the current ones" -- the web form always sends it, and "keep" would be the one way to reach a provider with no ids.
 
-**This changes the PUT contract**, so the existing update tests fail and must be updated in this step: every `doReq(..., http.MethodPut, "/api/llms/...", ...)` body in `internal/server/handlers_llms_test.go` gains `"models": []string{<the provider's ids>}`. Grep for them with `grep -n "http.MethodPut, \"/api/llms" internal/server/handlers_llms_test.go` and fix each one; the tests whose subject is the credential decision (`TestHandleUpdateLLMKeepsKey`, `...PromotesPublic`, `...KeepsSharedCredential`) pass the single id the fixture provider serves.
+**This changes the PUT contract**, so the existing update tests fail and must be updated in this step: every `doReq(..., http.MethodPut, "/api/v1/llms/...", ...)` body in `internal/server/handlers_llms_test.go` gains `"models": []string{<the provider's ids>}`. Grep for them with `grep -n "http.MethodPut, \"/api/v1/llms" internal/server/handlers_llms_test.go` and fix each one; the tests whose subject is the credential decision (`TestHandleUpdateLLMKeepsKey`, `...PromotesPublic`, `...KeepsSharedCredential`) pass the single id the fixture provider serves.
 
 - [ ] **Step 5: Scope the delete refusal and the credential deletion**
 
@@ -1283,9 +1309,9 @@ Expected: PASS.
 
 - [ ] **Step 7: Update the API docs and the request collection**
 
-`docs/cubepilot/api.md` section 6.3 (about line 569): the `POST /api/llms` and `PUT /api/llms/{name}` bodies gain `models` (array of backend model ids, at least one, ids may contain `/`), `name` is documented as the provider name (a DNS-1123 label, the ref prefix and the credential Secret suffix), and the DELETE 409 now covers every id the provider serves. Keep the path table exactly as it is -- `apidoc_test.go` parses `server.go` and fails on a stale or missing path.
+`docs/cubepilot/api.md` section 6.3 (about line 569): the `POST /api/v1/llms` and `PUT /api/v1/llms/{name}` bodies gain `models` (array of backend model ids, at least one, ids may contain `/`), `name` is documented as the provider name (a DNS-1123 label, the ref prefix and the credential Secret suffix), and the DELETE 409 now covers every id the provider serves. Keep the path table exactly as it is -- `apidoc_test.go` parses `server.go` and fails on a stale or missing path.
 
-Update the Bruno collection entries for `/api/llms` to match the new bodies.
+Update the Bruno collection entries for `/api/v1/llms` to match the new bodies.
 
 - [ ] **Step 8: Run the doc test and commit**
 
@@ -1297,8 +1323,8 @@ git add internal/server/ docs/
 git commit -s -m "$(cat <<'EOF'
 feat(api): add, edit and remove a provider's model ids (issue #189)
 
-POST /api/llms now creates a provider that serves the requested model ids
-rather than one id named after itself, and PUT /api/llms/{name} replaces the
+POST /api/v1/llms now creates a provider that serves the requested model ids
+rather than one id named after itself, and PUT /api/v1/llms/{name} replaces the
 list, so adding or removing a single model is an edit of the provider. The
 credential is created once per provider.
 
@@ -1321,7 +1347,7 @@ EOF
 - Modify: `web/src/api/types.ts` if the request types are declared there
 
 **Interfaces:**
-- Consumes: the Task 3 API -- `POST /api/llms` with `{name, endpoint, apiKey?, public, models[]}`, `PUT /api/llms/{name}`, `DELETE /api/llms/{name}`; templates carry `spec.providers[]` and a `spec.defaultModel` ref.
+- Consumes: the Task 3 API -- `POST /api/v1/llms` with `{name, endpoint, apiKey?, public, models[]}`, `PUT /api/v1/llms/{name}`, `DELETE /api/v1/llms/{name}`; templates carry `spec.providers[]` and a `spec.defaultModel` ref.
 - Produces: nothing consumed by later tasks. Verification is `npm run build` (there are no frontend tests) plus a manual pass against a running stack.
 
 - [ ] **Step 1: Replace the template model shape**
