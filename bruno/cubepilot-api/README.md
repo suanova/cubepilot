@@ -48,6 +48,21 @@
    `llmEndpoint`。注意 `llmName` 是 **provider 名**（小写 DNS-1123 label），`llmModel`
    才是发给 endpoint 的 model id —— 选择用的 ref 是 `{{llmName}}/{{llmModel}}`。
 
+5. **（只有 `6-skills-admin` 需要）打包夹具技能。**
+
+   `6-skills-admin/01-publish-skill` 发的 body 是 `fixtures/sample-skill.tar.gz`，而那个
+   tar **不在版本库里** —— 只有源目录 `fixtures/sample-skill/`（含 `SKILL.md`）在。先打一次包：
+
+   ```bash
+   ./scripts/make-sample-skill.sh
+   ```
+
+   不跑也能跑其余所有分组，只有那一条会 400 `{"error":"empty skill tar"}`（它的测试会
+   把上面这条命令直接报给你）。改了 `SKILL.md` 之后要重新打一次。
+
+   > 为什么不做成自动的：Bruno 的请求脚本跑在沙箱里，`fs` 和 `child_process` 都不在
+   > 白名单里（实测），所以它既不能打包也不能检测文件在不在。
+
 ## 打远端
 
 改 `baseUrl` 即可 —— 集合里所有路径都是相对的。**和上面一样，别改 `environments/remote.bru`**
