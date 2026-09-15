@@ -58,6 +58,7 @@ type TemplateProviderSpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 	// Endpoint is the OpenAI-compatible base URL.
+	// +kubebuilder:validation:MaxLength=2048
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
 	// holding the apiKey; a provider that needs no credentials omits it (nil).
@@ -68,6 +69,8 @@ type TemplateProviderSpec struct {
 	// sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
 	// "anthropic/claude-sonnet-4.5").
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Models []string `json:"models"`
 }
@@ -220,6 +223,7 @@ type AgentTemplateSpec struct {
 	// DefaultModel is the model ref (<provider>/<modelId>) used when an
 	// instance does not select one explicitly. Empty = no default / runtime
 	// default.
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Providers is the inline provider list (design §3.3: models are inlined in
@@ -228,6 +232,7 @@ type AgentTemplateSpec struct {
 	// selects a <provider>/<modelId> ref within this list.
 	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || has(p.credentialRef.name))",message="credentialRef must reference a Secret name"
 	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
+	// +kubebuilder:validation:MaxItems=32
 	// +listType=map
 	// +listMapKey=name
 	// +optional

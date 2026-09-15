@@ -107,6 +107,7 @@ spec:
                   DefaultModel is the model ref (<provider>/<modelId>) used when an
                   instance does not select one explicitly. Empty = no default / runtime
                   default.
+                maxLength: 256
                 type: string
               description:
                 description: Description explains what the template does.
@@ -177,6 +178,7 @@ spec:
                       x-kubernetes-map-type: atomic
                     endpoint:
                       description: Endpoint is the OpenAI-compatible base URL.
+                      maxLength: 2048
                       type: string
                     models:
                       description: |-
@@ -184,7 +186,9 @@ spec:
                         sent to the endpoint verbatim and may itself contain "/" (OpenRouter's
                         "anthropic/claude-sonnet-4.5").
                       items:
+                        maxLength: 256
                         type: string
+                      maxItems: 64
                       minItems: 1
                       type: array
                       x-kubernetes-list-type: set
@@ -208,6 +212,7 @@ spec:
                   - models
                   - name
                   type: object
+                maxItems: 32
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
