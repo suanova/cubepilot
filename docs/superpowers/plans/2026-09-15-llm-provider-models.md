@@ -608,9 +608,16 @@ In the same file, replace `DefaultModel` and `Models` (lines 164-175) with:
 Then add a cross-field rule above the `AgentTemplateSpec` type declaration, alongside the existing type-level comment:
 
 ```go
-// +kubebuilder:validation:XValidation:rule="self.defaultModel == '' || self.providers.exists(p, p.models.exists(m, p.name + '/' + m == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
+// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 ```
+
+Two things about that rule are load-bearing:
+
+- The ternary mirrors `gateway.ModelKey`. Plain `p.name + '/' + m` is wrong: an id that already names its provider (`vllm` serving `vllm/qwen3-32b`) is its own ref, and the naive concatenation would reject the only ref the renderer accepts.
+- The empty string is written `\"\"`, not `''`. gofmt rewrites `''` inside a doc comment (and a kubebuilder marker lives in one) into a typographic quote, which breaks the rule and fails the format gate.
+
+Residual difference from `ModelKey`, worth knowing rather than fixing: `ModelKey` compares the self-prefix case-insensitively, CEL's `startsWith` does not, so an id like `VLLM/x` under provider `vllm` passes Go validation and is rejected by CEL. Provider names are constrained to lowercase, so reaching it needs a deliberately odd model id.
 
 - [ ] **Step 6: Remove the dead instance fields**
 
@@ -860,14 +867,40 @@ Add the `gateway` import. Update the function's doc comment (line 136-139) to sa
 
 `handleUpdateLLM` (lines 207-249) indexes `tmpl.Spec.Providers` instead of `tmpl.Spec.Models`, and `current.CredentialRef` reads the same field on the provider -- the body of the function is otherwise unchanged.
 
-`handleDeleteLLM` (lines 339-407) indexes `tmpl.Spec.Providers`, and `instancesSelecting` / the 409 arm are unchanged in this task. The `DefaultModel` clearing at line 388 compares against `name` and must compare against the provider's refs instead:
+`handleDeleteLLM` (lines 339-407) indexes `tmpl.Spec.Providers`. Its 409 guard has to move with it, and leaving that to the later API task is not safe: `instancesSelecting` compares `inst.Spec.SelectedModel` against the value it is handed, `SelectedModel` is now a `<provider>/<modelId>` ref, and the handler still hands it the provider name -- so the guard would silently stop matching and a provider an instance still selects would become deletable. Make `instancesSelecting` take the ref set:
+
+```go
+// instancesSelecting lists the AgentInstances of the builtin template that
+// explicitly select one of the given model refs. Instances bound to another
+// template are ignored: their selection resolves against that template, so this
+// one cannot break it.
+func (s *Server) instancesSelecting(ctx context.Context, refs map[string]bool) ([]modelInstanceRef, error) {
+	var list v1alpha1.AgentInstanceList
+	if err := s.cr.List(ctx, &list, client.InNamespace(s.cfg.Namespace)); err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	out := []modelInstanceRef{}
+	for _, inst := range list.Items {
+		if inst.Spec.TemplateRef == v1alpha1.DefaultAgentName && refs[inst.Spec.SelectedModel] {
+			out = append(out, modelInstanceRef{Name: inst.Name, Owner: inst.Spec.Owner})
+		}
+	}
+	return out, nil
+}
+```
+
+and build the set from the provider being removed, so both the guard and the `DefaultModel` clearing at line 388 test the same refs:
 
 ```go
 	removed := tmpl.Spec.Providers[idx]
+	refs := make(map[string]bool, len(removed.Models))
+	for _, id := range removed.Models {
+		refs[gateway.ModelKey(removed.Name, id)] = true
+	}
+	selecting, err := s.instancesSelecting(r.Context(), refs)
+	// ... the existing 409 arm, unchanged ...
 	tmpl.Spec.Providers = append(tmpl.Spec.Providers[:idx], tmpl.Spec.Providers[idx+1:]...)
-	if tmpl.Spec.DefaultModel != "" && slices.ContainsFunc(removed.Models, func(id string) bool {
-		return gateway.ModelKey(removed.Name, id) == tmpl.Spec.DefaultModel
-	}) {
+	if tmpl.Spec.DefaultModel != "" && refs[tmpl.Spec.DefaultModel] {
 		tmpl.Spec.DefaultModel = ""
 	}
 ```
@@ -1116,7 +1149,9 @@ and then store it: `tmpl.Spec.Providers[idx] = provider`. A PUT always carries t
 
 - [ ] **Step 5: Scope the delete refusal and the credential deletion**
 
-`instancesSelecting` (lines 325-337) takes a single model name. It becomes a set membership test over refs:
+The `instancesSelecting` signature change and the delete handler's ref set are already in place from Task 2, Step 14 -- they could not wait until this task, because the guard would have silently stopped matching in between. Start this step by confirming they are there, then do the credential half.
+
+`instancesSelecting` (lines 325-337) takes a set of refs:
 
 ```go
 // instancesSelecting lists the AgentInstances of the builtin template that
