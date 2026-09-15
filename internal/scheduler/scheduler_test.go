@@ -785,3 +785,95 @@ func TestSchedulerSkipsRunWhenPromptIsBlank(t *testing.T) {
 		})
 	}
 }
+
+// probeRunner reads the Task's status from inside the turn. The ordering under
+// test -- the Task already naming the run that is executing -- must be observed
+// while it is true: a read taken after the run completes cannot tell the two
+// orderings apart.
+type probeRunner struct {
+	cl       client.Client
+	taskName string
+	calls    int
+	observed string
+	readErr  error
+}
+
+func (f *probeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	f.calls++
+	var task v1alpha1.Task
+	if err := f.cl.Get(ctx, types.NamespacedName{Name: f.taskName}, &task); err != nil {
+		f.readErr = err
+		return "", err
+	}
+	f.observed = task.Status.LastTaskRunName
+	return "### P2 -- checked during the run\n", nil
+}
+
+// TestTaskNamesTheRunInProgress verifies lastTaskRunName is set when the run is
+// created, not when it finishes: the field is documented as "the most recent
+// TaskRun created for this Task", and the Portal's report picker preselects
+// lastRunId while the run is in flight -- a value only written at completion
+// makes the picker open the *previous* report for the whole duration.
+func TestTaskNamesTheRunInProgress(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
+
+	task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+	// The state the bug showed up in: a task that already ran, so the field
+	// names an older run before this fire. That makes "names the run in
+	// progress" distinguishable from "still names the previous run".
+	const previousRun = "zhang-wei-daily-inspection-20200101-000000"
+	task.Status.LastTaskRunName = previousRun
+	if err := cl.Create(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(ctx, task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only",
+		},
+	}
+	if err := cl.Create(ctx, tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	runner := &probeRunner{cl: cl, taskName: task.Name}
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+	if runner.readErr != nil {
+		t.Fatalf("reading the task during the run: %v", runner.readErr)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(ctx, &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if runner.observed != run.Name {
+		t.Errorf("lastTaskRunName during the run = %q, want the run in progress %q (previous run was %q)",
+			runner.observed, run.Name, previousRun)
+	}
+	if runner.observed == previousRun {
+		t.Errorf("lastTaskRunName during the run still names the previous run %q", previousRun)
+	}
+}

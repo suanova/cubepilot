@@ -220,6 +220,21 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		log.Printf("scheduler: patch running %s: %v", run.Name, err)
 	}
 
+	// Record the run on the Task now that it exists, before it executes.
+	// lastTaskRunName is documented as "the most recent TaskRun created for
+	// this Task", and it has a reader while the run is still in flight: the
+	// reports endpoint already lists the new run first, and the Portal's report
+	// picker preselects lastRunId -- so setting it only at completion pointed
+	// the picker at the *previous* run for the whole duration of the new one.
+	// LastRunTime/LastStatus stay in the finish patch below: they describe the
+	// outcome, which is only known at the end. This adds one status write per
+	// fire; fires are per-schedule, not per-reconcile, so that is acceptable.
+	taskPatch := client.MergeFrom(task.DeepCopy())
+	task.Status.LastTaskRunName = run.Name
+	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
+		log.Printf("scheduler: patch task %s last run name: %v", task.Name, err)
+	}
+
 	// Run through the creator's agent instance (inspection runs with the
 	// creator's identity, §5.4).
 	sessionKey := fmt.Sprintf("task-%s-%s", task.Name, run.Name)
@@ -240,11 +255,10 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		log.Printf("scheduler: patch finish %s: %v", run.Name, err)
 	}
 
-	// Record the run on the Task (LastRunTime / LastTaskRunName / LastStatus).
-	taskPatch := client.MergeFrom(task.DeepCopy())
+	// Record the outcome on the Task (LastRunTime / LastStatus).
+	taskPatch = client.MergeFrom(task.DeepCopy())
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
-	task.Status.LastTaskRunName = run.Name
 	task.Status.LastStatus = v1alpha1.TaskRunOutcomeSuccess
 	if runErr != nil {
 		task.Status.LastStatus = v1alpha1.TaskRunOutcomeFailed
