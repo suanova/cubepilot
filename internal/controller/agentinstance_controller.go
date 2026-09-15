@@ -149,13 +149,15 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	kubeconfigRev := userSecretName + "@" + userSecret.ResourceVersion + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
 
 	// The PVC/Pod/Service names are a pure function of the instance name (they
-	// are bounded by GeneratedName so a 253-character instance name cannot
-	// produce an invalid name); both this path and the finalizer derive them
-	// through the same helper.
+	// are bounded so a 253-character instance name cannot produce an invalid
+	// name); both this path and the finalizer derive them through the same
+	// helpers. The bound differs per kind: a PVC/Pod name is a DNS-1123
+	// subdomain (253), while a Service name is a DNS-1035 label (63), so the
+	// Service gets its own call.
 	pvcName := k8s.GeneratedName("data", inst.Name)
 	size := inst.EffectiveDataVolumeSize()
 	podName := k8s.GeneratedName("agent", inst.Name)
-	svcName := podName
+	svcName := k8s.GeneratedServiceName("agent", inst.Name)
 
 	// PVC (data directory; source of truth = instance data directory; design
 	// §3.4 the platform holds zero agent data).
@@ -356,7 +358,10 @@ func (r *AgentInstanceReconciler) finalize(ctx context.Context, inst *v1alpha1.A
 	if err := r.deleteOwned(ctx, inst, "agent pod", pod); err != nil {
 		return fmt.Errorf("delete agent pod: %w", err)
 	}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: r.Cfg.Namespace}}
+	// The Service is bounded to the (tighter) DNS-1035 label limit, so it is
+	// not necessarily the pod name -- derive it exactly as the create path does.
+	svcName := k8s.GeneratedServiceName("agent", inst.Name)
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: r.Cfg.Namespace}}
 	if err := r.deleteOwned(ctx, inst, "agent service", svc); err != nil {
 		return fmt.Errorf("delete agent service: %w", err)
 	}

@@ -156,15 +156,22 @@ func ResourceName(prefix, user string) string {
 const (
 	// MaxResourceNameLen is the longest name Kubernetes accepts for the
 	// namespaced resources the platform generates (the DNS-1123 subdomain
-	// limit).
+	// limit): PVC and Pod.
 	MaxResourceNameLen = 253
+	// MaxServiceNameLen is the longest name Kubernetes accepts for a Service.
+	// A Service name is a DNS-1035 label, not a subdomain: at most 63
+	// characters, and it must start with a letter -- so the subdomain bound
+	// above would still hand the API server an invalid Service name for a long
+	// instance name.
+	MaxServiceNameLen = 63
 	// generatedNameHashLen is how many hex characters of the input digest a
 	// truncated generated name carries.
 	generatedNameHashLen = 10
 )
 
 // GeneratedName returns a name derived from prefix and name, bounded to
-// Kubernetes' 253-character limit. Inputs that fit are returned unchanged, so
+// Kubernetes' 253-character limit -- the DNS-1123 subdomain bound, which is
+// what PVC and Pod names get. Inputs that fit are returned unchanged, so
 // existing resources keep their names; longer ones are truncated and given a
 // short hash of the full input, so distinct inputs stay distinct.
 //
@@ -173,17 +180,32 @@ const (
 // 253-character instance name yields a 258-character "data-<name>", which the
 // API server rejects -- and which the instance finalizer then tries to delete
 // under that same impossible name. Truncating without the digest would instead
-// collapse two long instance names onto one PVC/Pod/Service.
+// collapse two long instance names onto one PVC/Pod.
 func GeneratedName(prefix, name string) string {
+	return generatedNameWithin(prefix, name, MaxResourceNameLen)
+}
+
+// GeneratedServiceName returns a name derived from prefix and name, bounded to
+// Kubernetes' 63-character Service-name limit (DNS-1035 label). Use it for
+// every Service the platform generates: the subdomain bound GeneratedName
+// applies is 190 characters too generous for a Service.
+func GeneratedServiceName(prefix, name string) string {
+	return generatedNameWithin(prefix, name, MaxServiceNameLen)
+}
+
+// generatedNameWithin bounds ResourceName(prefix, name) to max characters. The
+// prefix ("data"/"agent") starts with a letter and is never truncated away, so
+// a bounded name stays a valid DNS-1035 label as well as a DNS-1123 subdomain.
+func generatedNameWithin(prefix, name string, max int) string {
 	generated := ResourceName(prefix, name)
-	if len(generated) <= MaxResourceNameLen {
+	if len(generated) <= max {
 		return generated
 	}
 	sum := sha256.Sum256([]byte(generated))
 	digest := fmt.Sprintf("%x", sum[:generatedNameHashLen/2])
 	// Keep the head, drop any separator the cut left dangling (the tail is
 	// always alphanumeric), and append the digest of the full input.
-	head := strings.TrimRight(generated[:MaxResourceNameLen-len(digest)-1], "-")
+	head := strings.TrimRight(generated[:max-len(digest)-1], "-")
 	return head + "-" + digest
 }
 

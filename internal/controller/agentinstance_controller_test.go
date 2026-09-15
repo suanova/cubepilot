@@ -983,14 +983,20 @@ func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
 
 	pvcName := k8s.GeneratedName("data", longName)
 	podName := k8s.GeneratedName("agent", longName)
+	// The Service is bounded to the tighter DNS-1035 label limit, so it is not
+	// the pod name here.
+	svcName := k8s.GeneratedServiceName("agent", longName)
 	if len(pvcName) > k8s.MaxResourceNameLen || len(podName) > k8s.MaxResourceNameLen {
 		t.Fatalf("generated names are unbounded: pvc %d, pod %d", len(pvcName), len(podName))
+	}
+	if len(svcName) > k8s.MaxServiceNameLen {
+		t.Fatalf("generated service name is unbounded: %d > %d", len(svcName), k8s.MaxServiceNameLen)
 	}
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); err != nil {
 		t.Fatalf("data pvc not created under the bounded name %s: %v", pvcName, err)
 	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: podName}, &corev1.Service{}); err != nil {
-		t.Fatalf("gateway service not created under the bounded name %s: %v", podName, err)
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); err != nil {
+		t.Fatalf("gateway service not created under the bounded name %s: %v", svcName, err)
 	}
 
 	if err := r.finalize(ctx, inst); err != nil {
@@ -999,7 +1005,7 @@ func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
 		t.Errorf("finalize did not reclaim the data pvc the reconcile created (err=%v)", err)
 	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: podName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
 		t.Errorf("finalize did not reclaim the service the reconcile created (err=%v)", err)
 	}
 }

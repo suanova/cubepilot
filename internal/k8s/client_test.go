@@ -2,8 +2,54 @@ package k8s
 
 import (
 	"regexp"
+	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
+
+// TestGeneratedServiceNameBounded pins the Service-name bound: a Service name
+// is a DNS-1035 label (63 characters, must start with a letter), not the
+// DNS-1123 subdomain GeneratedName bounds to (253). A 253-character
+// AgentInstance name therefore still produced an invalid Service name through
+// GeneratedName alone. Short names must be untouched -- they are the names of
+// every existing Service -- and long ones must be bounded, valid and distinct.
+func TestGeneratedServiceNameBounded(t *testing.T) {
+	// Inputs that fit are returned unchanged, and the Service/Pod names agree
+	// while there is room for both.
+	short := "zhang-wei-cubepilot"
+	if got := GeneratedServiceName("agent", short); got != "agent-"+short {
+		t.Errorf("GeneratedServiceName(agent, %s) = %q, want %q", short, got, "agent-"+short)
+	}
+	if GeneratedServiceName("agent", short) != GeneratedName("agent", short) {
+		t.Errorf("GeneratedServiceName and GeneratedName disagree on a short name")
+	}
+
+	long := strings.Repeat("a", 253) // the longest metadata.name Kubernetes accepts
+	svc := GeneratedServiceName("agent", long)
+	if len(svc) > MaxServiceNameLen {
+		t.Errorf("GeneratedServiceName(agent, 253-char name) = %d characters, want <= %d", len(svc), MaxServiceNameLen)
+	}
+	if errs := validation.IsDNS1035Label(svc); len(errs) > 0 {
+		t.Errorf("GeneratedServiceName(agent, 253-char name) = %q is not a valid DNS-1035 label: %v", svc, errs)
+	}
+	if svc != GeneratedServiceName("agent", long) {
+		t.Errorf("GeneratedServiceName(agent, 253-char name) is not deterministic")
+	}
+	// Distinct long inputs must not collapse onto one Service name.
+	if other := GeneratedServiceName("agent", strings.Repeat("a", 252)+"b"); other == svc {
+		t.Errorf("two distinct 253-char names both produced the service name %q", svc)
+	}
+	// The readable head survives the cut.
+	if !strings.HasPrefix(svc, "agent-aaa") {
+		t.Errorf("GeneratedServiceName(agent, 253-char name) = %q, want it to keep the input's head", svc)
+	}
+	// The whole point of the second helper: the subdomain bound is too generous
+	// for a Service, so the two must not agree here.
+	if svc == GeneratedName("agent", long) {
+		t.Errorf("the Service name is still bounded to %d characters", MaxResourceNameLen)
+	}
+}
 
 // TestEnvNameForProviderNoCollision verifies distinct provider names that
 // sanitize to the same readable form (differing only in separator/case) still

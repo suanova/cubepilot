@@ -23,7 +23,7 @@ var _ = Describe("Instance provisioning", func() {
 	// Expected child names come from the production builders so the assertion
 	// can never drift from what the controller actually creates.
 	podName := k8s.GeneratedName("agent", instName)
-	svcName := podName
+	svcName := k8s.GeneratedServiceName("agent", instName)
 	pvcName := k8s.GeneratedName("data", instName)
 
 	BeforeEach(func() {

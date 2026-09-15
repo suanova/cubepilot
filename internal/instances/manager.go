@@ -108,12 +108,12 @@ func (m *Manager) BaseURL(user string) string {
 }
 
 // BaseURLFor returns the in-cluster gateway URL for an agentKey. The
-// controller names the instance's Pod/Service `agent-<instanceName>`
+// controller names the instance's Service `agent-<instanceName>`
 // (design §3.2), so the URL uses that resource name -- derived through the same
-// k8s.GeneratedName the controller uses, so a long instance name yields the
-// same bounded Service name here.
+// k8s.GeneratedServiceName the controller uses (the Service-name bound), so a
+// long instance name yields the same bounded Service name here.
 func (m *Manager) BaseURLFor(k AgentKey) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.GeneratedName("agent", k.InstanceName()), m.ns, m.port)
+	return fmt.Sprintf("http://%s.%s.svc:%d", k8s.GeneratedServiceName("agent", k.InstanceName()), m.ns, m.port)
 }
 
 // Touch records activity for an agentKey (keeps the instance warm).
@@ -141,7 +141,7 @@ func (m *Manager) EnsureFor(ctx context.Context, k AgentKey) error {
 	if err := m.waitCRWarm(ctx, k.InstanceName()); err != nil {
 		return err
 	}
-	return m.waitReachableFor(ctx, k8s.GeneratedName("agent", k.InstanceName()))
+	return m.waitReachableFor(ctx, k8s.GeneratedServiceName("agent", k.InstanceName()))
 }
 
 // waitCRWarm waits until the AgentInstance CR reaches the Ready phase (or the

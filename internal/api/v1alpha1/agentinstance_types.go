@@ -134,9 +134,10 @@ func init() {
 // PVC (default 1Gi).
 //
 // The PVC's *name* deliberately lives elsewhere: it is generated from the
-// instance name by k8s.GeneratedName, the single place that derives the
-// instance's PVC/Pod/Service names, so the create path and the finalizer that
-// reclaims them cannot drift apart. This accessor used to return the name too
+// instance name by k8s.GeneratedName (and k8s.GeneratedServiceName for the
+// Service, whose name is bounded more tightly), the single place that derives
+// the instance's PVC/Pod/Service names, so the create path and the finalizer
+// that reclaims them cannot drift apart. This accessor used to return the name too
 // ("data-" + name), which made it a second, unbounded source of truth for a
 // name the finalizer deletes by.
 func (in *AgentInstance) EffectiveDataVolumeSize() string {
