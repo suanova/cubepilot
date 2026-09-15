@@ -7,11 +7,14 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -28,10 +31,10 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-// newFakeClient returns a fake client with the status subresource enabled for
-// the platform types (fake client ignores status writes otherwise).
-func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) client.Client {
-	t.Helper()
+// testClientBuilder returns the fake-client builder the scheduler tests share:
+// the status subresource is enabled for the platform types (the fake client
+// drops status writes otherwise).
+func testClientBuilder(scheme *runtime.Scheme, objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(
@@ -41,8 +44,14 @@ func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) 
 			&v1alpha1.AgentTemplate{},
 			&v1alpha1.Skill{},
 		).
-		WithObjects(objs...).
-		Build()
+		WithObjects(objs...)
+}
+
+// newFakeClient returns a fake client with the status subresource enabled for
+// the platform types (fake client ignores status writes otherwise).
+func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) client.Client {
+	t.Helper()
+	return testClientBuilder(scheme, objs...).Build()
 }
 
 // fakeRunner records the prompt and returns a canned report. calls counts the
@@ -875,5 +884,130 @@ func TestTaskNamesTheRunInProgress(t *testing.T) {
 	}
 	if runner.observed == previousRun {
 		t.Errorf("lastTaskRunName during the run still names the previous run %q", previousRun)
+	}
+}
+
+// TestFailedStartPatchStillNamesTheRunAtTheEnd covers the failure path of the
+// start patch: if the status write that records lastTaskRunName fails (a
+// transient conflict, say) while execution continues, the Task must still end
+// the run naming it.
+//
+// The bug it pins is the baseline of the finish patch. Taking that baseline from
+// the local Task -- which the start patch already mutated -- leaves the field
+// out of the finish patch's diff, so nothing ever writes it and the Task keeps
+// pointing at the previous run even after the new run completed: the symptom the
+// start patch exists to remove, reintroduced by a failure path. Sharing one
+// baseline (taken before the mutation) makes the finish patch re-carry the field
+// and repair the failed start.
+func TestFailedStartPatchStillNamesTheRunAtTheEnd(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+
+	// The state the bug showed up in: a Task that already ran, so the field
+	// names an older run before this fire -- which makes "the finish patch
+	// repaired it" distinguishable from "it was never wrong".
+	const previousRun = "zhang-wei-daily-inspection-20200101-000000"
+
+	task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+	task.Status.LastTaskRunName = previousRun
+	cl := testClientBuilder(scheme, readyInstance("zhang.wei")).Build()
+	if err := cl.Create(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(ctx, task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only",
+		},
+	}
+	if err := cl.Create(ctx, tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	// Fail the first Task status patch that writes the run name -- the start
+	// patch -- and let everything else through. The name is what identifies it:
+	// the scheduler's other Task status writes (nextRunTime, the outcome) never
+	// carry the field.
+	failedStartPatches := 0
+	intercepted := interceptor.NewClient(cl, interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if subResource != "status" {
+				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+			}
+			task, isTask := obj.(*v1alpha1.Task)
+			if !isTask {
+				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+			}
+			data, err := patch.Data(obj)
+			if err != nil {
+				return err
+			}
+			if failedStartPatches == 0 && strings.Contains(string(data), "lastTaskRunName") {
+				failedStartPatches++
+				return apierrors.NewConflict(schema.GroupResource{Group: "ai.cubestack.io", Resource: "tasks"},
+					task.Name, errors.New("simulated transient conflict on the start patch"))
+			}
+			return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+		},
+	})
+
+	// The runner observes the Task from inside the turn: with the start patch
+	// failed, that read must still show the previous run -- which is what makes
+	// the final assertion evidence that the finish patch repaired the field,
+	// rather than a start patch that quietly worked.
+	runner := &probeRunner{cl: intercepted, taskName: task.Name}
+	r := &ReconcileScheduler{
+		Client: intercepted,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if failedStartPatches != 1 {
+		t.Fatalf("start patches failed = %d, want exactly 1 injected: the failure path under test was not exercised", failedStartPatches)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 (a failed status patch must not stop execution)", runner.calls)
+	}
+	if runner.readErr != nil {
+		t.Fatalf("reading the task during the run: %v", runner.readErr)
+	}
+	if runner.observed != previousRun {
+		t.Errorf("lastTaskRunName during the run = %q, want the previous run %q: the start patch was supposed to fail", runner.observed, previousRun)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(ctx, &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if run.Status.Phase != v1alpha1.TaskRunCompleted {
+		t.Fatalf("phase = %s, want Completed (the turn itself succeeded)", run.Status.Phase)
+	}
+
+	var got v1alpha1.Task
+	if err := cl.Get(ctx, types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastTaskRunName != run.Name {
+		t.Errorf("task.lastTaskRunName = %q after the run, want %q (previous run was %q): the finish patch did not re-carry the field, so a failed start patch left it stale",
+			got.Status.LastTaskRunName, run.Name, previousRun)
+	}
+	if got.Status.LastStatus != "success" {
+		t.Errorf("task.lastStatus = %q, want success", got.Status.LastStatus)
+	}
+	if got.Status.LastRunTime == nil {
+		t.Error("task.lastRunTime not recorded: the finish patch did not land")
 	}
 }

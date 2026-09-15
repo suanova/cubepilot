@@ -229,6 +229,16 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	// LastRunTime/LastStatus stay in the finish patch below: they describe the
 	// outcome, which is only known at the end. This adds one status write per
 	// fire; fires are per-schedule, not per-reconcile, so that is acceptable.
+	//
+	// The baseline is taken once, before the mutation, and both Task status
+	// writes below are computed from it. A baseline taken after the mutation
+	// (from the local object that already carries the new name) would leave the
+	// field out of the finish patch -- so a start patch that failed on a
+	// transient conflict, with execution carrying on, would never write it at
+	// all, and the Task would keep naming the previous run even once the new one
+	// completed: the very symptom this ordering exists to remove. Sharing the
+	// baseline makes the finish patch re-carry the field, so it repairs a failed
+	// start instead of depending on it.
 	taskPatch := client.MergeFrom(task.DeepCopy())
 	task.Status.LastTaskRunName = run.Name
 	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
@@ -255,8 +265,9 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		log.Printf("scheduler: patch finish %s: %v", run.Name, err)
 	}
 
-	// Record the outcome on the Task (LastRunTime / LastStatus).
-	taskPatch = client.MergeFrom(task.DeepCopy())
+	// Record the outcome on the Task (LastRunTime / LastStatus), from the same
+	// baseline as the start patch above -- which is what re-carries
+	// lastTaskRunName and repairs a start patch that failed.
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastStatus = v1alpha1.TaskRunOutcomeSuccess
