@@ -165,7 +165,7 @@ type AgentRegistrySpec struct {
 	Visibility string `json:"visibility,omitempty"`
 }
 
-// QuotaSpec caps resource usage of an agent (design §3.1 / NFR-015).
+// QuotaSpec caps resource usage of an agent (design §3.1).
 type QuotaSpec struct {
 	// MaxInstancesPerUser caps instances per user for this template
 	// (default 1).
@@ -283,7 +283,7 @@ type AgentTemplateSpec struct {
 	// Registry carries publish / visibility metadata.
 	// +optional
 	Registry *AgentRegistrySpec `json:"registry,omitempty"`
-	// Quotas caps instances per user (NFR-015).
+	// Quotas caps instances per user.
 	// +optional
 	Quotas *QuotaSpec `json:"quotas,omitempty"`
 }

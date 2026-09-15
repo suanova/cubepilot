@@ -117,9 +117,9 @@ spec:
   displayName: 平台管理助手
   defaultModel: platform/deepseek-v4-flash    # 一个 <provider>/<modelId> ref
   providers:                                  # 内联 provider 清单（无独立 Model CRD）
-    - name: platform                          # provider 名，DNS-1123 label：网关 provider key = ref 前缀 = 凭据 Secret 名后缀（llm-platform）
+    - name: platform                          # provider 名，DNS-1123 label：网关 provider key + 模型 ref 前缀（本 API 建的凭据 Secret 名派生为 llm-<name>）
       endpoint: https://api.deepseek.com      # 必填，OpenAI 兼容 base URL
-      credentialRef: { name: cubepilot-llm }  # 可选；不需要凭据的 provider 没有
+      credentialRef: { name: cubepilot-llm }  # 可选；这里是平台自建的 Secret（非派生名 llm-platform）；不需要凭据的 provider 没有
       models: [deepseek-v4-flash]             # 它服务的后端模型 id 列表，原样发给 endpoint，可含 /
     - name: vllm
       endpoint: http://vllm.ai.svc:8000/v1
@@ -164,9 +164,9 @@ status:
 
 ## 3.3 模型 provider（内联，无独立 CRD）
 
-不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `providers` 列表**。一条 provider 含 `name`（provider 名）+ `endpoint`（必填，OpenAI 兼容 base URL）+ `credentialRef`（可选，`LocalObjectReference`；不需要凭据的 provider 没有）+ `models`（它服务的后端模型 id 列表，至少一个，id 原样发给 endpoint，可含 `/`）。
+不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `providers` 列表**。一条 provider 含 `name`（provider 名）+ `endpoint`（必填，OpenAI 兼容 base URL）+ `credentialRef`（可选，`LocalObjectReference`；不需要凭据的 provider 没有）+ `models`（它服务的后端模型 id 列表，至少一个，id 原样发给 endpoint，可含 `/`）。唯一的例外是 provider 名与 OpenClaw 内置 provider key（`anthropic`、`nvidia`、`xai`、`google` 等）完全同名时会继承该内置 provider 的 model id 归一化，发给 endpoint 的 id 可能被改写；不要这个效果就另取名（如 `nvidia-proxy`）。
 
-- **provider 名**是 DNS-1123 label，承担三件事：网关 provider key、模型 ref 的前缀、凭据 Secret 名后缀（`llm-<name>`）。它**与 `models` 里的 id 无关**：一份端点、一份凭据服务多个 id 时只写一条 provider，而不是每个 id 一条（后者在 id 含 `/` 时还会派生出非法的 Secret 名）。
+- **provider 名**是 DNS-1123 label，承担两件事：网关 provider key 与模型 ref 的前缀。凭据 Secret 名后缀 `llm-<name>` **只对本 API（`/api/v1/llms`）创建的 provider 成立**：`credentialRef` 本身是任意 Secret 引用，内置 `platform` provider 指向的就是平台预建的 `cubepilot-llm`。它**与 `models` 里的 id 无关**：一份端点、一份凭据服务多个 id 时只写一条 provider，而不是每个 id 一条（后者在 id 含 `/` 时还会派生出非法的 Secret 名）。
 - **模型 ref** 是 `<provider>/<modelId>`（如 `vllm/qwen3-32b`、`openrouter/anthropic/claude-sonnet-4.5`）：`defaultModel` 与 `AgentInstance.selectedModel` 存的就是它，选择即「哪个 provider 的哪个 id」。id 本身已带 `<provider>/` 前缀时，它自己就是 ref。
 - 所有 provider 都是具体端点；`defaultModel` 从模板的模型 ref 里选默认，`AgentInstance.selectedModel` 覆盖。
 - 网关配置（providers + allowlist + 网关 token）由 operator 从模板 providers + 凭据 Secret **声明式生成**，写入 `openclaw-config` Secret；不再由安装时环境变量决定。

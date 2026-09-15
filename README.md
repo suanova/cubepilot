@@ -163,9 +163,9 @@ A provider is one endpoint, one credential and the backend model ids it serves:
 spec:
   defaultModel: platform/deepseek-v4-flash   # a <provider>/<modelId> ref
   providers:
-    - name: platform                         # provider key, ref prefix, Secret suffix (llm-platform)
+    - name: platform                         # provider key and ref prefix; the API names its credential Secret llm-<name>
       endpoint: https://api.deepseek.com
-      credentialRef: { name: cubepilot-llm } # omit for a provider that needs no credential
+      credentialRef: { name: cubepilot-llm } # the platform's own pre-created Secret, not a derived name; omit if none is needed
       models: [deepseek-v4-flash]
     - name: vllm
       endpoint: http://vllm.ai.svc:8000/v1
@@ -179,7 +179,8 @@ provider, not one entry per model, and a model id may itself contain `/`
 (OpenRouter's `anthropic/claude-sonnet-4.5`).
 
 To seed a DeepSeek default at deploy time, `scripts/setup.sh` configures an
-endpoint + model id and creates the `cubepilot-llm` Secret:
+endpoint + model id and creates its own `cubepilot-llm` Secret (a pre-created
+platform Secret, not a name derived from the provider):
 
 ```bash
 CUBEPILOT_LLM_APIKEY='sk-...' scripts/setup.sh

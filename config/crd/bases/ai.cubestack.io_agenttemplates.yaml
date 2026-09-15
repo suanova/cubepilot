@@ -227,7 +227,7 @@ spec:
                   rule: self.all(p, p.models.all(m, m != "" && m != '*' && !m.contains('//')
                     && !m.startsWith('/') && !m.endsWith('/')))
               quotas:
-                description: Quotas caps instances per user (NFR-015).
+                description: Quotas caps instances per user.
                 properties:
                   maxInstancesPerUser:
                     default: 1

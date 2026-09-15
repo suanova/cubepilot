@@ -2,14 +2,14 @@
 
 > 本文记录 CubePilot 简化设计在阶段一实现中的实际状态：已完成项、与设计正文(git 内的简体「cubepilot 简化设计」当前版)的有意偏差、以及后续演进清单。实现仓库：cubePilot（operator / api / web / agent supervisor）。设计正文见 [cubepilot-design.md](./cubepilot-design.md)。
 >
-> 状态：已按当前代码与当前设计重新核对（2026-09-15）。本次更新：**模板模型清单两级化** —— `AgentTemplate.spec.models[]`（一条模型 = 一份 endpoint + 一份凭据）换成 `spec.providers[]`（一条 provider = 一份 endpoint + 一份凭据 + 它服务的若干 model id），选择用 `<provider>/<modelId>` ref。此前（2026-08-27）：**网关配置改为声明式** —— `CUBEPILOT_MODEL_PROVIDERS` 退役，operator 从 AgentTemplate + 凭据 Secret 生成 `openclaw-config`。
+> 状态：已按当前代码与当前设计重新核对（2026-09-15）。本次更新：**模板模型清单两级化** -- `AgentTemplate.spec.models[]`（一条模型 = 一份 endpoint + 一份凭据）换成 `spec.providers[]`（一条 provider = 一份 endpoint + 一份凭据 + 它服务的若干 model id），选择用 `<provider>/<modelId>` ref。此前（2026-08-27）：**网关配置改为声明式** -- `CUBEPILOT_MODEL_PROVIDERS` 退役，operator 从 AgentTemplate + 凭据 Secret 生成 `openclaw-config`。
 >
 > 下文「本次对齐变更清单（2026-08-25 / 2026-08-27）」两节是当时的记录，其中的旧类型名与字段名（`TemplateModelSpec` / `Spec.Models`）不代表现状。
 
 ## 已对齐（一期已实现并验证）
 
 - **AgentTemplate 与实例分离**：AgentTemplate（`cubepilot` 内置）+ AgentInstance（每用户）分离；实例引用模板名（`templateRef`，不钉版）；内置实例由 operator 启动时按 bootstrap 名单自动创建（设计 §3.1/§3.2）。**已对齐设计：Agent→AgentTemplate 重命名完成。**
-- **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.providers`（每条 provider = name + endpoint + credentialRef? + 它服务的 model id 列表），`defaultModel` 与 `AgentInstance.selectedModel` 存 `<provider>/<modelId>` ref —— provider 名与 model id 是**两层**，不再共用一个名字。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/v1/models` 已删除；旧的「一名三用」（模型名同时是网关 provider key、选择 key 和后端模型 id）已换掉。**
+- **模型内联（无独立 Model CRD）**：模型清单内联在 `AgentTemplate.spec.providers`（每条 provider = name + endpoint + credentialRef? + 它服务的 model id 列表），`defaultModel` 与 `AgentInstance.selectedModel` 存 `<provider>/<modelId>` ref -- provider 名与 model id 是**两层**，不再共用一个名字。**已对齐设计 §3.3：Model CRD + ModelReconciler + `/api/v1/models` 已删除；旧的「一名三用」（模型名同时是网关 provider key、选择 key 和后端模型 id）已换掉。**
 - **声明式网关配置**：`OpenClawConfigReconciler` 从 AgentTemplate providers + 凭据 Secret 渲染 `openclaw-config`（providers + allowlist + primary），网关 token 由 cubepilot 生成一次并持久化；`CUBEPILOT_MODEL_PROVIDERS` 与 `deploy/openclaw-config.jq` 退役。`POST /api/v1/llms` + Portal「LLM 配置」可追加 provider（provider 名 + endpoint + 它服务的 model id 列表，凭据二选一：apiKey 或 `public: true`；**一条 provider 一份凭据**，不是每个 id 一份），`PUT`/`DELETE /api/v1/llms/{name}` 可编辑与删除（PUT 整体替换 endpoint、凭据和 model id 列表；DELETE 或 PUT 删掉被实例选中的模型时拒绝 409；endpoint 归一化为 API root，删除同步清理凭据 Secret），operator 自动接入网关。
 - **实例自服务**：`POST /api/v1/instances` owner 强制 = 请求者，幂等创建，冲突 409（设计 §3.2）。请求体使用 `templateRef`（非旧 `agentRef`）。
 - **模型选择 fail-closed**：`ResolvedAgentConfig` 解析链 `instance.selectedModel -> template.defaultModel`，选中的 ref 不在模板 providers 的模型 ref 集合里即报错，绝不静默回退；Portal WS 交互回合在 `sessions.send` 前通过 `sessions.patch {model}` 设置 session override（Runtime Default 显式发 `null` 清除旧 override），HTTP one-shot 回合通过 `x-openclaw-model` 头热生效。
@@ -71,7 +71,7 @@
 
 ## 本次对齐变更清单（2026-09-15）
 
-- **模板模型清单两级化**：`AgentTemplateSpec.Models []TemplateModelSpec` → `Providers []TemplateProviderSpec`。一条 provider = `name`（DNS-1123 label；既是网关 provider key 和 ref 前缀，也是凭据 Secret 名后缀 `llm-<name>`）+ `endpoint` + `credentialRef?` + `models`（它服务的后端 model id 列表，至少一个，原样发给 endpoint，可含 `/`）。旧形状表达不了「一份端点 + 一份凭据服务多个 id」，且 id 含 `/` 会派生出非法的 Secret 名。
+- **模板模型清单两级化**：`AgentTemplateSpec.Models []TemplateModelSpec` → `Providers []TemplateProviderSpec`。一条 provider = `name`（DNS-1123 label；既是网关 provider key 和 ref 前缀，也是本 API 建的凭据 Secret 名后缀 `llm-<name>`；`credentialRef` 本身是任意 Secret 引用，内置 provider 指向平台预建的 `cubepilot-llm`）+ `endpoint` + `credentialRef?` + `models`（它服务的后端 model id 列表，至少一个，原样发给 endpoint，可含 `/`）。旧形状表达不了「一份端点 + 一份凭据服务多个 id」，且 id 含 `/` 会派生出非法的 Secret 名。
 - **选择用 ref**：`AgentTemplateSpec.DefaultModel` 与 `AgentInstanceSpec.SelectedModel` 存 `<provider>/<modelId>`（id 本身已带 `<provider>/` 前缀时它自己就是 ref）；`gateway.ModelKey` 是唯一的 Go 实现。`TemplateProviderSpec.Validate()` + CEL `XValidation` 承接原 `TemplateModelSpec.Validate()` 的职责，并镜像结构上限（name ≤63、endpoint ≤2048、每个 id ≤256、每个 provider 至少 1 个且至多 64 个 id）。
 - **/api/v1/llms 语义**：POST 建 provider（body 带 `models`）；PUT 整体替换 endpoint、凭据和 model id 列表（空 `apiKey` 保留原凭据）；POST/PUT 响应封装在 `provider` 键下；DELETE 删 provider 及其凭据 Secret。有实例选中该 provider 服务的任意模型时 DELETE 返回 409，PUT 删掉这样的模型同样 409。
 - **k8s 命名**：`EnvNameForModel` → `EnvNameForProvider`（算法不变，参数从模型名改为 provider 名）。

@@ -579,7 +579,7 @@ GET /api/v1/sessions/{key}/question/pending
   网关」写一条记录，而不是每个 id 一条。
 - `name` 是**provider 名**：DNS-1123 label（小写字母数字和 `-`，≤63 字符），不可变——
   改名要删了重建。它同时是网关 provider key、每个模型 ref 的前缀（`<name>/<modelId>`）
-  和凭据 Secret 名后缀（`llm-<name>`），与 `models` 里的 id **无关**。
+  和本 API 建的凭据 Secret 名后缀（`llm-<name>`），与 `models` 里的 id **无关**。
 - `models` 是**后端模型 id 列表**，至少一个：id 按原样发给 endpoint，可含 `/`
   （如 OpenRouter 的 `anthropic/claude-sonnet-4.5`），但不能含空白、不以 `/` 开头或结尾、
   不含 `//`，也不能是 `*`（allowlist 通配符保留字）。服务端会 trim 并去重；
