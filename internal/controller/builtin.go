@@ -88,7 +88,6 @@ func BuiltinProviders(endpoint, modelName string) []v1alpha1.TemplateProviderSpe
 // (design §3.1), with the platform default model at the given endpoint and
 // model name.
 func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
-	builtin := true
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: BuiltinAgentName,
@@ -108,16 +107,6 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
 			Skills: BuiltinSkills,
-			Memory: &v1alpha1.MemorySpec{Enabled: true},
-			Identity: &v1alpha1.AgentIdentitySpec{
-				Mode:  v1alpha1.IdentityModeUser,
-				Scope: "project-write",
-			},
-			Registry: &v1alpha1.AgentRegistrySpec{
-				Builtin:    builtin,
-				Visibility: "system",
-			},
-			Quotas: &v1alpha1.QuotaSpec{MaxInstancesPerUser: 1},
 		},
 	}
 }

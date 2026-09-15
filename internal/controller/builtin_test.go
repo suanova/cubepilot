@@ -42,8 +42,8 @@ func TestBuiltinAgentShape(t *testing.T) {
 	if agent.Name != "cubepilot" {
 		t.Errorf("name = %s, want cubepilot", agent.Name)
 	}
-	if agent.Spec.Registry == nil || !agent.Spec.Registry.Builtin {
-		t.Error("builtin flag missing")
+	if agent.Labels["cubepilot/builtin"] != "true" {
+		t.Error("builtin label missing")
 	}
 	if agent.Spec.DefaultModel != "platform/deepseek-v4-flash" {
 		t.Errorf("defaultModel = %q, want platform/deepseek-v4-flash (design §3.1)", agent.Spec.DefaultModel)
@@ -62,9 +62,6 @@ func TestBuiltinAgentShape(t *testing.T) {
 	}
 	if agent.Spec.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
 		t.Errorf("approvalPolicy = %q, want Allowlist (design §3.1)", agent.Spec.ApprovalPolicy)
-	}
-	if agent.Spec.Identity == nil || agent.Spec.Identity.Mode != v1alpha1.IdentityModeUser {
-		t.Error("identity mode should default to user")
 	}
 	if len(agent.Spec.Skills) == 0 {
 		t.Error("builtin agent should reference skills/skills")
