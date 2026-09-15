@@ -48,7 +48,8 @@ type SkillSource struct {
 	// Path is the repo-relative tar path (e.g. skills/harbor/v1.tar.gz),
 	// versioned and immutable. Required when type=Path.
 	Path string `json:"path,omitempty"`
-	// S3 is the object-store addressing. Forbidden when type=Path (phase 2).
+	// S3 is the object-store addressing. Forbidden when type=Path. Not
+	// accepted anywhere yet: the catalog rejects type=S3.
 	S3 *SkillS3Source `json:"s3,omitempty"`
 	// Sha256 is the content fingerprint, backfilled by publish/seed. Optional:
 	// manual kubectl apply may leave it empty (audit via the versioned path).
@@ -63,7 +64,8 @@ type SkillSpec struct {
 	DisplayName string `json:"displayName"`
 	// Description explains when to use the skill.
 	Description string `json:"description,omitempty"`
-	// Visibility is Platform | Tenant | User; phase 1 only Platform.
+	// Visibility is Platform | Tenant | User. Only Platform is accepted: the
+	// publish path and the catalog reject the others.
 	Visibility SkillVisibility `json:"visibility"`
 	// Source addresses the skill content (discriminant type; CEL enforces the
 	// mutually exclusive Path/S3 branches on the API server).

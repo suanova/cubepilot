@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -18,56 +17,14 @@ const (
 	InstanceFailed InstancePhase = "Failed"
 )
 
-// CredentialSpec is one typed downstream credential of an instance
-// (design §4.4: identity = who I am; credentials[] = how I authenticate to
-// downstreams).
-// The actual secret is platform-managed; refs only, never plaintext.
-type CredentialSpec struct {
-	// Target is the downstream system: k8s | prometheus | harbor | llm | itsm | ...
-	Target string `json:"target"`
-	// Type is the credential type: kubeconfig | api-key | oauth2 | bearer-token | ...
-	Type string `json:"type"`
-	// Ref is the platform-managed Secret reference (namespace/name or name).
-	Ref string `json:"ref"`
-}
-
-// PrincipalRef binds the instance to a concrete principal (design §3.2:
-// userRef for mode=user; serviceRef for mode=service -- mutually exclusive).
-type PrincipalRef struct {
-	// UserRef binds a user identity (mode=user).
-	// +optional
-	UserRef string `json:"userRef,omitempty"`
-	// ServiceRef binds a service identity (mode=service, phase 2+).
-	// +optional
-	ServiceRef string `json:"serviceRef,omitempty"`
-}
-
-// IdentitySpec is the platform-side identity of an instance (design §3.2).
-type IdentitySpec struct {
-	// Mode must match the Agent definition (inherited, immutable).
-	Mode IdentityMode `json:"mode"`
-	// PrincipalRef binds the concrete principal.
-	PrincipalRef PrincipalRef `json:"principalRef"`
-}
-
 // DataVolumeSpec is the per-instance data directory (design §3.2: per-instance
-// PVC, default 1 GiB; source of truth = data directory).
+// PVC, default 1 GiB; source of truth = data directory). The PVC name is
+// platform-generated -- a writer cannot choose it, because the finalizer
+// deletes the name this resolves to.
 type DataVolumeSpec struct {
-	// PVC is the per-instance PVC name (platform-generated when empty).
-	// +optional
-	PVC string `json:"pvc,omitempty"`
 	// Size is the requested capacity (default 1Gi, applied in code).
 	// +optional
 	Size string `json:"size,omitempty"`
-}
-
-// LifecycleSpec is the instance lifecycle policy (design §3.2). Instances are
-// resident by default: they stay up once started and are never idle-reclaimed.
-type LifecycleSpec struct {
-	// Strategy is resident | on-demand (default resident).
-	// +kubebuilder:default=resident
-	// +optional
-	Strategy string `json:"strategy,omitempty"`
 }
 
 // AgentInstanceSpec is the runtime instance of an AgentTemplate definition for
@@ -80,11 +37,6 @@ type AgentInstanceSpec struct {
 	TemplateRef string `json:"templateRef"`
 	// Owner is the user the instance belongs to.
 	Owner string `json:"owner"`
-	// Identity is the platform-side identity (mode + principal).
-	Identity IdentitySpec `json:"identity"`
-	// Credentials are the typed downstream credentials.
-	// +optional
-	Credentials []CredentialSpec `json:"credentials,omitempty"`
 	// SelectedModel optionally selects a model by its ref
 	// "<provider>/<modelId>", one of the model ids of the providers inlined in
 	// the template (overrides defaultModel). Design §3.2.
@@ -93,9 +45,6 @@ type AgentInstanceSpec struct {
 	// DataVolume is the per-instance data directory.
 	// +optional
 	DataVolume *DataVolumeSpec `json:"dataVolume,omitempty"`
-	// Lifecycle overrides the definition defaults (within quota bounds).
-	// +optional
-	Lifecycle *LifecycleSpec `json:"lifecycle,omitempty"`
 	// UserInstructions optionally appends user preferences to the definition
 	// default system prompt (design §3.2: appended after the template
 	// instructions; cannot remove or weaken security/identity bounds).
@@ -137,9 +86,6 @@ type AgentInstanceStatus struct {
 	// PVCName is the per-instance data PVC.
 	// +optional
 	PVCName string `json:"pvcName,omitempty"`
-	// LastActivity is the last observed activity time (agentKey -> activity).
-	// +optional
-	LastActivity *metav1.Time `json:"lastActivity,omitempty"`
 	// Conditions carries detail (Ready / Reclaiming / Failed reason).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -184,42 +130,19 @@ func init() {
 	SchemeBuilder.Register(&AgentInstance{}, &AgentInstanceList{})
 }
 
-// EffectiveDataVolume returns the PVC name and size for the instance.
-func (in *AgentInstance) EffectiveDataVolume() (pvc, size string) {
-	size = "1Gi"
-	if in.Spec.DataVolume != nil {
-		if in.Spec.DataVolume.Size != "" {
-			size = in.Spec.DataVolume.Size
-		}
-		pvc = in.Spec.DataVolume.PVC
+// EffectiveDataVolumeSize returns the requested size of the instance's data
+// PVC (default 1Gi).
+//
+// The PVC's *name* deliberately lives elsewhere: it is generated from the
+// instance name by k8s.GeneratedName (and k8s.GeneratedServiceName for the
+// Service, whose name is bounded more tightly), the single place that derives
+// the instance's PVC/Pod/Service names, so the create path and the finalizer
+// that reclaims them cannot drift apart. This accessor used to return the name too
+// ("data-" + name), which made it a second, unbounded source of truth for a
+// name the finalizer deletes by.
+func (in *AgentInstance) EffectiveDataVolumeSize() string {
+	if in.Spec.DataVolume != nil && in.Spec.DataVolume.Size != "" {
+		return in.Spec.DataVolume.Size
 	}
-	if pvc == "" {
-		pvc = "data-" + in.Name
-	}
-	return pvc, size
-}
-
-// ReadyCondition returns the Ready condition if present.
-func (in *AgentInstance) ReadyCondition() (metav1.Condition, bool) {
-	for _, c := range in.Status.Conditions {
-		if c.Type == "Ready" {
-			return c, true
-		}
-	}
-	return metav1.Condition{}, false
-}
-
-// CredentialFor returns the first credential matching target, or nil.
-func (in *AgentInstance) CredentialFor(target string) *CredentialSpec {
-	for i := range in.Spec.Credentials {
-		if in.Spec.Credentials[i].Target == target {
-			return &in.Spec.Credentials[i]
-		}
-	}
-	return nil
-}
-
-// PodResources returns the container resources for the agent Pod (defaults).
-func (in *AgentInstance) PodResources() corev1.ResourceRequirements {
-	return corev1.ResourceRequirements{}
+	return "1Gi"
 }

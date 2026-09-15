@@ -22,9 +22,9 @@ var _ = Describe("Instance provisioning", func() {
 	instName := "e2e-" + rand.String(8) + "-cubepilot"
 	// Expected child names come from the production builders so the assertion
 	// can never drift from what the controller actually creates.
-	podName := k8s.ResourceName("agent", instName)
-	svcName := podName
-	pvcName := k8s.ResourceName("data", instName)
+	podName := k8s.GeneratedName("agent", instName)
+	svcName := k8s.GeneratedServiceName("agent", instName)
+	pvcName := k8s.GeneratedName("data", instName)
 
 	BeforeEach(func() {
 		// The per-user kubeconfig Secret is a hard prerequisite for provisioning
@@ -44,13 +44,6 @@ var _ = Describe("Instance provisioning", func() {
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: controller.BuiltinAgentName,
 				Owner:       "e2e.user",
-				Identity: v1alpha1.IdentitySpec{
-					Mode: v1alpha1.IdentityModeUser,
-					PrincipalRef: v1alpha1.PrincipalRef{
-						UserRef: "e2e.user",
-					},
-				},
-				Lifecycle: &v1alpha1.LifecycleSpec{Strategy: "resident"},
 			},
 		}
 		err := fw.CtrlClient.Create(ctx, inst)

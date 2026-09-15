@@ -137,9 +137,9 @@ export default function TasksView() {
     }
   }
 
-  async function selectTask(id: string) {
+  async function selectTask(id: string, preferReportId?: string) {
     setSelectedTaskId(id)
-    await loadReports(id)
+    await loadReports(id, preferReportId)
   }
 
   async function toggleTask(t: Task) {
@@ -184,12 +184,16 @@ export default function TasksView() {
     }
   }
 
-  async function loadReports(id: string) {
+  async function loadReports(id: string, preferReportId?: string) {
     try {
       const list = await api.taskReports(id)
       setReports(list)
-      setReportIndex((prev) => Math.max(0, Math.min(prev, list.length - 1)))
-      setSelectedReport(list[Math.min(reportIndex, list.length - 1)] ?? null)
+      // One value for both the index and the selected report, so the two cannot
+      // disagree (an unclamped index would select null at index 0).
+      const preferred = preferReportId ? list.findIndex((r) => r.id === preferReportId) : -1
+      const next = Math.max(0, preferred >= 0 ? preferred : Math.min(reportIndex, list.length - 1))
+      setReportIndex(next)
+      setSelectedReport(list[next] ?? null)
     } catch {
       setReports([])
       setSelectedReport(null)
@@ -354,7 +358,7 @@ export default function TasksView() {
                     <tr
                       key={t.id}
                       className={`task-row ${selectedTaskId === t.id ? 'selected' : ''}`}
-                      onClick={() => selectTask(t.id)}
+                      onClick={() => selectTask(t.id, t.lastRunId)}
                     >
                       <td>
                         <span className="task-radio" />
@@ -405,7 +409,7 @@ export default function TasksView() {
                 >
                   {reports.map((r, i) => (
                     <option key={r.id} value={i}>
-                      {fmtTime(r.startedAt)} - {r.trigger === 'Cron' ? 'Scheduled' : r.trigger === 'Manual' ? 'Manual' : 'Inspection'}
+                      {fmtTime(r.startedAt)} - {r.trigger === 'Cron' ? 'Scheduled' : 'Manual'}
                       {reportStatusSuffix(r.status)}
                     </option>
                   ))}
@@ -431,18 +435,6 @@ export default function TasksView() {
                       ? 'In progress'
                       : `Duration ${fmtDuration(selectedReport.startedAt, selectedReport.finishedAt)} - ${selectedReport.status === 'failed' ? 'Failed' : 'Completed'}`}
                   </div>
-                </div>
-                <div className="stat">
-                  <div className="stat-top">
-                    <span className="stat-label">Severity Counts</span>
-                    <span className="pill warn">{selectedReport.p0 + selectedReport.p1 + selectedReport.p2} items</span>
-                  </div>
-                  <div className="sev-row">
-                    <span className="sev p0"><b>{selectedReport.p0}</b> P0 Critical</span>
-                    <span className="sev p1"><b>{selectedReport.p1}</b> P1 Important</span>
-                    <span className="sev p2"><b>{selectedReport.p2}</b> P2 Minor</span>
-                  </div>
-                  <div className="stat-sub">Severity counts from the selected run report</div>
                 </div>
                 <div className="stat">
                   <div className="stat-top">
@@ -596,6 +588,13 @@ export default function TasksView() {
                     </option>
                   ))}
                 </select>
+                {activeTemplate?.spec?.requiredPermissions &&
+                  (activeTemplate.spec.requiredPermissions.note || activeTemplate.spec.requiredPermissions.level) && (
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                      {activeTemplate.spec.requiredPermissions.note ||
+                        `Requires: ${activeTemplate.spec.requiredPermissions.level}`}
+                    </div>
+                  )}
                 {templatesError && (
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--danger)' }}>Templates unavailable: {templatesError}</div>
                 )}

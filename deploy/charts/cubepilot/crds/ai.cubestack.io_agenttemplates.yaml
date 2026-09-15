@@ -21,9 +21,6 @@ spec:
     - jsonPath: .spec.runtime
       name: Runtime
       type: string
-    - jsonPath: .spec.registry.builtin
-      name: Builtin
-      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -33,7 +30,8 @@ spec:
         description: |-
           AgentTemplate is the declarative definition of an agent (design doc §3.1)
           -- the platform's first-class object. The builtin cubepilot is the
-          preset first template; user-created templates are phase 2+.
+          preset first template; the API exposes templates read-only, so a user
+          cannot create one.
         properties:
           apiVersion:
             description: |-
@@ -55,9 +53,8 @@ spec:
           spec:
             description: |-
               AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
-              tools (skill refs), memory, identity, policy and registry metadata
-              (design §3.1). It is the "class": shared by all instances, versioned,
-              user-independent.
+              tools (skill refs) and policy (design §3.1). It is the "class": shared by
+              all instances, versioned, user-independent.
 
               Like gateway.ModelKey, the rule below leaves an id that already starts with
               "<provider>/" unprefixed, and it tests that prefix case-insensitively
@@ -134,36 +131,11 @@ spec:
               displayName:
                 description: DisplayName is the human-facing template name.
                 type: string
-              identity:
-                description: Identity declares the identity mode and scope.
-                properties:
-                  mode:
-                    default: user
-                    description: Mode is user | service (default user).
-                    type: string
-                  scope:
-                    description: Scope is a coarse permission scope hint (e.g. project-write).
-                    type: string
-                type: object
               instructions:
                 description: |-
                   Instructions is the default system prompt (definition-level default;
                   instances may append within capability bounds).
                 type: string
-              memory:
-                description: Memory declares the memory capability.
-                properties:
-                  enabled:
-                    description: Enabled toggles persistent memory for instances of
-                      this template.
-                    type: boolean
-                type: object
-              policyRefs:
-                description: PolicyRefs references confirmation-rule policies (E3,
-                  phase 2).
-                items:
-                  type: string
-                type: array
               providers:
                 description: |-
                   Providers is the inline provider list (design §3.3: models are inlined in
@@ -248,31 +220,6 @@ spec:
                     segment, without whitespace, and not the wildcard
                   rule: self.all(p, p.models.all(m, m != "" && m != '*' && !m.contains('//')
                     && !m.startsWith('/') && !m.endsWith('/') && !m.matches('.*\\s.*')))
-              quotas:
-                description: Quotas caps instances per user.
-                properties:
-                  maxInstancesPerUser:
-                    default: 1
-                    description: |-
-                      MaxInstancesPerUser caps instances per user for this template
-                      (default 1).
-                    format: int32
-                    type: integer
-                type: object
-              registry:
-                description: Registry carries publish / visibility metadata.
-                properties:
-                  builtin:
-                    description: |-
-                      Builtin marks platform-preset templates (every user gets an instance
-                      automatically; cannot be deleted).
-                    type: boolean
-                  visibility:
-                    default: system
-                    description: Visibility is system | platform-reviewed | public
-                      (default system).
-                    type: string
-                type: object
               runtime:
                 default: OpenClaw
                 description: Runtime selects the runtime implementation (OpenClaw
@@ -297,8 +244,8 @@ spec:
                 + ''/'') ? m : p.name + ''/'' + m) == self.defaultModel)))'
           status:
             description: |-
-              AgentTemplateStatus is the observed state of an AgentTemplate definition
-              (phase one: minimal).
+              AgentTemplateStatus is the observed state of an AgentTemplate definition.
+              Minimal: the object is declarative and no controller reconciles it yet.
             properties:
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed.

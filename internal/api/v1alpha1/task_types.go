@@ -4,16 +4,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TaskPhase is the lifecycle phase of a Task (design §3.3.3: Ready / Paused).
-type TaskPhase string
-
-const (
-	// TaskPhaseReady means the task is scheduled and will fire.
-	TaskPhaseReady TaskPhase = "Ready"
-	// TaskPhasePaused means the task is paused (no firing).
-	TaskPhasePaused TaskPhase = "Paused"
-)
-
 // TaskState is the task enablement state (design §3.5: string enum, not bool).
 // +kubebuilder:validation:Enum=Enabled;Paused
 type TaskState string
@@ -25,13 +15,42 @@ const (
 	TaskStatePaused TaskState = "Paused"
 )
 
+// TaskRunOutcome is the outcome of a Task's most recent run: whether it ended
+// well, which is not the same question as whether it found anything -- a run
+// that completes while reporting problems is still success. The findings live
+// in the TaskRun's report, not here.
+// +kubebuilder:validation:Enum=success;failed
+type TaskRunOutcome string
+
+const (
+	// TaskRunOutcomeSuccess means the last run completed.
+	TaskRunOutcomeSuccess TaskRunOutcome = "success"
+	// TaskRunOutcomeFailed means the last run failed.
+	TaskRunOutcomeFailed TaskRunOutcome = "failed"
+)
+
 // TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
 // links the
 // execution subject (agentRef -> Agent) with the task content (templateRef ->
 // TaskTemplate); creator decides the execution identity.
+//
+// A Task is either bound to a TaskTemplate or free-form, and params only mean
+// something with a template. "At least one", not "exactly one": a
+// template-bound Task carries both, because the stored instruction is the
+// rendered snapshot kept as the fallback for when the template is deleted.
+//
+// Each side tests the value, not just presence -- has() is true for an
+// explicitly empty string, and the API handler trims before comparing, so a
+// blank value must fail here too, for either side. The blank test uses
+// matches() rather than trim(): matches is core CEL, while trim() comes from
+// the ext.Strings library whose escaping convention is copied below from the
+// proven matches('.*\\s.*') rule on TemplateProviderSpec.Models.
+// +kubebuilder:validation:XValidation:rule="(has(self.templateRef) && !self.templateRef.matches('^\\\\s*$')) || (has(self.instruction) && !self.instruction.matches('^\\\\s*$'))",message="a task needs a templateRef or a non-blank instruction"
+// +kubebuilder:validation:XValidation:rule="!has(self.params) || (has(self.templateRef) && !self.templateRef.matches('^\\\\s*$'))",message="params require a templateRef"
 type TaskSpec struct {
-	// TemplateRef points to the TaskTemplate (optional: inline instruction
-	// tasks are also allowed, phase-one compatibility).
+	// TemplateRef points to the TaskTemplate. Optional: a Task may instead
+	// carry an inline instruction (the XValidation rules on TaskSpec require
+	// one of the two).
 	// +optional
 	TemplateRef string `json:"templateRef,omitempty"`
 	// Instruction is the inline prompt (used when TemplateRef is empty).
@@ -41,8 +60,8 @@ type TaskSpec struct {
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
 	// Owner is the task owner; execution identity = owner (RBAC matches the
-	// owner; the per-user instance is derived from it -- design §3.5: phase
-	// one has one cubepilot instance per user, no agentInstanceRef).
+	// owner; the per-user instance is derived from it -- design §3.5: one
+	// cubepilot instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
 	// Cron is the 5-field cron expression. Empty means the task never fires on
 	// its own and runs only when asked (there is no separate trigger field: it
@@ -59,15 +78,12 @@ type TaskSpec struct {
 
 // TaskStatus is the observed state of a Task.
 type TaskStatus struct {
-	// Phase is Ready / Paused.
-	// +optional
-	Phase TaskPhase `json:"phase,omitempty"`
 	// LastRunTime is the last successful scheduling time.
 	// +optional
 	LastRunTime *metav1.Time `json:"lastRunTime,omitempty"`
-	// LastStatus is the last run outcome (success | failed).
+	// LastStatus is the last run outcome.
 	// +optional
-	LastStatus string `json:"lastStatus,omitempty"`
+	LastStatus TaskRunOutcome `json:"lastStatus,omitempty"`
 	// NextRunTime is the computed next fire time.
 	// +optional
 	NextRunTime *metav1.Time `json:"nextRunTime,omitempty"`
@@ -80,7 +96,6 @@ type TaskStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
 // +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
-// +kubebuilder:printcolumn:name="Trigger",type="string",JSONPath=".spec.trigger"
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".spec.state"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
@@ -116,9 +131,9 @@ const (
 	// TaskDisplayNameAnnotation carries the human-facing task name (the CR
 	// name is DNS-1123 and may be sanitized/lossy for CJK input).
 	TaskDisplayNameAnnotation = "cubepilot/display-name"
-	// TaskManualRunAnnotation is set by the API on POST /api/tasks/{id}/run;
-	// the operator's scheduler fires the task once (trigger=manual) and
-	// removes the annotation. Value = RFC3339 timestamp (idempotency key).
+	// TaskManualRunAnnotation is set by the API on POST /api/tasks/{id}/run; the
+	// operator's scheduler fires the task once and removes the annotation.
+	// Value = RFC3339 timestamp (idempotency key).
 	TaskManualRunAnnotation = "cubepilot/manual-run"
 )
 

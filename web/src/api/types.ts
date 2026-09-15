@@ -35,6 +35,8 @@ export interface Task {
   createdAt: string
   lastRunAt?: string
   lastStatus?: string
+  // Most recent TaskRun name; absent for a task that has never run.
+  lastRunId?: string
   nextRunAt?: string
 }
 
@@ -42,7 +44,6 @@ export interface Task {
 // spec). Mirrors the Go TaskTemplateSpec json tags.
 export interface TaskParamSchema {
   name: string
-  type?: string
   default?: string
   enum?: string[]
 }
@@ -59,6 +60,7 @@ export interface TaskTemplate {
     description?: string
     instruction?: string
     paramsSchema?: TaskParamSchema[]
+    requiredPermissions?: { level?: string; note?: string }
     defaultCron?: string
     skills?: string[]
   }
@@ -68,16 +70,15 @@ export interface Report {
   id: string
   taskId: string
   taskName: string
-  trigger: 'Cron' | 'Manual' | 'Inspect'
+  // The scheduler sets only these two (TaskTriggerKind); a running report is
+  // not a third trigger.
+  trigger: 'Cron' | 'Manual'
   // status also carries 'running' while the TaskRun is queued/executing
   // (issue #95); success/failed only once the scheduler finishes the run.
   status: 'success' | 'failed' | 'running'
   startedAt: string
   finishedAt: string
   content: string
-  p0: number
-  p1: number
-  p2: number
 }
 
 export interface AuditEntry {

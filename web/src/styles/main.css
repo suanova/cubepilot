@@ -240,16 +240,12 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .thread-empty-desc{font-size:12.5px;line-height:1.7}
 
 /* tasks */
-.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
 .stat-top{display:flex;align-items:center;justify-content:space-between}
 .stat-label{font-size:12px;color:var(--muted);font-weight:500}
 .stat-value{font-size:26px;font-weight:650;letter-spacing:-0.02em;line-height:1;font-variant-numeric:tabular-nums}
 .stat-sub{font-size:11.5px;color:var(--muted)}
-.sev-row{display:flex;gap:14px;margin-top:2px}
-.sev{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-.sev b{font-size:16px;font-weight:650;font-variant-numeric:tabular-nums}
-.sev.p0 b{color:var(--danger)}.sev.p1 b{color:var(--warn)}.sev.p2 b{color:var(--muted)}
 .grid-2{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:16px}
 .grid-2.eq{grid-template-columns:1fr 1fr}
 .chart-wrap{padding:16px 18px 12px}

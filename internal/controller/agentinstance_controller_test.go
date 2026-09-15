@@ -2,16 +2,24 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -24,6 +32,12 @@ const (
 	testPodName      = "agent-zhang-wei-cubepilot"
 	testPVCName      = "data-zhang-wei-cubepilot"
 	testNamespace    = "cubepilot"
+
+	// testInstanceUID is the API-server-assigned identity the controller's
+	// ownership checks compare generated objects against. The fake client keeps
+	// whatever UID an object is seeded with, so resources marked with
+	// ownByTestInstance are recognized as this instance's own.
+	testInstanceUID = types.UID("0f8f0d5a-4a0e-4f4e-9d6a-1f2c3b4a5c6d")
 )
 
 func testAgentCfg() config.Config {
@@ -44,15 +58,26 @@ func testTemplate() *v1alpha1.AgentTemplate {
 
 func testInstance() *v1alpha1.AgentInstance {
 	return &v1alpha1.AgentInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
+		ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, UID: testInstanceUID},
 		Spec: v1alpha1.AgentInstanceSpec{
 			TemplateRef: "cubepilot",
 			Owner:       "zhang.wei",
-			Identity: v1alpha1.IdentitySpec{
-				Mode:         v1alpha1.IdentityModeUser,
-				PrincipalRef: v1alpha1.PrincipalRef{UserRef: "zhang.wei"},
-			},
 		},
+	}
+}
+
+// ownByTestInstance marks objs as owned by the test instance the way Reconcile
+// binds the resources it creates: a controller owner reference to the
+// AgentInstance, with BlockOwnerDeletion left false (see
+// AgentInstanceReconciler.setInstanceOwner). A resource seeded without it is
+// foreign -- which is what the ownership tests deliberately exercise.
+func ownByTestInstance(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) {
+	t.Helper()
+	owner := testInstance()
+	for _, obj := range objs {
+		if err := controllerutil.SetControllerReference(owner, obj, scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
+			t.Fatalf("set controller reference on %T %s: %v", obj, obj.GetName(), err)
+		}
 	}
 }
 
@@ -68,12 +93,12 @@ func agentSpec() k8s.AgentSpec {
 	}
 }
 
-func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceReconciler, client.Client) {
-	t.Helper()
-	scheme := testScheme(t)
-	// The operator reconciles the per-user kubeconfig Secrets (issue #19
-	// Option B); seed the platform (agent-kubeconfig) and the test owner's
-	// per-user Secret so Reconcile does not requeue on a missing Secret.
+// testClientBuilder returns the fake-client builder the controller tests share:
+// the operator reconciles the per-user kubeconfig Secrets (issue #19 Option B),
+// so the platform (agent-kubeconfig) and the test owner's per-user Secret are
+// seeded too and Reconcile does not requeue on a missing Secret. The status
+// subresource is enabled for the platform types the tests write status to.
+func testClientBuilder(scheme *runtime.Scheme, objs ...client.Object) *fake.ClientBuilder {
 	secrets := []client.Object{
 		&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: testNamespace},
@@ -85,11 +110,16 @@ func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceRecon
 		},
 	}
 	objs = append(objs, secrets...)
-	cl := fake.NewClientBuilder().
+	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
-		WithObjects(objs...).
-		Build()
+		WithObjects(objs...)
+}
+
+func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceReconciler, client.Client) {
+	t.Helper()
+	scheme := testScheme(t)
+	cl := testClientBuilder(scheme, objs...).Build()
 	r := &AgentInstanceReconciler{Client: cl, Scheme: scheme, Cfg: testAgentCfg()}
 	return r, cl
 }
@@ -163,8 +193,10 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	}
 
 	// Idempotent: a second Reconcile must not duplicate resources or rewrite
-	// status (no write amplification on the periodic requeue).
-	firstActivity := inst.Status.LastActivity
+	// status (no write amplification on the periodic requeue). resourceVersion
+	// is the direct evidence -- a status write bumps it -- where the old
+	// assertion inferred the same thing from a field the write happened to set.
+	rvBefore := inst.ResourceVersion
 	reconcileInstance(r, t)
 	var pods corev1.PodList
 	if err := cl.List(context.Background(), &pods); err != nil {
@@ -177,8 +209,8 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &inst2); err != nil {
 		t.Fatal(err)
 	}
-	if firstActivity == nil || inst2.Status.LastActivity == nil || !inst2.Status.LastActivity.Equal(firstActivity) {
-		t.Error("status rewritten on no-change reconcile (LastActivity changed)")
+	if inst2.ResourceVersion != rvBefore {
+		t.Errorf("status rewritten on no-change reconcile (resourceVersion %s -> %s)", rvBefore, inst2.ResourceVersion)
 	}
 }
 
@@ -193,6 +225,7 @@ func TestAgentInstanceReconcileReady(t *testing.T) {
 	// Match the kubeconfig-revision annotation Reconcile sets so the seeded
 	// "already converged" pod is not seen as drifted and recreated.
 	readyPod.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	ownByTestInstance(t, r.Scheme, readyPod)
 	if err := cl.Create(context.Background(), readyPod); err != nil {
 		t.Fatalf("create ready pod: %v", err)
 	}
@@ -219,6 +252,7 @@ func makeReadyPod(t *testing.T, r *AgentInstanceReconciler, cl client.Client) {
 	p := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
 	p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	p.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	ownByTestInstance(t, r.Scheme, p)
 	if err := cl.Create(context.Background(), p); err != nil {
 		t.Fatalf("create ready pod: %v", err)
 	}
@@ -422,6 +456,7 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 	// Match the kubeconfig-revision annotation Reconcile sets; the pod is
 	// healed because it is Failed (explicit delete+recreate), not for drift.
 	failedPod.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: kubeconfigRevForTest(t, cl)}
+	ownByTestInstance(t, r.Scheme, failedPod)
 	if err := cl.Create(context.Background(), failedPod); err != nil {
 		t.Fatalf("create failed pod: %v", err)
 	}
@@ -471,6 +506,7 @@ func TestAgentInstanceReconcileRemovesDataPVCOnDelete(t *testing.T) {
 	pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
 	pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
 	svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
+	ownByTestInstance(t, testScheme(t), pvc, pod, svc)
 
 	r, cl := newTestReconciler(t, inst, pvc, pod, svc)
 	reconcileInstance(r, t)
@@ -496,6 +532,188 @@ func TestAgentInstanceReconcileRemovesDataPVCOnDelete(t *testing.T) {
 	}
 }
 
+// TestAgentInstanceFinalizeTouchesOnlyItsOwnObjects verifies the finalizer's
+// ownership rule: the generated names come from metadata.name, which the
+// writer of the AgentInstance picks, so a name-identical object that is not
+// this instance's must be left alone -- and must not fail the delete either
+// (an erroring finalizer would pin the instance in deletion forever). The
+// instance's own objects are still reclaimed.
+func TestAgentInstanceFinalizeTouchesOnlyItsOwnObjects(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owned bool
+	}{
+		{"leaves foreign objects alone", false},
+		{"reclaims its own objects", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := metav1.Now()
+			inst := testInstance()
+			inst.DeletionTimestamp = &now
+			inst.Finalizers = []string{finalizerName}
+
+			spec := agentSpec()
+			pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
+			pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+			svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
+			if tc.owned {
+				ownByTestInstance(t, testScheme(t), pvc, pod, svc)
+			}
+
+			r, cl := newTestReconciler(t, inst, pvc, pod, svc)
+			reconcileInstance(r, t)
+
+			for _, obj := range []struct {
+				name string
+				obj  client.Object
+			}{
+				{testPVCName, &corev1.PersistentVolumeClaim{}},
+				{testPodName, &corev1.Pod{}},
+				{testPodName, &corev1.Service{}},
+			} {
+				err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: obj.name}, obj.obj)
+				if missing := apierrors.IsNotFound(err); missing != tc.owned {
+					t.Errorf("%T %s: missing = %v, want %v (err=%v)", obj.obj, obj.name, missing, tc.owned, err)
+				}
+			}
+
+			// Released either way: a foreign object is not ours to delete, and
+			// skipping it is not a reason to block the instance's deletion.
+			if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &v1alpha1.AgentInstance{}); !apierrors.IsNotFound(err) {
+				t.Errorf("instance not reclaimed after finalize (err=%v)", err)
+			}
+		})
+	}
+}
+
+// TestAgentInstanceReconcileDoesNotAdoptForeignPVC verifies the ownership rule
+// on the data PVC: the name is derived from metadata.name, which the writer of
+// the AgentInstance chooses, so a PVC already sitting under that name that is
+// not this instance's must never be adopted. Adopting it would hand a
+// stranger's volume to the instance and let finalize delete it later; the
+// reconcile fails closed instead -- the instance goes Failed, the PVC keeps its
+// owner and contents, and nothing is provisioned onto it.
+func TestAgentInstanceReconcileDoesNotAdoptForeignPVC(t *testing.T) {
+	ctx := context.Background()
+	// A PVC belonging to something else: no controller owner reference.
+	foreign := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: testPVCName, Namespace: testNamespace},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("5Gi")},
+			},
+		},
+	}
+	r, cl := newTestReconciler(t, testTemplate(), testInstance(), foreign)
+	provisionInstance(r, t)
+
+	var got corev1.PersistentVolumeClaim
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &got); err != nil {
+		t.Fatalf("foreign pvc was deleted: %v", err)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("foreign pvc was adopted: ownerReferences = %v", got.OwnerReferences)
+	}
+	if size := got.Spec.Resources.Requests[corev1.ResourceStorage]; size.String() != "5Gi" {
+		t.Errorf("foreign pvc was modified: storage = %s, want 5Gi", size.String())
+	}
+
+	// Nothing may be provisioned onto a volume the instance does not own.
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Errorf("pod created on a foreign data pvc (err=%v)", err)
+	}
+
+	var inst v1alpha1.AgentInstance
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &inst); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status.Phase != v1alpha1.InstanceFailed {
+		t.Errorf("phase = %q, want %q", inst.Status.Phase, v1alpha1.InstanceFailed)
+	}
+	if !strings.Contains(inst.Status.Message, "not owned") {
+		t.Errorf("status message = %q, want it to name the ownership failure so an operator can see why", inst.Status.Message)
+	}
+}
+
+// TestAgentInstanceReconcileDoesNotReplaceForeignPod verifies the ownership rule
+// on the Pod path, which is the destructive one: ensurePod deletes an existing
+// Pod whose security fingerprint drifted. A Pod under the generated name that is
+// not this instance's must not be deleted, even when it looks drifted -- the
+// reconcile fails closed instead.
+func TestAgentInstanceReconcileDoesNotReplaceForeignPod(t *testing.T) {
+	ctx := context.Background()
+	// A foreign Pod that *would* be deleted as drift: writable init-container
+	// root filesystem and no supervisor resource limits.
+	spec := agentSpec()
+	foreign := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+	foreign.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem = nil
+	foreign.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+	foreign.UID = types.UID("foreign-pod-uid")
+
+	r, cl := newTestReconciler(t, testTemplate(), testInstance(), foreign)
+	provisionInstance(r, t)
+
+	var got corev1.Pod
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
+		t.Fatalf("foreign pod was deleted: %v", err)
+	}
+	if got.UID != foreign.UID {
+		t.Errorf("foreign pod was replaced (uid %s -> %s)", foreign.UID, got.UID)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("foreign pod was adopted: ownerReferences = %v", got.OwnerReferences)
+	}
+
+	var inst v1alpha1.AgentInstance
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &inst); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status.Phase != v1alpha1.InstanceFailed {
+		t.Errorf("phase = %q, want %q", inst.Status.Phase, v1alpha1.InstanceFailed)
+	}
+	if !strings.Contains(inst.Status.Message, "not owned") {
+		t.Errorf("status message = %q, want it to name the ownership failure so an operator can see why", inst.Status.Message)
+	}
+}
+
+// TestAgentInstanceReconcileDoesNotAdoptForeignService verifies the same rule on
+// the Service path: an existing same-named Service that is not this instance's
+// is left as it is (it is never rewritten to select this instance's Pod) and the
+// reconcile fails closed.
+func TestAgentInstanceReconcileDoesNotAdoptForeignService(t *testing.T) {
+	ctx := context.Background()
+	foreign := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: testPodName, Namespace: testNamespace},
+		Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "someone-else"}},
+	}
+
+	r, cl := newTestReconciler(t, testTemplate(), testInstance(), foreign)
+	provisionInstance(r, t)
+
+	var got corev1.Service
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &got); err != nil {
+		t.Fatalf("foreign service was deleted: %v", err)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("foreign service was adopted: ownerReferences = %v", got.OwnerReferences)
+	}
+	if got.Spec.Selector["app"] != "someone-else" {
+		t.Errorf("foreign service was rewritten: selector = %v", got.Spec.Selector)
+	}
+
+	var inst v1alpha1.AgentInstance
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &inst); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status.Phase != v1alpha1.InstanceFailed {
+		t.Errorf("phase = %q, want %q", inst.Status.Phase, v1alpha1.InstanceFailed)
+	}
+	if !strings.Contains(inst.Status.Message, "not owned") {
+		t.Errorf("status message = %q, want it to name the ownership failure so an operator can see why", inst.Status.Message)
+	}
+}
+
 // TestEnsurePodRecreatesOnSecurityDrift verifies a Pod whose immutable security
 // spec (image, security context, resource limits) drifted is deleted and
 // recreated so it converges on the current baseline -- e.g. an instance Pod
@@ -506,13 +724,15 @@ func TestEnsurePodRecreatesOnSecurityDrift(t *testing.T) {
 	spec := agentSpec()
 	desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
 
+	r, cl := newTestReconciler(t)
+	ownByTestInstance(t, r.Scheme, desired)
+
 	// A pod created before the baseline landed: writable init-container root
 	// filesystem and no resource limits on the supervisor.
 	stale := desired.DeepCopy()
 	stale.Spec.InitContainers[0].SecurityContext.ReadOnlyRootFilesystem = nil
 	stale.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
 
-	r, cl := newTestReconciler(t)
 	if err := cl.Create(context.Background(), stale); err != nil {
 		t.Fatalf("seed stale pod: %v", err)
 	}
@@ -567,6 +787,9 @@ func TestEnsurePodKubeconfigDriftDeleteDoesNotCreateInSameCall(t *testing.T) {
 	desired.Annotations[k8s.KubeconfigRevisionAnnotation] = "rotated-rev"
 
 	r, cl := newTestReconciler(t)
+	// Both the existing and the desired pod must be the instance's own, or
+	// ensurePod fails closed instead of reaching the drift comparison.
+	ownByTestInstance(t, r.Scheme, old, desired)
 	if err := cl.Create(ctx, old); err != nil {
 		t.Fatalf("seed pod: %v", err)
 	}
@@ -605,6 +828,10 @@ func TestEnsurePodKubeconfigDriftDeleteDoesNotCreateInSameCall(t *testing.T) {
 func TestEnsurePodDoesNotRecreateOnConfigDrift(t *testing.T) {
 	spec := agentSpec()
 	desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+
+	r, cl := newTestReconciler(t)
+	ownByTestInstance(t, r.Scheme, desired)
+
 	existing := desired.DeepCopy()
 	for i := range existing.Spec.Containers[0].Env {
 		if existing.Spec.Containers[0].Env[i].Name == "OPENCLAW_HOME" {
@@ -613,7 +840,6 @@ func TestEnsurePodDoesNotRecreateOnConfigDrift(t *testing.T) {
 	}
 	existing.UID = types.UID("seed-uid")
 
-	r, cl := newTestReconciler(t)
 	if err := cl.Create(context.Background(), existing); err != nil {
 		t.Fatalf("seed pod: %v", err)
 	}
@@ -650,5 +876,379 @@ func TestSecurityFingerprintKubeconfigRevision(t *testing.T) {
 	}
 	if !reflect.DeepEqual(securityFingerprint(build("u@2|p@1")), securityFingerprint(build("u@2|p@1"))) {
 		t.Error("fingerprint should be stable for the same kubeconfig revision")
+	}
+}
+
+// TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly verifies the finalizer
+// reclaims exactly the platform-generated data-<instance> PVC and nothing else:
+// an unrelated PVC in the same namespace survives, and carrying a dataVolume in
+// the spec does not change which PVC is removed. The name is generated from the
+// instance name, so no spec value can select it.
+func TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly(t *testing.T) {
+	now := metav1.Now()
+	inst := testInstance()
+	inst.DeletionTimestamp = &now
+	inst.Finalizers = []string{finalizerName}
+	inst.Spec.DataVolume = &v1alpha1.DataVolumeSpec{Size: "2Gi"}
+
+	spec := agentSpec()
+	generated := spec.DataPVCFor(testPVCName, testInstanceName, "2Gi")
+	other := spec.DataPVCFor("data-somebody-else", "somebody-else", "1Gi")
+	ownByTestInstance(t, testScheme(t), generated)
+
+	r, cl := newTestReconciler(t, inst, generated, other)
+	reconcileInstance(r, t)
+
+	var gotGenerated corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &gotGenerated); !apierrors.IsNotFound(err) {
+		t.Errorf("generated data pvc not reclaimed (err=%v)", err)
+	}
+	var gotOther corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "data-somebody-else"}, &gotOther); err != nil {
+		t.Errorf("unrelated pvc was deleted or unreadable (err=%v)", err)
+	}
+}
+
+// TestAgentInstanceDataVolumeSizeReachesPVC verifies a configured
+// dataVolume.size is applied to the data PVC (the default is 1Gi).
+func TestAgentInstanceDataVolumeSizeReachesPVC(t *testing.T) {
+	inst := testInstance()
+	inst.Spec.DataVolume = &v1alpha1.DataVolumeSpec{Size: "2Gi"}
+
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+	reconcileInstance(r, t)
+	reconcileInstance(r, t)
+
+	var pvc corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &pvc); err != nil {
+		t.Fatalf("data pvc not created: %v", err)
+	}
+	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "2Gi" {
+		t.Errorf("pvc storage request = %s, want 2Gi", got.String())
+	}
+}
+
+// TestGeneratedNameBoundedAndDeterministic pins the name bound. AgentInstance
+// metadata.name is accepted up to 253 characters, so "data-<name>" can be 258
+// -- a name the API server rejects, and which the finalizer then tries to
+// delete under that same impossible name. Generated names must be truncated,
+// yet stay distinct for distinct inputs (truncation alone collides) and
+// unchanged for names that already fit, so existing resources keep their names.
+func TestGeneratedNameBoundedAndDeterministic(t *testing.T) {
+	// Inputs that fit are returned unchanged: this is exactly what the
+	// controller derived before the bound existed.
+	if got := k8s.GeneratedName("data", testInstanceName); got != testPVCName {
+		t.Errorf("GeneratedName(data, %s) = %q, want %q", testInstanceName, got, testPVCName)
+	}
+	if got := k8s.GeneratedName("agent", testInstanceName); got != testPodName {
+		t.Errorf("GeneratedName(agent, %s) = %q, want %q", testInstanceName, got, testPodName)
+	}
+
+	// 253 characters is the longest metadata.name Kubernetes accepts.
+	long := strings.Repeat("a", 253)
+	for _, prefix := range []string{"data", "agent"} {
+		got := k8s.GeneratedName(prefix, long)
+		if len(got) > k8s.MaxResourceNameLen {
+			t.Errorf("GeneratedName(%s, 253-char name) = %d characters, want <= %d", prefix, len(got), k8s.MaxResourceNameLen)
+		}
+		if errs := validation.IsDNS1123Subdomain(got); len(errs) > 0 {
+			t.Errorf("GeneratedName(%s, 253-char name) = %q is not a valid DNS-1123 subdomain: %v", prefix, got, errs)
+		}
+		if got != k8s.GeneratedName(prefix, long) {
+			t.Errorf("GeneratedName(%s, 253-char name) is not deterministic", prefix)
+		}
+		// Distinct long inputs must not collapse onto one name.
+		other := k8s.GeneratedName(prefix, strings.Repeat("a", 252)+"b")
+		if other == got {
+			t.Errorf("two distinct 253-char names both produced %q", got)
+		}
+		// The readable head of the input survives the cut.
+		if !strings.HasPrefix(got, prefix+"-aaa") {
+			t.Errorf("GeneratedName(%s, 253-char name) = %q, want it to keep the input's head", prefix, got)
+		}
+	}
+}
+
+// TestAgentInstanceLongNameProvisionsAndReclaims runs the whole lifecycle for a
+// 253-character instance name -- the longest the API server accepts -- and
+// asserts that the create path and the finalizer agree on the bounded names:
+// the finalizer reclaims the very PVC/Service the reconcile created. If the two
+// derived the name differently, the instance would leak its data PVC.
+func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
+	ctx := context.Background()
+	longName := strings.Repeat("a", 253)
+	inst := testInstance()
+	inst.Name = longName
+
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+	for i := 0; i < 2; i++ {
+		if _, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: longName},
+		}); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+	}
+
+	pvcName := k8s.GeneratedName("data", longName)
+	podName := k8s.GeneratedName("agent", longName)
+	// The Service is bounded to the tighter DNS-1035 label limit, so it is not
+	// the pod name here.
+	svcName := k8s.GeneratedServiceName("agent", longName)
+	if len(pvcName) > k8s.MaxResourceNameLen || len(podName) > k8s.MaxResourceNameLen {
+		t.Fatalf("generated names are unbounded: pvc %d, pod %d", len(pvcName), len(podName))
+	}
+	if len(svcName) > k8s.MaxServiceNameLen {
+		t.Fatalf("generated service name is unbounded: %d > %d", len(svcName), k8s.MaxServiceNameLen)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Fatalf("data pvc not created under the bounded name %s: %v", pvcName, err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); err != nil {
+		t.Fatalf("gateway service not created under the bounded name %s: %v", svcName, err)
+	}
+
+	if err := r.finalize(ctx, inst); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Errorf("finalize did not reclaim the data pvc the reconcile created (err=%v)", err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
+		t.Errorf("finalize did not reclaim the service the reconcile created (err=%v)", err)
+	}
+}
+
+// replacedObject emulates the one thing the fake client does not implement --
+// the API server's delete precondition -- and uses it to stage the race the
+// controller's ownership checks have to survive.
+//
+// It installs a client interceptor that
+//
+//   - swaps the object at target for a same-name, different-UID replacement
+//     immediately after the Get that returned checkedUID. That Get is the
+//     ownership check: from that point on the controller is holding an object
+//     that no longer exists, while the name it will delete still resolves to
+//     something nobody has vetted; and
+//   - refuses a delete whose precondition UID is not the UID of the object it
+//     is about to delete, answering 409 Conflict exactly as a real API server
+//     does.
+//
+// The second half is what makes the race observable in a unit test: the fake
+// client deletes by name/namespace alone and honours only a ResourceVersion
+// precondition, so on its own it would destroy the replacement in the fixed and
+// the broken code alike. With the emulation, a delete that is not bound to the
+// object that was checked destroys the replacement -- which is exactly the bug.
+type replacedObject struct {
+	target     types.NamespacedName
+	checkedUID types.UID
+	// replacementUID is the identity the object at target takes over with.
+	replacementUID types.UID
+
+	// swaps counts the replacements staged (0 means the delete was never
+	// reached, so the test would otherwise pass vacuously).
+	swaps int
+	// deletes records the precondition carried by each delete, by object name.
+	deletes map[string]*metav1.Preconditions
+	// err records a failure inside the interceptor, where t.Fatalf is awkward.
+	err error
+}
+
+func newReplacedObject(target types.NamespacedName, checkedUID types.UID) *replacedObject {
+	return &replacedObject{
+		target:         target,
+		checkedUID:     checkedUID,
+		replacementUID: types.UID("replacement-object-uid"),
+		deletes:        map[string]*metav1.Preconditions{},
+	}
+}
+
+func (ro *replacedObject) funcs() interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			ro.swap(ctx, c, key, obj)
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			pre := (&client.DeleteOptions{}).ApplyOptions(opts).Preconditions
+			ro.deletes[obj.GetName()] = pre
+			// The API server's precondition check: the delete is refused while the
+			// object about to be deleted is not the one the precondition names.
+			current := obj.DeepCopyObject().(client.Object)
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+				return c.Delete(ctx, obj, opts...) // already gone: nothing left to bind to
+			}
+			if pre != nil && pre.UID != nil && *pre.UID != current.GetUID() {
+				return apierrors.NewConflict(schema.GroupResource{Group: "test", Resource: "objects"}, obj.GetName(),
+					fmt.Errorf("Precondition failed: UID in precondition: %v, UID in object meta: %v", *pre.UID, current.GetUID()))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}
+}
+
+// swap replaces the object at key once, right after the Get that returned
+// checkedUID: it is deleted and a different object is created under the same
+// name. Anything the controller held from that Get now refers to an object that
+// does not exist, and the name points at one no ownership check has seen.
+func (ro *replacedObject) swap(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object) {
+	if ro.err != nil || ro.swaps > 0 || key.Name != ro.target.Name || key.Namespace != ro.target.Namespace {
+		return
+	}
+	if obj.GetUID() != ro.checkedUID {
+		return // a different object already holds the name
+	}
+	if err := c.Delete(ctx, obj.DeepCopyObject().(client.Object)); err != nil {
+		ro.err = fmt.Errorf("staging the replacement: deleting %s: %w", key, err)
+		return
+	}
+	replacement := obj.DeepCopyObject().(client.Object)
+	replacement.SetUID(ro.replacementUID)
+	replacement.SetResourceVersion("")
+	if err := c.Create(ctx, replacement); err != nil {
+		ro.err = fmt.Errorf("staging the replacement: creating %s: %w", key, err)
+		return
+	}
+	ro.swaps++
+}
+
+// TestDeleteRefusesAReplacedObject pins the check-then-use race shared by the
+// three paths that verify a generated object's owner and then delete it by
+// name: deleteOwned (the finalizer), the drift deletion inside ensurePod, and
+// deletePod (the failed-Pod heal). In each, the object that was checked is
+// replaced -- same name, different UID -- before the delete reaches the API
+// server. The delete is bound to the UID that was checked (see
+// deletePrecondition), so it fails with a Conflict, the replacement survives,
+// and the caller re-reads rather than destroying an object it never vetted.
+func TestDeleteRefusesAReplacedObject(t *testing.T) {
+	const checkedUID = types.UID("checked-object-uid")
+
+	cases := []struct {
+		name string
+		// target is the object the path checks and deletes.
+		target types.NamespacedName
+		// empty returns a fresh, typed object for reading the target back.
+		empty func() client.Object
+		// seed returns the objects the path will find: the one at target carries
+		// checkedUID and this instance's ownership.
+		seed func(t *testing.T, scheme *runtime.Scheme) []client.Object
+		// call runs the path under test.
+		call func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error
+	}{
+		{
+			name:   "finalizer deleteOwned",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPVCName},
+			empty:  func() client.Object { return &corev1.PersistentVolumeClaim{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				now := metav1.Now()
+				inst := testInstance()
+				inst.DeletionTimestamp = &now
+				inst.Finalizers = []string{finalizerName}
+				spec := agentSpec()
+				pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
+				pvc.UID = checkedUID
+				pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
+				ownByTestInstance(t, scheme, pvc, pod, svc)
+				return []client.Object{inst, pvc, pod, svc}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testInstanceName}})
+				return err
+			},
+		},
+		{
+			name:   "ensurePod drift deletion",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPodName},
+			empty:  func() client.Object { return &corev1.Pod{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				spec := agentSpec()
+				stale := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				stale.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: "stale-rev"}
+				stale.UID = checkedUID
+				ownByTestInstance(t, scheme, stale)
+				return []client.Object{stale}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				spec := agentSpec()
+				desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				desired.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: "rotated-rev"}
+				ownByTestInstance(t, r.Scheme, desired)
+				recreate, err := r.ensurePod(ctx, desired)
+				if recreate {
+					t.Errorf("ensurePod reported recreate=true for a Pod it did not delete: the caller would wait out the short requeue for a deletion that never happened")
+				}
+				return err
+			},
+		},
+		{
+			name:   "deletePod failed-pod heal",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPodName},
+			empty:  func() client.Object { return &corev1.Pod{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				spec := agentSpec()
+				failed := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				failed.Status.Phase = corev1.PodFailed
+				failed.UID = checkedUID
+				ownByTestInstance(t, scheme, failed)
+				return []client.Object{failed}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				spec := agentSpec()
+				desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				ownByTestInstance(t, r.Scheme, desired)
+				return r.deletePod(ctx, desired)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := testScheme(t)
+			race := newReplacedObject(tc.target, checkedUID)
+			cl := interceptor.NewClient(testClientBuilder(scheme, tc.seed(t, scheme)...).Build(), race.funcs())
+			r := &AgentInstanceReconciler{Client: cl, Scheme: scheme, Cfg: testAgentCfg()}
+
+			err := tc.call(t, ctx, r)
+
+			if race.err != nil {
+				t.Fatalf("staging the race: %v", race.err)
+			}
+			if race.swaps != 1 {
+				t.Fatalf("the object at %s was replaced %d time(s), want 1: the delete under test was never reached", tc.target, race.swaps)
+			}
+			// The delete is bound to the object that was checked: its UID is the
+			// precondition.
+			pre, ok := race.deletes[tc.target.Name]
+			if !ok {
+				t.Fatalf("no delete of %s was attempted", tc.target)
+			}
+			if pre == nil || pre.UID == nil || *pre.UID != checkedUID {
+				t.Errorf("delete of %s carried precondition %+v, want UID %q (the object whose owner was checked)", tc.target, pre, checkedUID)
+			}
+
+			// The replacement is still there: nothing vetted it, so nothing may
+			// delete it.
+			got := tc.empty()
+			got.SetName(tc.target.Name)
+			got.SetNamespace(tc.target.Namespace)
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(got), got); err != nil {
+				t.Fatalf("the object at %s is gone: %v -- the delete hit the replacement instead of the object that was checked", tc.target, err)
+			}
+			if got.GetUID() != race.replacementUID {
+				t.Errorf("object at %s has uid %q, want the replacement %q", tc.target, got.GetUID(), race.replacementUID)
+			}
+
+			// Fail closed: the caller is told the object changed under it and
+			// re-reads, rather than carrying the delete out.
+			if err == nil {
+				t.Errorf("the path swallowed a failed delete precondition; want the Conflict returned so the caller re-reads")
+			} else if !apierrors.IsConflict(err) {
+				t.Errorf("err = %v, want a Conflict from the failed precondition", err)
+			}
+		})
 	}
 }

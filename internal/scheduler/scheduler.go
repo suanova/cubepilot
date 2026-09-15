@@ -116,25 +116,29 @@ func (r *ReconcileScheduler) nextDue(task *v1alpha1.Task) (next *time.Time, due 
 }
 
 func (r *ReconcileScheduler) patchPaused(ctx context.Context, task *v1alpha1.Task) {
-	if task.Status.Phase == v1alpha1.TaskPhasePaused {
-		return
+	if task.Status.NextRunTime == nil {
+		return // already recorded as having no next run
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Status.Phase = v1alpha1.TaskPhasePaused
+	task.Status.NextRunTime = nil
 	if err := r.Status().Patch(ctx, task, patch); err != nil {
 		log.Printf("scheduler: patch paused %s: %v", task.Name, err)
 	}
 }
 
 func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Task, next *time.Time) {
+	if next == nil && task.Status.NextRunTime == nil {
+		return // nothing to clear: a malformed cron keeps next == nil
+	}
 	if task.Status.NextRunTime != nil && next != nil && task.Status.NextRunTime.Time.Equal(next.Truncate(time.Minute)) {
 		return
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Status.Phase = v1alpha1.TaskPhaseReady
 	if next != nil {
 		t := metav1.NewTime(*next)
 		task.Status.NextRunTime = &t
+	} else {
+		task.Status.NextRunTime = nil
 	}
 	if err := r.Status().Patch(ctx, task, patch); err != nil {
 		log.Printf("scheduler: patch nextRun %s: %v", task.Name, err)
@@ -176,6 +180,26 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	if strings.TrimSpace(prompt) == "" {
 		prompt = task.Spec.Instruction
 	}
+	// A blank prompt must never reach the runner as a turn. Both sources have
+	// been tried above, so nothing is left to resolve: the Task points at a
+	// template that is gone (or renders empty) and stores no instruction of its
+	// own. A hand-written CR can be exactly that shape -- the TaskSpec CEL rules
+	// require at least one of templateRef/instruction to be *set*, not to be
+	// non-blank, and their \s does not cover U+00A0 and the other Unicode
+	// spaces TrimSpace does -- so this is the fail-closed side of that
+	// divergence rather than an unreachable branch.
+	if strings.TrimSpace(prompt) == "" {
+		// Name both sources in the record: the template that was tried and the
+		// inline instruction that would have been the fallback.
+		missing := "no template is referenced and the inline instruction is blank"
+		if task.Spec.TemplateRef != "" {
+			missing = fmt.Sprintf("template %q did not resolve and no inline instruction is stored", task.Spec.TemplateRef)
+		}
+		reason := fmt.Errorf("task %s: no instruction to run: %s; run skipped", task.Name, missing)
+		log.Printf("scheduler: task %s fire skipped: %v", task.Name, reason)
+		r.recordSkippedRun(ctx, task, trigger, reason)
+		return reason
+	}
 
 	run := NewTaskRun(task, trigger)
 	if err := r.Create(ctx, run); err != nil {
@@ -196,6 +220,31 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		log.Printf("scheduler: patch running %s: %v", run.Name, err)
 	}
 
+	// Record the run on the Task now that it exists, before it executes.
+	// lastTaskRunName is documented as "the most recent TaskRun created for
+	// this Task", and it has a reader while the run is still in flight: the
+	// reports endpoint already lists the new run first, and the Portal's report
+	// picker preselects lastRunId -- so setting it only at completion pointed
+	// the picker at the *previous* run for the whole duration of the new one.
+	// LastRunTime/LastStatus stay in the finish patch below: they describe the
+	// outcome, which is only known at the end. This adds one status write per
+	// fire; fires are per-schedule, not per-reconcile, so that is acceptable.
+	//
+	// The baseline is taken once, before the mutation, and both Task status
+	// writes below are computed from it. A baseline taken after the mutation
+	// (from the local object that already carries the new name) would leave the
+	// field out of the finish patch -- so a start patch that failed on a
+	// transient conflict, with execution carrying on, would never write it at
+	// all, and the Task would keep naming the previous run even once the new one
+	// completed: the very symptom this ordering exists to remove. Sharing the
+	// baseline makes the finish patch re-carry the field, so it repairs a failed
+	// start instead of depending on it.
+	taskPatch := client.MergeFrom(task.DeepCopy())
+	task.Status.LastTaskRunName = run.Name
+	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
+		log.Printf("scheduler: patch task %s last run name: %v", task.Name, err)
+	}
+
 	// Run through the creator's agent instance (inspection runs with the
 	// creator's identity, §5.4).
 	sessionKey := fmt.Sprintf("task-%s-%s", task.Name, run.Name)
@@ -206,13 +255,6 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	finish := metav1.Now()
 	run.Status.FinishedAt = &finish
 	run.Status.Content = content
-	run.Status.Summary = &v1alpha1.TaskRunSummary{
-		Total:    countSeverityTotal(content),
-		Abnormal: countSeverity(content, "P0") + countSeverity(content, "P1") + countSeverity(content, "P2"),
-		P0:       countSeverity(content, "P0"),
-		P1:       countSeverity(content, "P1"),
-		P2:       countSeverity(content, "P2"),
-	}
 	if runErr != nil {
 		run.Status.Phase = v1alpha1.TaskRunFailed
 		run.Status.Error = runErr.Error()
@@ -223,14 +265,14 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 		log.Printf("scheduler: patch finish %s: %v", run.Name, err)
 	}
 
-	// Record the run on the Task (LastRunTime / LastTaskRunName / LastStatus).
-	taskPatch := client.MergeFrom(task.DeepCopy())
+	// Record the outcome on the Task (LastRunTime / LastStatus), from the same
+	// baseline as the start patch above -- which is what re-carries
+	// lastTaskRunName and repairs a start patch that failed.
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
-	task.Status.LastTaskRunName = run.Name
-	task.Status.LastStatus = "success"
+	task.Status.LastStatus = v1alpha1.TaskRunOutcomeSuccess
 	if runErr != nil {
-		task.Status.LastStatus = "failed"
+		task.Status.LastStatus = v1alpha1.TaskRunOutcomeFailed
 	}
 	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
 		log.Printf("scheduler: patch task %s: %v", task.Name, err)
@@ -299,7 +341,7 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
-	task.Status.LastStatus = "failed"
+	task.Status.LastStatus = v1alpha1.TaskRunOutcomeFailed
 	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
 		log.Printf("scheduler: patch task %s: %v", task.Name, err)
 	}
@@ -349,27 +391,6 @@ func renderTemplate(instruction string, params map[string]string) string {
 		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
 	}
 	return out
-}
-
-// countSeverity counts severity mentions (shared with the server's report
-// builder; keeps TaskRun summaries consistent).
-func countSeverity(content, sev string) int {
-	return strings.Count(content, sev)
-}
-
-func countSeverityTotal(content string) int {
-	// Total findings ~= count of P0/P1/P2 lines (rough; the agent's structured
-	// report lists each finding under a header).
-	lines := strings.Split(content, "\n")
-	total := 0
-	for _, l := range lines {
-		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "- P0") || strings.HasPrefix(t, "- P1") || strings.HasPrefix(t, "- P2") ||
-			strings.HasPrefix(t, "### P0") || strings.HasPrefix(t, "### P1") || strings.HasPrefix(t, "### P2") {
-			total++
-		}
-	}
-	return total
 }
 
 // SetupWithManager registers the scheduler's watch on Task CRs.

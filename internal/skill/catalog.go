@@ -166,7 +166,7 @@ func (c *Catalog) ValidateSkill(skill *v1alpha1.Skill) error {
 	case v1alpha1.SkillVisibilityPlatform:
 		// OK — phase 1 only.
 	case v1alpha1.SkillVisibilityTenant, v1alpha1.SkillVisibilityUser:
-		return fmt.Errorf("skill %s: visibility %q is phase 2 (only Platform in phase 1)", skill.Name, skill.Spec.Visibility)
+		return fmt.Errorf("skill %s: visibility %q is not supported (only Platform is accepted)", skill.Name, skill.Spec.Visibility)
 	default:
 		return fmt.Errorf("skill %s: invalid visibility %q", skill.Name, skill.Spec.Visibility)
 	}
@@ -179,7 +179,7 @@ func (c *Catalog) ValidateSkill(skill *v1alpha1.Skill) error {
 			return fmt.Errorf("skill %s: source.type=Path forbids source.s3", skill.Name)
 		}
 	case v1alpha1.SkillSourceS3:
-		return fmt.Errorf("skill %s: source.type=S3 is phase 2", skill.Name)
+		return fmt.Errorf("skill %s: source.type=S3 is not supported (only Path is accepted)", skill.Name)
 	default:
 		return fmt.Errorf("skill %s: invalid source.type %q", skill.Name, skill.Spec.Source.Type)
 	}

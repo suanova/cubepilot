@@ -181,11 +181,11 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 					SecretName: pr.CredentialRef.Name,
 				})
 			}
-			// User instructions append after the template instructions
-			// (design §3.2: final instructions = platform safety & execution
-			// constraints + template instructions + user instructions, combined
-			// in order; user instructions cannot remove or weaken the safety
-			// boundary).
+			// Final instructions are the template's instructions with the
+			// user's appended (design §3.2). There is no platform-level text
+			// layer: the safety boundary is enforced by mechanism -- the
+			// per-user read-only RBAC, the allowlist and the HITL gate -- not
+			// by prompt text.
 			if ui := strings.TrimSpace(inst.Spec.UserInstructions); ui != "" {
 				if cfg.Instructions != "" {
 					cfg.Instructions += "\n\n"

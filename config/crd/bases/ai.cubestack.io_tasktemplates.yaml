@@ -72,14 +72,15 @@ spec:
                     paramsSchema).
                   properties:
                     default:
+                      description: Default is the value used when the Task does not
+                        override this parameter.
                       type: string
                     enum:
+                      description: Enum, when set, restricts the accepted values.
                       items:
                         type: string
                       type: array
                     name:
-                      type: string
-                    type:
                       type: string
                   required:
                   - name

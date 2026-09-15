@@ -7,11 +7,14 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -28,10 +31,10 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-// newFakeClient returns a fake client with the status subresource enabled for
-// the platform types (fake client ignores status writes otherwise).
-func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) client.Client {
-	t.Helper()
+// testClientBuilder returns the fake-client builder the scheduler tests share:
+// the status subresource is enabled for the platform types (the fake client
+// drops status writes otherwise).
+func testClientBuilder(scheme *runtime.Scheme, objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(
@@ -41,17 +44,27 @@ func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) 
 			&v1alpha1.AgentTemplate{},
 			&v1alpha1.Skill{},
 		).
-		WithObjects(objs...).
-		Build()
+		WithObjects(objs...)
 }
 
-// fakeRunner records the prompt and returns a canned report.
+// newFakeClient returns a fake client with the status subresource enabled for
+// the platform types (fake client ignores status writes otherwise).
+func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) client.Client {
+	t.Helper()
+	return testClientBuilder(scheme, objs...).Build()
+}
+
+// fakeRunner records the prompt and returns a canned report. calls counts the
+// turns actually run, so a test asserting "no turn was run" cannot pass just
+// because the prompt it inspected happened to be empty.
 type fakeRunner struct {
 	gotPrompt string
 	gotUser   string
+	calls     int
 }
 
 func (f *fakeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	f.calls++
 	f.gotUser = creator
 	f.gotPrompt = prompt
 	return "### P1 Important -- inference pod CrashLoopBackOff\nEvidence: kubectl get pods", nil
@@ -134,7 +147,7 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 		}
 	}
 
-	// TaskRun created with the platform identity, completed, report summary.
+	// TaskRun created with the platform identity, completed.
 	var runs v1alpha1.TaskRunList
 	if err := cl.List(context.Background(), &runs); err != nil {
 		t.Fatalf("list taskruns: %v", err)
@@ -148,9 +161,6 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	}
 	if run.Status.Phase != v1alpha1.TaskRunCompleted {
 		t.Errorf("phase = %s, want Completed", run.Status.Phase)
-	}
-	if run.Status.Summary == nil || run.Status.Summary.P1 != 1 {
-		t.Errorf("summary = %+v, want P1=1", run.Status.Summary)
 	}
 
 	// Task status records the run.
@@ -202,8 +212,8 @@ func (f *errorRunner) RunTask(ctx context.Context, creator, sessionKey, prompt s
 }
 
 // TestSchedulerRunFailed verifies the Failed state-machine transition: the
-// TaskRun records the error and any partial content, the severity summary is
-// still computed, and the Task's last run status is "failed".
+// TaskRun records the error and any partial content, and the Task's last run
+// status is "failed".
 func TestSchedulerRunFailed(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &errorRunner{}
@@ -251,9 +261,6 @@ func TestSchedulerRunFailed(t *testing.T) {
 	}
 	if !strings.Contains(run.Status.Content, "P0") {
 		t.Errorf("content = %q, want partial output retained", run.Status.Content)
-	}
-	if run.Status.Summary == nil || run.Status.Summary.P0 != 1 {
-		t.Errorf("summary = %+v, want P0=1 despite failure", run.Status.Summary)
 	}
 
 	var got v1alpha1.Task
@@ -333,16 +340,22 @@ func TestManualRunAnnotationFiresEvenWhenPaused(t *testing.T) {
 }
 
 // TestPausedTaskDoesNotFire verifies a paused task without a manual-run
-// annotation never fires: no TaskRun is created and the task status is marked
-// Paused (design §3.5: Paused never fires).
+// annotation never fires: no TaskRun is created and the task records no next
+// run (design §3.5: Paused never fires).
 func TestPausedTaskDoesNotFire(t *testing.T) {
 	scheme := testScheme(t)
 	cl := newFakeClient(t, scheme)
 
 	task := dueTask(time.Now().Add(-26 * time.Hour)) // would be long due if enabled
 	task.Spec.State = v1alpha1.TaskStatePaused
+	// The pre-state that makes the dedup meaningful: the task ran while
+	// enabled, so its status carries a next run; pausing must clear it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
 	if err := cl.Create(context.Background(), task); err != nil {
 		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
 	}
 
 	r := &ReconcileScheduler{
@@ -368,8 +381,150 @@ func TestPausedTaskDoesNotFire(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != v1alpha1.TaskPhasePaused {
-		t.Errorf("task phase = %s, want Paused", got.Status.Phase)
+	if got.Status.NextRunTime != nil {
+		t.Errorf("paused task still has nextRunTime = %v, want nil", got.Status.NextRunTime)
+	}
+}
+
+// TestPausedTaskWritesStatusOnce verifies the scheduler's pause dedup: the
+// first reconcile records that a paused task has no next run, and every
+// requeue after that writes nothing. resourceVersion is the evidence -- the
+// fake client bumps it on a status write. The first reconcile is asserted to
+// have bumped it, so the follow-up assertion cannot pass vacuously.
+func TestPausedTaskWritesStatusOnce(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-26 * time.Hour))
+	task.Spec.State = v1alpha1.TaskStatePaused
+	// Stale next run from the enabled period: the first reconcile must clear it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: &fakeRunner{}, // must not be invoked
+	}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: task.Name}}
+
+	var seeded v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	// First reconcile: the state changed (paused, no next run) -> exactly one
+	// write.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var afterFirst v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &afterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status.NextRunTime != nil {
+		t.Fatalf("paused task still has nextRunTime = %v, want nil", afterFirst.Status.NextRunTime)
+	}
+	if afterFirst.ResourceVersion == seeded.ResourceVersion {
+		t.Fatalf("resourceVersion = %q unchanged on the first reconcile; the dedup assertion below would be vacuous",
+			afterFirst.ResourceVersion)
+	}
+
+	// Every requeue after that must stay silent: no status write, so
+	// resourceVersion must not move again.
+	for i := 1; i <= 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("requeue %d: %v", i, err)
+		}
+		var got v1alpha1.Task
+		if err := cl.Get(context.Background(), req.NamespacedName, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ResourceVersion != afterFirst.ResourceVersion {
+			t.Errorf("requeue %d wrote status: resourceVersion = %q, want %q (one write when the state changes, none after)",
+				i, got.ResourceVersion, afterFirst.ResourceVersion)
+		}
+	}
+}
+
+// TestMalformedCronWritesStatusOnce verifies the patchNextRun guard: a cron the
+// scheduler cannot parse yields no next run, so once the stale NextRunTime has
+// been cleared the scheduler must stop writing status on every reconcile.
+// resourceVersion is the evidence (the fake client bumps it on a status write).
+// The first reconcile is asserted to have bumped it -- it is the one that
+// clears the stale value -- so the guard assertion cannot pass vacuously.
+func TestMalformedCronWritesStatusOnce(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-26 * time.Hour))
+	task.Spec.Cron = "not-a-cron" // unparseable -> nextDue returns nil
+	// Stale next run from the period when the cron was still valid: the first
+	// reconcile must clear it, and only it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: &fakeRunner{}, // must not be invoked
+	}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: task.Name}}
+
+	var seeded v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	// First reconcile: the stale next run is cleared -> exactly one write.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var afterFirst v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &afterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status.NextRunTime != nil {
+		t.Fatalf("task with a malformed cron still has nextRunTime = %v, want nil", afterFirst.Status.NextRunTime)
+	}
+	if afterFirst.ResourceVersion == seeded.ResourceVersion {
+		t.Fatalf("resourceVersion = %q unchanged on the first reconcile; the guard assertion below would be vacuous",
+			afterFirst.ResourceVersion)
+	}
+
+	// Nothing left to clear: the guard must stop the write, so resourceVersion
+	// must not move again.
+	for i := 1; i <= 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("requeue %d: %v", i, err)
+		}
+		var got v1alpha1.Task
+		if err := cl.Get(context.Background(), req.NamespacedName, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ResourceVersion != afterFirst.ResourceVersion {
+			t.Errorf("requeue %d wrote status: resourceVersion = %q, want %q (one write when the state changes, none after)",
+				i, got.ResourceVersion, afterFirst.ResourceVersion)
+		}
+	}
+
+	// A malformed cron never fires.
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Errorf("taskruns = %d, want 0 for a malformed cron", len(runs.Items))
 	}
 }
 
@@ -538,5 +693,321 @@ func TestSchedulerSkipsRunWhenInstanceMissing(t *testing.T) {
 	}
 	if got.Status.LastTaskRunName != run.Name {
 		t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
+	}
+}
+
+// TestSchedulerSkipsRunWhenPromptIsBlank verifies the fail-closed prompt check:
+// a Task that resolves to a blank prompt must never hand the runner a turn.
+// Both admitted-by-the-schema shapes are covered --
+//
+//   - a template-bound Task whose template has since been deleted, with no
+//     stored instruction (the CEL rule requires one of templateRef/instruction
+//     to be *set*, not to be non-blank); the API always stores a rendered
+//     snapshot, but a hand-written CR need not -- and
+//   - an instruction that is blank only to strings.TrimSpace: the CEL rules
+//     match ^\s*$ with RE2's ASCII-only \s, which does not cover U+00A0 and the
+//     other Unicode spaces the scheduler trims.
+//
+// In both cases the run is recorded as Failed with the reason and the runner is
+// never invoked.
+func TestSchedulerSkipsRunWhenPromptIsBlank(t *testing.T) {
+	cases := []struct {
+		name        string
+		templateRef string
+		instruction string
+		wantReason  string
+	}{
+		{
+			name:        "templateRef does not resolve and no instruction is stored",
+			templateRef: "deleted-template",
+			wantReason:  `template "deleted-template" did not resolve`,
+		},
+		{
+			// U+00A0: blank to strings.TrimSpace, not to the CRD's \s.
+			name:        "instruction is only a non-breaking space",
+			instruction: "\u00a0", // non-breaking space
+			wantReason:  "the inline instruction is blank",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := testScheme(t)
+			runner := &fakeRunner{}
+			cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
+
+			task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+			task.Spec.TemplateRef = tc.templateRef
+			task.Spec.Instruction = tc.instruction
+			if err := cl.Create(ctx, task); err != nil {
+				t.Fatalf("create task: %v", err)
+			}
+
+			r := &ReconcileScheduler{
+				Client: cl,
+				Cfg:    config.Config{Namespace: ""},
+				Runner: runner,
+			}
+			if _, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: task.Name},
+			}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+
+			// No turn ran at all: counting the calls is what makes this
+			// non-vacuous (an empty gotPrompt would pass even if the runner had
+			// been invoked with the blank prompt).
+			if runner.calls != 0 {
+				t.Errorf("runner ran %d turn(s) with prompt %q, want 0", runner.calls, runner.gotPrompt)
+			}
+
+			var runs v1alpha1.TaskRunList
+			if err := cl.List(ctx, &runs); err != nil {
+				t.Fatalf("list taskruns: %v", err)
+			}
+			if len(runs.Items) != 1 {
+				t.Fatalf("taskruns = %d, want 1 (skipped run recorded)", len(runs.Items))
+			}
+			run := runs.Items[0]
+			if run.Status.Phase != v1alpha1.TaskRunFailed {
+				t.Errorf("phase = %s, want Failed", run.Status.Phase)
+			}
+			if !strings.Contains(run.Status.Error, "no instruction to run") {
+				t.Errorf("error = %q, want a missing-instruction reason", run.Status.Error)
+			}
+			if !strings.Contains(run.Status.Error, tc.wantReason) {
+				t.Errorf("error = %q, want it to say %q", run.Status.Error, tc.wantReason)
+			}
+
+			// The skipped occurrence still advances the task's due state, so a
+			// cron task does not re-fire (and re-fail) every reconcile.
+			var got v1alpha1.Task
+			if err := cl.Get(ctx, types.NamespacedName{Name: task.Name}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status.LastTaskRunName != run.Name {
+				t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
+			}
+			if got.Status.LastStatus != "failed" {
+				t.Errorf("task.lastStatus = %q, want failed", got.Status.LastStatus)
+			}
+		})
+	}
+}
+
+// probeRunner reads the Task's status from inside the turn. The ordering under
+// test -- the Task already naming the run that is executing -- must be observed
+// while it is true: a read taken after the run completes cannot tell the two
+// orderings apart.
+type probeRunner struct {
+	cl       client.Client
+	taskName string
+	calls    int
+	observed string
+	readErr  error
+}
+
+func (f *probeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	f.calls++
+	var task v1alpha1.Task
+	if err := f.cl.Get(ctx, types.NamespacedName{Name: f.taskName}, &task); err != nil {
+		f.readErr = err
+		return "", err
+	}
+	f.observed = task.Status.LastTaskRunName
+	return "### P2 -- checked during the run\n", nil
+}
+
+// TestTaskNamesTheRunInProgress verifies lastTaskRunName is set when the run is
+// created, not when it finishes: the field is documented as "the most recent
+// TaskRun created for this Task", and the Portal's report picker preselects
+// lastRunId while the run is in flight -- a value only written at completion
+// makes the picker open the *previous* report for the whole duration.
+func TestTaskNamesTheRunInProgress(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
+
+	task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+	// The state the bug showed up in: a task that already ran, so the field
+	// names an older run before this fire. That makes "names the run in
+	// progress" distinguishable from "still names the previous run".
+	const previousRun = "zhang-wei-daily-inspection-20200101-000000"
+	task.Status.LastTaskRunName = previousRun
+	if err := cl.Create(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(ctx, task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only",
+		},
+	}
+	if err := cl.Create(ctx, tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	runner := &probeRunner{cl: cl, taskName: task.Name}
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+	if runner.readErr != nil {
+		t.Fatalf("reading the task during the run: %v", runner.readErr)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(ctx, &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if runner.observed != run.Name {
+		t.Errorf("lastTaskRunName during the run = %q, want the run in progress %q (previous run was %q)",
+			runner.observed, run.Name, previousRun)
+	}
+	if runner.observed == previousRun {
+		t.Errorf("lastTaskRunName during the run still names the previous run %q", previousRun)
+	}
+}
+
+// TestFailedStartPatchStillNamesTheRunAtTheEnd covers the failure path of the
+// start patch: if the status write that records lastTaskRunName fails (a
+// transient conflict, say) while execution continues, the Task must still end
+// the run naming it.
+//
+// The bug it pins is the baseline of the finish patch. Taking that baseline from
+// the local Task -- which the start patch already mutated -- leaves the field
+// out of the finish patch's diff, so nothing ever writes it and the Task keeps
+// pointing at the previous run even after the new run completed: the symptom the
+// start patch exists to remove, reintroduced by a failure path. Sharing one
+// baseline (taken before the mutation) makes the finish patch re-carry the field
+// and repair the failed start.
+func TestFailedStartPatchStillNamesTheRunAtTheEnd(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+
+	// The state the bug showed up in: a Task that already ran, so the field
+	// names an older run before this fire -- which makes "the finish patch
+	// repaired it" distinguishable from "it was never wrong".
+	const previousRun = "zhang-wei-daily-inspection-20200101-000000"
+
+	task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+	task.Status.LastTaskRunName = previousRun
+	cl := testClientBuilder(scheme, readyInstance("zhang.wei")).Build()
+	if err := cl.Create(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(ctx, task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+	tpl := &v1alpha1.TaskTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "daily-inspection"},
+		Spec: v1alpha1.TaskTemplateSpec{
+			DisplayName: "Daily cluster inspection",
+			Instruction: "Inspect the cluster read-only",
+		},
+	}
+	if err := cl.Create(ctx, tpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	// Fail the first Task status patch that writes the run name -- the start
+	// patch -- and let everything else through. The name is what identifies it:
+	// the scheduler's other Task status writes (nextRunTime, the outcome) never
+	// carry the field.
+	failedStartPatches := 0
+	intercepted := interceptor.NewClient(cl, interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if subResource != "status" {
+				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+			}
+			task, isTask := obj.(*v1alpha1.Task)
+			if !isTask {
+				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+			}
+			data, err := patch.Data(obj)
+			if err != nil {
+				return err
+			}
+			if failedStartPatches == 0 && strings.Contains(string(data), "lastTaskRunName") {
+				failedStartPatches++
+				return apierrors.NewConflict(schema.GroupResource{Group: "ai.cubestack.io", Resource: "tasks"},
+					task.Name, errors.New("simulated transient conflict on the start patch"))
+			}
+			return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+		},
+	})
+
+	// The runner observes the Task from inside the turn: with the start patch
+	// failed, that read must still show the previous run -- which is what makes
+	// the final assertion evidence that the finish patch repaired the field,
+	// rather than a start patch that quietly worked.
+	runner := &probeRunner{cl: intercepted, taskName: task.Name}
+	r := &ReconcileScheduler{
+		Client: intercepted,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: runner,
+	}
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: task.Name},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if failedStartPatches != 1 {
+		t.Fatalf("start patches failed = %d, want exactly 1 injected: the failure path under test was not exercised", failedStartPatches)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1 (a failed status patch must not stop execution)", runner.calls)
+	}
+	if runner.readErr != nil {
+		t.Fatalf("reading the task during the run: %v", runner.readErr)
+	}
+	if runner.observed != previousRun {
+		t.Errorf("lastTaskRunName during the run = %q, want the previous run %q: the start patch was supposed to fail", runner.observed, previousRun)
+	}
+
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(ctx, &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("taskruns = %d, want 1", len(runs.Items))
+	}
+	run := runs.Items[0]
+	if run.Status.Phase != v1alpha1.TaskRunCompleted {
+		t.Fatalf("phase = %s, want Completed (the turn itself succeeded)", run.Status.Phase)
+	}
+
+	var got v1alpha1.Task
+	if err := cl.Get(ctx, types.NamespacedName{Name: task.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastTaskRunName != run.Name {
+		t.Errorf("task.lastTaskRunName = %q after the run, want %q (previous run was %q): the finish patch did not re-carry the field, so a failed start patch left it stale",
+			got.Status.LastTaskRunName, run.Name, previousRun)
+	}
+	if got.Status.LastStatus != "success" {
+		t.Errorf("task.lastStatus = %q, want success", got.Status.LastStatus)
+	}
+	if got.Status.LastRunTime == nil {
+		t.Error("task.lastRunTime not recorded: the finish patch did not land")
 	}
 }

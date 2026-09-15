@@ -88,7 +88,6 @@ func BuiltinProviders(endpoint, modelName string) []v1alpha1.TemplateProviderSpe
 // (design §3.1), with the platform default model at the given endpoint and
 // model name.
 func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
-	builtin := true
 	return &v1alpha1.AgentTemplate{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: BuiltinAgentName,
@@ -108,16 +107,6 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 				"Use kubectl to query and operate cluster resources; run read-only operations directly, " +
 				"and state the action and its blast radius before running write operations. Inspection and reporting use structured output.",
 			Skills: BuiltinSkills,
-			Memory: &v1alpha1.MemorySpec{Enabled: true},
-			Identity: &v1alpha1.AgentIdentitySpec{
-				Mode:  v1alpha1.IdentityModeUser,
-				Scope: "project-write",
-			},
-			Registry: &v1alpha1.AgentRegistrySpec{
-				Builtin:    builtin,
-				Visibility: "system",
-			},
-			Quotas: &v1alpha1.QuotaSpec{MaxInstancesPerUser: 1},
 		},
 	}
 }
@@ -144,7 +133,7 @@ func BuiltinTaskTemplate() *v1alpha1.TaskTemplate {
 5. Check platform component health (Harbor / Keycloak / Prometheus)
 Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
-				{Name: "scope", Type: "string", Default: "all", Enum: []string{"all", "node-pool", "project"}},
+				{Name: "scope", Default: "all", Enum: []string{"all", "node-pool", "project"}},
 			},
 			RequiredPermissions: &v1alpha1.RequiredPermissions{
 				Level: "cluster-read",
@@ -243,13 +232,6 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: BuiltinAgentName,
 				Owner:       user,
-				Identity: v1alpha1.IdentitySpec{
-					Mode: v1alpha1.IdentityModeUser,
-					PrincipalRef: v1alpha1.PrincipalRef{
-						UserRef: user,
-					},
-				},
-				Lifecycle: &v1alpha1.LifecycleSpec{Strategy: "resident"},
 			},
 		}
 		if err := r.createIfMissing(ctx, inst); err != nil {

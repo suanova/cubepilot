@@ -18,6 +18,9 @@ docs {
 
   ⚠️ 没有 `enabled` 布尔 —— `state` 是**唯一**的启停字段。
 
+  返回的 `task` 是 `taskDTO`,字段与 `docs/cubepilot/api.md` 列的一致;其中 `lastRunId?`
+  是最近一次 TaskRun 的名字,未运行过则缺省(新建出来的任务必然缺省)。
+
   后置脚本会把返回的 `task.id` 写进环境变量,供后面几条复用。
 }
 

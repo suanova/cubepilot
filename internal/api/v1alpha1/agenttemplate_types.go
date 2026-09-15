@@ -26,18 +26,6 @@ const (
 	RuntimeHermes AgentRuntime = "Hermes"
 )
 
-// IdentityMode is how an agent instance derives its platform-side identity
-// (design doc §4.4: user = run as the user identity; service = independent
-// service identity, phase 2+).
-type IdentityMode string
-
-const (
-	// IdentityModeUser runs with the creator/user identity (phase one default).
-	IdentityModeUser IdentityMode = "user"
-	// IdentityModeService runs as an independent service identity (phase 2+).
-	IdentityModeService IdentityMode = "service"
-)
-
 // TemplateProviderSpec is one OpenAI-compatible LLM provider of an
 // AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
 // A provider owns the endpoint and the credential once, and lists the backend
@@ -147,47 +135,6 @@ func validateModelID(id string) error {
 	return nil
 }
 
-// AgentIdentitySpec declares the identity mode and scope an agent runs with
-// (design doc §3.1: the definition declares the identity mode and the
-// permission scope it needs).
-type AgentIdentitySpec struct {
-	// Mode is user | service (default user).
-	// +kubebuilder:default=user
-	// +optional
-	Mode IdentityMode `json:"mode,omitempty"`
-	// Scope is a coarse permission scope hint (e.g. project-write).
-	// +optional
-	Scope string `json:"scope,omitempty"`
-}
-
-// MemorySpec declares the agent's memory capability (design §3.1).
-type MemorySpec struct {
-	// Enabled toggles persistent memory for instances of this template.
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-}
-
-// AgentRegistrySpec carries publish / visibility metadata (design §4.6).
-type AgentRegistrySpec struct {
-	// Builtin marks platform-preset templates (every user gets an instance
-	// automatically; cannot be deleted).
-	// +optional
-	Builtin bool `json:"builtin,omitempty"`
-	// Visibility is system | platform-reviewed | public (default system).
-	// +kubebuilder:default=system
-	// +optional
-	Visibility string `json:"visibility,omitempty"`
-}
-
-// QuotaSpec caps resource usage of an agent (design §3.1).
-type QuotaSpec struct {
-	// MaxInstancesPerUser caps instances per user for this template
-	// (default 1).
-	// +kubebuilder:default=1
-	// +optional
-	MaxInstancesPerUser int32 `json:"maxInstancesPerUser,omitempty"`
-}
-
 // ApprovalPolicy is the platform confirmation intent (design §3.1 / issue
 // #116). Uniform across runtimes: each value describes which operations
 // require a human on an interactive turn; each runtime adapter enforces the
@@ -226,9 +173,8 @@ type AllowlistRule struct {
 }
 
 // AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
-// tools (skill refs), memory, identity, policy and registry metadata
-// (design §3.1). It is the "class": shared by all instances, versioned,
-// user-independent.
+// tools (skill refs) and policy (design §3.1). It is the "class": shared by
+// all instances, versioned, user-independent.
 //
 // Like gateway.ModelKey, the rule below leaves an id that already starts with
 // "<provider>/" unprefixed, and it tests that prefix case-insensitively
@@ -302,25 +248,10 @@ type AgentTemplateSpec struct {
 	// discovery) are platform-provided and always available -- NOT listed here.
 	// +optional
 	Skills []string `json:"skills,omitempty"`
-	// Memory declares the memory capability.
-	// +optional
-	Memory *MemorySpec `json:"memory,omitempty"`
-	// Identity declares the identity mode and scope.
-	// +optional
-	Identity *AgentIdentitySpec `json:"identity,omitempty"`
-	// PolicyRefs references confirmation-rule policies (E3, phase 2).
-	// +optional
-	PolicyRefs []string `json:"policyRefs,omitempty"`
-	// Registry carries publish / visibility metadata.
-	// +optional
-	Registry *AgentRegistrySpec `json:"registry,omitempty"`
-	// Quotas caps instances per user.
-	// +optional
-	Quotas *QuotaSpec `json:"quotas,omitempty"`
 }
 
-// AgentTemplateStatus is the observed state of an AgentTemplate definition
-// (phase one: minimal).
+// AgentTemplateStatus is the observed state of an AgentTemplate definition.
+// Minimal: the object is declarative and no controller reconciles it yet.
 type AgentTemplateStatus struct {
 	// ObservedGeneration is the most recent generation observed.
 	// +optional
@@ -331,12 +262,12 @@ type AgentTemplateStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="DisplayName",type="string",JSONPath=".spec.displayName"
 // +kubebuilder:printcolumn:name="Runtime",type="string",JSONPath=".spec.runtime"
-// +kubebuilder:printcolumn:name="Builtin",type="boolean",JSONPath=".spec.registry.builtin"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentTemplate is the declarative definition of an agent (design doc §3.1)
 // -- the platform's first-class object. The builtin cubepilot is the
-// preset first template; user-created templates are phase 2+.
+// preset first template; the API exposes templates read-only, so a user
+// cannot create one.
 type AgentTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
