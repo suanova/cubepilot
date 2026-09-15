@@ -720,7 +720,10 @@ At line 194 (`agent.Spec.Models = nil`) set `agent.Spec.Providers = nil`, and at
 and the fallback at lines 68-70:
 
 ```go
-	if primary == "" && len(providers) > 0 {
+	// The Models guard is not redundant with the loop's skip: the skip makes it
+	// unreachable today, but the field is a slice now, so an index without the
+	// guard is a panic waiting for the next caller.
+	if primary == "" && len(providers) > 0 && len(providers[0].Models) > 0 {
 		primary = gateway.ModelKey(providers[0].Key, providers[0].Models[0])
 	}
 ```
