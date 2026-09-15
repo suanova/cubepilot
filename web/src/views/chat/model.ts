@@ -225,3 +225,36 @@ export function toolArgsDisplay(args: unknown): string {
 // inline code / code blocks). remark-breaks keeps single line breaks as breaks,
 // which chat text uses heavily. Raw HTML in the source is escaped by
 // react-markdown by default.
+
+export function statusLine(b: BubbleMsg): string {
+  if (b.kind === 'user') return ''
+  // The lost-connection headline is checked *before* the phase guard, and it
+  // has to be: sse.ts synthesizes its terminal on paths that run before any
+  // event arrives -- a non-2xx response, a rejected fetch, a body with no
+  // reader -- so the bubble is left with no phase at all, and a guard that
+  // returned '' on an unset phase would render the amber line empty and leave
+  // only the raw reason underneath. The headline is the whole point of that
+  // state, so it must not depend on a phase the failure never set.
+  if (b.transportLost) return 'Lost connection — this turn may still be running'
+  if (!b.phase) return ''
+  // Stopped outranks the parked-state lines below: a turn that was stopped
+  // cannot be waiting on a human, even when one of its cards has not been
+  // settled by the stream yet (a transient the settled event closes).
+  if (b.stopped) return 'Stopped'
+  if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
+  if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
+  const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
+  switch (b.phase) {
+    case 'thinking':
+      return `Thinking... ${secs}s`
+    case 'tools': {
+      const n = b.tools.filter((t) => !t.done).length
+      return n > 0 ? `Running ${n} tool(s)... ${secs}s` : `Collating tool results / thinking... ${secs}s`
+    }
+    case 'streaming':
+      return `Streaming reply... ${secs}s`
+    case 'done':
+      return 'Done'
+  }
+}
+
