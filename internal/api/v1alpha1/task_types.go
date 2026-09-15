@@ -32,6 +32,20 @@ const (
 // links the
 // execution subject (agentRef -> Agent) with the task content (templateRef ->
 // TaskTemplate); creator decides the execution identity.
+//
+// A Task is either bound to a TaskTemplate or free-form, and params only mean
+// something with a template. "At least one", not "exactly one": a
+// template-bound Task carries both, because the stored instruction is the
+// rendered snapshot kept as the fallback for when the template is deleted.
+//
+// Each side tests the value, not just presence -- has() is true for an
+// explicitly empty string, and the API handler trims before comparing, so a
+// blank instruction must fail here too. The blank test uses matches() rather
+// than trim(): matches is core CEL, while trim() comes from the ext.Strings
+// library whose escaping convention is copied below from the proven
+// matches('.*\s.*') rule on TemplateProviderSpec.Models.
+// +kubebuilder:validation:XValidation:rule="(has(self.templateRef) && self.templateRef != \"\") || (has(self.instruction) && !self.instruction.matches('^\\\\s*$'))",message="a task needs a templateRef or a non-blank instruction"
+// +kubebuilder:validation:XValidation:rule="!has(self.params) || (has(self.templateRef) && self.templateRef != \"\")",message="params require a templateRef"
 type TaskSpec struct {
 	// TemplateRef points to the TaskTemplate (optional: inline instruction
 	// tasks are also allowed, phase-one compatibility).
