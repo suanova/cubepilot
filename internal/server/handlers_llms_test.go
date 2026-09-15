@@ -377,9 +377,27 @@ func TestHandleUpdateLLMReplacesModels(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	for _, p := range templateProviders(t, s) {
-		if p.Name == "vllm" && (len(p.Models) != 2 || p.Models[1] != "qwen3-8b") {
-			t.Errorf("models = %v, want [qwen3-32b qwen3-8b]", p.Models)
+	// The assertion must not be conditional on the provider being there: a PUT
+	// that stored nothing, or stored it under another name, is exactly the
+	// failure this test exists to catch, so a missing provider fails the test.
+	var updated *v1alpha1.TemplateProviderSpec
+	providers := templateProviders(t, s)
+	for i := range providers {
+		if providers[i].Name == "vllm" {
+			updated = &providers[i]
+			break
+		}
+	}
+	if updated == nil {
+		t.Fatalf("provider vllm missing after the update: %+v", providers)
+	}
+	want := []string{"qwen3-32b", "qwen3-8b"}
+	if len(updated.Models) != len(want) {
+		t.Fatalf("models = %v, want %v", updated.Models, want)
+	}
+	for i := range want {
+		if updated.Models[i] != want[i] {
+			t.Errorf("models[%d] = %q, want %q", i, updated.Models[i], want[i])
 		}
 	}
 }
@@ -398,6 +416,36 @@ func TestHandleUpdateLLMRefusesEmptyModels(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestNormalizeModels covers the only place incoming ids are cleaned up: it
+// absorbs the blank line a textarea leaves behind and drops an id a client sent
+// twice. An all-blank input returns an empty slice rather than an error -- the
+// assembled provider's Validate is what rejects "no model ids", the same way it
+// does for a hand-edited CR.
+func TestNormalizeModels(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"surrounding whitespace trimmed", []string{" qwen3-32b "}, []string{"qwen3-32b"}},
+		{"duplicates collapsed", []string{"a", "a", "b"}, []string{"a", "b"}},
+		{"empty entries dropped", []string{"a", "", "b"}, []string{"a", "b"}},
+		{"all blank yields empty", []string{"", "  ", "\n"}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeModels(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("normalizeModels(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("normalizeModels(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
