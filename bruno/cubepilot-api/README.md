@@ -30,20 +30,55 @@
    右上角是没有这个控件的。先点开任意一个请求，比如说 `1-read/01-agent-status`。
 
    **不选也能用**：集合根目录的 `collection.bru` 用 `vars:pre-request` 定义了同一组
-   变量作为兜底，所以只读请求在 `No Environment` 状态下照常工作
-   （`environments/local.bru` 里的值优先级更高，要改配置改那边）。
+   变量作为兜底，所以只读请求在 `No Environment` 状态下照常工作。
+
+4. **要改 endpoint / 模型 / 身份，建一个自己的环境 —— 不要改 `local`。**
+
+   `environments/local.bru` 和 `environments/remote.bru` 是**提交进仓库的共享文件**，
+   里面是占位值。直接在 UI 里改它们，git 工作区就脏了；而且那些值（内网地址、
+   session key）本来就不该进版本库。
+
+   在环境下拉里**新建一个环境**（名字建议 `local-<你的名字>`），值填在里面，然后选中
+   它。个人环境文件已被 `.gitignore` 忽略，随便改都不影响仓库。
+
+   ⚠️ 新建时**别用带空格的名字** —— Bruno 识别不了（[usebruno/bruno#294](https://github.com/usebruno/bruno/issues/294)）。
+   另外它在 UI 里不一定立刻出现在下拉里，重开集合或重启应用即可。
+
+   要覆盖的变量和 `local.bru` 一样：`baseUrl` / `user` / `llmName` / `llmModel` /
+   `llmEndpoint`。注意 `llmName` 是 **provider 名**（小写 DNS-1123 label），`llmModel`
+   才是发给 endpoint 的 model id —— 选择用的 ref 是 `{{llmName}}/{{llmModel}}`。
+
+5. **（只有 `6-skills-admin` 需要）打包夹具技能。**
+
+   `6-skills-admin/01-publish-skill` 发的 body 是 `fixtures/sample-skill.tar.gz`，而那个
+   tar **不在版本库里** —— 只有源目录 `fixtures/sample-skill/`（含 `SKILL.md`）在。先打一次包：
+
+   ```bash
+   ./scripts/make-sample-skill.sh
+   ```
+
+   不跑也能跑其余所有分组，只有那一条会 400 `{"error":"empty skill tar"}`（它的测试会
+   把上面这条命令直接报给你）。改了 `SKILL.md` 之后要重新打一次。
+
+   > 为什么不做成自动的：Bruno 的请求脚本跑在沙箱里，`fs` 和 `child_process` 都不在
+   > 白名单里（实测），所以它既不能打包也不能检测文件在不在。
 
 ## 打远端
 
-改 `baseUrl` 即可 —— 集合里所有路径都是相对的。用 `environments/remote.bru`
-（已建好，填地址就行），或在 gui 的环境下拉里选 `remote`，或命令行覆盖：
+改 `baseUrl` 即可 —— 集合里所有路径都是相对的。**和上面一样，别改 `environments/remote.bru`**
+（它也是提交进仓库的共享文件，里面是占位值）：照第 4 步建一个自己的环境，把远端地址填在
+里面；或者只在命令行临时覆盖：
 
 ```bash
-bru run 1-read --env remote
-bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改
+bru run 1-read --env local-<你的名字>                            # 你自己的环境
+bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改，不落盘
 ```
 
 ⚠️ **`baseUrl` 填「入口」地址，不要带 `/api/v1` 后缀** —— 路径已经含有它。
+
+⚠️ 还有一个理由不要用共享环境跑：`bru.setEnvVar()` 会把 `sessionId` / `taskId` **写回
+`environments/<env>.bru`**（见下面「两个 Bruno 的坑」），所以拿 `--env remote` 跑一遍
+`3-chat` / `4-tasks`，那个被跟踪的文件就会被改脏。
 
 ### 四个会让人以为「远端坏了」的坑
 
@@ -90,8 +125,8 @@ bru run 1-read --env local                            # 只跑一组(推荐:先�
 bru run 4-tasks --env local --reporter-html out.html  # 出报告
 ```
 
-**只有 4 个端点会「加热」实例**(冷启动一个 Pod,可能数十秒或直接 503):
-`GET /sessions`、`GET /sessions/{key}/messages`、`POST /messages`、`POST /inspect`。
+**只有 3 个端点会「加热」实例**(冷启动一个 Pod,可能数十秒或直接 503):
+`GET /sessions`、`GET /sessions/{key}/messages`、`POST /messages`。
 其余全部秒回 —— 所以 `1-read` 可以在实例还没 Ready 时先跑。
 
 > **503 `instance warming failed` 不是故障**,等一会儿重试即可。

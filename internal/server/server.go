@@ -166,7 +166,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource)
 	mux.HandleFunc("/api/v1/messages", s.handleMessages)
-	mux.HandleFunc("/api/v1/inspect", s.handleInspect)
 	mux.HandleFunc("/api/v1/tasks", s.handleTasks)
 	mux.HandleFunc("/api/v1/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/v1/audit", s.handleAudit)

@@ -15,11 +15,18 @@ docs {
   - `name` 必须是 DNS 风格小写 slug,否则 400。
   - `visibility` 阶段一强制 `Platform`,其他值 → 400。
 
-  重新打包(改了 `fixtures/sample-skill/` 之后):
-  `./scripts/make-sample-skill.sh`
+  ⚠️ `fixtures/sample-skill.tar.gz` **不在版本库里**,只有源目录
+  `fixtures/sample-skill/`(含 `SKILL.md`)在。跑这条之前先打包:
+
+  ```bash
+  ./scripts/make-sample-skill.sh
+  ```
+
+  改了 `SKILL.md` 之后要重新打一次。没打包就跑,会得到 400
+  `{"error":"empty skill tar"}` —— 这条请求的测试会直接把这个命令报出来。
 
   ⚠️ `file:` 的值**必须写成 `@file(...)`** —— 少了 `@` 只会把路径字符串当正文发出去
-  (会得到 `{"error":"empty skill tar"}` 或 `invalid skill tar`)。
+  (会得到同样的 `{"error":"empty skill tar"}` 或 `invalid skill tar`)。
 }
 
 post {
@@ -38,7 +45,17 @@ body:file {
 }
 
 tests {
-  test("201", function() { expect(res.status).to.equal(201) })
+  test("201, or a pointer to the missing fixture", function() {
+    // fixtures/sample-skill.tar.gz is generated from fixtures/sample-skill/,
+    // not committed. Bruno's script sandbox has no filesystem access -- fs is
+    // not in the module whitelist -- so this request can neither build the tar
+    // nor detect that it is absent. The test is the only place that can turn
+    // the opaque 400 into the command that fixes it.
+    if (res.status === 400 && (res.body.error || "").includes("empty skill tar")) {
+      throw new Error("fixtures/sample-skill.tar.gz is missing -- run ./scripts/make-sample-skill.sh (see the collection README's setup step)")
+    }
+    expect(res.status).to.equal(201)
+  })
   test("enveloped under skill", function() {
     expect(res.body).to.have.property("skill")
   })

@@ -270,7 +270,7 @@ Publishing the images/chart to the registry is handled separately by the
 | Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-admin` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
 | User isolation | Deploy a second user (`--set 'agents.users=admin\,li.ming'`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
-| Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (`/api/v1/inspect`) |
+| Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (the TaskRun's report) |
 
 ## Current simplifications (phase-one boundaries)
 

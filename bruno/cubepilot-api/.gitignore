@@ -1,2 +1,16 @@
 # Local secrets (LLM apiKey). Never commit.
 .env
+
+# Personal environments. Each developer points the collection at their own
+# endpoint and model, so these files hold machine-local values (an internal
+# address, a session key) and must not reach the repository. Create one from
+# the environment selector in the app; prefer the local-<name>.bru form, and
+# add your file's name here if it does not match.
+environments/local-*.bru
+environments/mine.bru
+
+# Built by scripts/make-sample-skill.sh from the tracked fixtures/sample-skill/,
+# and needed before 6-skills-admin/01-publish-skill can run. Repack it rather
+# than committing it.
+fixtures/sample-skill.tar.gz
+
