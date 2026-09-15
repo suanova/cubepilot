@@ -184,6 +184,16 @@ func TestBootstrapEnsure(t *testing.T) {
 		if inst.Spec.TemplateRef != "cubepilot" {
 			t.Errorf("instance %s templateRef = %s", inst.Name, inst.Spec.TemplateRef)
 		}
+		bound := false
+		for _, u := range users {
+			if inst.Spec.Owner == u {
+				bound = true
+				break
+			}
+		}
+		if !bound {
+			t.Errorf("instance %s owner = %q, want one of the configured users %v", inst.Name, inst.Spec.Owner, users)
+		}
 	}
 
 	// Idempotent: a second Ensure must not fail or duplicate.
