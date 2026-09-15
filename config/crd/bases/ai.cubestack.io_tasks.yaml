@@ -21,9 +21,6 @@ spec:
     - jsonPath: .spec.owner
       name: Owner
       type: string
-    - jsonPath: .spec.trigger
-      name: Trigger
-      type: string
     - jsonPath: .spec.state
       name: State
       type: string
@@ -119,9 +116,6 @@ spec:
               nextRunTime:
                 description: NextRunTime is the computed next fire time.
                 format: date-time
-                type: string
-              phase:
-                description: Phase is Ready / Paused.
                 type: string
             type: object
         type: object

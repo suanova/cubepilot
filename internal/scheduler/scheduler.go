@@ -116,11 +116,11 @@ func (r *ReconcileScheduler) nextDue(task *v1alpha1.Task) (next *time.Time, due 
 }
 
 func (r *ReconcileScheduler) patchPaused(ctx context.Context, task *v1alpha1.Task) {
-	if task.Status.Phase == v1alpha1.TaskPhasePaused {
-		return
+	if task.Status.NextRunTime == nil {
+		return // already recorded as having no next run
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Status.Phase = v1alpha1.TaskPhasePaused
+	task.Status.NextRunTime = nil
 	if err := r.Status().Patch(ctx, task, patch); err != nil {
 		log.Printf("scheduler: patch paused %s: %v", task.Name, err)
 	}
@@ -131,10 +131,11 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 		return
 	}
 	patch := client.MergeFrom(task.DeepCopy())
-	task.Status.Phase = v1alpha1.TaskPhaseReady
 	if next != nil {
 		t := metav1.NewTime(*next)
 		task.Status.NextRunTime = &t
+	} else {
+		task.Status.NextRunTime = nil
 	}
 	if err := r.Status().Patch(ctx, task, patch); err != nil {
 		log.Printf("scheduler: patch nextRun %s: %v", task.Name, err)

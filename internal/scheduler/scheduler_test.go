@@ -333,16 +333,22 @@ func TestManualRunAnnotationFiresEvenWhenPaused(t *testing.T) {
 }
 
 // TestPausedTaskDoesNotFire verifies a paused task without a manual-run
-// annotation never fires: no TaskRun is created and the task status is marked
-// Paused (design §3.5: Paused never fires).
+// annotation never fires: no TaskRun is created and the task records no next
+// run (design §3.5: Paused never fires).
 func TestPausedTaskDoesNotFire(t *testing.T) {
 	scheme := testScheme(t)
 	cl := newFakeClient(t, scheme)
 
 	task := dueTask(time.Now().Add(-26 * time.Hour)) // would be long due if enabled
 	task.Spec.State = v1alpha1.TaskStatePaused
+	// The pre-state that makes the dedup meaningful: the task ran while
+	// enabled, so its status carries a next run; pausing must clear it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
 	if err := cl.Create(context.Background(), task); err != nil {
 		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
 	}
 
 	r := &ReconcileScheduler{
@@ -368,8 +374,8 @@ func TestPausedTaskDoesNotFire(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: task.Name}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != v1alpha1.TaskPhasePaused {
-		t.Errorf("task phase = %s, want Paused", got.Status.Phase)
+	if got.Status.NextRunTime != nil {
+		t.Errorf("paused task still has nextRunTime = %v, want nil", got.Status.NextRunTime)
 	}
 }
 

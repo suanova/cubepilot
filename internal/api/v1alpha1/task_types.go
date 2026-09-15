@@ -4,16 +4,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TaskPhase is the lifecycle phase of a Task (design §3.3.3: Ready / Paused).
-type TaskPhase string
-
-const (
-	// TaskPhaseReady means the task is scheduled and will fire.
-	TaskPhaseReady TaskPhase = "Ready"
-	// TaskPhasePaused means the task is paused (no firing).
-	TaskPhasePaused TaskPhase = "Paused"
-)
-
 // TaskState is the task enablement state (design §3.5: string enum, not bool).
 // +kubebuilder:validation:Enum=Enabled;Paused
 type TaskState string
@@ -59,9 +49,6 @@ type TaskSpec struct {
 
 // TaskStatus is the observed state of a Task.
 type TaskStatus struct {
-	// Phase is Ready / Paused.
-	// +optional
-	Phase TaskPhase `json:"phase,omitempty"`
 	// LastRunTime is the last successful scheduling time.
 	// +optional
 	LastRunTime *metav1.Time `json:"lastRunTime,omitempty"`
@@ -80,7 +67,6 @@ type TaskStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Template",type="string",JSONPath=".spec.templateRef"
 // +kubebuilder:printcolumn:name="Owner",type="string",JSONPath=".spec.owner"
-// +kubebuilder:printcolumn:name="Trigger",type="string",JSONPath=".spec.trigger"
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".spec.state"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
