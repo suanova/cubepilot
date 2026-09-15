@@ -62,8 +62,10 @@ spec:
               Like gateway.ModelKey, the rule below leaves an id that already starts with
               "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
               case-sensitive, so an id like "VLLM/x" under provider "vllm" passes the Go
-              validation and is rejected here. The divergence only ever rejects a
-              self-prefixed id, which is never a ref the renderer writes.
+              validation and is rejected here, while an id with whitespace is accepted
+              here though the Go validation rejects it and ModelKey trims it. The
+              rejection only ever hits a self-prefixed id, which is never a ref the
+              renderer writes.
             properties:
               allowlist:
                 description: |-
@@ -107,7 +109,7 @@ spec:
                   DefaultModel is the model ref (<provider>/<modelId>) used when an
                   instance does not select one explicitly. Empty = no default / runtime
                   default.
-                maxLength: 256
+                maxLength: 320
                 type: string
               description:
                 description: Description explains what the template does.

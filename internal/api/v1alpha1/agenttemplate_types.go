@@ -208,8 +208,10 @@ type AllowlistRule struct {
 // Like gateway.ModelKey, the rule below leaves an id that already starts with
 // "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
 // case-sensitive, so an id like "VLLM/x" under provider "vllm" passes the Go
-// validation and is rejected here. The divergence only ever rejects a
-// self-prefixed id, which is never a ref the renderer writes.
+// validation and is rejected here, while an id with whitespace is accepted
+// here though the Go validation rejects it and ModelKey trims it. The
+// rejection only ever hits a self-prefixed id, which is never a ref the
+// renderer writes.
 // +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
@@ -223,7 +225,7 @@ type AgentTemplateSpec struct {
 	// DefaultModel is the model ref (<provider>/<modelId>) used when an
 	// instance does not select one explicitly. Empty = no default / runtime
 	// default.
-	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:MaxLength=320
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Providers is the inline provider list (design §3.3: models are inlined in
