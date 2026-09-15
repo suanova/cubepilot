@@ -32,7 +32,7 @@
 2. 每用户一个实例：`(user, cubepilot)` 对应一个 Runtime Pod 和一个 PVC。
 3. 一个 Runtime 接口、一个实现：平台依赖 `AgentRuntime`，当前唯一实现是 `OpenClawRuntime`。
 4. 工具用 **OpenClaw 原生 skill + exec kubectl** 执行（用户最小权限 + RBAC 兜底）；写操作加**尽力而为的简单 HITL**（命令匹配命中即确认，不保证防住所有变体）。MCP Gateway 是阶段二统一执行边界，阶段一不建。
-5. 能力分两层：generic（kubectl 执行 + schema 发现，零登记）+ skill（经**技能市场**发布、一键安装的 SKILL.md 目录）。不单独建 Model CRD——模型内联在 AgentTemplate 的 `models` 列表（支持外部）。
+5. 能力分两层：generic（kubectl 执行 + schema 发现，零登记）+ skill（经**技能市场**发布、一键安装的 SKILL.md 目录）。不单独建 Model CRD——模型 provider 内联在 AgentTemplate 的 `providers` 列表（每个 provider 一份端点/凭据，服务多个模型 id，支持外部端点）。
 6. 声明配置在控制面，私有状态在 PVC：PVC 不作为 Agent 配置真源。
 
 ---
@@ -115,11 +115,15 @@ metadata:
 spec:
   runtime: OpenClaw
   displayName: 平台管理助手
-  defaultModel: deepseek-v4-flash          # 从 models 里选默认
-  models:                                  # 内联模型清单（无独立 Model CRD）
-    - name: deepseek-v4-flash              # 目录名 = 选择 key = 后端模型名
-      endpoint: https://api.deepseek.com   # 必填，OpenAI 兼容 base URL
-      credentialRef: { name: cubepilot-llm }  # 可选；public 模型没有
+  defaultModel: platform/deepseek-v4-flash    # 一个 <provider>/<modelId> ref
+  providers:                                  # 内联 provider 清单（无独立 Model CRD）
+    - name: platform                          # provider 名，DNS-1123 label：网关 provider key = ref 前缀 = 凭据 Secret 名后缀（llm-platform）
+      endpoint: https://api.deepseek.com      # 必填，OpenAI 兼容 base URL
+      credentialRef: { name: cubepilot-llm }  # 可选；不需要凭据的 provider 没有
+      models: [deepseek-v4-flash]             # 它服务的后端模型 id 列表，原样发给 endpoint，可含 /
+    - name: vllm
+      endpoint: http://vllm.ai.svc:8000/v1
+      models: [qwen3-32b, qwen3-8b]           # 一份端点 + 一份凭据服务多个 id，只写一条 provider
   instructions: |
     你是 CubeStack 平台管理助手。优先使用已登记能力；
     不确定资源或权限时先解释并请求用户澄清。
@@ -142,7 +146,7 @@ metadata:
 spec:
   owner: zhang.wei
   templateRef: cubepilot           # 引用模板名（不钉版；模板更新在下次 reconcile/重启时生效）
-  selectedModel: deepseek-v4-flash         # 从模板 models 里选（覆盖 defaultModel）
+  selectedModel: platform/deepseek-v4-flash  # 模板里的一个模型 ref（覆盖 defaultModel）
   enabledSkills: [kubectl-platform, cluster-inspection]   # 启用的 skill 子集
   userInstructions: "回答尽量简洁，使用中文。"
   # approvalPolicy: None             # 可选：#120 起可覆盖模板默认（None | Allowlist | AlwaysAsk）；缺省 = 继承模板
@@ -154,17 +158,19 @@ status:
   podName: agent-zhang-wei-cubepilot
 ```
 
-可覆盖的字段：模型选择（`selectedModel`，从模板 `models` 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及审批策略覆盖（`approvalPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。**`allowlist` 不是 inherit-or-own**：有效 allowlist = 平台内置 ∪ 模板 `allowlist` ∪ 实例自有条目 ∪ 用户学到的授权，恒为并集——实例条目为空表示「不额外增加」，非空也只是增加，实例无法删掉内置项，平台加固内置列表后也不需要用户做任何事；自有条目**只含 AgentView 手写的规则**（PUT 整表覆盖，须回传要保留的每一条），聊天里 allow-always 学到的授权不进实例 `spec`，而是记在每用户的 grants ConfigMap 里（学习结果是记录态，吊销只删该条授权，不动实例条目）。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
+可覆盖的字段：模型选择（`selectedModel`，从模板 providers 的模型 ref 里选）、skill 子集（`enabledSkills`）、`userInstructions`，以及审批策略覆盖（`approvalPolicy`，缺省空 = 继承模板默认）与自有 allowlist（`allowlist`，空 = 继承模板有效默认）。**通用继承规则（inherit-or-own）**：实例字段空/缺省 = live 继承模板默认（模板更新流入）；整表类字段（`enabledSkills`）在用户首次显式编辑时才物化为自有值，此后该字段权威、模板更新不再流入；文本类（`userInstructions`）天然隔离（追加在模板指令之后）。**`allowlist` 不是 inherit-or-own**：有效 allowlist = 平台内置 ∪ 模板 `allowlist` ∪ 实例自有条目 ∪ 用户学到的授权，恒为并集——实例条目为空表示「不额外增加」，非空也只是增加，实例无法删掉内置项，平台加固内置列表后也不需要用户做任何事；自有条目**只含 AgentView 手写的规则**（PUT 整表覆盖，须回传要保留的每一条），聊天里 allow-always 学到的授权不进实例 `spec`，而是记在每用户的 grants ConfigMap 里（学习结果是记录态，吊销只删该条授权，不动实例条目）。切换模型 = 改 `selectedModel` → 重新解析并注入（§4 配置注入）；skill 类变更靠文件监听热重载，其余配置变更不支持热重载时退化为重启 OpenClaw（会话与记忆在 PVC，不丢失）。`userInstructions` 仅追加用户偏好，最终指令由平台安全与执行约束、模板 `instructions`、用户指令依次组合；它不能删除、替换或降低模板中的安全边界、工具规则和身份限制，也不得扩大模板定义的能力或权限。
 
 **实例开通（自服务）**：用户通过 Portal「Agent 配置」页或 `POST /api/v1/instances` 开通自己的实例（owner 恒为请求者，服务端强制，防越权；读列表同样只返回自己的实例）。重复开通幂等返回已存在实例，不重复拉起 Pod/PVC。operator 控制器负责后续生命周期（Pod/PVC/Service 创建与自愈），API 只写 AgentInstance CR。阶段一预置用户（values 配置的 bootstrap 名单）由 operator 启动时创建；生产环境不依赖该名单，管理员在页面上开通或 `kubectl apply` 均可。
 
-## 3.3 模型（内联，无独立 CRD）
+## 3.3 模型 provider（内联，无独立 CRD）
 
-不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `models` 列表**，每项含 `name`（目录名 = 选择 key = 网关 provider key = 后端模型名）+ `endpoint`（必填，OpenAI 兼容 base URL）+ `credentialRef`（可选，`LocalObjectReference`；public 模型没有）。
+不单独建 Model CRD：模型配置**内联在 AgentTemplate 的 `providers` 列表**。一条 provider 含 `name`（provider 名）+ `endpoint`（必填，OpenAI 兼容 base URL）+ `credentialRef`（可选，`LocalObjectReference`；不需要凭据的 provider 没有）+ `models`（它服务的后端模型 id 列表，至少一个，id 原样发给 endpoint，可含 `/`）。
 
-- 所有模型都是具体端点；`defaultModel` 从 models 里选默认，`AgentInstance.selectedModel` 覆盖。
-- 网关配置（providers + allowlist + 网关 token）由 operator 从模板 models + 凭据 Secret **声明式生成**，写入 `openclaw-config` Secret；不再由安装时环境变量决定。
-- 加一个 LLM = 往模板加一条模型（+ 非 public 时一个凭据 Secret），Portal「LLM 配置」即可完成。
+- **provider 名**是 DNS-1123 label，承担三件事：网关 provider key、模型 ref 的前缀、凭据 Secret 名后缀（`llm-<name>`）。它**与 `models` 里的 id 无关**：一份端点、一份凭据服务多个 id 时只写一条 provider，而不是每个 id 一条（后者在 id 含 `/` 时还会派生出非法的 Secret 名）。
+- **模型 ref** 是 `<provider>/<modelId>`（如 `vllm/qwen3-32b`、`openrouter/anthropic/claude-sonnet-4.5`）：`defaultModel` 与 `AgentInstance.selectedModel` 存的就是它，选择即「哪个 provider 的哪个 id」。id 本身已带 `<provider>/` 前缀时，它自己就是 ref。
+- 所有 provider 都是具体端点；`defaultModel` 从模板的模型 ref 里选默认，`AgentInstance.selectedModel` 覆盖。
+- 网关配置（providers + allowlist + 网关 token）由 operator 从模板 providers + 凭据 Secret **声明式生成**，写入 `openclaw-config` Secret；不再由安装时环境变量决定。
+- 加一个 LLM = 往模板加一条 provider（+ 需要凭据时一个凭据 Secret），Portal「LLM 配置」即可完成；给已有 provider 增加一个模型 id 只是改它的 `models` 列表。
 - 多模型路由/模型目录治理是阶段二的事。
 
 ## 3.4 技能市场（Skill）
@@ -291,7 +297,7 @@ status:
 | 运行指标 | 监控模块 / 日志 | 阶段一预留、验收不要求 |
 | 工具调用索引、确认决定、trajectory | —（阶段一不落） | 阶段二 MCP Gateway / 审计体系落地后引入 |
 
-启动时，将 AgentTemplate、AgentInstance、Skill 合并为不可变 `ResolvedAgentConfig` 注入 Runtime（§4 配置注入）；模型（名 + 端点 + 凭据引用）内联在 AgentTemplate.models。PVC 不是配置真源。
+启动时，将 AgentTemplate、AgentInstance、Skill 合并为不可变 `ResolvedAgentConfig` 注入 Runtime（§4 配置注入）；模型 provider（名 + 端点 + 凭据引用 + 它服务的模型 id 列表）内联在 AgentTemplate.providers。PVC 不是配置真源。
 
 ---
 
@@ -312,7 +318,7 @@ interface AgentRuntime {
 
 统一事件：`message_start`、`agent_thinking`、`message_delta`、`text_replace`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`。
 
-`ResolvedAgentConfig` 包含模型名（内联）、系统指令、启用的 skill 列表、用户身份、凭据挂载位置、PVC 路径；不包含明文密钥。
+`ResolvedAgentConfig` 包含模型 ref（`<provider>/<modelId>`，来自内联 provider 清单）、系统指令、启用的 skill 列表、用户身份、凭据挂载位置、PVC 路径；不包含明文密钥。
 
 Go 实现中的完整 `AgentRuntime` 组合 `LiveTurnRunner`、`OneShotRunner` 与 `SessionReader` 三个语义面；新增 runtime 只需实现该完整契约，不依赖 OpenClaw 协议。传输按交互语义而非“形式统一”选择：Portal 交互聊天由 OpenClaw adapter 通过 gateway protocol WebSocket 发起并订阅，文本、工具事件、确认和终态共用同一有序实时通道；定时任务和同步巡检是只需要最终结果的 one-shot 调用，保留 OpenAI-compatible HTTP/SSE；session 列表与历史是无状态只读查询，保留 HTTP。生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总、加载 skill、exec kubectl（§5）。
 
@@ -361,7 +367,7 @@ schema 发现：runtime Pod 挂**两个 kubeconfig**——用户 kubeconfig（�
 - 用户被禁用、权限回收或凭据轮换时，Instance Manager 更新或撤销实例挂载的凭据。
 - TaskRun 在运行前再次校验身份和授权，不依赖创建任务时的权限。
 - 凭据由平台托管为 Secret，以文件挂载或短期令牌注入 Pod；Template、Instance、PVC 和审计记录中不存明文密钥。
-- 模型端点与凭据内联在 AgentTemplate 的 `models` 里（每项含 endpoint；credentialRef 可选，public 模型没有），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
+- 模型 provider 的端点与凭据内联在 AgentTemplate 的 `providers` 里（每条含 endpoint；credentialRef 可选，不需要凭据的 provider 没有），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
 - 每实例独占 Pod 和 PVC，使用非 root、`readOnlyRootFilesystem`、`seccomp RuntimeDefault`、`drop ALL capabilities`、资源限制；egress 白名单延后（依赖 CNI 网络策略，模型端点需按实例动态放行）。
 
 ---
@@ -502,7 +508,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 - MCP Gateway（统一执行边界 / 完整 HITL / 审计）——阶段二；
 - trajectory / 工具调用索引 / 确认决定——阶段二；
 - 可观测性验收——代码预留即可；
-- Model CRD——模型内联在 AgentTemplate.models（支持外部）；
+- Model CRD——模型 provider 内联在 AgentTemplate.providers（支持外部端点）；
 - 用户自建技能（`visibility: User`）——阶段二；
 - 多 Runtime、Agent 市场、用户自建 Agent、service 身份、RAG、长期记忆、多模态、多模型路由。
 

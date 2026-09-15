@@ -551,7 +551,7 @@ GET /api/v1/sessions/{key}/question/pending
 **Agent 配置的常见错误**：
 
 - `400 model "x" is not in the cubepilot template (add it under Agent Config -> LLM Config first)`
-  —— 模型没进模板的 `spec.models`；空 `selectedModel` 永远允许（表示「用运行时默认」）。
+  —— 模型没进模板的 `spec.providers`（要的是 `<provider>/<modelId>` ref）；空 `selectedModel` 永远允许（表示「用运行时默认」）。
 - `400 pattern is required` —— `allowlist[]` 或 `revokeGrants[]` 里的 `pattern` 为空
   （或只有空白）。以前这种条目被静默丢弃，现在整次 PUT 被拒：规则不会写进实例，也不会下发给
   网关。同一条校验还拒绝含 `|` 的 `pattern`（错误文是 `pattern must not contain '|'`）：

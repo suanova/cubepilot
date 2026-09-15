@@ -1606,6 +1606,8 @@ That grep only finds names that changed. Two fields kept their name and changed 
 - `docs/cubepilot/implementation-status.md` describes the current shape as `TemplateModelSpec{name, endpoint, credentialRef?}`. It is a live status document, not a dated plan, so it must describe the shipped shape -- `spec.providers[]`.
 - `internal/api/v1alpha1/agentinstance_types.go`'s `SelectedModel` doc comment says it "selects a model within the template's inline models list". It is now a `<provider>/<modelId>` ref, and that comment is the source of the field's CRD description text.
 
+- `bruno/cubepilot-api/README.md` describes its groups in model terms ("add a model", "edit / remove a model") while the requests they link to now speak of providers. English-Chinese mixed prose, so the grep above will not find it.
+
 Read `docs/cubepilot/cubepilot-design.md` for the same class of stale prose rather than relying on the grep: any sentence asserting that a model's name is also the provider key, the selection key or the backend model id is now false.
 
 - [ ] **Step 4: Run the full local check**

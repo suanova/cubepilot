@@ -73,10 +73,10 @@ bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改
 |---|---|---|
 | `0-health` | 存活探针(唯一不在 `/api/v1` 下的端点) | 否 |
 | `1-read` | 全部只读端点,不加热实例,永远秒回 | 否 |
-| `2-provision` | 加模型 → 选模型 → 开通实例 → 装技能 | **是** |
+| `2-provision` | 加 provider → 选模型 → 开通实例 → 装技能 | **是** |
 | `3-chat` | 对话 SSE、会话、历史、停止、审批 | **是**(会真调 LLM) |
 | `4-tasks` | 任务 CRUD / 触发 / 报告 | **是** |
-| `5-llm-admin` | 改 / 删模型 | **是** |
+| `5-llm-admin` | 改 / 删 provider | **是** |
 | `6-skills-admin` | 发布 / 卸载技能 | **是** |
 
 每组内按 `seq` 顺序执行;`3-chat` 和 `4-tasks` 会通过后置脚本把
@@ -174,6 +174,6 @@ and to answer with only a number. Let me run kubectl.The answer is 7.
 
 ## 清理
 
-跑完写入组后,集群里会留下:模型、实例的 `selectedModel`、任务(已删)、
-`bruno-demo` 技能、若干会话。模型和实例是可复用的,技能目前**没有 unpublish 端点**,
+跑完写入组后,集群里会留下:provider、实例的 `selectedModel`、任务(已删)、
+`bruno-demo` 技能、若干会话。provider 和实例是可复用的,技能目前**没有 unpublish 端点**,
 要清掉得删 Skill CR。

@@ -85,8 +85,9 @@ type AgentInstanceSpec struct {
 	// Credentials are the typed downstream credentials.
 	// +optional
 	Credentials []CredentialSpec `json:"credentials,omitempty"`
-	// SelectedModel optionally selects a model within the template's inline
-	// models list (overrides defaultModel). FR-M2-005 / design §3.2.
+	// SelectedModel optionally selects a model by its ref
+	// "<provider>/<modelId>", one of the model ids of the providers inlined in
+	// the template (overrides defaultModel). Design §3.2.
 	// +optional
 	SelectedModel string `json:"selectedModel,omitempty"`
 	// DataVolume is the per-instance data directory.
