@@ -1050,59 +1050,64 @@ type llmRequest struct {
 Add the shared validation, next to `credentialChoiceError`:
 
 ```go
-// normalizeModels splits, trims and de-duplicates the requested model ids and
-// rejects the ones that would not survive being used as a model ref. An empty
-// list is refused: a provider with no models renders nothing and is
-// unselectable, so there is no reason to store one.
-func normalizeModels(ids []string) ([]string, error) {
+// normalizeModels trims and de-duplicates the requested model ids. The grammar
+// is deliberately not restated here: the handler validates the assembled
+// TemplateProviderSpec with its own Validate, so the HTTP path and a
+// hand-edited CR are held to exactly the same rules by one implementation.
+func normalizeModels(ids []string) []string {
 	out := make([]string, 0, len(ids))
 	seen := map[string]bool{}
 	for _, raw := range ids {
 		id := strings.TrimSpace(raw)
-		if id == "" {
-			continue
-		}
-		if seen[id] {
+		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
 		out = append(out, id)
 	}
-	if len(out) == 0 {
-		return nil, errors.New("at least one model id is required")
-	}
-	// The same rules the CRD enforces, so an id rejected here is never written
-	// and an id written by hand is rejected by the API server instead.
-	for _, id := range out {
-		if id == "*" {
-			return nil, fmt.Errorf("model id %q is reserved for allowlist wildcards", id)
-		}
-		if strings.ContainsAny(id, " \t\n\r") {
-			return nil, fmt.Errorf("model id %q must not contain whitespace", id)
-		}
-		if strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") || strings.Contains(id, "//") {
-			return nil, fmt.Errorf("model id %q must not contain an empty path segment", id)
-		}
-	}
-	return out, nil
+	return out
 }
 ```
 
+The empty-list rule, the id grammar and the provider-name grammar all arrive through `TemplateProviderSpec.Validate()` (Task 2, Step 4) rather than being written a second time. Trim-then-validate matters: `Validate` rejects an id with surrounding whitespace rather than silently trimming it, so the trim has to happen first and only trailing blank lines from the web form are absorbed.
+
 - [ ] **Step 4: Wire it into add and update**
 
-`handleAddLLM`: after the `credentialChoiceError` check, add
+`handleAddLLM`: after the `credentialChoiceError` check, build the provider and validate it before anything is written:
 
 ```go
-	models, err := normalizeModels(body.Models)
-	if err != nil {
+	provider := v1alpha1.TemplateProviderSpec{
+		Name:     name,
+		Endpoint: endpoint,
+		Models:   normalizeModels(body.Models),
+	}
+	if body.APIKey != "" {
+		provider.CredentialRef = &corev1.LocalObjectReference{Name: llmCredentialName(name)}
+	}
+	// One validator for the HTTP path and the CRD: an empty model list, a bad id
+	// or a bad provider name is refused with the same message either way.
+	if err := provider.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 ```
 
-and use it when building the provider: `Models: models`. The provider `Name` stays the sanitized posted name.
+Then the duplicate-provider check runs against `tmpl.Spec.Providers`, the provider is appended and the credential Secret is created as below. The provider `Name` stays the sanitized posted name.
 
-`handleUpdateLLM`: after the `normalizeEndpoint` call, add the same `normalizeModels` block. A PUT always carries the full list, so an absent or empty `models` is a client error rather than "keep the current ones" -- the web form always sends it, and "keep" would be the one way to reach a provider with no ids. Set `provider.Models = models` alongside `provider.Endpoint = endpoint`.
+`handleUpdateLLM`: after the `normalizeEndpoint` call, apply the new list to the stored provider and validate the result before writing:
+
+```go
+	provider := current
+	provider.Endpoint = endpoint
+	provider.Models = normalizeModels(body.Models)
+	// ... the existing apiKey / public credential decision, unchanged ...
+	if err := provider.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+```
+
+and then store it: `tmpl.Spec.Providers[idx] = provider`. A PUT always carries the full list, so an absent or empty `models` is a client error rather than "keep the current ones" -- the web form always sends it, and "keep" would be the one way to reach a provider with no ids.
 
 **This changes the PUT contract**, so the existing update tests fail and must be updated in this step: every `doReq(..., http.MethodPut, "/api/llms/...", ...)` body in `internal/server/handlers_llms_test.go` gains `"models": []string{<the provider's ids>}`. Grep for them with `grep -n "http.MethodPut, \"/api/llms" internal/server/handlers_llms_test.go` and fix each one; the tests whose subject is the credential decision (`TestHandleUpdateLLMKeepsKey`, `...PromotesPublic`, `...KeepsSharedCredential`) pass the single id the fixture provider serves.
 
