@@ -286,6 +286,18 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
+	// An edit can drop the very id defaultModel names, and the ref then has to
+	// be cleared in this same write -- the delete path's rule, applied to the
+	// ids this update removes. It is not that the ref would be merely stale:
+	// the CEL XValidation on spec.defaultModel refuses a write whose default
+	// names a model the provider no longer lists, so leaving it makes the whole
+	// edit fail with a 500 instead of storing the new list. A default naming
+	// another provider is left alone -- this edit says nothing about it.
+	served, kept := providerModelRefs(current), providerModelRefs(provider)
+	if tmpl.Spec.DefaultModel != "" && served[tmpl.Spec.DefaultModel] && !kept[tmpl.Spec.DefaultModel] {
+		tmpl.Spec.DefaultModel = ""
+	}
+
 	// Template first, then the Secret -- the same ordering as handleAddLLM:
 	// the template decides whether the model exists at all, so a failure after
 	// it leaves a recoverable state (an orphaned Secret) rather than a model
@@ -361,6 +373,19 @@ func deleteLLMCredential(ctx context.Context, s *Server, secretName string) erro
 	return nil
 }
 
+// providerModelRefs is the set of <provider>/<modelId> refs a provider serves.
+// A stored selection and spec.defaultModel are both such refs, so both paths
+// that have to compare against them build the set the same way -- with
+// gateway.ModelKey, which leaves an already-prefixed id alone. A ref built by
+// concatenation would miss the id the renderer treats as that provider's.
+func providerModelRefs(p v1alpha1.TemplateProviderSpec) map[string]bool {
+	refs := make(map[string]bool, len(p.Models))
+	for _, id := range p.Models {
+		refs[gateway.ModelKey(p.Name, id)] = true
+	}
+	return refs
+}
+
 // modelInstanceRef names an instance that selects a model, for the refusal
 // body of a delete.
 type modelInstanceRef struct {
@@ -417,10 +442,7 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 	// a selection is stored as a <provider>/<modelId> ref, never as a bare
 	// provider name.
 	removed := tmpl.Spec.Providers[idx]
-	refs := make(map[string]bool, len(removed.Models))
-	for _, id := range removed.Models {
-		refs[gateway.ModelKey(removed.Name, id)] = true
-	}
+	refs := providerModelRefs(removed)
 
 	selecting, err := s.instancesSelecting(r.Context(), refs)
 	if err != nil {

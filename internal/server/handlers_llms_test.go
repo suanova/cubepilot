@@ -179,8 +179,19 @@ func TestHandleAddLLMProviderWithModels(t *testing.T) {
 	}
 	providers := templateProviders(t, s)
 	last := providers[len(providers)-1]
-	if last.Name != "vllm" || len(last.Models) != 2 {
-		t.Fatalf("provider = %+v, want vllm with two ids", last)
+	if last.Name != "vllm" {
+		t.Fatalf("provider = %+v, want vllm", last)
+	}
+	// Which ids, not just how many: a create that stored a different pair is
+	// the failure this test exists to catch, and a count alone would pass it.
+	want := []string{"qwen3-32b", "deepseek-v4-flash"}
+	if len(last.Models) != len(want) {
+		t.Fatalf("models = %v, want %v", last.Models, want)
+	}
+	for i := range want {
+		if last.Models[i] != want[i] {
+			t.Errorf("models[%d] = %q, want %q", i, last.Models[i], want[i])
+		}
 	}
 	var sec corev1.Secret
 	if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-vllm"}, &sec); err != nil {
@@ -191,6 +202,32 @@ func TestHandleAddLLMProviderWithModels(t *testing.T) {
 		if err := s.cr.Get(context.Background(), types.NamespacedName{Namespace: "cubepilot", Name: "llm-" + id}, &corev1.Secret{}); err == nil {
 			t.Errorf("model %q should not get its own credential Secret", id)
 		}
+	}
+}
+
+// TestHandleAddLLMRefusesNoModels: the add path's counterpart to
+// TestHandleUpdateLLMRefusesEmptyModels, and the reason the existing POST tests
+// each carry a models field. A provider with no ids renders nothing and is
+// unselectable, so an absent list and an empty one are both refused -- the
+// grammar is checked before anything is written, not after.
+func TestHandleAddLLMRefusesNoModels(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"empty list", map[string]any{"name": "vllm", "endpoint": "http://vllm.ai.svc:8000/v1", "apiKey": "sk-1", "models": []string{}}},
+		{"absent field", map[string]any{"name": "vllm", "endpoint": "http://vllm.ai.svc:8000/v1", "apiKey": "sk-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := llmTestServer(t)
+			rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/llms", "", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if providers := templateProviders(t, s); len(providers) != 1 {
+				t.Errorf("nothing should be written on a rejected add: %+v", providers)
+			}
+		})
 	}
 }
 
@@ -416,6 +453,47 @@ func TestHandleUpdateLLMRefusesEmptyModels(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleUpdateLLMClearsDefaultModel is the update-path counterpart to
+// TestHandleDeleteLLMClearsDefaultModel. The delete case clears a ref that
+// would merely be stale; here the stale ref is fatal. The CRD's CEL rule on
+// spec.defaultModel refuses a write whose default names a model the provider no
+// longer lists, so an edit that drops that id and leaves the ref cannot be
+// stored at all -- the handler can only answer 500. The fake client does not
+// evaluate x-kubernetes-validations, so the test cannot observe that refusal;
+// it pins the cleared value the real API server requires instead.
+func TestHandleUpdateLLMClearsDefaultModel(t *testing.T) {
+	s := llmTestServer(t)
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
+		t.Fatalf("fixture defaultModel = %q", got)
+	}
+
+	// The provider the default names drops the id it names: deepseek-v4-flash
+	// is not in the new list.
+	w := putLLM(t, s, controller.BuiltinProviderName, `{"endpoint":"https://api.deepseek.com","models":["qwen3-32b"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "" {
+		t.Errorf("defaultModel = %q, want cleared with the id it named", got)
+	}
+}
+
+// TestHandleUpdateLLMKeepsOtherProvidersDefaultModel: the ref is only cleared
+// when the provider being edited is the one it names. Dropping an id from
+// another provider says nothing about the default, and clearing it there would
+// silently move the gateway's primary model.
+func TestHandleUpdateLLMKeepsOtherProvidersDefaultModel(t *testing.T) {
+	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
+
+	w := putLLM(t, s, "my-qwen", `{"endpoint":"https://api.example.com/v1","models":["qwen3-32b"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := builtinTemplate(t, s).Spec.DefaultModel; got != "platform/deepseek-v4-flash" {
+		t.Errorf("defaultModel = %q, want the untouched platform default", got)
 	}
 }
 

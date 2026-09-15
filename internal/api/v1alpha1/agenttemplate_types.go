@@ -81,6 +81,8 @@ var providerNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // Validate enforces the provider invariants. The same rules are enforced on the
 // API server by the markers on the type and the CEL XValidations on Providers.
+// The structural bounds are mirrored too, so a request this validator accepts
+// cannot be refused by the API server afterwards and surface as a 500.
 func (p TemplateProviderSpec) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("provider name is required")
@@ -91,13 +93,22 @@ func (p TemplateProviderSpec) Validate() error {
 	if p.Endpoint == "" {
 		return fmt.Errorf("provider %q requires an endpoint", p.Name)
 	}
+	if len(p.Endpoint) > 2048 {
+		return fmt.Errorf("provider %q endpoint must be at most 2048 characters", p.Name)
+	}
 	if p.CredentialRef != nil && p.CredentialRef.Name == "" {
 		return fmt.Errorf("provider %q credentialRef must reference a Secret name", p.Name)
 	}
 	if len(p.Models) == 0 {
 		return fmt.Errorf("provider %q requires at least one model", p.Name)
 	}
+	if len(p.Models) > 64 {
+		return fmt.Errorf("provider %q must list at most 64 models", p.Name)
+	}
 	for _, id := range p.Models {
+		if len(id) > 256 {
+			return fmt.Errorf("provider %q model id must be at most 256 characters", p.Name)
+		}
 		if err := validateModelID(id); err != nil {
 			return fmt.Errorf("provider %q: %w", p.Name, err)
 		}

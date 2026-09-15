@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -71,11 +73,28 @@ func TestAgentTemplateRevision(t *testing.T) {
 	}
 }
 
+// modelIDs returns n distinct ids, for the bound cases below.
+func modelIDs(n int) []string {
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("m%d", i)
+	}
+	return ids
+}
+
+// TestTemplateProviderValidate pins the single Go-side grammar validator the
+// write API delegates to. Its bounds are the CRD's markers and CEL rules
+// restated, so a request it accepts is not refused by the API server afterwards
+// -- which the handler could only answer as a 500.
 func TestTemplateProviderValidate(t *testing.T) {
 	ok := []TemplateProviderSpec{
 		{Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1", Models: []string{"qwen3-32b"}},
 		{Name: "openrouter", Endpoint: "https://openrouter.ai/api/v1", Models: []string{"anthropic/claude-sonnet-4.5", "openai/gpt-5-mini"}},
 		{Name: "a", Endpoint: "https://x", Models: []string{"m"}},
+		// The bounds themselves are inclusive: one over is the bad case below.
+		{Name: "max-models", Endpoint: "https://x", Models: modelIDs(64)},
+		{Name: "max-id", Endpoint: "https://x", Models: []string{strings.Repeat("m", 256)}},
+		{Name: "max-endpoint", Endpoint: "https://x/" + strings.Repeat("p", 2038), Models: []string{"m"}},
 	}
 	for _, p := range ok {
 		if err := p.Validate(); err != nil {
@@ -97,6 +116,9 @@ func TestTemplateProviderValidate(t *testing.T) {
 		{Name: "trailing-slash", Endpoint: "https://x", Models: []string{"a/"}},
 		{Name: "space", Endpoint: "https://x", Models: []string{"a b"}},
 		{Name: "bad-cred", Endpoint: "https://x", Models: []string{"m"}, CredentialRef: &corev1.LocalObjectReference{}},
+		{Name: "too-many-models", Endpoint: "https://x", Models: modelIDs(65)},
+		{Name: "long-id", Endpoint: "https://x", Models: []string{strings.Repeat("m", 257)}},
+		{Name: "long-endpoint", Endpoint: "https://x/" + strings.Repeat("p", 2040), Models: []string{"m"}},
 	}
 	for _, p := range bad {
 		if err := p.Validate(); err == nil {
