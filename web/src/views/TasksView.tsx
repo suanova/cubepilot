@@ -436,18 +436,6 @@ export default function TasksView() {
                 </div>
                 <div className="stat">
                   <div className="stat-top">
-                    <span className="stat-label">Severity Counts</span>
-                    <span className="pill warn">{selectedReport.p0 + selectedReport.p1 + selectedReport.p2} items</span>
-                  </div>
-                  <div className="sev-row">
-                    <span className="sev p0"><b>{selectedReport.p0}</b> P0 Critical</span>
-                    <span className="sev p1"><b>{selectedReport.p1}</b> P1 Important</span>
-                    <span className="sev p2"><b>{selectedReport.p2}</b> P2 Minor</span>
-                  </div>
-                  <div className="stat-sub">Severity counts from the selected run report</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-top">
                     <span className="stat-label">Run Count</span>
                   </div>
                   <div className="stat-value">{reports.length}</div>

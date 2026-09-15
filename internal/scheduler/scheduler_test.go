@@ -134,7 +134,7 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 		}
 	}
 
-	// TaskRun created with the platform identity, completed, report summary.
+	// TaskRun created with the platform identity, completed.
 	var runs v1alpha1.TaskRunList
 	if err := cl.List(context.Background(), &runs); err != nil {
 		t.Fatalf("list taskruns: %v", err)
@@ -148,9 +148,6 @@ func TestSchedulerFiresDueTask(t *testing.T) {
 	}
 	if run.Status.Phase != v1alpha1.TaskRunCompleted {
 		t.Errorf("phase = %s, want Completed", run.Status.Phase)
-	}
-	if run.Status.Summary == nil || run.Status.Summary.P1 != 1 {
-		t.Errorf("summary = %+v, want P1=1", run.Status.Summary)
 	}
 
 	// Task status records the run.
@@ -202,8 +199,8 @@ func (f *errorRunner) RunTask(ctx context.Context, creator, sessionKey, prompt s
 }
 
 // TestSchedulerRunFailed verifies the Failed state-machine transition: the
-// TaskRun records the error and any partial content, the severity summary is
-// still computed, and the Task's last run status is "failed".
+// TaskRun records the error and any partial content, and the Task's last run
+// status is "failed".
 func TestSchedulerRunFailed(t *testing.T) {
 	scheme := testScheme(t)
 	runner := &errorRunner{}
@@ -251,9 +248,6 @@ func TestSchedulerRunFailed(t *testing.T) {
 	}
 	if !strings.Contains(run.Status.Content, "P0") {
 		t.Errorf("content = %q, want partial output retained", run.Status.Content)
-	}
-	if run.Status.Summary == nil || run.Status.Summary.P0 != 1 {
-		t.Errorf("summary = %+v, want P0=1 despite failure", run.Status.Summary)
 	}
 
 	var got v1alpha1.Task

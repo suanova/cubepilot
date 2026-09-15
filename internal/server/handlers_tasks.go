@@ -51,9 +51,6 @@ type reportDTO struct {
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	Content    string    `json:"content"`
-	P0         int       `json:"p0"`
-	P1         int       `json:"p1"`
-	P2         int       `json:"p2"`
 }
 
 func taskToDTO(t v1alpha1.Task) taskDTO {
@@ -126,11 +123,6 @@ func taskRunToReport(taskName string, run v1alpha1.TaskRun) reportDTO {
 	}
 	if run.Status.FinishedAt != nil {
 		dto.FinishedAt = run.Status.FinishedAt.Time
-	}
-	if run.Status.Summary != nil {
-		dto.P0 = run.Status.Summary.P0
-		dto.P1 = run.Status.Summary.P1
-		dto.P2 = run.Status.Summary.P2
 	}
 	return dto
 }

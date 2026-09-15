@@ -54,9 +54,6 @@ type EvidenceEntry struct {
 type TaskRunStatus struct {
 	// Phase is Pending / Running / Completed / Failed / Cancelled.
 	Phase TaskRunPhase `json:"phase,omitempty"`
-	// Summary carries the severity counts.
-	// +optional
-	Summary *TaskRunSummary `json:"summary,omitempty"`
 	// Items are the structured findings.
 	// +optional
 	Items []FindingItem `json:"items,omitempty"`
@@ -84,15 +81,6 @@ type TaskRunStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-// TaskRunSummary is the severity summary of a run (design §3.3.4).
-type TaskRunSummary struct {
-	Total    int `json:"total,omitempty"`
-	Abnormal int `json:"abnormal,omitempty"`
-	P0       int `json:"p0,omitempty"`
-	P1       int `json:"p1,omitempty"`
-	P2       int `json:"p2,omitempty"`
-}
-
 // TaskRunSpec is the execution report of a task (design §3.3.4). It is
 // created and written by the scheduler with the platform identity.
 type TaskRunSpec struct {
@@ -113,9 +101,6 @@ type TaskRunSpec struct {
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Task",type="string",JSONPath=".spec.creatorTaskRef.name"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-// +kubebuilder:printcolumn:name="P0",type="integer",JSONPath=".status.summary.p0"
-// +kubebuilder:printcolumn:name="P1",type="integer",JSONPath=".status.summary.p1"
-// +kubebuilder:printcolumn:name="P2",type="integer",JSONPath=".status.summary.p2"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // TaskRun is the execution report (design §3.3.4) -- written by the scheduler

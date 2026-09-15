@@ -210,13 +210,6 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	finish := metav1.Now()
 	run.Status.FinishedAt = &finish
 	run.Status.Content = content
-	run.Status.Summary = &v1alpha1.TaskRunSummary{
-		Total:    countSeverityTotal(content),
-		Abnormal: countSeverity(content, "P0") + countSeverity(content, "P1") + countSeverity(content, "P2"),
-		P0:       countSeverity(content, "P0"),
-		P1:       countSeverity(content, "P1"),
-		P2:       countSeverity(content, "P2"),
-	}
 	if runErr != nil {
 		run.Status.Phase = v1alpha1.TaskRunFailed
 		run.Status.Error = runErr.Error()
@@ -353,27 +346,6 @@ func renderTemplate(instruction string, params map[string]string) string {
 		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
 	}
 	return out
-}
-
-// countSeverity counts severity mentions (shared with the server's report
-// builder; keeps TaskRun summaries consistent).
-func countSeverity(content, sev string) int {
-	return strings.Count(content, sev)
-}
-
-func countSeverityTotal(content string) int {
-	// Total findings ~= count of P0/P1/P2 lines (rough; the agent's structured
-	// report lists each finding under a header).
-	lines := strings.Split(content, "\n")
-	total := 0
-	for _, l := range lines {
-		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "- P0") || strings.HasPrefix(t, "- P1") || strings.HasPrefix(t, "- P2") ||
-			strings.HasPrefix(t, "### P0") || strings.HasPrefix(t, "### P1") || strings.HasPrefix(t, "### P2") {
-			total++
-		}
-	}
-	return total
 }
 
 // SetupWithManager registers the scheduler's watch on Task CRs.

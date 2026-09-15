@@ -24,15 +24,6 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.summary.p0
-      name: P0
-      type: integer
-    - jsonPath: .status.summary.p1
-      name: P1
-      type: integer
-    - jsonPath: .status.summary.p2
-      name: P2
-      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -211,20 +202,6 @@ spec:
                 description: StartedAt / FinishedAt bound the run.
                 format: date-time
                 type: string
-              summary:
-                description: Summary carries the severity counts.
-                properties:
-                  abnormal:
-                    type: integer
-                  p0:
-                    type: integer
-                  p1:
-                    type: integer
-                  p2:
-                    type: integer
-                  total:
-                    type: integer
-                type: object
               templateRevision:
                 description: |-
                   TemplateRevision is the TaskTemplate revision actually used for this run

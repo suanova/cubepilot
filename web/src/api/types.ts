@@ -77,9 +77,6 @@ export interface Report {
   startedAt: string
   finishedAt: string
   content: string
-  p0: number
-  p1: number
-  p2: number
 }
 
 export interface AuditEntry {
