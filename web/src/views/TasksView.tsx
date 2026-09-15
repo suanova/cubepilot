@@ -532,7 +532,7 @@ export default function TasksView() {
                         {tpl.spec?.description || (tpl.spec?.paramsSchema || []).map((p) => p.name).join(', ')}
                         {(tpl.spec?.requiredPermissions?.note || tpl.spec?.requiredPermissions?.level) && (
                           <div style={{ marginTop: 4 }}>
-                            Requires: {tpl.spec.requiredPermissions.note || tpl.spec.requiredPermissions.level}
+                            {tpl.spec?.requiredPermissions?.note || `Requires: ${tpl.spec?.requiredPermissions?.level}`}
                           </div>
                         )}
                       </td>
