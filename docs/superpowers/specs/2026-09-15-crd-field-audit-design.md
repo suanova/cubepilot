@@ -5,9 +5,19 @@ Issue: [#194](https://github.com/suanova/cubepilot/issues/194)
 ## Context
 
 The six `ai.cubestack.io` CRDs were written ahead of the implementation and have
-accumulated fields that no code reads and no consumer sees. v1 is unreleased, so
-there is no compatibility burden -- and a field describing behaviour the platform
-does not have is a lie in the schema, not a harmless placeholder.
+accumulated fields that no code reads and no consumer sees. A field describing
+behaviour the platform does not have is a lie in the schema, not a harmless
+placeholder.
+
+**Premise: v1 is unreleased.** There is no compatibility to keep and no data to
+migrate -- a CRD change here is a delete-and-reinstall, and the objects are
+recreated. Nothing in this design is constrained by what exists on a cluster
+today, and nothing needs a migration path, a default, or a fallback branch. This
+is stated up front because it was violated twice while writing the document: an
+early draft argued a field should stay because `api.md` mentioned it, and a later
+one worked out what happens to existing non-conforming `Task` objects when the
+new validation lands. Both are recorded below rather than quietly deleted, so the
+reasoning is not re-derived.
 
 This is a full pass over every field of all six objects. 15 fields come out, 1
 (`taskDTO.lastRunId`) goes in, 3 defects are fixed and several fields change
@@ -513,50 +523,20 @@ the UI, to make one template's report structured. Design §3.3.4 wants it; desig
 
 ## Migration
 
-None for the removed fields. Each CRD is a structural schema, so the API server
-prunes a removed field from an existing object on the next write to it; no
-object becomes unreadable and no data needs converting. Pre-release, no
-compatibility is promised (the same position taken in #185's design).
+None. The CRDs are deleted and reinstalled and the objects recreated -- there is
+no data to preserve and no compatibility to keep.
 
-**The two new CEL rules on `TaskSpec` are a different matter**, and an earlier
-draft of this section claimed flatly that no existing object becomes invalid.
-That is too strong, and the correction matters:
+An earlier draft of this section argued at length about what happens to an
+existing non-conforming `Task` when the new CEL rules land: which writes trigger
+validation, whether the scheduler's next status write would be rejected, whether
+CRD validation ratcheting applies. All of that is an artifact of treating
+existing objects as a constraint, and they are not one. That draft is recorded
+here only so the reasoning is not re-derived.
 
-- CEL rules are evaluated on CREATE and UPDATE, never on read. So existing Tasks
-  stay readable, and an existing Task that already satisfies the rules is
-  unaffected.
-- A Task with neither `templateRef` nor `instruction` -- both absent, empty, or
-  blank -- is rejected by any write that triggers spec validation.
-- The scheduler writes Task status after every run
-  (`scheduler.go:226-233`), so such a Task would also stop reporting its runs.
-- Whether a *status-only* write re-evaluates a **spec-level** rule depends on CRD
-  validation ratcheting for unchanged fields, which is a cluster-version
-  question. It could not be checked here: `k8s.io/apiserver` is not in this
-  module's build graph, there is no local copy of it, and there is no network in
-  this environment. Assume it can be rejected, and confirm on the target cluster
-  before shipping.
-
-**Who can be affected: only hand-written CRs.** `POST /api/v1/tasks` has always
-refused to create a Task with neither field (`handlers_tasks.go:182`), and the
-builtin template always carries an instruction, so nothing the platform itself
-creates is non-conforming. The set to check is whatever was `kubectl apply`ed:
-
-```sh
-kubectl get tasks -A -o json \
-  | jq -r '.items[]
-      | select((.spec.templateRef // "") == ""
-               and ((.spec.instruction // "") | test("^\\s*$")))
-      | .metadata.name'
-```
-
-A hit needs a `templateRef` or a non-blank `instruction` before the CRD update
-lands. No automation: the expected set is empty, and a one-off `kubectl edit` is
-smaller than a migration path nobody would run twice.
-
-This is also the one part of the change that `make test` cannot verify: the rules
-are compiled by the API server at CRD install time, not by the Go toolchain. The
-kind e2e job, which installs the CRDs and goes on to create Tasks through them,
-is the check.
+Note the CEL rules themselves are not a compatibility question: they are
+compiled by the API server at CRD install time, so `make test` cannot see them
+and the kind e2e job -- which installs the CRDs and then creates Tasks through
+them -- is what verifies them.
 
 ## Testing
 
