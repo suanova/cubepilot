@@ -104,7 +104,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	// Runtime must be supported by this controller.
 	if agent != nil && agent.Spec.Runtime != "" && agent.Spec.Runtime != v1alpha1.RuntimeOpenClaw {
 		return ctrl.Result{}, r.patchStatus(ctx, &inst, v1alpha1.InstanceFailed, "",
-			fmt.Sprintf("runtime %q not supported by phase-one controller", agent.Spec.Runtime))
+			fmt.Sprintf("runtime %q is not supported (only OpenClaw is available)", agent.Spec.Runtime))
 	}
 
 	// Model credential keys are delivered by the supervisor (it reads the

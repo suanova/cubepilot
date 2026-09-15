@@ -487,7 +487,7 @@ func (s *Server) handlePublishSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if v := q.Get("visibility"); v != "" && v != string(v1alpha1.SkillVisibilityPlatform) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "phase 1 supports only visibility=Platform"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "only visibility=Platform is accepted"})
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxSkillTarSize+1))
@@ -709,7 +709,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if skillCR.Spec.Visibility != v1alpha1.SkillVisibilityPlatform {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "phase 1 supports only Platform-visible skills"})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "only Platform-visible skills can be installed"})
 		return
 	}
 	me := s.userOf(r)
