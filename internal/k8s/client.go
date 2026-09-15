@@ -171,9 +171,10 @@ const (
 
 // GeneratedName returns a name derived from prefix and name, bounded to
 // Kubernetes' 253-character limit -- the DNS-1123 subdomain bound, which is
-// what PVC and Pod names get. Inputs that fit are returned unchanged, so
-// existing resources keep their names; longer ones are truncated and given a
-// short hash of the full input, so distinct inputs stay distinct.
+// what PVC and Pod names get. An input that fits is returned unchanged, so the
+// ordinary case stays readable and the name can be derived by eye; a longer one
+// is truncated and given a short hash of the full input, so distinct inputs
+// stay distinct.
 //
 // The bound matters because callers derive these names from AgentInstance
 // metadata.name, which Kubernetes itself accepts up to 253 characters: a
