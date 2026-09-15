@@ -24,11 +24,20 @@ A `DevEnvironment` is a containerized dev machine ("开发机"). Key semantics:
 - `spec.running` (default `false`) is the desired state: `true` = Running,
   `false` = Stopped. Omit it unless you must start the machine now.
 - `spec.resources` is **flat** — `cpu`/`memory` are top-level strings here, NOT
-  a k8s `requests`/`limits` map. `gpuCount` is an integer (≥ 1, default 1);
-  `gpuType` is `nvidia` (default) or `metax`.
-- Omit `spec.storage` to skip a managed workspace PVC (default 10Gi mounted at
-  `/workspace` when present); omit `spec.volumes` unless you mount an existing
-  PVC as the workspace.
+  a k8s `requests`/`limits` map. `gpuCount` is an integer (default 1; `0` means
+  no accelerator — the pod carries no vendor GPU resource and the image brand
+  is not checked); `gpuType` is `nvidia` (default) or `metax`.
+- `spec.runtime.user` is the container account the environment runs as (default
+  `user`); set it for a bring-your-own image that runs as something else (e.g.
+  `jovyan`), and keep `spec.runtime.securityContext.runAsUser` on that account.
+- Omit `spec.storage` to skip a managed workspace PVC (10Gi when present). Its
+  mount path is derived from `spec.runtime` — `/root` for a root container,
+  `/home/<user>` when `spec.runtime.user` names an account, else `/workspace` —
+  or pinned with `spec.storage.mountPath`. The claim is deleted together with
+  the environment unless you set `spec.storage.pvcRetention: retain`. Omit
+  `spec.volumes` unless you mount an existing PVC as the workspace; a
+  referenced PVC is mounted as-is, so it must already grant the environment's
+  account access.
 
 A minimal manifest matching "create a dev machine with N CPU / M memory and
 image X in namespace Y" (created Stopped, no extra storage):
@@ -55,7 +64,7 @@ A DevEnvironment may exist while still Stopped/Pending. Read `status` to know
 what to hand the user:
 
 - `status.phase.name`: `Pending` / `Running` / `Stopped` / `Failed` /
-  `Terminating`. `status.conditions` (e.g. `PodScheduled`, `StorageReady`,
+  `Terminating`. `status.conditions` (e.g. `PodScheduled`, `RouteReady`,
   `Ready`) explains why.
 - `status.endpoints` lists access addresses once Running — Jupyter as a URL,
   SSH as `host:port`, and extra `ports[].name` entries likewise. Report these
@@ -69,7 +78,9 @@ what to hand the user:
   workloads, `endpoint` selection, `modelRequirements`, and any
   user-adjustable `overrides`. Usually created by an admin first.
 - `ModelVersion` — a model artifact: `model` + `version` identify it;
-  `storage` says where it lives; `architecture` / `quantization` describe it.
+  `storage` says where it lives (`strategy` picks one of `HostPath` / `Dynamic`
+  / `Static` / `S3`, and exactly one matching sub-object must accompany it);
+  `architecture` / `quantization` describe it.
 - `InferenceService` — the running service: reference a `modelRef`
   (ModelVersion) and a `profileRef` (InferenceRuntimeProfile); the controller
   reconciles the workload from the profile.
@@ -85,5 +96,11 @@ Required fields and defaults for each kind are in `crd-reference.md`.
 - Using the wrong group/version — everything here is `ai.cubestack.io/v1alpha1`.
 - Assuming `running` is implicit — a DevEnvironment is created Stopped unless
   you set `running: true`.
+- Expecting `spec.storage` to work in a namespace pinned to the Restricted Pod
+  Security Standard — the workspace-claim init container runs as root with
+  `CAP_CHOWN`/`CAP_FOWNER`/`CAP_FSETID`, so the namespace has to be at Baseline.
+- Assuming `spec.storage.pvcRetention` protects the workspace on deletion — the
+  default is `delete`; set it to `retain` before deleting an environment whose
+  data must outlive it.
 - Guessing kinds the map does not cover — fall back to the `kubectl-platform`
   skill's generic schema-discovery recipe instead.
