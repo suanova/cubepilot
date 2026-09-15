@@ -379,6 +379,72 @@ func TestPausedTaskDoesNotFire(t *testing.T) {
 	}
 }
 
+// TestPausedTaskWritesStatusOnce verifies the scheduler's pause dedup: the
+// first reconcile records that a paused task has no next run, and every
+// requeue after that writes nothing. resourceVersion is the evidence -- the
+// fake client bumps it on a status write. The first reconcile is asserted to
+// have bumped it, so the follow-up assertion cannot pass vacuously.
+func TestPausedTaskWritesStatusOnce(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-26 * time.Hour))
+	task.Spec.State = v1alpha1.TaskStatePaused
+	// Stale next run from the enabled period: the first reconcile must clear it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: &fakeRunner{}, // must not be invoked
+	}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: task.Name}}
+
+	var seeded v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	// First reconcile: the state changed (paused, no next run) -> exactly one
+	// write.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var afterFirst v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &afterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status.NextRunTime != nil {
+		t.Fatalf("paused task still has nextRunTime = %v, want nil", afterFirst.Status.NextRunTime)
+	}
+	if afterFirst.ResourceVersion == seeded.ResourceVersion {
+		t.Fatalf("resourceVersion = %q unchanged on the first reconcile; the dedup assertion below would be vacuous",
+			afterFirst.ResourceVersion)
+	}
+
+	// Every requeue after that must stay silent: no status write, so
+	// resourceVersion must not move again.
+	for i := 1; i <= 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("requeue %d: %v", i, err)
+		}
+		var got v1alpha1.Task
+		if err := cl.Get(context.Background(), req.NamespacedName, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ResourceVersion != afterFirst.ResourceVersion {
+			t.Errorf("requeue %d wrote status: resourceVersion = %q, want %q (one write when the state changes, none after)",
+				i, got.ResourceVersion, afterFirst.ResourceVersion)
+		}
+	}
+}
+
 // TestNotDueTaskDoesNotFire verifies a task whose next fire is still in the
 // future does not create a TaskRun.
 func TestNotDueTaskDoesNotFire(t *testing.T) {

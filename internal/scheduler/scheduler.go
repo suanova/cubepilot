@@ -127,6 +127,9 @@ func (r *ReconcileScheduler) patchPaused(ctx context.Context, task *v1alpha1.Tas
 }
 
 func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Task, next *time.Time) {
+	if next == nil && task.Status.NextRunTime == nil {
+		return // nothing to clear: a malformed cron keeps next == nil
+	}
 	if task.Status.NextRunTime != nil && next != nil && task.Status.NextRunTime.Time.Equal(next.Truncate(time.Minute)) {
 		return
 	}
