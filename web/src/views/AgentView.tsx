@@ -267,6 +267,14 @@ export default function AgentView() {
     return raw.split('\n').map((s) => s.trim()).filter(Boolean)
   }
 
+  // modelRef mirrors gateway.ModelKey: an id that already names its provider is
+  // its own ref and must not be prefixed a second time. Keep in step with
+  // internal/gateway/modelkey.go.
+  function modelRef(provider: string, id: string): string {
+    if (id.toLowerCase().startsWith(provider.toLowerCase() + '/')) return id
+    return `${provider}/${id}`
+  }
+
   function startEditProvider(p: TemplateProvider) {
     // The stored key is never sent to the browser, so the field starts blank --
     // and a blank key on edit means "keep the current credential".
@@ -307,6 +315,7 @@ export default function AgentView() {
   // PUT that carries neither a key nor public=true is refused for a provider
   // that has no credential, which is the inline path's case for a public one.
   async function addModelToProvider(p: TemplateProvider, id: string) {
+    if (llmBusy) return
     const trimmed = id.trim()
     if (!trimmed || p.models.includes(trimmed)) return
     setLLMBusy(true)
@@ -323,6 +332,7 @@ export default function AgentView() {
   }
 
   async function removeModelFromProvider(p: TemplateProvider, id: string) {
+    if (llmBusy) return
     if (p.models.length === 1) {
       showToast('A provider needs at least one model -- remove the provider instead')
       return
@@ -423,7 +433,7 @@ export default function AgentView() {
                   {templateProviders.map((p) => (
                     <optgroup key={p.name} label={p.name}>
                       {p.models.map((id) => {
-                        const ref = `${p.name}/${id}`
+                        const ref = modelRef(p.name, id)
                         return <option key={ref} value={ref}>{id}</option>
                       })}
                     </optgroup>

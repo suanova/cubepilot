@@ -168,7 +168,8 @@ X-CubePilot-User: <用户名>
 客户端可以无条件地按 JSON 解析错误体。
 
 错误体是**可扩展**的：个别端点会在 `error` 之外附带结构化字段，客户端应当容忍未知键。
-目前只有一处：删除正被选用的模型时，`409` 额外带一个 `instances` 数组（见 §6.3）。
+目前只有一处：删掉正被选用的模型时——`DELETE` 整个 provider，或 `PUT` 把它服务的某个 id
+从列表里去掉——`409` 额外带一个 `instances` 数组（见 §6.3）。
 
 以下状态码**有特定语义**，客户端必须区别处理：
 
@@ -588,14 +589,19 @@ GET /api/v1/sessions/{key}/question/pending
 - 凭据按 provider 建**一次**（`llm-<name>`），不是每个 id 一个。
 - `apiKey` 与 `public` **互斥**：公开 provider 不能带凭证；非公开 provider 必须给 key。
 - `PUT` 时省略 `apiKey` = 保留已存凭证；`public:true` 会清掉凭证并删掉该 Secret。
-- `DELETE` 删掉整个 provider 以及它服务的**所有** id；只要**其中任何一个**正被实例选用 → `409`，
-  错误体会**额外带一个 `instances` 数组**：
+- `DELETE` 删掉整个 provider 以及它服务的**所有** id；`PUT` 则删掉新列表中不再出现的 id
+  （整体替换的必然结果）。两种删法都受同一条规则约束：只要被删的 id **其中任何一个**正被实例选用
+  → `409`，错误体会**额外带一个 `instances` 数组**：
 
 ```json
 {"error":"provider \"x\" serves a model selected by alice, bob; select another model there first",
  "instances":[{"name":"...","owner":"alice"}]}
 ```
 
+  之所以拒绝而不是放行：`selectedModel` 是 fail-closed 的，那个用户下一回合会直接报
+  `model "..." is not available in template ...`，而不是回退到默认模型。`PUT` 只对被**本次编辑
+  真正删掉**的 ref 生效——保留的 id、新增的 id 都不算；被删的 ref 若**同一模板的别的 provider
+  还在服务**（删掉后仍然可达），其用户照常解析，也不算，不会拒绝。
 - `DELETE` 只删本 API 为这个 provider 命名的那个 Secret（`llm-<name>`）。若 `credentialRef`
   指向别的 Secret（手工改过 CR、多个 provider 共用一个凭据），该 Secret **会被保留**并在响应的
   `warning` 里说明。删单个 id 走 `PUT`，永远不会动 Secret。

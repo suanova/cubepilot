@@ -294,6 +294,25 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 	// edit fail with a 500 instead of storing the new list. A default naming
 	// another provider is left alone -- this edit says nothing about it.
 	served, kept := providerModelRefs(current), providerModelRefs(provider)
+
+	// The ids this edit removes can also be selected by an instance, the
+	// situation the delete path refuses outright: SelectedModelFor is
+	// fail-closed, so the affected user's next turn fails with `model "..."
+	// is not available in template ...` instead of falling back. Dropping a
+	// single id is a one-click action in the Portal, so the delete path's rule
+	// is applied here -- to the refs this edit actually removes, before the
+	// write, so a refusal leaves the catalog exactly as it was.
+	if dropped := droppedModelRefs(tmpl.Spec.Providers, idx, served, kept); len(dropped) > 0 {
+		selecting, err := s.instancesSelecting(r.Context(), dropped)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if len(selecting) > 0 {
+			writeModelSelectionConflict(w, name, selecting)
+			return
+		}
+	}
 	if tmpl.Spec.DefaultModel != "" && served[tmpl.Spec.DefaultModel] && !kept[tmpl.Spec.DefaultModel] {
 		tmpl.Spec.DefaultModel = ""
 	}
@@ -386,8 +405,57 @@ func providerModelRefs(p v1alpha1.TemplateProviderSpec) map[string]bool {
 	return refs
 }
 
+// droppedModelRefs is the set of refs an edit to providers[edited] takes out of
+// the catalog: a ref that provider served before (served), that its new list no
+// longer serves (kept), and that no other provider of the same template serves
+// either. A dropped ref another provider still serves is deliberately left out
+// of the set: resolveModel scans every provider of the template, so a user
+// selecting that ref keeps resolving and the edit strands nobody. Only a ref
+// that is nowhere left to be found can break a selection, so only that one is
+// ever worth refusing.
+func droppedModelRefs(providers []v1alpha1.TemplateProviderSpec, edited int, served, kept map[string]bool) map[string]bool {
+	other := map[string]bool{}
+	for i := range providers {
+		if i == edited {
+			continue
+		}
+		for ref := range providerModelRefs(providers[i]) {
+			other[ref] = true
+		}
+	}
+	dropped := make(map[string]bool, len(served))
+	for ref := range served {
+		if !kept[ref] && !other[ref] {
+			dropped[ref] = true
+		}
+	}
+	return dropped
+}
+
+// writeModelSelectionConflict is the 409 shared by both paths that remove model
+// refs: a delete removes every id of a provider, an update removes the ids its
+// new list drops, and either strands the users still selecting one of them. The
+// Portal renders the message verbatim, so it names who is blocking rather than
+// only counting them, and the structured instances array is what lets the card
+// offer to re-point each selection.
+func writeModelSelectionConflict(w http.ResponseWriter, providerName string, selecting []modelInstanceRef) {
+	who := make([]string, 0, len(selecting))
+	for _, sel := range selecting {
+		if sel.Owner != "" {
+			who = append(who, sel.Owner)
+		} else {
+			who = append(who, sel.Name)
+		}
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": fmt.Sprintf("provider %q serves a model selected by %s; select another model there first",
+			providerName, strings.Join(who, ", ")),
+		"instances": selecting,
+	})
+}
+
 // modelInstanceRef names an instance that selects a model, for the refusal
-// body of a delete.
+// body both removal paths answer with.
 type modelInstanceRef struct {
 	Name  string `json:"name"`
 	Owner string `json:"owner"`
@@ -450,21 +518,7 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	if len(selecting) > 0 {
-		// The Portal shows this message verbatim, so it names who is blocking
-		// the delete rather than only counting them.
-		who := make([]string, 0, len(selecting))
-		for _, sel := range selecting {
-			if sel.Owner != "" {
-				who = append(who, sel.Owner)
-			} else {
-				who = append(who, sel.Name)
-			}
-		}
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error": fmt.Sprintf("provider %q serves a model selected by %s; select another model there first",
-				name, strings.Join(who, ", ")),
-			"instances": selecting,
-		})
+		writeModelSelectionConflict(w, name, selecting)
 		return
 	}
 

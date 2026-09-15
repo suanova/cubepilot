@@ -439,6 +439,144 @@ func TestHandleUpdateLLMReplacesModels(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateLLMRefusesDroppedSelectedModel is the update-path half of the
+// delete rule: an edit that drops an id an instance still selects strands that
+// user, because SelectedModelFor is fail-closed and their next turn fails with
+// `model "..." is not available in template ...` instead of falling back. The
+// card makes dropping a single id a one-click action, so the same 409 the
+// delete path answers -- naming the blocker -- is what this pins.
+func TestHandleUpdateLLMRefusesDroppedSelectedModel(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b", "qwen3-8b"},
+	})
+	seedInstanceSelecting(t, s, "vllm/qwen3-8b")
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{"qwen3-32b"}, // the selected qwen3-8b is gone
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error     string                         `json:"error"`
+		Instances []struct{ Name, Owner string } `json:"instances"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode 409 body: %v", err)
+	}
+	if len(resp.Instances) != 1 || resp.Instances[0].Owner != "zhang.wei" {
+		t.Errorf("409 should name the selecting instance, got %+v", resp.Instances)
+	}
+	// The Portal surfaces the message verbatim, so the blocker has to be in it
+	// -- a bare count sends the admin hunting through instances.
+	if !strings.Contains(resp.Error, "zhang.wei") {
+		t.Errorf("409 message should name the owner, got %q", resp.Error)
+	}
+	// A refused edit must not have stored the shorter list, or the user it
+	// protects is stranded anyway.
+	if got := providerModels(t, s, "vllm"); len(got) != 2 {
+		t.Errorf("models = %v, want the list untouched by the refusal", got)
+	}
+}
+
+// TestHandleUpdateLLMKeepsSelectedModel: only a ref the edit actually drops
+// counts. Dropping the id nobody selected, while the selected one stays, is a
+// legal edit and must not be refused.
+func TestHandleUpdateLLMKeepsSelectedModel(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b", "qwen3-8b"},
+	})
+	seedInstanceSelecting(t, s, "vllm/qwen3-8b")
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{"qwen3-8b"}, // drops qwen3-32b, keeps the selection
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := providerModels(t, s, "vllm"); len(got) != 1 || got[0] != "qwen3-8b" {
+		t.Errorf("models = %v, want the selected id kept", got)
+	}
+}
+
+// TestHandleUpdateLLMAddsModelWhileSelected: an edit that only adds an id drops
+// nothing, so it is refused for nothing -- the guard must look at what the edit
+// removes, not at whether a selection exists at all.
+func TestHandleUpdateLLMAddsModelWhileSelected(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b"},
+	})
+	seedInstanceSelecting(t, s, "vllm/qwen3-32b")
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{"qwen3-32b", "qwen3-8b"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := providerModels(t, s, "vllm"); len(got) != 2 {
+		t.Errorf("models = %v, want the added id stored", got)
+	}
+}
+
+// TestHandleUpdateLLMAllowsRefServedByAnotherProvider: a ref the edit drops
+// from this provider but that another provider of the template still serves is
+// still reachable, because resolveModel matches the stored selection against
+// every provider. Refusing it would block a harmless edit, so the guard checks
+// that before it counts a ref as dropped -- this test pins that ordering, and
+// without it the edit below 409s.
+//
+// Two providers can only serve the same ref in a state the listMapKey on
+// spec.providers forbids: ModelKey prefixes an id with its provider's name, so
+// two distinct names always yield two distinct refs. That is why the fixture
+// below is seeded into the template directly. The branch is defensive -- it
+// keeps a template in that state from turning a cleanup into a refusal -- and
+// this is the only fixture that reaches it.
+func TestHandleUpdateLLMAllowsRefServedByAnotherProvider(t *testing.T) {
+	s := llmTestServer(t,
+		v1alpha1.TemplateProviderSpec{
+			Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+			CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+			Models:        []string{"qwen3-32b"},
+		},
+		v1alpha1.TemplateProviderSpec{
+			Name: "vllm", Endpoint: "http://mirror.ai.svc:8000/v1",
+			Models: []string{"qwen3-32b"}, // same name, so the same ref "vllm/qwen3-32b"
+		})
+	seedInstanceSelecting(t, s, "vllm/qwen3-32b")
+
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/llms/vllm", "", map[string]any{
+		"endpoint": "http://vllm.ai.svc:8000/v1",
+		"models":   []string{"qwen3-8b"}, // drops the ref the other entry still serves
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// providerModels returns the model ids the named provider serves, and fails the
+// test when there is no such provider -- a PUT that lost the provider is the
+// failure these guards must not hide.
+func providerModels(t *testing.T, s *Server, name string) []string {
+	t.Helper()
+	for _, p := range templateProviders(t, s) {
+		if p.Name == name {
+			return p.Models
+		}
+	}
+	t.Fatalf("provider %q missing from the template", name)
+	return nil
+}
+
 // TestHandleUpdateLLMRefusesEmptyModels: a provider with no model ids renders
 // nothing and is unselectable, so the list can never be emptied.
 func TestHandleUpdateLLMRefusesEmptyModels(t *testing.T) {
