@@ -649,11 +649,12 @@ func TestSecurityFingerprintKubeconfigRevision(t *testing.T) {
 	}
 }
 
-// TestAgentInstanceFinalizeIgnoresDataVolumeName pins the finalizer to the
-// platform-generated PVC. spec.dataVolume.pvc currently selects the name the
-// finalizer deletes, so whoever writes that field chooses which PVC the
-// platform reclaims -- including one belonging to something else.
-func TestAgentInstanceFinalizeIgnoresDataVolumeName(t *testing.T) {
+// TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly verifies the finalizer
+// reclaims exactly the platform-generated data-<instance> PVC and nothing else:
+// an unrelated PVC in the same namespace survives, and carrying a dataVolume in
+// the spec does not change which PVC is removed. The name is generated from the
+// instance name, so no spec value can select it.
+func TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly(t *testing.T) {
 	now := metav1.Now()
 	inst := testInstance()
 	inst.DeletionTimestamp = &now
@@ -674,5 +675,24 @@ func TestAgentInstanceFinalizeIgnoresDataVolumeName(t *testing.T) {
 	var gotOther corev1.PersistentVolumeClaim
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "data-somebody-else"}, &gotOther); err != nil {
 		t.Errorf("unrelated pvc was deleted or unreadable (err=%v)", err)
+	}
+}
+
+// TestAgentInstanceDataVolumeSizeReachesPVC verifies a configured
+// dataVolume.size is applied to the data PVC (the default is 1Gi).
+func TestAgentInstanceDataVolumeSizeReachesPVC(t *testing.T) {
+	inst := testInstance()
+	inst.Spec.DataVolume = &v1alpha1.DataVolumeSpec{Size: "2Gi"}
+
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+	reconcileInstance(r, t)
+	reconcileInstance(r, t)
+
+	var pvc corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &pvc); err != nil {
+		t.Fatalf("data pvc not created: %v", err)
+	}
+	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "2Gi" {
+		t.Errorf("pvc storage request = %s, want 2Gi", got.String())
 	}
 }
