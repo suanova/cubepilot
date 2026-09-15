@@ -50,15 +50,20 @@
 
 ## 打远端
 
-改 `baseUrl` 即可 —— 集合里所有路径都是相对的。用 `environments/remote.bru`
-（已建好，填地址就行），或在 gui 的环境下拉里选 `remote`，或命令行覆盖：
+改 `baseUrl` 即可 —— 集合里所有路径都是相对的。**和上面一样，别改 `environments/remote.bru`**
+（它也是提交进仓库的共享文件，里面是占位值）：照第 4 步建一个自己的环境，把远端地址填在
+里面；或者只在命令行临时覆盖：
 
 ```bash
-bru run 1-read --env remote
-bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改
+bru run 1-read --env local-<你的名字>                            # 你自己的环境
+bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改，不落盘
 ```
 
 ⚠️ **`baseUrl` 填「入口」地址，不要带 `/api/v1` 后缀** —— 路径已经含有它。
+
+⚠️ 还有一个理由不要用共享环境跑：`bru.setEnvVar()` 会把 `sessionId` / `taskId` **写回
+`environments/<env>.bru`**（见下面「两个 Bruno 的坑」），所以拿 `--env remote` 跑一遍
+`3-chat` / `4-tasks`，那个被跟踪的文件就会被改脏。
 
 ### 四个会让人以为「远端坏了」的坑
 
