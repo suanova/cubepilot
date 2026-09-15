@@ -439,6 +439,82 @@ func TestPausedTaskWritesStatusOnce(t *testing.T) {
 	}
 }
 
+// TestMalformedCronWritesStatusOnce verifies the patchNextRun guard: a cron the
+// scheduler cannot parse yields no next run, so once the stale NextRunTime has
+// been cleared the scheduler must stop writing status on every reconcile.
+// resourceVersion is the evidence (the fake client bumps it on a status write).
+// The first reconcile is asserted to have bumped it -- it is the one that
+// clears the stale value -- so the guard assertion cannot pass vacuously.
+func TestMalformedCronWritesStatusOnce(t *testing.T) {
+	scheme := testScheme(t)
+	cl := newFakeClient(t, scheme)
+
+	task := dueTask(time.Now().Add(-26 * time.Hour))
+	task.Spec.Cron = "not-a-cron" // unparseable -> nextDue returns nil
+	// Stale next run from the period when the cron was still valid: the first
+	// reconcile must clear it, and only it.
+	task.Status.NextRunTime = &metav1.Time{Time: time.Now().Add(-25 * time.Hour)}
+	if err := cl.Create(context.Background(), task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := cl.Status().Update(context.Background(), task); err != nil {
+		t.Fatalf("seed task status: %v", err)
+	}
+
+	r := &ReconcileScheduler{
+		Client: cl,
+		Cfg:    config.Config{Namespace: ""},
+		Runner: &fakeRunner{}, // must not be invoked
+	}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: task.Name}}
+
+	var seeded v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	// First reconcile: the stale next run is cleared -> exactly one write.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var afterFirst v1alpha1.Task
+	if err := cl.Get(context.Background(), req.NamespacedName, &afterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status.NextRunTime != nil {
+		t.Fatalf("task with a malformed cron still has nextRunTime = %v, want nil", afterFirst.Status.NextRunTime)
+	}
+	if afterFirst.ResourceVersion == seeded.ResourceVersion {
+		t.Fatalf("resourceVersion = %q unchanged on the first reconcile; the guard assertion below would be vacuous",
+			afterFirst.ResourceVersion)
+	}
+
+	// Nothing left to clear: the guard must stop the write, so resourceVersion
+	// must not move again.
+	for i := 1; i <= 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("requeue %d: %v", i, err)
+		}
+		var got v1alpha1.Task
+		if err := cl.Get(context.Background(), req.NamespacedName, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ResourceVersion != afterFirst.ResourceVersion {
+			t.Errorf("requeue %d wrote status: resourceVersion = %q, want %q (one write when the state changes, none after)",
+				i, got.ResourceVersion, afterFirst.ResourceVersion)
+		}
+	}
+
+	// A malformed cron never fires.
+	var runs v1alpha1.TaskRunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list taskruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Errorf("taskruns = %d, want 0 for a malformed cron", len(runs.Items))
+	}
+}
+
 // TestNotDueTaskDoesNotFire verifies a task whose next fire is still in the
 // future does not create a TaskRun.
 func TestNotDueTaskDoesNotFire(t *testing.T) {

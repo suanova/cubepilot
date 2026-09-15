@@ -38,7 +38,7 @@
    设计 §5 一期写操作确认。写前拦截点在 gateway 内部，故走 OpenClaw **原生 exec 审批**，由平台的 **gateway-protocol WS 设备客户端**（Ed25519 device，operator scopes）驱动：Portal 交互回合由同一 WS 连接执行 `sessions.send` 并订阅完整 live stream，把文本、工具和 `exec.approval.requested` 投影为 SSE；Portal 批准/拒绝 -> `POST /api/v1/sessions/{key}/approval` -> WS `exec.approval.resolve`（同回合恢复/拒绝，写不执行）。仅**交互回合**启用 gate；cron/巡检等 one-shot 回合仍走 HTTP 且不 guard。设备配对由 supervisor 通过 loopback 管理员会话自动批准。-> 端到端已建立；CI kind e2e 的 chat 路径含写 gate（reject 不执行）spec。
 
 3. **每用户身份由平台生成（issue #19 落地，2026-09-03）**。
-   设计 §5.3 的双 kubeconfig 已实现并由平台**自动生成**用户身份：operator（builtin bootstrap）为每个 `CUBEPILOT_USERS` 用户创建一个 namespaced `ServiceAccount`（`user-<sanitize>`），ClusterRoleBinding 绑定 **内置 `view`**（cluster 只读、不含 secrets）+ **`cubepilot-user-crds`**（ai.cubestack.io 全量 admin），再用 SA token 渲染 kubeconfig 写入 `<sanitize>-kubeconfig-<32hex>` Secret；agent Pod 默认 `~/.kube/config` 挂它，业务 kubectl 以该用户身份执行。`cubepilot-agent` SA 的 `agent-kubeconfig` 挪到非默认路径 `$CUBEPILOT_PLATFORM_KUBECONFIG`，仅 CRD/kind schema 发现用。helm `agents.kubeconfigs` / setup `--user-kubeconfig` 已移除（不再需要管理员喂）。→ 剩余：SA 角色（现仍通配）收窄另立；动态每用户凭证（`AgentInstance.spec.credentials[target=k8s]` + resolver/supervisor 动态投递）随 #79 动态身份。
+   设计 §5.3 的双 kubeconfig 已实现并由平台**自动生成**用户身份：operator（builtin bootstrap）为每个 `CUBEPILOT_USERS` 用户创建一个 namespaced `ServiceAccount`（`user-<sanitize>`），ClusterRoleBinding 绑定 **内置 `view`**（cluster 只读、不含 secrets）+ **`cubepilot-user-crds`**（ai.cubestack.io 全量 admin），再用 SA token 渲染 kubeconfig 写入 `<sanitize>-kubeconfig-<32hex>` Secret；agent Pod 默认 `~/.kube/config` 挂它，业务 kubectl 以该用户身份执行。`cubepilot-agent` SA 的 `agent-kubeconfig` 挪到非默认路径 `$CUBEPILOT_PLATFORM_KUBECONFIG`，仅 CRD/kind schema 发现用。helm `agents.kubeconfigs` / setup `--user-kubeconfig` 已移除（不再需要管理员喂）。→ 剩余：SA 角色（现仍通配）收窄另立；动态每用户凭证投递未建（本次审计删掉了原 `AgentInstance.spec.credentials`，未另建字段；模型凭据的实际路径是 `AgentTemplate.spec.providers[].credentialRef`，由 resolver 解析、supervisor 投递）随 #79 动态身份。
 
 4. **agentInstanceRef / 多实例显式记录**——阶段一每用户单实例从 owner 推导，符合设计 §3.5「不写 agentInstanceRef」；阶段二多 Agent 时再加回（现状一致）。
 
@@ -81,7 +81,7 @@
 
 - 集中 Tool/MCP Gateway（统一执行边界 + 完整 HITL + 审计）。
 - Keycloak OIDC 鉴权替换 `X-CubePilot-User`。
-- 模型凭据托管、轮换与 egress 白名单；每用户 kubeconfig 动态投递（`AgentInstance.spec.credentials[target=k8s]`，随 #79 动态身份）。
+- 模型凭据托管、轮换与 egress 白名单；每用户 kubeconfig 动态投递未建（原 `AgentInstance.spec.credentials[target=k8s]` 已随本次审计删除；模型凭据现由 `AgentTemplate.spec.providers[].credentialRef` 引用，随 #79 动态身份）。
 - 技能市场（Path 源 + Platform 可见性 + 发布/安装）是**阶段一**交付项（设计阶段一清单，issue #21/#22/#23/#24）；阶段二仅剩：对象存储 S3 技能源、用户私有技能（`visibility: User`）。
 - AgentTemplate/AgentInstance 版本化 Revision、用户自建模板、service 身份。
 - 多 Agent/多 Runtime 形态，TaskRun 显式记录 Agent；trajectory / 工具调用索引 / 确认决定。

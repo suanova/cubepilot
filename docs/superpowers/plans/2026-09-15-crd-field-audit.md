@@ -382,6 +382,8 @@ The assertions are unchanged -- they now hold by construction, because the name 
 Run: `make test`
 Expected: PASS, including this test and the existing `TestAgentInstanceReconcileRemovesDataPVCOnDelete`.
 
+Regenerate first (see Global Constraints) -- a red here before regeneration is the stale `zz_generated.deepcopy.go`, not this change; do not hand-edit it.
+
 - [ ] **Step 5: Regenerate and confirm the field is gone**
 
 ```bash
@@ -598,6 +600,8 @@ func (r *ReconcileScheduler) patchNextRun(ctx context.Context, task *v1alpha1.Ta
 Run: `make test`
 Expected: PASS, including the rewritten paused test.
 
+Regenerate first (see Global Constraints) -- a red here before regeneration is the stale `zz_generated.deepcopy.go`, not this change; do not hand-edit it.
+
 - [ ] **Step 6: Regenerate and confirm**
 
 ```bash
@@ -644,9 +648,10 @@ Assisted-by: Claude Code"
 In `internal/api/v1alpha1/task_types.go`, after the `TaskState` constants and before the `TaskSpec` block (Task 7 adds markers directly above the struct, so leave a blank line between this type and those):
 
 ```go
-// TaskRunOutcome is the outcome of a Task's most recent run. A task's own
-// status records only whether it ran and how it ended; the run's report is the
-// TaskRun's.
+// TaskRunOutcome is the outcome of a Task's most recent run: whether it ended
+// well, which is not the same question as whether it found anything -- a run
+// that completes while reporting problems is still success. The findings live
+// in the TaskRun's report, not here.
 // +kubebuilder:validation:Enum=success;failed
 type TaskRunOutcome string
 
@@ -692,6 +697,8 @@ In `internal/server/handlers_tasks.go`, the DTO keeps its `string` type and conv
 
 Run: `make test`
 Expected: PASS.
+
+Regenerate first (see Global Constraints) -- a red here before regeneration is the stale `zz_generated.deepcopy.go`, not this change; do not hand-edit it.
 
 - [ ] **Step 5: Regenerate and confirm the enum**
 
@@ -1130,6 +1137,8 @@ with:
 
 Run: `make test`
 Expected: PASS -- nothing read either field, so no call site breaks.
+
+Regenerate first (see Global Constraints) -- a red here before regeneration is the stale `zz_generated.deepcopy.go`, not this change; do not hand-edit it.
 
 - [ ] **Step 4: Regenerate and confirm**
 

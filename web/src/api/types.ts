@@ -70,7 +70,9 @@ export interface Report {
   id: string
   taskId: string
   taskName: string
-  trigger: 'Cron' | 'Manual' | 'Inspect'
+  // The scheduler sets only these two (TaskTriggerKind); a running report is
+  // not a third trigger.
+  trigger: 'Cron' | 'Manual'
   // status also carries 'running' while the TaskRun is queued/executing
   // (issue #95); success/failed only once the scheduler finishes the run.
   status: 'success' | 'failed' | 'running'

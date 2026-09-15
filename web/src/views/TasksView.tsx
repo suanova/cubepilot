@@ -188,9 +188,11 @@ export default function TasksView() {
     try {
       const list = await api.taskReports(id)
       setReports(list)
+      // One value for both the index and the selected report, so the two cannot
+      // disagree (an unclamped index would select null at index 0).
       const preferred = preferReportId ? list.findIndex((r) => r.id === preferReportId) : -1
-      const next = preferred >= 0 ? preferred : Math.min(reportIndex, list.length - 1)
-      setReportIndex(Math.max(0, next))
+      const next = Math.max(0, preferred >= 0 ? preferred : Math.min(reportIndex, list.length - 1))
+      setReportIndex(next)
       setSelectedReport(list[next] ?? null)
     } catch {
       setReports([])
@@ -407,7 +409,7 @@ export default function TasksView() {
                 >
                   {reports.map((r, i) => (
                     <option key={r.id} value={i}>
-                      {fmtTime(r.startedAt)} - {r.trigger === 'Cron' ? 'Scheduled' : r.trigger === 'Manual' ? 'Manual' : 'Inspection'}
+                      {fmtTime(r.startedAt)} - {r.trigger === 'Cron' ? 'Scheduled' : 'Manual'}
                       {reportStatusSuffix(r.status)}
                     </option>
                   ))}

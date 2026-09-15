@@ -41,12 +41,12 @@ const (
 //
 // Each side tests the value, not just presence -- has() is true for an
 // explicitly empty string, and the API handler trims before comparing, so a
-// blank instruction must fail here too. The blank test uses matches() rather
-// than trim(): matches is core CEL, while trim() comes from the ext.Strings
-// library whose escaping convention is copied below from the proven
-// matches('.*\\s.*') rule on TemplateProviderSpec.Models.
-// +kubebuilder:validation:XValidation:rule="(has(self.templateRef) && self.templateRef != \"\") || (has(self.instruction) && !self.instruction.matches('^\\\\s*$'))",message="a task needs a templateRef or a non-blank instruction"
-// +kubebuilder:validation:XValidation:rule="!has(self.params) || (has(self.templateRef) && self.templateRef != \"\")",message="params require a templateRef"
+// blank value must fail here too, for either side. The blank test uses
+// matches() rather than trim(): matches is core CEL, while trim() comes from
+// the ext.Strings library whose escaping convention is copied below from the
+// proven matches('.*\\s.*') rule on TemplateProviderSpec.Models.
+// +kubebuilder:validation:XValidation:rule="(has(self.templateRef) && !self.templateRef.matches('^\\\\s*$')) || (has(self.instruction) && !self.instruction.matches('^\\\\s*$'))",message="a task needs a templateRef or a non-blank instruction"
+// +kubebuilder:validation:XValidation:rule="!has(self.params) || (has(self.templateRef) && !self.templateRef.matches('^\\\\s*$'))",message="params require a templateRef"
 type TaskSpec struct {
 	// TemplateRef points to the TaskTemplate. Optional: a Task may instead
 	// carry an inline instruction (the XValidation rules on TaskSpec require

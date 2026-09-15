@@ -46,7 +46,7 @@ type reportDTO struct {
 	ID         string    `json:"id"`
 	TaskID     string    `json:"taskId"`
 	TaskName   string    `json:"taskName"`
-	Trigger    string    `json:"trigger"` // Manual | Cron | Inspect
+	Trigger    string    `json:"trigger"` // Manual | Cron
 	Status     string    `json:"status"`  // success | failed | running
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
