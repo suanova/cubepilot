@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"log"
+	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,12 +40,31 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 	if err := r.List(ctx, &tpls, client.InNamespace(r.Cfg.Namespace)); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Every template is merged into one gateway config, so a provider name must
+	// be unique across all of them -- +listMapKey=name only scopes the name to
+	// its own template. Two providers named alike collide in the rendered
+	// models.providers map (the later entry overwrites the earlier one) while the
+	// allowlist keeps refs from both, which would route one template's model to
+	// another template's endpoint and credential. So the merge is resolved here
+	// instead: name order decides, the first provider to claim a name wins, and a
+	// later provider with a taken name is skipped whole -- its models must not
+	// reach the allowlist either, which skipping the provider achieves.
+	templates := make([]*v1alpha1.AgentTemplate, 0, len(tpls.Items))
+	for i := range tpls.Items {
+		templates = append(templates, &tpls.Items[i])
+	}
+	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
+	claimed := map[string]string{} // provider name -> the template that claimed it
+
 	var providers []gateway.Provider
 	var primary string
-	for i := range tpls.Items {
-		t := &tpls.Items[i]
+	for _, t := range templates {
 		for _, pr := range t.Spec.Providers {
 			if pr.Endpoint == "" || len(pr.Models) == 0 {
+				continue
+			}
+			if owner, taken := claimed[pr.Name]; taken {
+				log.Printf("openclaw-config: provider %q of agent template %q is skipped: the name is already taken by agent template %q", pr.Name, t.Name, owner)
 				continue
 			}
 			p := gateway.Provider{Key: pr.Name, BaseURL: pr.Endpoint, Models: pr.Models}
@@ -60,6 +80,10 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 				// in the config or the PVC.
 				p.APIKey = k8s.EnvNameForProvider(pr.Name)
 			}
+			// Claimed only once the provider is really rendered: a provider
+			// dropped above (missing credential) does not take the name away
+			// from a later template that can serve it.
+			claimed[pr.Name] = t.Name
 			if primary == "" {
 				for _, id := range pr.Models {
 					if gateway.ModelKey(pr.Name, id) == t.Spec.DefaultModel {

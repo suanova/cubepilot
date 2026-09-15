@@ -85,8 +85,9 @@ var providerNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // Validate enforces the provider invariants. The same rules are enforced on the
 // API server by the markers on the type and the CEL XValidations on Providers.
-// The structural bounds are mirrored too, so a request this validator accepts
-// cannot be refused by the API server afterwards and surface as a 500.
+// The structural rules -- the bounds and the +listType=set uniqueness of Models
+// -- are mirrored too, so a request this validator accepts cannot be refused by
+// the API server afterwards and surface as a 500.
 func (p TemplateProviderSpec) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("provider name is required")
@@ -109,7 +110,16 @@ func (p TemplateProviderSpec) Validate() error {
 	if len(p.Models) > 64 {
 		return fmt.Errorf("provider %q must list at most 64 models", p.Name)
 	}
+	// Models is +listType=set, so the API server rejects a repeated id outright.
+	// This is the Go mirror of that structural rule; the HTTP handlers
+	// de-duplicate before they get here (normalizeModels), so it is a hand-written
+	// caller that this catches.
+	seen := make(map[string]struct{}, len(p.Models))
 	for _, id := range p.Models {
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("provider %q lists the model id %q more than once", p.Name, id)
+		}
+		seen[id] = struct{}{}
 		if len(id) > 256 {
 			return fmt.Errorf("provider %q model id must be at most 256 characters", p.Name)
 		}
@@ -221,14 +231,15 @@ type AllowlistRule struct {
 // user-independent.
 //
 // Like gateway.ModelKey, the rule below leaves an id that already starts with
-// "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
-// case-sensitive, so the two diverge in both directions. Milder: an id with
-// whitespace is accepted here though the Go validation rejects it and ModelKey
-// trims it. Worse: provider "vllm" serving the id "VLLM/x" -- ModelKey
-// compares the self-prefix case-insensitively, so it returns "VLLM/x", which
-// is exactly the ref the renderer writes as the allowlist key and as the
-// primary, while CEL computes "vllm/VLLM/x" and rejects the only ref the
-// platform has for that id.
+// "<provider>/" unprefixed, and it tests that prefix case-insensitively
+// (lowerAscii) because ModelKey lowercases both sides. Without that the two
+// diverge: provider "vllm" serving the id "VLLM/x" makes ModelKey return
+// "VLLM/x" -- the ref the renderer writes as the allowlist key and as the
+// primary -- while CEL computed "vllm/VLLM/x" and rejected the only ref the
+// platform has for that id. Provider names are lowercase by the Pattern on
+// Name, so lowercasing the id alone is enough. ModelKey also trims, which is a
+// no-op on the ids the rule ranges over: the XValidation on Providers rejects
+// whitespace, exactly as validateModelID does.
 //
 // Both fields this rule reads are omitempty, so either key can be absent from
 // the serialized object: DefaultModel whenever it is cleared (which is exactly
@@ -243,7 +254,7 @@ type AllowlistRule struct {
 // The two XValidations on Providers need no such guard: the API server does not
 // evaluate field-level rules on an absent field (verified against a live
 // cluster -- an object with no providers key passes them untouched).
-// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel)))",message="defaultModel must name a provider/model listed in providers"
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultModel) || self.defaultModel == \"\" || (has(self.providers) && self.providers.exists(p, p.models.exists(m, (m.lowerAscii().startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel)))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`
@@ -264,7 +275,7 @@ type AgentTemplateSpec struct {
 	// endpoint, an optional credential and the model ids it serves; an instance
 	// selects a <provider>/<modelId> ref within this list.
 	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || p.credentialRef.name != \"\")",message="credentialRef must reference a Secret name"
-	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/') && !m.matches('.*\\\\s.*')))",message="every model id must be non-empty, without an empty path segment, without whitespace, and not the wildcard"
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=map
 	// +listMapKey=name

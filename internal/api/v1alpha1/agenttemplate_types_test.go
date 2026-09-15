@@ -115,6 +115,9 @@ func TestTemplateProviderValidate(t *testing.T) {
 		{Name: "leading-slash", Endpoint: "https://x", Models: []string{"/a"}},
 		{Name: "trailing-slash", Endpoint: "https://x", Models: []string{"a/"}},
 		{Name: "space", Endpoint: "https://x", Models: []string{"a b"}},
+		// Models is +listType=set, so the API server refuses a repeated id; the
+		// Go mirror must refuse it too.
+		{Name: "duplicate-ids", Endpoint: "https://x", Models: []string{"m", "m"}},
 		// The Go counterpart of the credentialRef CEL rule on spec.providers:
 		// present but unnamed is refused, absent (every ok case above) is not.
 		{Name: "bad-cred", Endpoint: "https://x", Models: []string{"m"}, CredentialRef: &corev1.LocalObjectReference{}},

@@ -60,14 +60,15 @@ spec:
               user-independent.
 
               Like gateway.ModelKey, the rule below leaves an id that already starts with
-              "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
-              case-sensitive, so the two diverge in both directions. Milder: an id with
-              whitespace is accepted here though the Go validation rejects it and ModelKey
-              trims it. Worse: provider "vllm" serving the id "VLLM/x" -- ModelKey
-              compares the self-prefix case-insensitively, so it returns "VLLM/x", which
-              is exactly the ref the renderer writes as the allowlist key and as the
-              primary, while CEL computes "vllm/VLLM/x" and rejects the only ref the
-              platform has for that id.
+              "<provider>/" unprefixed, and it tests that prefix case-insensitively
+              (lowerAscii) because ModelKey lowercases both sides. Without that the two
+              diverge: provider "vllm" serving the id "VLLM/x" makes ModelKey return
+              "VLLM/x" -- the ref the renderer writes as the allowlist key and as the
+              primary -- while CEL computed "vllm/VLLM/x" and rejected the only ref the
+              platform has for that id. Provider names are lowercase by the Pattern on
+              Name, so lowercasing the id alone is enough. ModelKey also trims, which is a
+              no-op on the ids the rule ranges over: the XValidation on Providers rejects
+              whitespace, exactly as validateModelID does.
 
               Both fields this rule reads are omitempty, so either key can be absent from
               the serialized object: DefaultModel whenever it is cleared (which is exactly
@@ -244,9 +245,9 @@ spec:
                   rule: self.all(p, !has(p.credentialRef) || p.credentialRef.name
                     != "")
                 - message: every model id must be non-empty, without an empty path
-                    segment, and not the wildcard
+                    segment, without whitespace, and not the wildcard
                   rule: self.all(p, p.models.all(m, m != "" && m != '*' && !m.contains('//')
-                    && !m.startsWith('/') && !m.endsWith('/')))
+                    && !m.startsWith('/') && !m.endsWith('/') && !m.matches('.*\\s.*')))
               quotas:
                 description: Quotas caps instances per user.
                 properties:
@@ -292,7 +293,7 @@ spec:
             x-kubernetes-validations:
             - message: defaultModel must name a provider/model listed in providers
               rule: '!has(self.defaultModel) || self.defaultModel == "" || (has(self.providers)
-                && self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name
+                && self.providers.exists(p, p.models.exists(m, (m.lowerAscii().startsWith(p.name
                 + ''/'') ? m : p.name + ''/'' + m) == self.defaultModel)))'
           status:
             description: |-
