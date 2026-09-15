@@ -989,6 +989,8 @@ EOF
 - Consumes: `v1alpha1.TemplateProviderSpec` from Task 2.
 - Produces: `llmRequest{Name, Endpoint, APIKey string; Public bool; Models []string}`; `POST /api/v1/llms` creates a provider; `PUT /api/v1/llms/{name}` replaces endpoint, credential and the model list; `DELETE /api/v1/llms/{name}` removes the provider and its credential. Routes are unchanged, so `apidoc_test.go`'s path assertions still hold -- but the documented request shape must be updated.
 
+**Both POST and PUT respond under the same envelope key, `provider`.** The previous task made POST return `{"provider": provider}`; `handleUpdateLLM` still returns `{"model": provider}`, left over from the shape before it. Change it here. The two handlers answer for the same resource, and a client that reads `provider` after a POST would otherwise have to read `model` after a PUT; the web client's `api.updateLLM` is touched in Task 4 regardless, so carrying the asymmetry one task further buys nothing.
+
 - [ ] **Step 1: Write the failing tests**
 
 Add to `internal/server/handlers_llms_test.go`:
@@ -1598,6 +1600,13 @@ The "LLM providers (declarative)" section and the YAML at lines 122-128 show `sp
 Run: `grep -rn "spec\.models\|spec/models\|TemplateModelSpec\|llm-<model>\|EnvNameForModel" --include='*.md' --include='*.yaml' --include='*.go' . | grep -v node_modules | grep -v '^./deploy/charts/cubepilot/crds/'`
 
 Expected after the earlier tasks: only historical documents under `docs/superpowers/specs/` and `docs/superpowers/plans/` (which record what was true when they were written and must not be rewritten) plus `test/e2e/framework/testdata/`. Fix anything else.
+
+That grep only finds names that changed. Two fields kept their name and changed meaning, so it cannot find them, and both are wrong now:
+
+- `docs/cubepilot/implementation-status.md` describes the current shape as `TemplateModelSpec{name, endpoint, credentialRef?}`. It is a live status document, not a dated plan, so it must describe the shipped shape -- `spec.providers[]`.
+- `internal/api/v1alpha1/agentinstance_types.go`'s `SelectedModel` doc comment says it "selects a model within the template's inline models list". It is now a `<provider>/<modelId>` ref, and that comment is the source of the field's CRD description text.
+
+Read `docs/cubepilot/cubepilot-design.md` for the same class of stale prose rather than relying on the grep: any sentence asserting that a model's name is also the provider key, the selection key or the backend model id is now false.
 
 - [ ] **Step 4: Run the full local check**
 
