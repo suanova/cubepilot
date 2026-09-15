@@ -180,6 +180,26 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	if strings.TrimSpace(prompt) == "" {
 		prompt = task.Spec.Instruction
 	}
+	// A blank prompt must never reach the runner as a turn. Both sources have
+	// been tried above, so nothing is left to resolve: the Task points at a
+	// template that is gone (or renders empty) and stores no instruction of its
+	// own. A hand-written CR can be exactly that shape -- the TaskSpec CEL rules
+	// require at least one of templateRef/instruction to be *set*, not to be
+	// non-blank, and their \s does not cover U+00A0 and the other Unicode
+	// spaces TrimSpace does -- so this is the fail-closed side of that
+	// divergence rather than an unreachable branch.
+	if strings.TrimSpace(prompt) == "" {
+		// Name both sources in the record: the template that was tried and the
+		// inline instruction that would have been the fallback.
+		missing := "no template is referenced and the inline instruction is blank"
+		if task.Spec.TemplateRef != "" {
+			missing = fmt.Sprintf("template %q did not resolve and no inline instruction is stored", task.Spec.TemplateRef)
+		}
+		reason := fmt.Errorf("task %s: no instruction to run: %s; run skipped", task.Name, missing)
+		log.Printf("scheduler: task %s fire skipped: %v", task.Name, reason)
+		r.recordSkippedRun(ctx, task, trigger, reason)
+		return reason
+	}
 
 	run := NewTaskRun(task, trigger)
 	if err := r.Create(ctx, run); err != nil {

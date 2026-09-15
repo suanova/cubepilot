@@ -45,13 +45,17 @@ func newFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) 
 		Build()
 }
 
-// fakeRunner records the prompt and returns a canned report.
+// fakeRunner records the prompt and returns a canned report. calls counts the
+// turns actually run, so a test asserting "no turn was run" cannot pass just
+// because the prompt it inspected happened to be empty.
 type fakeRunner struct {
 	gotPrompt string
 	gotUser   string
+	calls     int
 }
 
 func (f *fakeRunner) RunTask(ctx context.Context, creator, sessionKey, prompt string) (string, error) {
+	f.calls++
 	f.gotUser = creator
 	f.gotPrompt = prompt
 	return "### P1 Important -- inference pod CrashLoopBackOff\nEvidence: kubectl get pods", nil
@@ -680,5 +684,104 @@ func TestSchedulerSkipsRunWhenInstanceMissing(t *testing.T) {
 	}
 	if got.Status.LastTaskRunName != run.Name {
 		t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
+	}
+}
+
+// TestSchedulerSkipsRunWhenPromptIsBlank verifies the fail-closed prompt check:
+// a Task that resolves to a blank prompt must never hand the runner a turn.
+// Both admitted-by-the-schema shapes are covered --
+//
+//   - a template-bound Task whose template has since been deleted, with no
+//     stored instruction (the CEL rule requires one of templateRef/instruction
+//     to be *set*, not to be non-blank); the API always stores a rendered
+//     snapshot, but a hand-written CR need not -- and
+//   - an instruction that is blank only to strings.TrimSpace: the CEL rules
+//     match ^\s*$ with RE2's ASCII-only \s, which does not cover U+00A0 and the
+//     other Unicode spaces the scheduler trims.
+//
+// In both cases the run is recorded as Failed with the reason and the runner is
+// never invoked.
+func TestSchedulerSkipsRunWhenPromptIsBlank(t *testing.T) {
+	cases := []struct {
+		name        string
+		templateRef string
+		instruction string
+		wantReason  string
+	}{
+		{
+			name:        "templateRef does not resolve and no instruction is stored",
+			templateRef: "deleted-template",
+			wantReason:  `template "deleted-template" did not resolve`,
+		},
+		{
+			// U+00A0: blank to strings.TrimSpace, not to the CRD's \s.
+			name:        "instruction is only a non-breaking space",
+			instruction: "\u00a0", // non-breaking space
+			wantReason:  "the inline instruction is blank",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := testScheme(t)
+			runner := &fakeRunner{}
+			cl := newFakeClient(t, scheme, readyInstance("zhang.wei"))
+
+			task := dueTask(time.Now().Add(-2 * time.Minute)) // due if enabled
+			task.Spec.TemplateRef = tc.templateRef
+			task.Spec.Instruction = tc.instruction
+			if err := cl.Create(ctx, task); err != nil {
+				t.Fatalf("create task: %v", err)
+			}
+
+			r := &ReconcileScheduler{
+				Client: cl,
+				Cfg:    config.Config{Namespace: ""},
+				Runner: runner,
+			}
+			if _, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: task.Name},
+			}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+
+			// No turn ran at all: counting the calls is what makes this
+			// non-vacuous (an empty gotPrompt would pass even if the runner had
+			// been invoked with the blank prompt).
+			if runner.calls != 0 {
+				t.Errorf("runner ran %d turn(s) with prompt %q, want 0", runner.calls, runner.gotPrompt)
+			}
+
+			var runs v1alpha1.TaskRunList
+			if err := cl.List(ctx, &runs); err != nil {
+				t.Fatalf("list taskruns: %v", err)
+			}
+			if len(runs.Items) != 1 {
+				t.Fatalf("taskruns = %d, want 1 (skipped run recorded)", len(runs.Items))
+			}
+			run := runs.Items[0]
+			if run.Status.Phase != v1alpha1.TaskRunFailed {
+				t.Errorf("phase = %s, want Failed", run.Status.Phase)
+			}
+			if !strings.Contains(run.Status.Error, "no instruction to run") {
+				t.Errorf("error = %q, want a missing-instruction reason", run.Status.Error)
+			}
+			if !strings.Contains(run.Status.Error, tc.wantReason) {
+				t.Errorf("error = %q, want it to say %q", run.Status.Error, tc.wantReason)
+			}
+
+			// The skipped occurrence still advances the task's due state, so a
+			// cron task does not re-fire (and re-fail) every reconcile.
+			var got v1alpha1.Task
+			if err := cl.Get(ctx, types.NamespacedName{Name: task.Name}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status.LastTaskRunName != run.Name {
+				t.Errorf("task.lastTaskRunName = %q, want %q", got.Status.LastTaskRunName, run.Name)
+			}
+			if got.Status.LastStatus != "failed" {
+				t.Errorf("task.lastStatus = %q, want failed", got.Status.LastStatus)
+			}
+		})
 	}
 }
