@@ -19,11 +19,10 @@ const (
 )
 
 // DataVolumeSpec is the per-instance data directory (design §3.2: per-instance
-// PVC, default 1 GiB; source of truth = data directory).
+// PVC, default 1 GiB; source of truth = data directory). The PVC name is
+// platform-generated -- a writer cannot choose it, because the finalizer
+// deletes the name this resolves to.
 type DataVolumeSpec struct {
-	// PVC is the per-instance PVC name (platform-generated when empty).
-	// +optional
-	PVC string `json:"pvc,omitempty"`
 	// Size is the requested capacity (default 1Gi, applied in code).
 	// +optional
 	Size string `json:"size,omitempty"`
@@ -135,19 +134,15 @@ func init() {
 	SchemeBuilder.Register(&AgentInstance{}, &AgentInstanceList{})
 }
 
-// EffectiveDataVolume returns the PVC name and size for the instance.
+// EffectiveDataVolume returns the PVC name and size for the instance. The name
+// is always generated from the instance name: it is what the finalizer deletes,
+// so it must not be selectable from the spec.
 func (in *AgentInstance) EffectiveDataVolume() (pvc, size string) {
 	size = "1Gi"
-	if in.Spec.DataVolume != nil {
-		if in.Spec.DataVolume.Size != "" {
-			size = in.Spec.DataVolume.Size
-		}
-		pvc = in.Spec.DataVolume.PVC
+	if in.Spec.DataVolume != nil && in.Spec.DataVolume.Size != "" {
+		size = in.Spec.DataVolume.Size
 	}
-	if pvc == "" {
-		pvc = "data-" + in.Name
-	}
-	return pvc, size
+	return "data-" + in.Name, size
 }
 
 // ReadyCondition returns the Ready condition if present.

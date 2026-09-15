@@ -105,10 +105,6 @@ spec:
               dataVolume:
                 description: DataVolume is the per-instance data directory.
                 properties:
-                  pvc:
-                    description: PVC is the per-instance PVC name (platform-generated
-                      when empty).
-                    type: string
                   size:
                     description: Size is the requested capacity (default 1Gi, applied
                       in code).

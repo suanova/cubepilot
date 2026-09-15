@@ -648,3 +648,31 @@ func TestSecurityFingerprintKubeconfigRevision(t *testing.T) {
 		t.Error("fingerprint should be stable for the same kubeconfig revision")
 	}
 }
+
+// TestAgentInstanceFinalizeIgnoresDataVolumeName pins the finalizer to the
+// platform-generated PVC. spec.dataVolume.pvc currently selects the name the
+// finalizer deletes, so whoever writes that field chooses which PVC the
+// platform reclaims -- including one belonging to something else.
+func TestAgentInstanceFinalizeIgnoresDataVolumeName(t *testing.T) {
+	now := metav1.Now()
+	inst := testInstance()
+	inst.DeletionTimestamp = &now
+	inst.Finalizers = []string{finalizerName}
+	inst.Spec.DataVolume = &v1alpha1.DataVolumeSpec{Size: "2Gi"}
+
+	spec := agentSpec()
+	generated := spec.DataPVCFor(testPVCName, testInstanceName, "2Gi")
+	other := spec.DataPVCFor("data-somebody-else", "somebody-else", "1Gi")
+
+	r, cl := newTestReconciler(t, inst, generated, other)
+	reconcileInstance(r, t)
+
+	var gotGenerated corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &gotGenerated); !apierrors.IsNotFound(err) {
+		t.Errorf("generated data pvc not reclaimed (err=%v)", err)
+	}
+	var gotOther corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "data-somebody-else"}, &gotOther); err != nil {
+		t.Errorf("unrelated pvc was deleted or unreadable (err=%v)", err)
+	}
+}
