@@ -384,24 +384,38 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
       turnChunks = null
       return sseBody(chunks)
     }
-    if (/^\/api\/v1\/sessions\/[^/]+\/messages$/.test(path) && method === 'GET') {
-      return history.length ? json(history) : json(NOT_FOUND, 404)
-    }
-    if (/^\/api\/v1\/sessions\/[^/]+\/turn$/.test(path) && method === 'GET') {
-      return json({ active: init.turnActive ?? false })
-    }
-    // In production `/abort` does not answer until the session has settled;
-    // here it answers at once, so a test using it proves the request was made
-    // rather than that the view copes with a slow stop.
-    if (/^\/api\/v1\/sessions\/[^/]+\/abort$/.test(path) && method === 'POST') {
-      return json({})
-    }
-    if (/^\/api\/v1\/sessions\/[^/]+\/(approval|question)$/.test(path) && method === 'POST') {
-      decisions.push(record)
-      return json({})
-    }
-    if (/^\/api\/v1\/sessions\/[^/]+\/(approval|question)\/pending$/.test(path) && method === 'GET') {
-      return json({})
+    const sub = /^\/api\/v1\/sessions\/([^/]+)\/(.+)$/.exec(path)
+    if (sub) {
+      const key = sub[1] ?? ''
+      const known = sessions.some((s) => s.sessionKey === key)
+      switch (sub[2]) {
+        // Nested under `items`, which is the wire shape and not a detail: the
+        // client unwraps it, so serving the array directly would test a
+        // client that does not exist. (Which is what this plan said to do until
+        // the widget's tests caught it.)
+        case 'messages':
+          return known ? json({ items: history }) : json(NOT_FOUND, 404)
+        case 'turn':
+          return json({ active: init.turnActive ?? false })
+        // In production `/abort` does not answer until the session has settled;
+        // here it answers at once, so a test using it proves the request was
+        // made rather than that the view copes with a slow stop.
+        case 'abort':
+          return json({})
+        case 'approval':
+        case 'question':
+          decisions.push(record)
+          return json({})
+        // Nothing parked answers 404, not an empty object: the client unwraps
+        // `d.approval` / `d.questions`, so a bare `{}` would hand the caller
+        // `undefined` and make it read a field off nothing.
+        case 'approval/pending':
+          return json({ error: 'no pending approval' }, 404)
+        case 'question/pending':
+          return json({ questions: [] })
+        default:
+          break
+      }
     }
     throw new Error(`fake gateway has no route for ${method} ${path}`)
   }
@@ -734,6 +748,14 @@ Run: `npm test -- ChatView`
 Expected: FAIL on the new test.
 
 - [ ] **Step 3: Diagnose and fix**
+
+**What the implementation actually needed.** The test as written below does not
+work: a stream that merely ends without `message_done` does not leave the turn
+running, because the request resolves and the view leaves its streaming state.
+A turn that is genuinely still running needs a stream that stays open, so the
+fake gateway grew `openTurn()` -- which returns a handle the test pushes frames
+into and closes. That is the version in `web/src/test/gateway.ts`; the prose
+below is kept because the reasoning about `stopTurn` still holds.
 
 `stopTurn` (`web/src/views/ChatView.tsx`:943) returns early when `currentSessionId` is null, so the abort is only posted once `message_start` has named the session -- which the queued frames do before the test clicks. Two likely failures:
 

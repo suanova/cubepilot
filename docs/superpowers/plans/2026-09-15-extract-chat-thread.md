@@ -69,6 +69,16 @@ export interface ChatThreadApi {
 
 export function useChatThread(opts: {
   /**
+   * The conversation to open with. Omitted by the Chat view, which starts on a
+   * new conversation and learns the key the server mints from `message_start`;
+   * supplied by the widget, which is bound to the same one every time.
+   *
+   * Added after this plan was written, when the widget needed it: it is the
+   * only way to express "always this conversation" in a hook whose default is
+   * "a new one". It also decides how a history read is treated -- see below.
+   */
+  initialSessionKey?: string
+  /**
    * A new conversation's key is minted mid-turn and reported in
    * `message_start`; the shell's list has to learn about it, or the
    * conversation the user is looking at is missing from its own sidebar.
@@ -76,6 +86,19 @@ export function useChatThread(opts: {
   onSessionStarted: () => void
 }): ChatThreadApi
 ```
+
+Two behaviours the hook grew that this plan did not anticipate, both from the
+same "the widget may be looking at a conversation that does not exist yet"
+requirement:
+
+- **A 404 history read is an empty conversation, not a failure.** Every
+  conversation is in that state until its first message reaches the server, so
+  the hook renders nothing rather than "History load failed" -- which would make
+  a brand-new conversation look like an erased one.
+- **`refresh()` re-reads the conversation without blanking it first.** The
+  widget shares its conversation with the Chat view, so a message sent there
+  while the panel was shut is not something it can know about on its own; a
+  panel that reopened onto a stale thread would be quietly wrong.
 
 ```tsx
 // web/src/views/chat/ChatThread.tsx

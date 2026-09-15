@@ -243,7 +243,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                       messages stay plain text. */}
                   {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
                     <div className="answer-panel">
-                      <span className="answer-label">最终结果</span>
+                      <span className="answer-label">Final result</span>
                       <MdText text={b.text} />
                     </div>
                   ) : b.kind === 'assistant' && b.text ? (

@@ -14,6 +14,7 @@ import { useCallback, useRef, useState } from 'react'
 import { ChatThread } from './views/chat/ChatThread'
 import { useChatThread } from './views/chat/useChatThread'
 import { AssistantIcon } from './views/chat/icons'
+import { invalidateSessions } from './stores/sessions'
 
 // The conversation the widget is bound to, in the gateway's canonical form
 // (`agent:<agentId>:<segment>`). Fixed rather than minted, and deliberately not
@@ -27,15 +28,15 @@ import { AssistantIcon } from './views/chat/icons'
 // message route canonicalizes on the way in.
 export const ASSISTANT_SESSION_KEY = 'agent:main:conv-assistant'
 
-// The widget has no session list to keep in step, so a conversation starting is
-// not news here.
-const ignore = () => {}
-
 export default function AssistantWidget() {
   const [open, setOpen] = useState(false)
   const thread = useChatThread({
     initialSessionKey: ASSISTANT_SESSION_KEY,
-    onSessionStarted: ignore,
+    // The widget has no list of its own, but the Chat view does -- and this
+    // conversation is meant to appear in it, so the first message here has to
+    // say so. Otherwise the session exists server-side and nowhere else until
+    // the user happens to reload.
+    onSessionStarted: invalidateSessions,
   })
   // Re-read the conversation on the way in. It is shared with the Chat view, so
   // a message sent there while this panel was shut is not something the widget

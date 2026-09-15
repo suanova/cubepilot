@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/api'
 import type { SessionInfo } from '@/api/types'
+import { invalidateSessions, useSessionsVersion } from '@/stores/sessions'
 import { shortSession } from '@/utils/format'
 import { ChatThread } from './chat/ChatThread'
 import { useChatThread } from './chat/useChatThread'
@@ -23,10 +24,11 @@ export default function ChatView() {
     }
   }, [])
 
-  // The thread tells the list when a new conversation starts, because the key
-  // is minted mid-turn by the server and the sidebar would otherwise be missing
-  // the conversation the user is looking at.
-  const thread = useChatThread({ onSessionStarted: loadSessions })
+  // A conversation can start in either entry -- this one or the widget -- and
+  // the key is minted mid-turn by the server, so whoever started it says so
+  // rather than the sidebar guessing. See stores/sessions.ts.
+  const sessionsVersion = useSessionsVersion()
+  const thread = useChatThread({ onSessionStarted: invalidateSessions })
 
   // Derived from the list, so it stays here rather than in the hook: the thread
   // knows its key, not what the key is called.
@@ -44,7 +46,7 @@ export default function ChatView() {
 
   useEffect(() => {
     loadSessions()
-  }, [loadSessions])
+  }, [loadSessions, sessionsVersion])
 
   return (
     <div className="chat-body">
