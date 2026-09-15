@@ -21,8 +21,8 @@ import (
 
 // llmRequest is the body shared by the add and edit handlers. Name is only
 // read by add: a rename is a delete plus an add, because the name is the
-// gateway provider key, the prefix of every model ref and the credential
-// Secret name all at once.
+// gateway provider key, the prefix of every model ref and the suffix of the
+// credential Secret (llm-<name>) all at once.
 type llmRequest struct {
 	Name     string `json:"name"`
 	Endpoint string `json:"endpoint"`
@@ -202,8 +202,8 @@ func upsertLLMCredential(ctx context.Context, s *Server, secretName, apiKey stri
 // platform admin edits or removes a provider it already added. Both act on the
 // builtin AgentTemplate, matching handleAddLLM. {name} is the sanitized
 // provider name, and it is not editable -- the name is the gateway provider
-// key, the prefix of every model ref and the credential Secret name all at
-// once, so a rename is a delete plus an add.
+// key, the prefix of every model ref and the suffix of the credential Secret
+// (llm-<name>) all at once, so a rename is a delete plus an add.
 func (s *Server) handleLLMByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {

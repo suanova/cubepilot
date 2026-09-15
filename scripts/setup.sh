@@ -147,8 +147,23 @@ kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
 # and the per-user gateways are auto-paired; whether writes are gated is decided
 # by each agent's confirmPolicy.
 
-log "deploying components via Helm (CRDs ship in the chart crds/ dir)"
-helm upgrade --install cubepilot "$REPO_DIR/deploy/charts/cubepilot" -n "$NAMESPACE" \
+# ---- apply the chart CRDs -------------------------------------------------
+# Helm installs a chart's crds/ directory on the first `helm install` only:
+# `helm upgrade` never applies it. Re-running this script is a plausible path
+# (`helm upgrade --install` does not fail on an existing release), so without
+# this step a re-run after a CRD change -- the spec.models -> spec.providers
+# rename, say -- would leave the cluster on the old schema, and the failure is
+# silent: the API server prunes the unknown field, so a provider write answers
+# 201 while storing nothing. Applying the directory is idempotent and matches
+# what `helm install` does once.
+CHART_DIR="$REPO_DIR/deploy/charts/cubepilot"
+CRDS_DIR="$CHART_DIR/crds"
+[ -d "$CRDS_DIR" ] || { echo "error: chart CRDs dir not found: $CRDS_DIR" >&2; exit 1; }
+log "applying CRDs from $CRDS_DIR"
+kubectl apply -f "$CRDS_DIR"
+
+log "deploying components via Helm"
+helm upgrade --install cubepilot "$CHART_DIR" -n "$NAMESPACE" \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set agents.llmEndpoint="$LLM_ENDPOINT" \
   --set agents.llmModel="$LLM_MODEL" \

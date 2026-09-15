@@ -98,7 +98,7 @@ var _ = Describe("LLM model lifecycle", func() {
 		// The SDK appends /chat/completions itself; storing the request URL
 		// would double it and 404.
 		Expect(nestedString(body, "provider", "endpoint")).To(Equal(remoteBase))
-		Expect(credentialExists()).To(BeFalse(), "a public model has no credential")
+		Expect(credentialExists()).To(BeFalse(), "a public provider has no credential")
 
 		Eventually(func() error {
 			sec, err := fw.KubeClient.CoreV1().Secrets(fw.Namespace).Get(ctx, "openclaw-config", metav1.GetOptions{})

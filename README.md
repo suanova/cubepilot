@@ -165,7 +165,9 @@ provider from the Portal answers 201, nothing is stored, and the catalog stays
 empty with no error.
 
 An existing `cubepilot` template then still carries its old bare `defaultModel`
-with an empty `providers` list, which the new rule refuses; every write through
+and has no `providers` field at all (the field did not exist when that object
+was written), so the rule refuses it: a bare name is not a
+`<provider>/<modelId>` ref naming anything in `providers`. Every write through
 the API re-validates it, so the API cannot repair it either. Empty `defaultModel`
 and add a provider in the same edit -- deleting the line, or setting it to `""`,
 both work:

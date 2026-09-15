@@ -51,6 +51,7 @@ CUBESTACK_SKILL_REF ?= internal/skill/skills/cubestack-platform/crd-reference.md
 GO       ?= go
 DOCKER   ?= docker
 HELM     ?= helm
+KUBECTL  ?= kubectl
 NPM      ?= npm
 
 # OCM-style package scoping: `go test` skips test/e2e (it needs a live
@@ -139,7 +140,14 @@ lint:
 	$(HELM) template $(HELM_RELEASE) $(CHART_DIR) -n $(NAMESPACE) > /dev/null
 
 ## Install/upgrade the release (secrets must exist; see scripts/setup.sh).
+## The chart's crds/ dir is applied first: Helm installs it on a first install
+## only, and `helm upgrade` never applies it, so upgrading an existing release
+## would otherwise run the new binaries against the old schema -- the API
+## server prunes the changed field and the write is silently lost. The apply is
+## idempotent, matching scripts/redeploy.sh.
 deploy:
+	@[ -d $(CHART_DIR)/crds ] || { echo "error: chart CRDs dir not found: $(CHART_DIR)/crds" >&2; exit 1; }
+	$(KUBECTL) apply -f $(CHART_DIR)/crds
 	$(HELM) upgrade --install $(HELM_RELEASE) $(CHART_DIR) -n $(NAMESPACE)
 
 ## Remove the release.
