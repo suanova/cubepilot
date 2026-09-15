@@ -66,7 +66,7 @@ func taskToDTO(t v1alpha1.Task) taskDTO {
 		Creator:     t.Spec.Owner,
 		CreatedAt:   t.CreationTimestamp.Time,
 		LastRunAt:   taskTimePtr(t.Status.LastRunTime),
-		LastStatus:  t.Status.LastStatus,
+		LastStatus:  string(t.Status.LastStatus),
 	}
 	if dto.Name == "" {
 		dto.Name = t.Name

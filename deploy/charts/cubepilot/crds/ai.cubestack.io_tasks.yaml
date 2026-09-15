@@ -107,7 +107,10 @@ spec:
                 format: date-time
                 type: string
               lastStatus:
-                description: LastStatus is the last run outcome (success | failed).
+                description: LastStatus is the last run outcome.
+                enum:
+                - success
+                - failed
                 type: string
               lastTaskRunName:
                 description: LastTaskRunName is the most recent TaskRun created for

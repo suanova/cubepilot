@@ -232,9 +232,9 @@ func (r *ReconcileScheduler) fire(ctx context.Context, task *v1alpha1.Task, trig
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
-	task.Status.LastStatus = "success"
+	task.Status.LastStatus = v1alpha1.TaskRunOutcomeSuccess
 	if runErr != nil {
-		task.Status.LastStatus = "failed"
+		task.Status.LastStatus = v1alpha1.TaskRunOutcomeFailed
 	}
 	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
 		log.Printf("scheduler: patch task %s: %v", task.Name, err)
@@ -303,7 +303,7 @@ func (r *ReconcileScheduler) recordSkippedRun(ctx context.Context, task *v1alpha
 	lastRun := metav1.NewTime(time.Now().UTC())
 	task.Status.LastRunTime = &lastRun
 	task.Status.LastTaskRunName = run.Name
-	task.Status.LastStatus = "failed"
+	task.Status.LastStatus = v1alpha1.TaskRunOutcomeFailed
 	if err := r.Status().Patch(ctx, task, taskPatch); err != nil {
 		log.Printf("scheduler: patch task %s: %v", task.Name, err)
 	}

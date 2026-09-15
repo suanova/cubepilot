@@ -15,6 +15,19 @@ const (
 	TaskStatePaused TaskState = "Paused"
 )
 
+// TaskRunOutcome is the outcome of a Task's most recent run. A task's own
+// status records only whether it ran and how it ended; the run's report is the
+// TaskRun's.
+// +kubebuilder:validation:Enum=success;failed
+type TaskRunOutcome string
+
+const (
+	// TaskRunOutcomeSuccess means the last run completed.
+	TaskRunOutcomeSuccess TaskRunOutcome = "success"
+	// TaskRunOutcomeFailed means the last run failed.
+	TaskRunOutcomeFailed TaskRunOutcome = "failed"
+)
+
 // TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
 // links the
 // execution subject (agentRef -> Agent) with the task content (templateRef ->
@@ -52,9 +65,9 @@ type TaskStatus struct {
 	// LastRunTime is the last successful scheduling time.
 	// +optional
 	LastRunTime *metav1.Time `json:"lastRunTime,omitempty"`
-	// LastStatus is the last run outcome (success | failed).
+	// LastStatus is the last run outcome.
 	// +optional
-	LastStatus string `json:"lastStatus,omitempty"`
+	LastStatus TaskRunOutcome `json:"lastStatus,omitempty"`
 	// NextRunTime is the computed next fire time.
 	// +optional
 	NextRunTime *metav1.Time `json:"nextRunTime,omitempty"`
