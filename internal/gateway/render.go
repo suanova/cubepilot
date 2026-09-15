@@ -63,6 +63,12 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 		}
 	}
 	allowOut := []string{}
+	// A provider serving both a bare id and its own prefixed form ("qwen3-8b"
+	// and "vllm/qwen3-8b") collapses both to one ref. modelsOut is a map and
+	// absorbs that, but the allow list is an array: without this it would carry
+	// the same ref twice. OpenClaw folds allow into a Set and the web client
+	// de-duplicates the same case, so an entry repeated here is only noise.
+	allowed := map[string]bool{}
 	for _, p := range providers {
 		modelEntries := make([]any, 0, len(p.Models))
 		for _, id := range p.Models {
@@ -73,7 +79,10 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 				entry["alias"] = id
 			}
 			modelsOut[key] = entry
-			allowOut = append(allowOut, key)
+			if !allowed[key] {
+				allowed[key] = true
+				allowOut = append(allowOut, key)
+			}
 		}
 		pv := map[string]any{
 			"api":     "openai-completions",

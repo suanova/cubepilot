@@ -91,7 +91,7 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		} else if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not in the cubepilot template (add it under Agent Config -> LLM Config first)", model)})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not served by any provider of the cubepilot template (add it under Agent Config -> LLM Config first)", model)})
 			return
 		}
 		name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)

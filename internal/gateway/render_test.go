@@ -301,10 +301,13 @@ func TestRenderDuplicateModelIDOmitsAlias(t *testing.T) {
 
 // TestRenderIDCarryingItsOwnProviderPrefix pins the self-prefix rule end to
 // end: the allowlist key must be the id itself, and the primary ref must match
-// it, or the selection would be rejected as not-allowed.
+// it, or the selection would be rejected as not-allowed. Serving the bare id
+// next to its own prefixed form is that one ref under two spellings, so the
+// allowlist carries it once -- OpenClaw folds allow into a Set and the web
+// client de-duplicates the same case.
 func TestRenderIDCarryingItsOwnProviderPrefix(t *testing.T) {
 	b, err := Render("tok", "openrouter/auto", []Provider{
-		{Key: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKey: "CUBEPILOT_LLM_OPENROUTER", Models: []string{"openrouter/auto"}},
+		{Key: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKey: "CUBEPILOT_LLM_OPENROUTER", Models: []string{"auto", "openrouter/auto"}},
 	})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
@@ -324,6 +327,9 @@ func TestRenderIDCarryingItsOwnProviderPrefix(t *testing.T) {
 	}
 	if _, ok := cfg.Agents.Defaults.Models["openrouter/auto"]; !ok {
 		t.Errorf("allowlist should hold the id as-is: %+v", cfg.Agents.Defaults.Models)
+	}
+	if len(cfg.Agents.Defaults.Models) != 1 {
+		t.Errorf("agents.defaults.models = %v, want the one collapsed ref", cfg.Agents.Defaults.Models)
 	}
 	if len(cfg.Agents.Defaults.ModelPolicy.Allow) != 1 || cfg.Agents.Defaults.ModelPolicy.Allow[0] != "openrouter/auto" {
 		t.Errorf("modelPolicy.allow = %v, want [openrouter/auto]", cfg.Agents.Defaults.ModelPolicy.Allow)

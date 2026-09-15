@@ -222,11 +222,13 @@ type AllowlistRule struct {
 //
 // Like gateway.ModelKey, the rule below leaves an id that already starts with
 // "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
-// case-sensitive, so an id like "VLLM/x" under provider "vllm" passes the Go
-// validation and is rejected here, while an id with whitespace is accepted
-// here though the Go validation rejects it and ModelKey trims it. The
-// rejection only ever hits a self-prefixed id, which is never a ref the
-// renderer writes.
+// case-sensitive, so the two diverge in both directions. Milder: an id with
+// whitespace is accepted here though the Go validation rejects it and ModelKey
+// trims it. Worse: provider "vllm" serving the id "VLLM/x" -- ModelKey
+// compares the self-prefix case-insensitively, so it returns "VLLM/x", which
+// is exactly the ref the renderer writes as the allowlist key and as the
+// primary, while CEL computes "vllm/VLLM/x" and rejects the only ref the
+// platform has for that id.
 // +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
@@ -247,7 +249,7 @@ type AgentTemplateSpec struct {
 	// the template -- no standalone Model CRD). Each provider declares an
 	// endpoint, an optional credential and the model ids it serves; an instance
 	// selects a <provider>/<modelId> ref within this list.
-	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || has(p.credentialRef.name))",message="credentialRef must reference a Secret name"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || p.credentialRef.name != \"\")",message="credentialRef must reference a Secret name"
 	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=map

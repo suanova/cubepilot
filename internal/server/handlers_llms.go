@@ -21,8 +21,8 @@ import (
 
 // llmRequest is the body shared by the add and edit handlers. Name is only
 // read by add: a rename is a delete plus an add, because the name is the
-// gateway provider key, the prefix of every model ref, the selection key and
-// the credential Secret name all at once.
+// gateway provider key, the prefix of every model ref and the credential
+// Secret name all at once.
 type llmRequest struct {
 	Name     string `json:"name"`
 	Endpoint string `json:"endpoint"`
@@ -62,10 +62,10 @@ func normalizeEndpoint(raw string) (string, error) {
 // given. It returns the message to send, or "" when the pair is valid.
 func credentialChoiceError(apiKey string, public bool) string {
 	if public && apiKey != "" {
-		return "apiKey and public are mutually exclusive: a public model has no credential"
+		return "apiKey and public are mutually exclusive: a public provider has no credential"
 	}
 	if !public && apiKey == "" {
-		return "apiKey is required unless the model is declared public (public=true)"
+		return "apiKey is required unless the provider is declared public (public=true)"
 	}
 	return ""
 }
@@ -202,8 +202,8 @@ func upsertLLMCredential(ctx context.Context, s *Server, secretName, apiKey stri
 // platform admin edits or removes a provider it already added. Both act on the
 // builtin AgentTemplate, matching handleAddLLM. {name} is the sanitized
 // provider name, and it is not editable -- the name is the gateway provider
-// key, the prefix of every model ref, the selection key and the credential
-// Secret name all at once, so a rename is a delete plus an add.
+// key, the prefix of every model ref and the credential Secret name all at
+// once, so a rename is a delete plus an add.
 func (s *Server) handleLLMByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -242,7 +242,7 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	if body.Public && body.APIKey != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "apiKey and public are mutually exclusive: a public model has no credential"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "apiKey and public are mutually exclusive: a public provider has no credential"})
 		return
 	}
 
@@ -265,9 +265,9 @@ func (s *Server) handleUpdateLLM(w http.ResponseWriter, r *http.Request, name st
 	current := tmpl.Spec.Providers[idx]
 	if body.APIKey == "" && !body.Public && current.CredentialRef == nil {
 		// Neither a key to keep nor a declaration that none is wanted. Refuse,
-		// exactly as an add would: a model with no credential fails every turn
+		// exactly as an add would: a provider with no credential fails every turn
 		// with "No API key resolved".
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "apiKey is required unless the model is declared public (public=true)"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "apiKey is required unless the provider is declared public (public=true)"})
 		return
 	}
 

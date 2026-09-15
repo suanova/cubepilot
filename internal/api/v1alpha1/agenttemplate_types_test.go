@@ -115,6 +115,8 @@ func TestTemplateProviderValidate(t *testing.T) {
 		{Name: "leading-slash", Endpoint: "https://x", Models: []string{"/a"}},
 		{Name: "trailing-slash", Endpoint: "https://x", Models: []string{"a/"}},
 		{Name: "space", Endpoint: "https://x", Models: []string{"a b"}},
+		// The Go counterpart of the credentialRef CEL rule on spec.providers:
+		// present but unnamed is refused, absent (every ok case above) is not.
 		{Name: "bad-cred", Endpoint: "https://x", Models: []string{"m"}, CredentialRef: &corev1.LocalObjectReference{}},
 		{Name: "too-many-models", Endpoint: "https://x", Models: modelIDs(65)},
 		{Name: "long-id", Endpoint: "https://x", Models: []string{strings.Repeat("m", 257)}},

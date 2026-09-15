@@ -599,15 +599,15 @@ In the same file, replace `DefaultModel` and `Models` (lines 164-175) with:
 	// DefaultModel is the model ref (<provider>/<modelId>) used when an
 	// instance does not select one explicitly. Empty = no default / runtime
 	// default.
-	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:MaxLength=320
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
 	// Providers is the inline provider list (design §3.3: models are inlined in
 	// the template -- no standalone Model CRD). Each provider declares an
 	// endpoint, an optional credential and the model ids it serves; an instance
 	// selects a <provider>/<modelId> ref within this list.
-	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || has(p.credentialRef.name))",message="credentialRef must reference a Secret name"
-	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != '' && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || p.credentialRef.name != \"\")",message="credentialRef must reference a Secret name"
+	// +kubebuilder:validation:XValidation:rule="self.all(p, p.models.all(m, m != \"\" && m != '*' && !m.contains('//') && !m.startsWith('/') && !m.endsWith('/')))",message="every model id must be non-empty, without an empty path segment, and not the wildcard"
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=map
 	// +listMapKey=name
@@ -983,7 +983,7 @@ EOF
 - Modify: `internal/server/handlers_llms.go` (`llmRequest` at :25-34, `handleAddLLM`, `handleUpdateLLM`, `handleDeleteLLM`, `removeModelCredential` at :277-299)
 - Modify: `internal/server/handlers_llms_test.go`
 - Modify: `docs/cubepilot/api.md` (section 6.3)
-- Modify: `docs/bruno/` collection entries for `/api/v1/llms` (the collection added for the /api/v1 surface)
+- Modify: `bruno/cubepilot-api/` collection entries for `/api/v1/llms` (the collection added for the /api/v1 surface)
 
 **Interfaces:**
 - Consumes: `v1alpha1.TemplateProviderSpec` from Task 2.

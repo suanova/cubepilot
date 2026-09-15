@@ -409,7 +409,7 @@ func TestHandleUpdateLLMPublicWithKey(t *testing.T) {
 	}
 }
 
-func TestHandleUpdateLLMUnknownModel(t *testing.T) {
+func TestHandleUpdateLLMUnknownProvider(t *testing.T) {
 	s := llmTestServer(t)
 
 	w := putLLM(t, s, "nope", `{"endpoint":"https://api.example.com/v1","apiKey":"sk-1","models":["nope"]}`)
@@ -768,8 +768,8 @@ func TestHandleDeleteLLM(t *testing.T) {
 	}
 }
 
-// TestHandleDeleteLLMPublicModel covers a model that never had a Secret.
-func TestHandleDeleteLLMPublicModel(t *testing.T) {
+// TestHandleDeleteLLMPublicProvider covers a provider that never had a Secret.
+func TestHandleDeleteLLMPublicProvider(t *testing.T) {
 	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{Name: "pub", Endpoint: "https://api.example.com/v1", Models: []string{"pub"}})
 
 	if w := deleteLLM(t, s, "pub"); w.Code != http.StatusOK {
@@ -777,7 +777,7 @@ func TestHandleDeleteLLMPublicModel(t *testing.T) {
 	}
 }
 
-func TestHandleDeleteLLMUnknownModel(t *testing.T) {
+func TestHandleDeleteLLMUnknownProvider(t *testing.T) {
 	s := llmTestServer(t)
 
 	if w := deleteLLM(t, s, "nope"); w.Code != http.StatusNotFound {

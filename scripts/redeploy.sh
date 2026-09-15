@@ -5,7 +5,8 @@
 # Counterpart of scripts/setup.sh (one-shot bring-up). This script assumes the
 # stack is already deployed once (scripts/setup.sh or `make deploy`) and that
 # the four images have been built from the current tree (`make images`, the
-# `make redeploy` prerequisite). It kind-loads the images, helm-upgrades
+# `make redeploy` prerequisite). It kind-loads the images, applies the chart's
+# CRDs (`helm upgrade` never applies a chart's crds/ directory), helm-upgrades
 # (preserving the release's stored values while the current chart defaults
 # refresh the rest; only the four image refs are overridden), rolls the
 # operator / api / web Deployments, then waits for the per-user agent pods to
@@ -64,6 +65,19 @@ kind load docker-image \
   "$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
   "$IMAGE_REPO/cubepilot-web:$IMAGE_TAG" \
   --name "$KIND_CLUSTER"
+
+# ---- apply the chart CRDs -------------------------------------------------
+# Helm installs the chart's crds/ directory on the first `helm install` only:
+# `helm upgrade` never applies it. Without this step a changed CRD -- the
+# spec.models -> spec.providers rename, say -- never reaches a cluster that
+# already has the release, and the failure is silent: the API server prunes the
+# unknown field, so the write succeeds, the API answers 201 for a provider it
+# never stored, and the Portal shows an empty catalog with no error. Applying
+# the directory is idempotent and matches what `helm install` does once.
+CRDS_DIR="$CHART_DIR/crds"
+[ -d "$CRDS_DIR" ] || { echo "error: chart CRDs dir not found: $CRDS_DIR" >&2; exit 1; }
+log "applying CRDs from $CRDS_DIR"
+kubectl --context "$KUBE_CONTEXT" apply -f "$CRDS_DIR"
 
 # ---- helm upgrade (image refs only, preserve custom values) --------------
 # The stored release values predate any chart defaults added since it was
