@@ -201,7 +201,13 @@ type AllowlistRule struct {
 // tools (skill refs), memory, identity, policy and registry metadata
 // (design §3.1). It is the "class": shared by all instances, versioned,
 // user-independent.
-// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, p.name + '/' + m == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
+//
+// Like gateway.ModelKey, the rule below leaves an id that already starts with
+// "<provider>/" unprefixed. Unlike ModelKey, CEL's startsWith is
+// case-sensitive, so an id like "VLLM/x" under provider "vllm" passes the Go
+// validation and is rejected here. The divergence only ever rejects a
+// self-prefixed id, which is never a ref the renderer writes.
+// +kubebuilder:validation:XValidation:rule="self.defaultModel == \"\" || self.providers.exists(p, p.models.exists(m, (m.startsWith(p.name + '/') ? m : p.name + '/' + m) == self.defaultModel))",message="defaultModel must name a provider/model listed in providers"
 type AgentTemplateSpec struct {
 	// DisplayName is the human-facing template name.
 	DisplayName string `json:"displayName,omitempty"`

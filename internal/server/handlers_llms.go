@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -322,17 +321,17 @@ type modelInstanceRef struct {
 }
 
 // instancesSelecting lists the AgentInstances of the builtin template that
-// explicitly select the given model. Instances bound to another template are
-// ignored: their selection resolves against that template, so this one cannot
-// break it.
-func (s *Server) instancesSelecting(ctx context.Context, model string) ([]modelInstanceRef, error) {
+// explicitly select one of the given model refs. Instances bound to another
+// template are ignored: their selection resolves against that template, so this
+// one cannot break it.
+func (s *Server) instancesSelecting(ctx context.Context, refs map[string]bool) ([]modelInstanceRef, error) {
 	var list v1alpha1.AgentInstanceList
 	if err := s.cr.List(ctx, &list, client.InNamespace(s.cfg.Namespace)); err != nil {
 		return nil, fmt.Errorf("list instances: %w", err)
 	}
 	out := []modelInstanceRef{}
 	for _, inst := range list.Items {
-		if inst.Spec.TemplateRef == v1alpha1.DefaultAgentName && inst.Spec.SelectedModel == model {
+		if inst.Spec.TemplateRef == v1alpha1.DefaultAgentName && refs[inst.Spec.SelectedModel] {
 			out = append(out, modelInstanceRef{Name: inst.Name, Owner: inst.Spec.Owner})
 		}
 	}
@@ -362,7 +361,16 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	selecting, err := s.instancesSelecting(r.Context(), name)
+	// Removing the provider removes every ref it serves, so both the 409 guard
+	// and the DefaultModel check below test the same set. A selection is stored
+	// as a <provider>/<modelId> ref, never as a bare provider name.
+	removed := tmpl.Spec.Providers[idx]
+	refs := make(map[string]bool, len(removed.Models))
+	for _, id := range removed.Models {
+		refs[gateway.ModelKey(removed.Name, id)] = true
+	}
+
+	selecting, err := s.instancesSelecting(r.Context(), refs)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -386,11 +394,8 @@ func (s *Server) handleDeleteLLM(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 
-	removed := tmpl.Spec.Providers[idx]
 	tmpl.Spec.Providers = append(tmpl.Spec.Providers[:idx], tmpl.Spec.Providers[idx+1:]...)
-	if tmpl.Spec.DefaultModel != "" && slices.ContainsFunc(removed.Models, func(id string) bool {
-		return gateway.ModelKey(removed.Name, id) == tmpl.Spec.DefaultModel
-	}) {
+	if tmpl.Spec.DefaultModel != "" && refs[tmpl.Spec.DefaultModel] {
 		// The deleted provider may serve the gateway's primary. Clearing the
 		// ref is defined: the renderer falls back to the first remaining
 		// provider. A dangling ref would leave the CR referencing a model that

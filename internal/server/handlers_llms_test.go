@@ -19,6 +19,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 func addLLMTestServer(t *testing.T, objs ...client.Object) *Server {
@@ -397,6 +398,26 @@ func TestHandleDeleteLLMUnknownModel(t *testing.T) {
 	}
 }
 
+// seedInstanceSelecting creates the AgentInstance of the builtin template that
+// belongs to zhang.wei and explicitly selects the given model ref.
+func seedInstanceSelecting(t *testing.T, s *Server, ref string) {
+	t.Helper()
+	inst := &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      k8s.InstanceName("zhang.wei", v1alpha1.DefaultAgentName),
+			Namespace: "cubepilot",
+		},
+		Spec: v1alpha1.AgentInstanceSpec{
+			TemplateRef:   v1alpha1.DefaultAgentName,
+			Owner:         "zhang.wei",
+			SelectedModel: ref,
+		},
+	}
+	if err := s.cr.Create(context.Background(), inst); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+}
+
 // TestHandleDeleteLLMRefusesSelectedModel pins the fail-closed rule: removing a
 // model an instance selects would make that user's turns fail, so the delete is
 // refused and the response names the instance to re-point.
@@ -405,9 +426,12 @@ func TestHandleDeleteLLMRefusesSelectedModel(t *testing.T) {
 	inst := &v1alpha1.AgentInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "bob-cubepilot", Namespace: "cubepilot"},
 		Spec: v1alpha1.AgentInstanceSpec{
-			TemplateRef:   v1alpha1.DefaultAgentName,
-			Owner:         "bob",
-			SelectedModel: "my-qwen",
+			TemplateRef: v1alpha1.DefaultAgentName,
+			Owner:       "bob",
+			// A stored selection is the provider's model ref, not the bare
+			// provider name: keyedModel serves the single id "my-qwen" under
+			// provider "my-qwen".
+			SelectedModel: "my-qwen/my-qwen",
 		},
 	}
 	if err := s.cr.Create(context.Background(), inst); err != nil {
@@ -445,8 +469,26 @@ func TestHandleDeleteLLMRefusesSelectedModel(t *testing.T) {
 	}
 }
 
+// TestHandleDeleteLLMRefusesSelectedProvider: the 409 guard compares the
+// instance's selectedModel, which is a <provider>/<modelId> ref, against the
+// refs the provider serves. Comparing a provider name instead never matches,
+// which would make a provider an instance still selects deletable.
+func TestHandleDeleteLLMRefusesSelectedProvider(t *testing.T) {
+	s := llmTestServer(t, v1alpha1.TemplateProviderSpec{
+		Name: "vllm", Endpoint: "http://vllm.ai.svc:8000/v1",
+		CredentialRef: &corev1.LocalObjectReference{Name: "llm-vllm"},
+		Models:        []string{"qwen3-32b"},
+	})
+	seedInstanceSelecting(t, s, "vllm/qwen3-32b")
+	rec := doReq(t, s.Handler(), http.MethodDelete, "/api/v1/llms/vllm", "", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestHandleDeleteLLMIgnoresOtherTemplateSelection: the selection only matters
-// for the builtin template, so an instance pointing elsewhere must not block.
+// for the builtin template, so an instance pointing elsewhere must not block --
+// even when it selects a ref this provider serves.
 func TestHandleDeleteLLMIgnoresOtherTemplateSelection(t *testing.T) {
 	s := llmTestServer(t, keyedModel("my-qwen", "https://api.example.com/v1"))
 	inst := &v1alpha1.AgentInstance{
@@ -454,7 +496,7 @@ func TestHandleDeleteLLMIgnoresOtherTemplateSelection(t *testing.T) {
 		Spec: v1alpha1.AgentInstanceSpec{
 			TemplateRef:   "some-other-template",
 			Owner:         "bob",
-			SelectedModel: "my-qwen",
+			SelectedModel: "my-qwen/my-qwen",
 		},
 	}
 	if err := s.cr.Create(context.Background(), inst); err != nil {
