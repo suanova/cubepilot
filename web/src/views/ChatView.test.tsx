@@ -169,3 +169,29 @@ describe('ChatView question', () => {
     })
   })
 })
+
+describe('ChatView stop', () => {
+  it('replaces Send with Stop while a turn runs, and posts an abort', async () => {
+    // The stream has to stay open for the turn to be genuinely running: a
+    // stream that merely ends without `message_done` closes the turn in the
+    // view too (the request resolves, so the view leaves its streaming state),
+    // which is the bug this test would otherwise be written around.
+    const turn = gateway!.openTurn()
+
+    render(<ChatView />)
+    await send('do something long')
+    turn.push([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      { type: 'message_delta', sessionId: 'agent:main:conv-1', delta: 'working' },
+    ])
+
+    await userEvent.setup().click(await screen.findByLabelText('Stop'))
+    // Only now: the turn is over from the view's side, so nothing later in the
+    // test depends on a stream still being open.
+    turn.close()
+
+    expect(gateway!.requests.some((r) => r.path === '/api/v1/sessions/agent:main:conv-1/abort')).toBe(
+      true,
+    )
+  })
+})

@@ -18,6 +18,12 @@ export interface FakeGatewayInit {
   turnActive?: boolean
 }
 
+/** A turn whose stream stays open until the test closes it. */
+export interface OpenTurn {
+  push(frames: SSEEvent[]): void
+  close(): void
+}
+
 export interface FakeGateway {
   install(): void
   restore(): void
@@ -25,6 +31,11 @@ export interface FakeGateway {
   decisions: RecordedRequest[]
   setTurn(frames: SSEEvent[]): void
   setTurnRaw(chunks: string[]): void
+  /**
+   * Leaves the next turn's stream open instead of ending it, so a test can act
+   * on a turn that is genuinely still running. Call it before the app sends.
+   */
+  openTurn(): OpenTurn
 }
 
 /** The wire form of one frame: an `event:` line, a `data:` line, a blank line. */
@@ -72,6 +83,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   // A turn given by `setTurn` is consumed by the next POST, so a test that
   // sends twice gets the frames it queued rather than the previous turn's.
   let turnChunks: string[] | null = null
+  // An open turn's stream. `held` buffers anything pushed before the app has
+  // issued the POST that will carry it -- the test cannot know exactly when
+  // that lands, and a push that silently vanished would look like a view bug.
+  const encoder = new TextEncoder()
+  let openMode = false
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  let held: string[] = []
 
   const handler = async (input: RequestInfo | URL, opts: RequestInit = {}): Promise<Response> => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -94,6 +112,20 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
       return json({ sessions })
     }
     if (path === '/api/v1/messages' && method === 'POST') {
+      if (openMode) {
+        openMode = false
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            controller = c
+            for (const chunk of held) c.enqueue(encoder.encode(chunk))
+            held = []
+          },
+        })
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
       const chunks = turnChunks ?? []
       turnChunks = null
       return sseBody(chunks)
@@ -132,6 +164,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     restore() {
       globalThis.fetch = real
+      // An open stream outlives the test that opened it unless it is closed
+      // here; leaving one dangling would leak a pending reader into the next
+      // test in the file.
+      controller?.close()
+      controller = null
+      held = []
+      openMode = false
     },
     requests,
     decisions,
@@ -140,6 +179,23 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     setTurnRaw(chunks: string[]) {
       turnChunks = chunks
+    },
+    openTurn() {
+      openMode = true
+      return {
+        push(frames: SSEEvent[]) {
+          const chunks = frames.map(frame)
+          if (controller) {
+            for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+          } else {
+            held.push(...chunks)
+          }
+        },
+        close() {
+          controller?.close()
+          controller = null
+        },
+      }
     },
   }
 }

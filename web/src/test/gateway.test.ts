@@ -72,6 +72,31 @@ describe('fake gateway', () => {
     })
   })
 
+  it('holds a turn open until the test closes it', async () => {
+    gateway = installFakeGateway()
+    gateway.install()
+    const turn = gateway.openTurn()
+
+    const seen: SSEEvent[] = []
+    const streamed = streamSSE(
+      '/api/v1/messages',
+      { method: 'POST', body: '{}' },
+      (_n, ev) => seen.push(ev),
+    )
+    // Pushed before the POST is issued: the helper buffers rather than drops,
+    // because the test cannot know when the request lands.
+    turn.push([{ type: 'message_start', sessionId: 's' }])
+    await Promise.resolve()
+    turn.push([{ type: 'message_done', sessionId: 's' }])
+    turn.close()
+    await streamed
+
+    expect(seen).toEqual([
+      { type: 'message_start', sessionId: 's' },
+      { type: 'message_done', sessionId: 's' },
+    ])
+  })
+
   it('reports a session it does not know as a 404, like the gateway does', async () => {
     gateway = installFakeGateway({ sessions: [{ sessionKey: 'agent:main:conv-1', title: 'One' }] })
     gateway.install()
