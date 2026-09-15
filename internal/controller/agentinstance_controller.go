@@ -148,8 +148,13 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	}
 	kubeconfigRev := userSecretName + "@" + userSecret.ResourceVersion + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
 
-	pvcName, size := inst.EffectiveDataVolume()
-	podName := k8s.ResourceName("agent", inst.Name)
+	// The PVC/Pod/Service names are a pure function of the instance name (they
+	// are bounded by GeneratedName so a 253-character instance name cannot
+	// produce an invalid name); both this path and the finalizer derive them
+	// through the same helper.
+	pvcName := k8s.GeneratedName("data", inst.Name)
+	size := inst.EffectiveDataVolumeSize()
+	podName := k8s.GeneratedName("agent", inst.Name)
 	svcName := podName
 
 	// PVC (data directory; source of truth = instance data directory; design
@@ -341,16 +346,17 @@ func (r *AgentInstanceReconciler) mapAllToInstances(_ context.Context, _ client.
 // that returns an error blocks instance deletion forever, and a foreign object
 // is not ours to delete.
 func (r *AgentInstanceReconciler) finalize(ctx context.Context, inst *v1alpha1.AgentInstance) error {
-	pvcName, _ := inst.EffectiveDataVolume()
+	pvcName := k8s.GeneratedName("data", inst.Name)
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: r.Cfg.Namespace}}
 	if err := r.deleteOwned(ctx, inst, "data pvc", pvc); err != nil {
 		return fmt.Errorf("delete data pvc: %w", err)
 	}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: k8s.ResourceName("agent", inst.Name), Namespace: r.Cfg.Namespace}}
+	podName := k8s.GeneratedName("agent", inst.Name)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: r.Cfg.Namespace}}
 	if err := r.deleteOwned(ctx, inst, "agent pod", pod); err != nil {
 		return fmt.Errorf("delete agent pod: %w", err)
 	}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: k8s.ResourceName("agent", inst.Name), Namespace: r.Cfg.Namespace}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: r.Cfg.Namespace}}
 	if err := r.deleteOwned(ctx, inst, "agent service", svc); err != nil {
 		return fmt.Errorf("delete agent service: %w", err)
 	}

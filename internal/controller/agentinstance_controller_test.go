@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -916,5 +917,89 @@ func TestAgentInstanceDataVolumeSizeReachesPVC(t *testing.T) {
 	}
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "2Gi" {
 		t.Errorf("pvc storage request = %s, want 2Gi", got.String())
+	}
+}
+
+// TestGeneratedNameBoundedAndDeterministic pins the name bound. AgentInstance
+// metadata.name is accepted up to 253 characters, so "data-<name>" can be 258
+// -- a name the API server rejects, and which the finalizer then tries to
+// delete under that same impossible name. Generated names must be truncated,
+// yet stay distinct for distinct inputs (truncation alone collides) and
+// unchanged for names that already fit, so existing resources keep their names.
+func TestGeneratedNameBoundedAndDeterministic(t *testing.T) {
+	// Inputs that fit are returned unchanged: this is exactly what the
+	// controller derived before the bound existed.
+	if got := k8s.GeneratedName("data", testInstanceName); got != testPVCName {
+		t.Errorf("GeneratedName(data, %s) = %q, want %q", testInstanceName, got, testPVCName)
+	}
+	if got := k8s.GeneratedName("agent", testInstanceName); got != testPodName {
+		t.Errorf("GeneratedName(agent, %s) = %q, want %q", testInstanceName, got, testPodName)
+	}
+
+	// 253 characters is the longest metadata.name Kubernetes accepts.
+	long := strings.Repeat("a", 253)
+	for _, prefix := range []string{"data", "agent"} {
+		got := k8s.GeneratedName(prefix, long)
+		if len(got) > k8s.MaxResourceNameLen {
+			t.Errorf("GeneratedName(%s, 253-char name) = %d characters, want <= %d", prefix, len(got), k8s.MaxResourceNameLen)
+		}
+		if errs := validation.IsDNS1123Subdomain(got); len(errs) > 0 {
+			t.Errorf("GeneratedName(%s, 253-char name) = %q is not a valid DNS-1123 subdomain: %v", prefix, got, errs)
+		}
+		if got != k8s.GeneratedName(prefix, long) {
+			t.Errorf("GeneratedName(%s, 253-char name) is not deterministic", prefix)
+		}
+		// Distinct long inputs must not collapse onto one name.
+		other := k8s.GeneratedName(prefix, strings.Repeat("a", 252)+"b")
+		if other == got {
+			t.Errorf("two distinct 253-char names both produced %q", got)
+		}
+		// The readable head of the input survives the cut.
+		if !strings.HasPrefix(got, prefix+"-aaa") {
+			t.Errorf("GeneratedName(%s, 253-char name) = %q, want it to keep the input's head", prefix, got)
+		}
+	}
+}
+
+// TestAgentInstanceLongNameProvisionsAndReclaims runs the whole lifecycle for a
+// 253-character instance name -- the longest the API server accepts -- and
+// asserts that the create path and the finalizer agree on the bounded names:
+// the finalizer reclaims the very PVC/Service the reconcile created. If the two
+// derived the name differently, the instance would leak its data PVC.
+func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
+	ctx := context.Background()
+	longName := strings.Repeat("a", 253)
+	inst := testInstance()
+	inst.Name = longName
+
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+	for i := 0; i < 2; i++ {
+		if _, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: longName},
+		}); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+	}
+
+	pvcName := k8s.GeneratedName("data", longName)
+	podName := k8s.GeneratedName("agent", longName)
+	if len(pvcName) > k8s.MaxResourceNameLen || len(podName) > k8s.MaxResourceNameLen {
+		t.Fatalf("generated names are unbounded: pvc %d, pod %d", len(pvcName), len(podName))
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Fatalf("data pvc not created under the bounded name %s: %v", pvcName, err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: podName}, &corev1.Service{}); err != nil {
+		t.Fatalf("gateway service not created under the bounded name %s: %v", podName, err)
+	}
+
+	if err := r.finalize(ctx, inst); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Errorf("finalize did not reclaim the data pvc the reconcile created (err=%v)", err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: podName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
+		t.Errorf("finalize did not reclaim the service the reconcile created (err=%v)", err)
 	}
 }

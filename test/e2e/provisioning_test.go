@@ -22,9 +22,9 @@ var _ = Describe("Instance provisioning", func() {
 	instName := "e2e-" + rand.String(8) + "-cubepilot"
 	// Expected child names come from the production builders so the assertion
 	// can never drift from what the controller actually creates.
-	podName := k8s.ResourceName("agent", instName)
+	podName := k8s.GeneratedName("agent", instName)
 	svcName := podName
-	pvcName := k8s.ResourceName("data", instName)
+	pvcName := k8s.GeneratedName("data", instName)
 
 	BeforeEach(func() {
 		// The per-user kubeconfig Secret is a hard prerequisite for provisioning
