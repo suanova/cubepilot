@@ -205,11 +205,6 @@ spec:
                   - type
                   type: object
                 type: array
-              lastActivity:
-                description: LastActivity is the last observed activity time (agentKey
-                  -> activity).
-                format: date-time
-                type: string
               message:
                 description: Message is a human-readable status detail.
                 type: string

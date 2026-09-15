@@ -231,7 +231,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	meta.SetStatusCondition(&inst.Status.Conditions, cond)
 
 	// Update status only when it changed (avoid write amplification on the
-	// periodic requeue; LastActivity is refreshed on state transitions).
+	// periodic requeue).
 	if inst.Status.Phase != status || inst.Status.PodName != podName ||
 		inst.Status.PVCName != pvcName || inst.Status.ServiceName != svcName ||
 		inst.Status.Message != message ||
@@ -242,8 +242,6 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		inst.Status.ServiceName = svcName
 		inst.Status.Message = message
 		inst.Status.ObservedGeneration = inst.Generation
-		now := metav1.Now()
-		inst.Status.LastActivity = &now
 		if err := r.Status().Update(ctx, &inst); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -344,8 +342,6 @@ func (r *AgentInstanceReconciler) patchStatus(ctx context.Context, inst *v1alpha
 	inst.Status.Message = message
 	inst.Status.PodName = podName
 	inst.Status.ObservedGeneration = inst.Generation
-	now := metav1.Now()
-	inst.Status.LastActivity = &now
 	return r.Status().Update(ctx, inst)
 }
 

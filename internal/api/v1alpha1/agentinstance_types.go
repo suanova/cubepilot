@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -87,9 +86,6 @@ type AgentInstanceStatus struct {
 	// PVCName is the per-instance data PVC.
 	// +optional
 	PVCName string `json:"pvcName,omitempty"`
-	// LastActivity is the last observed activity time (agentKey -> activity).
-	// +optional
-	LastActivity *metav1.Time `json:"lastActivity,omitempty"`
 	// Conditions carries detail (Ready / Reclaiming / Failed reason).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -143,19 +139,4 @@ func (in *AgentInstance) EffectiveDataVolume() (pvc, size string) {
 		size = in.Spec.DataVolume.Size
 	}
 	return "data-" + in.Name, size
-}
-
-// ReadyCondition returns the Ready condition if present.
-func (in *AgentInstance) ReadyCondition() (metav1.Condition, bool) {
-	for _, c := range in.Status.Conditions {
-		if c.Type == "Ready" {
-			return c, true
-		}
-	}
-	return metav1.Condition{}, false
-}
-
-// PodResources returns the container resources for the agent Pod (defaults).
-func (in *AgentInstance) PodResources() corev1.ResourceRequirements {
-	return corev1.ResourceRequirements{}
 }

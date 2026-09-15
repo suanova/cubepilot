@@ -159,8 +159,10 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	}
 
 	// Idempotent: a second Reconcile must not duplicate resources or rewrite
-	// status (no write amplification on the periodic requeue).
-	firstActivity := inst.Status.LastActivity
+	// status (no write amplification on the periodic requeue). resourceVersion
+	// is the direct evidence -- a status write bumps it -- where the old
+	// assertion inferred the same thing from a field the write happened to set.
+	rvBefore := inst.ResourceVersion
 	reconcileInstance(r, t)
 	var pods corev1.PodList
 	if err := cl.List(context.Background(), &pods); err != nil {
@@ -173,8 +175,8 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &inst2); err != nil {
 		t.Fatal(err)
 	}
-	if firstActivity == nil || inst2.Status.LastActivity == nil || !inst2.Status.LastActivity.Equal(firstActivity) {
-		t.Error("status rewritten on no-change reconcile (LastActivity changed)")
+	if inst2.ResourceVersion != rvBefore {
+		t.Errorf("status rewritten on no-change reconcile (resourceVersion %s -> %s)", rvBefore, inst2.ResourceVersion)
 	}
 }
 
