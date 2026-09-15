@@ -335,20 +335,52 @@ link from the task list to the latest report.
 
 ### Two CEL rules on `TaskSpec`
 
-Both mirror rules the API handler already enforces in
-`handlers_tasks.go:182` and `:213-216`, moved into the schema so a hand-written
-CR is held to the same contract:
+Both mirror rules the API handler already enforces in `handlers_tasks.go:182`
+and `:213-216`, moved into the schema so a hand-written CR is held to the same
+contract.
 
-- `has(self.templateRef) || has(self.instruction)` -- at least one is required.
-  **Not "exactly one"**: a template-bound Task legitimately carries both, because
-  the stored `instruction` is the rendered snapshot
-  (`handlers_tasks.go:207`), kept for display and as the fallback when the
-  template is deleted, while the scheduler re-renders from the template at fire
-  time (`scheduler.go:164-171`).
-- `!has(self.params) || has(self.templateRef)` -- params require a template.
+**Presence is not enough, and the first draft of this rule got that wrong.**
+`has(self.instruction)` is true for `instruction: ""`: `has()` tests whether the
+key exists in the serialized object, and an explicitly empty string is a present
+key. So a hand-written `instruction: ""` would pass a rule the handler rejects --
+and a `params` map with `templateRef: ""` would pass the second rule too.
 
-Both are written with `has()` guards: these fields are `omitempty`, and CEL
-errors on a missing key rather than treating it as empty.
+The mirror is worse than "non-empty" as well: the handler trims before comparing
+(`handlers_tasks.go:175-176`, `:182`), so a whitespace-only instruction is a 400
+there and must fail validation here.
+
+```
+(has(self.templateRef) && self.templateRef != "")
+  || (has(self.instruction) && !self.instruction.matches('^\s*$'))
+```
+
+`!matches('^\s*$')` also rejects the empty string, since the pattern matches zero
+whitespace characters; the `!= ""` beside it is for symmetry, not necessity.
+
+The blank test uses `matches` rather than `trim()`. `trim()` belongs to the CEL
+`ext.Strings` library -- the same library the `lowerAscii()` call in
+`AgentTemplateSpec`'s rule comes from, so it is very likely available -- but
+`github.com/google/cel-go` is not in this module's build graph, there is no local
+copy of it and there is no network here, so that could not be confirmed. `matches`
+is core CEL, and its escaping convention is already proven in this repo by the
+`matches('.*\s.*')` rule on `Providers`: the Go marker carries `\\\\s`, which
+controller-gen unquotes to `\\s` in the generated YAML, which CEL reads as the
+regex escape `\s`. The new rule copies that convention.
+
+The rule is **at least one**, not exactly one: a template-bound Task legitimately
+carries both, because the stored `instruction` is the rendered snapshot
+(`handlers_tasks.go:207`), kept for display and as the fallback when the template
+is deleted, while the scheduler re-renders from the template at fire time
+(`scheduler.go:164-171`).
+
+The second rule, with the same value test:
+
+```
+!has(self.params) || (has(self.templateRef) && self.templateRef != "")
+```
+
+Both are written with `has()` guards: these fields are `omitempty`, and CEL errors
+on a missing key rather than treating it as empty.
 
 ### Stale comments
 
@@ -481,10 +513,50 @@ the UI, to make one template's report structured. Design §3.3.4 wants it; desig
 
 ## Migration
 
-None. Each CRD is a structural schema, so the API server prunes the removed
-fields from an existing object on the next write to it; nothing needs a
-migration step, and no existing object becomes invalid. Pre-release, no
+None for the removed fields. Each CRD is a structural schema, so the API server
+prunes a removed field from an existing object on the next write to it; no
+object becomes unreadable and no data needs converting. Pre-release, no
 compatibility is promised (the same position taken in #185's design).
+
+**The two new CEL rules on `TaskSpec` are a different matter**, and an earlier
+draft of this section claimed flatly that no existing object becomes invalid.
+That is too strong, and the correction matters:
+
+- CEL rules are evaluated on CREATE and UPDATE, never on read. So existing Tasks
+  stay readable, and an existing Task that already satisfies the rules is
+  unaffected.
+- A Task with neither `templateRef` nor `instruction` -- both absent, empty, or
+  blank -- is rejected by any write that triggers spec validation.
+- The scheduler writes Task status after every run
+  (`scheduler.go:226-233`), so such a Task would also stop reporting its runs.
+- Whether a *status-only* write re-evaluates a **spec-level** rule depends on CRD
+  validation ratcheting for unchanged fields, which is a cluster-version
+  question. It could not be checked here: `k8s.io/apiserver` is not in this
+  module's build graph, there is no local copy of it, and there is no network in
+  this environment. Assume it can be rejected, and confirm on the target cluster
+  before shipping.
+
+**Who can be affected: only hand-written CRs.** `POST /api/v1/tasks` has always
+refused to create a Task with neither field (`handlers_tasks.go:182`), and the
+builtin template always carries an instruction, so nothing the platform itself
+creates is non-conforming. The set to check is whatever was `kubectl apply`ed:
+
+```sh
+kubectl get tasks -A -o json \
+  | jq -r '.items[]
+      | select((.spec.templateRef // "") == ""
+               and ((.spec.instruction // "") | test("^\\s*$")))
+      | .metadata.name'
+```
+
+A hit needs a `templateRef` or a non-blank `instruction` before the CRD update
+lands. No automation: the expected set is empty, and a one-off `kubectl edit` is
+smaller than a migration path nobody would run twice.
+
+This is also the one part of the change that `make test` cannot verify: the rules
+are compiled by the API server at CRD install time, not by the Go toolchain. The
+kind e2e job, which installs the CRDs and goes on to create Tasks through them,
+is the check.
 
 ## Testing
 
@@ -503,8 +575,13 @@ compatibility is promised (the same position taken in #185's design).
   `metadata.resourceVersion` on a status write (`1` -> `2`).
 - **The scheduler's pause change**: a paused task writes `nextRunTime = nil`
   once, and a second reconcile with the same state issues no status write.
-- **The Task CEL rules**: a Task with neither `templateRef` nor `instruction` is
-  rejected by the API server, and one with both is accepted (the snapshot case).
+- **The Task CEL rules**, against a cluster with the CRD installed (the kind e2e
+  job -- `make test` cannot compile CEL). Rejected: neither field present;
+  `instruction: ""`; `instruction: "   "` (spaces); `instruction: "\n\t"`
+  (whitespace that is not a space); `templateRef: ""`. Accepted: a real
+  `instruction`; a real `templateRef`; both together (the snapshot case); a real
+  `templateRef` with `params`. And separately: `params` with no `templateRef` is
+  rejected, with one is accepted.
 - **CRD regeneration**: `make manifests` leaves `config/crd/bases` and
   `deploy/charts/cubepilot/crds` byte-identical to each other and matching the
   markers.
