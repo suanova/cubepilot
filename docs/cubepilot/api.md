@@ -209,17 +209,16 @@ X-CubePilot-User: <用户名>
 
 # 3. 调用顺序
 
-## 3.1 关键前提：只有 4 个端点会「加热」实例
+## 3.1 关键前提：只有 3 个端点会「加热」实例
 
 CubePilot 的 agent 实例是**常驻**的（起来后不回收），但第一次访问要**冷启动**一个 Pod，
-可能耗时数十秒。只有下面 4 个端点会触发这个过程（它们调用 `mgr.Ensure`）：
+可能耗时数十秒。只有下面 3 个端点会触发这个过程（它们调用 `mgr.Ensure`）：
 
 | 会加热（可能慢、可能 503） |
 | --- |
 | `GET /api/v1/sessions` |
 | `GET /api/v1/sessions/{key}/messages` |
 | `POST /api/v1/messages` |
-| `POST /api/v1/inspect` |
 
 **其余所有端点都不加热**——它们直接读 CR 或网关，永远快。
 调用顺序就建立在这条分界上。
@@ -498,7 +497,6 @@ GET /api/v1/sessions/{key}/question/pending
 | GET | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
 | GET | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
 | POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
-| POST | `/api/v1/inspect` | — | `{"report":"<自然语言文本>"}` | 是 |
 | POST | `/api/v1/sessions/{key}/approval` | `{"decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
 | GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approval":{"sessionId","approvalId","tool","command","level","message"}}` | 否 |
 | POST | `/api/v1/sessions/{key}/question` | `{"id","answers"\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
