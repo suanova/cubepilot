@@ -30,7 +30,8 @@ spec:
         description: |-
           AgentTemplate is the declarative definition of an agent (design doc §3.1)
           -- the platform's first-class object. The builtin cubepilot is the
-          preset first template; user-created templates are phase 2+.
+          preset first template; the API exposes templates read-only, so a user
+          cannot create one.
         properties:
           apiVersion:
             description: |-
@@ -243,8 +244,8 @@ spec:
                 + ''/'') ? m : p.name + ''/'' + m) == self.defaultModel)))'
           status:
             description: |-
-              AgentTemplateStatus is the observed state of an AgentTemplate definition
-              (phase one: minimal).
+              AgentTemplateStatus is the observed state of an AgentTemplate definition.
+              Minimal: the object is declarative and no controller reconciles it yet.
             properties:
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed.

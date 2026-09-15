@@ -75,6 +75,7 @@
 - **选择用 ref**：`AgentTemplateSpec.DefaultModel` 与 `AgentInstanceSpec.SelectedModel` 存 `<provider>/<modelId>`（id 本身已带 `<provider>/` 前缀时它自己就是 ref）；`gateway.ModelKey` 是唯一的 Go 实现。`TemplateProviderSpec.Validate()` + CEL `XValidation` 承接原 `TemplateModelSpec.Validate()` 的职责，并镜像结构上限（name ≤63、endpoint ≤2048、每个 id ≤256、每个 provider 至少 1 个且至多 64 个 id）。
 - **/api/v1/llms 语义**：POST 建 provider（body 带 `models`）；PUT 整体替换 endpoint、凭据和 model id 列表（空 `apiKey` 保留原凭据）；POST/PUT 响应封装在 `provider` 键下；DELETE 删 provider 及其凭据 Secret。有实例选中该 provider 服务的任意模型时 DELETE 返回 409，PUT 删掉这样的模型同样 409。
 - **k8s 命名**：`EnvNameForModel` → `EnvNameForProvider`（算法不变，参数从模型名改为 provider 名）。
+- **CRD 字段逐项审计**：六个 `ai.cubestack.io` CRD 的字段逐项核对完毕：删除 15 个没有任何代码读写的字段，新增 `taskDTO.lastRunId`，并修掉三个既有缺陷：`dataVolume.pvc` 曾让写者决定终结器删除哪个 PVC（数据卷名现恒由实例名生成），两个 printcolumn 指向已删字段、对每个对象都恒为空。`TaskRun.status` 的 `summary`（p0/p1/p2/total）删除：p0/p1/p2 是对正文的子串计数（报告写「no P0 issues found」也会被算成 `p0: 1`），`total` 又按另一种口径统计、可与它们互相矛盾；P0/P1/P2 分级保留在报告正文里。有意偏差共五处：设计 §3.2 的 `dataVolume.pvc`、§7 的证据引用、`TaskRun.spec.owner` 三处为审计开始时已记录，`AgentInstance.spec.identity` 与 `TaskRun.status.summary` 两处由本次审计补记，全部逐条列在审计 spec 的「Recorded deviations」节。
 
 ## 阶段二/演进清单（设计 §9 / 附录 B）
 

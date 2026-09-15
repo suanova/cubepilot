@@ -28,6 +28,7 @@
   cp config/crd/bases/ai.cubestack.io_*.yaml deploy/charts/cubepilot/crds/
   ```
   `controller-gen` is already installed at `$(go env GOPATH)/bin/controller-gen`, version v0.19.0 (it must stay v0.19.0 -- the checked-in CRDs carry that in `controller-gen.kubebuilder.io/version`).
+- **Regenerate before running the tests.** A task that deletes a type and runs the tests first sees a spurious failure in the stale `zz_generated.deepcopy.go`, not the deletion.
 - **Checks per task:** `make test` (runs `go vet ./...` + unit tests). Before the final commit: `make test && make web && make lint`.
 - **k8s API conventions:** no `bool` fields, string enums need `+kubebuilder:validation:Enum`, structured ints are `int32`.
 - **Do not touch** other worktrees under `.claude/worktrees/`, and never `git stash` in this repo.
@@ -301,11 +302,11 @@ A defect, not just dead weight: `EffectiveDataVolume` returns `spec.dataVolume.p
 Append to `internal/controller/agentinstance_controller_test.go`. It points `spec.dataVolume.pvc` at another object's PVC and asserts what should be true instead: the platform reclaims only its own generated name.
 
 ```go
-// TestAgentInstanceFinalizeIgnoresDataVolumeName pins the finalizer to the
+// TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly pins the finalizer to the
 // platform-generated PVC. spec.dataVolume.pvc currently selects the name the
 // finalizer deletes, so whoever writes that field chooses which PVC the
 // platform reclaims -- including one belonging to something else.
-func TestAgentInstanceFinalizeIgnoresDataVolumeName(t *testing.T) {
+func TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly(t *testing.T) {
 	now := metav1.Now()
 	inst := testInstance()
 	inst.DeletionTimestamp = &now
@@ -332,7 +333,7 @@ func TestAgentInstanceFinalizeIgnoresDataVolumeName(t *testing.T) {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `go test ./internal/controller/ -run TestAgentInstanceFinalizeIgnoresDataVolumeName -v`
+Run: `go test ./internal/controller/ -run TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly -v`
 Expected: FAIL on both assertions. `EffectiveDataVolume` returns `data-somebody-else` when the spec sets it, so the finalizer reclaims that PVC and leaves the generated one -- the defect, reproduced.
 
 **This step is the point of the test.** A version that sets only `Size` would pass against the old code too (the empty-`PVC` path already falls back to the generated name), so it would prove nothing.
@@ -417,7 +418,7 @@ Assisted-by: Claude Code"
 
 **Interfaces:**
 - Consumes: Tasks 2, 3.
-- Produces: `AgentInstanceStatus` without `LastActivity`. `PodResources()` and `ReadyCondition()` no longer exist. The no-write-amplification assertion now proves absence of a write via `metadata.resourceVersion` instead of inferring it from a field value -- verified to be a real assertion: the controller-runtime fake client bumps `resourceVersion` from `1` to `2` on a status write.
+- Produces: `AgentInstanceStatus` without `LastActivity`. `PodResources()` and `ReadyCondition()` no longer exist. The no-write-amplification assertion now proves absence of a write via `metadata.resourceVersion` instead of inferring it from a field value -- verified to be a real assertion: the controller-runtime fake client bumps `resourceVersion` on a status write, and the test observes it going from one value to the next.
 
 - [ ] **Step 1: Rewrite the test assertion first**
 
@@ -668,7 +669,7 @@ Change the field:
 - [ ] **Step 2: Run the build to confirm the writers break**
 
 Run: `go build ./internal/...`
-Expected: FAIL at `internal/scheduler/scheduler.go:231-233` (cannot use `"success"` as `TaskRunOutcome` without conversion) and at `internal/server/handlers_tasks.go:69`.
+Expected: FAIL at `internal/server/handlers_tasks.go:69` only -- the DTO's struct literal assigns the new `TaskRunOutcome` to a `string` field, which needs an explicit conversion. The writer in `internal/scheduler/scheduler.go:231-233` keeps compiling: an untyped string constant assigns to a named string type, so nothing there breaks. The value of the enum is the CRD schema and the documentation, not compile-time enforcement at Go call sites.
 
 - [ ] **Step 3: Fix the writers and the DTO**
 

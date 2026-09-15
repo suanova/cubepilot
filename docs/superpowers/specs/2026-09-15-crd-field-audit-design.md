@@ -454,7 +454,7 @@ them.
 ## Recorded deviations from the design doc
 
 The design doc is the source of truth and is not being edited to match. These
-three deviations are deliberate:
+five deviations are deliberate:
 
 1. **`AgentInstance.spec.dataVolume.pvc`** -- the design §3.2 example carries the
    field. Dropped for the deletion-primitive reason above.
@@ -463,6 +463,16 @@ three deviations are deliberate:
    `content`.
 3. **`TaskRun.spec.owner`** -- not in the design; kept because it has a real
    reader.
+4. **`AgentInstance.spec.identity`** -- the design §3.2 example carries it and §6
+   states its invariant (owner and identity.userRef must be equal). Dropped: in
+   phase one it is a second name for `owner`, the invariant was enforced nowhere,
+   and the credential chain -- the user kubeconfig Secret, the per-user
+   ServiceAccount -- runs entirely off `spec.owner`.
+5. **`TaskRun.status.summary`** -- the design §3.5 example shows
+   `summary: { p0: 0, p1: 1, p2: 3 }`. Dropped: p0/p1/p2 were substring counts
+   over prose, so a report saying "no P0 issues were found" produced `p0: 1`, and
+   `total` counted a different shape again so it could contradict them. The
+   report keeps its P0/P1/P2 grading in its text.
 
 ## Rejected alternatives
 
@@ -552,7 +562,7 @@ them -- is what verifies them.
   which uses `LastActivity` as the proof that a no-change reconcile did not write
   status. The replacement asserts `resourceVersion` is unchanged -- verified to
   be a real assertion, since the controller-runtime fake client bumps
-  `metadata.resourceVersion` on a status write (`1` -> `2`).
+  `metadata.resourceVersion` on a status write.
 - **The scheduler's pause change**: a paused task writes `nextRunTime = nil`
   once, and a second reconcile with the same state issues no status write.
 - **The Task CEL rules**, against a cluster with the CRD installed (the kind e2e

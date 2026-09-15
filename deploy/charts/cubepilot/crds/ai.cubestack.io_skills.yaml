@@ -74,8 +74,9 @@ spec:
                       versioned and immutable. Required when type=Path.
                     type: string
                   s3:
-                    description: S3 is the object-store addressing. Forbidden when
-                      type=Path (phase 2).
+                    description: |-
+                      S3 is the object-store addressing. Forbidden when type=Path. Not
+                      accepted anywhere yet: the catalog rejects type=S3.
                     properties:
                       bucket:
                         type: string
@@ -105,8 +106,9 @@ spec:
                 - message: source.type=S3 requires source.s3 and forbids source.path
                   rule: 'self.type==''S3'' ? has(self.s3) && !has(self.path) : true'
               visibility:
-                description: Visibility is Platform | Tenant | User; phase 1 only
-                  Platform.
+                description: |-
+                  Visibility is Platform | Tenant | User. Only Platform is accepted: the
+                  publish path and the catalog reject the others.
                 enum:
                 - Platform
                 - Tenant

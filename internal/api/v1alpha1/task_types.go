@@ -15,9 +15,10 @@ const (
 	TaskStatePaused TaskState = "Paused"
 )
 
-// TaskRunOutcome is the outcome of a Task's most recent run. A task's own
-// status records only whether it ran and how it ended; the run's report is the
-// TaskRun's.
+// TaskRunOutcome is the outcome of a Task's most recent run: whether it ended
+// well, which is not the same question as whether it found anything -- a run
+// that completes while reporting problems is still success. The findings live
+// in the TaskRun's report, not here.
 // +kubebuilder:validation:Enum=success;failed
 type TaskRunOutcome string
 
@@ -43,12 +44,13 @@ const (
 // blank instruction must fail here too. The blank test uses matches() rather
 // than trim(): matches is core CEL, while trim() comes from the ext.Strings
 // library whose escaping convention is copied below from the proven
-// matches('.*\s.*') rule on TemplateProviderSpec.Models.
+// matches('.*\\s.*') rule on TemplateProviderSpec.Models.
 // +kubebuilder:validation:XValidation:rule="(has(self.templateRef) && self.templateRef != \"\") || (has(self.instruction) && !self.instruction.matches('^\\\\s*$'))",message="a task needs a templateRef or a non-blank instruction"
 // +kubebuilder:validation:XValidation:rule="!has(self.params) || (has(self.templateRef) && self.templateRef != \"\")",message="params require a templateRef"
 type TaskSpec struct {
-	// TemplateRef points to the TaskTemplate (optional: inline instruction
-	// tasks are also allowed, phase-one compatibility).
+	// TemplateRef points to the TaskTemplate. Optional: a Task may instead
+	// carry an inline instruction (the XValidation rules on TaskSpec require
+	// one of the two).
 	// +optional
 	TemplateRef string `json:"templateRef,omitempty"`
 	// Instruction is the inline prompt (used when TemplateRef is empty).
@@ -58,8 +60,8 @@ type TaskSpec struct {
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
 	// Owner is the task owner; execution identity = owner (RBAC matches the
-	// owner; the per-user instance is derived from it -- design §3.5: phase
-	// one has one cubepilot instance per user, no agentInstanceRef).
+	// owner; the per-user instance is derived from it -- design §3.5: one
+	// cubepilot instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
 	// Cron is the 5-field cron expression. Empty means the task never fires on
 	// its own and runs only when asked (there is no separate trigger field: it
@@ -129,9 +131,9 @@ const (
 	// TaskDisplayNameAnnotation carries the human-facing task name (the CR
 	// name is DNS-1123 and may be sanitized/lossy for CJK input).
 	TaskDisplayNameAnnotation = "cubepilot/display-name"
-	// TaskManualRunAnnotation is set by the API on POST /api/tasks/{id}/run;
-	// the operator's scheduler fires the task once (trigger=manual) and
-	// removes the annotation. Value = RFC3339 timestamp (idempotency key).
+	// TaskManualRunAnnotation is set by the API on POST /api/tasks/{id}/run; the
+	// operator's scheduler fires the task once and removes the annotation.
+	// Value = RFC3339 timestamp (idempotency key).
 	TaskManualRunAnnotation = "cubepilot/manual-run"
 )
 

@@ -70,7 +70,7 @@ spec:
               blank instruction must fail here too. The blank test uses matches() rather
               than trim(): matches is core CEL, while trim() comes from the ext.Strings
               library whose escaping convention is copied below from the proven
-              matches('.*\s.*') rule on TemplateProviderSpec.Models.
+              matches('.*\\s.*') rule on TemplateProviderSpec.Models.
             properties:
               cron:
                 description: |-
@@ -86,8 +86,8 @@ spec:
               owner:
                 description: |-
                   Owner is the task owner; execution identity = owner (RBAC matches the
-                  owner; the per-user instance is derived from it -- design §3.5: phase
-                  one has one cubepilot instance per user, no agentInstanceRef).
+                  owner; the per-user instance is derived from it -- design §3.5: one
+                  cubepilot instance per user, no agentInstanceRef).
                 type: string
               params:
                 additionalProperties:
@@ -105,8 +105,9 @@ spec:
                 type: string
               templateRef:
                 description: |-
-                  TemplateRef points to the TaskTemplate (optional: inline instruction
-                  tasks are also allowed, phase-one compatibility).
+                  TemplateRef points to the TaskTemplate. Optional: a Task may instead
+                  carry an inline instruction (the XValidation rules on TaskSpec require
+                  one of the two).
                 type: string
             required:
             - owner

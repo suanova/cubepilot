@@ -250,8 +250,8 @@ type AgentTemplateSpec struct {
 	Skills []string `json:"skills,omitempty"`
 }
 
-// AgentTemplateStatus is the observed state of an AgentTemplate definition
-// (phase one: minimal).
+// AgentTemplateStatus is the observed state of an AgentTemplate definition.
+// Minimal: the object is declarative and no controller reconciles it yet.
 type AgentTemplateStatus struct {
 	// ObservedGeneration is the most recent generation observed.
 	// +optional
@@ -266,7 +266,8 @@ type AgentTemplateStatus struct {
 
 // AgentTemplate is the declarative definition of an agent (design doc §3.1)
 // -- the platform's first-class object. The builtin cubepilot is the
-// preset first template; user-created templates are phase 2+.
+// preset first template; the API exposes templates read-only, so a user
+// cannot create one.
 type AgentTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
