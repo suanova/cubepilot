@@ -143,19 +143,25 @@ export const api = {
 
   // Platform objects (read-only CRD views)
   listAgentTemplates: () => apiFetch<{ agentTemplates: PlatformObject[] }>('/api/v1/agenttemplates').then((d) => d.agentTemplates),
-  // The catalog: add a model, or edit/remove one that already exists. The name
-  // is the model's identity everywhere downstream (provider key, model id,
-  // credential Secret), so it is immutable and there is no rename -- a rename
-  // is a delete plus an add. A model with no credential must say so explicitly
-  // (public), or the server rejects it: a keyless provider fails every turn.
-  addLLM: (body: { name: string; endpoint: string; apiKey?: string; public?: boolean }) =>
-    apiFetch<{ model: PlatformObject }>('/api/v1/llms', {
+  // The catalog: add a provider, or edit/remove one that already exists. The
+  // name is the provider's identity everywhere downstream (the gateway provider
+  // key, the prefix of every model ref, the credential Secret), so it is
+  // immutable and there is no rename -- a rename is a delete plus an add. models
+  // is required and non-empty: it is the list of backend model ids the endpoint
+  // serves, and a provider that lists none renders nothing and cannot be
+  // selected. A provider with no credential must say so explicitly (public), or
+  // the server rejects it: a keyless provider fails every turn.
+  addLLM: (body: { name: string; endpoint: string; apiKey?: string; public?: boolean; models: string[] }) =>
+    apiFetch<{ provider: PlatformObject }>('/api/v1/llms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).then((d) => d.model),
-  updateLLM: (name: string, body: { endpoint: string; apiKey?: string; public?: boolean }) =>
-    apiFetch<{ model: PlatformObject; warning?: string }>(`/api/v1/llms/${encodeURIComponent(name)}`, {
+    }).then((d) => d.provider),
+  // A PUT carries the full model list -- it replaces the stored one, so adding
+  // and removing an id are this same request. An empty apiKey keeps the stored
+  // credential.
+  updateLLM: (name: string, body: { endpoint: string; apiKey?: string; public?: boolean; models: string[] }) =>
+    apiFetch<{ provider: PlatformObject; warning?: string }>(`/api/v1/llms/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
