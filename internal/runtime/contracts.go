@@ -6,7 +6,17 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+// ErrSessionNotFound is a SessionReader's answer for a session that does not
+// exist. It is an ordinary outcome, not a failure: a conversation is created by
+// its first message, so "no history yet" is what every conversation looks like
+// before it starts, and a caller that renders history has to tell it apart from
+// a runtime it could not reach -- otherwise an unreachable runtime and an
+// unstarted conversation are the same thing to a user whose history appears to
+// have been erased.
+var ErrSessionNotFound = errors.New("session not found")
 
 const (
 	EventMessageStart     = "message_start"

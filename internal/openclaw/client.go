@@ -182,6 +182,13 @@ func (c *Client) GetHistory(ctx context.Context, sessionKey string, limit int) (
 		return nil, fmt.Errorf("history request: %w", err)
 	}
 	defer resp.Body.Close()
+	// The gateway reports an unknown session with a 404. It is translated rather
+	// than wrapped: the caller needs to distinguish "this conversation has not
+	// started" from "the gateway is down", and the status code is the only thing
+	// that says which.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, agentruntime.ErrSessionNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("history returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))

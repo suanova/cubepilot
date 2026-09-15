@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -109,6 +110,16 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	client := s.sessionReaderFor(user)
 	history, err := client.GetHistory(r.Context(), sessionKey, 200)
 	if err != nil {
+		// A session that does not exist yet is answered with its own status, not
+		// folded into the 502 below. A conversation is created by its first
+		// message, so a caller that reads history before that is asking about an
+		// unstarted conversation -- and a client that cannot tell that from an
+		// unreachable runtime renders an empty thread for an outage, which looks
+		// to the user like their history was erased. (issue #30)
+		if errors.Is(err, agentruntime.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such session"})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
