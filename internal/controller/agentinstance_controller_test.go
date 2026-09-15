@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,10 +13,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -90,12 +93,12 @@ func agentSpec() k8s.AgentSpec {
 	}
 }
 
-func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceReconciler, client.Client) {
-	t.Helper()
-	scheme := testScheme(t)
-	// The operator reconciles the per-user kubeconfig Secrets (issue #19
-	// Option B); seed the platform (agent-kubeconfig) and the test owner's
-	// per-user Secret so Reconcile does not requeue on a missing Secret.
+// testClientBuilder returns the fake-client builder the controller tests share:
+// the operator reconciles the per-user kubeconfig Secrets (issue #19 Option B),
+// so the platform (agent-kubeconfig) and the test owner's per-user Secret are
+// seeded too and Reconcile does not requeue on a missing Secret. The status
+// subresource is enabled for the platform types the tests write status to.
+func testClientBuilder(scheme *runtime.Scheme, objs ...client.Object) *fake.ClientBuilder {
 	secrets := []client.Object{
 		&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: testNamespace},
@@ -107,11 +110,16 @@ func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceRecon
 		},
 	}
 	objs = append(objs, secrets...)
-	cl := fake.NewClientBuilder().
+	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.AgentInstance{}, &v1alpha1.AgentTemplate{}).
-		WithObjects(objs...).
-		Build()
+		WithObjects(objs...)
+}
+
+func newTestReconciler(t *testing.T, objs ...client.Object) (*AgentInstanceReconciler, client.Client) {
+	t.Helper()
+	scheme := testScheme(t)
+	cl := testClientBuilder(scheme, objs...).Build()
 	r := &AgentInstanceReconciler{Client: cl, Scheme: scheme, Cfg: testAgentCfg()}
 	return r, cl
 }
@@ -1007,5 +1015,240 @@ func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
 	}
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
 		t.Errorf("finalize did not reclaim the service the reconcile created (err=%v)", err)
+	}
+}
+
+// replacedObject emulates the one thing the fake client does not implement --
+// the API server's delete precondition -- and uses it to stage the race the
+// controller's ownership checks have to survive.
+//
+// It installs a client interceptor that
+//
+//   - swaps the object at target for a same-name, different-UID replacement
+//     immediately after the Get that returned checkedUID. That Get is the
+//     ownership check: from that point on the controller is holding an object
+//     that no longer exists, while the name it will delete still resolves to
+//     something nobody has vetted; and
+//   - refuses a delete whose precondition UID is not the UID of the object it
+//     is about to delete, answering 409 Conflict exactly as a real API server
+//     does.
+//
+// The second half is what makes the race observable in a unit test: the fake
+// client deletes by name/namespace alone and honours only a ResourceVersion
+// precondition, so on its own it would destroy the replacement in the fixed and
+// the broken code alike. With the emulation, a delete that is not bound to the
+// object that was checked destroys the replacement -- which is exactly the bug.
+type replacedObject struct {
+	target     types.NamespacedName
+	checkedUID types.UID
+	// replacementUID is the identity the object at target takes over with.
+	replacementUID types.UID
+
+	// swaps counts the replacements staged (0 means the delete was never
+	// reached, so the test would otherwise pass vacuously).
+	swaps int
+	// deletes records the precondition carried by each delete, by object name.
+	deletes map[string]*metav1.Preconditions
+	// err records a failure inside the interceptor, where t.Fatalf is awkward.
+	err error
+}
+
+func newReplacedObject(target types.NamespacedName, checkedUID types.UID) *replacedObject {
+	return &replacedObject{
+		target:         target,
+		checkedUID:     checkedUID,
+		replacementUID: types.UID("replacement-object-uid"),
+		deletes:        map[string]*metav1.Preconditions{},
+	}
+}
+
+func (ro *replacedObject) funcs() interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			ro.swap(ctx, c, key, obj)
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			pre := (&client.DeleteOptions{}).ApplyOptions(opts).Preconditions
+			ro.deletes[obj.GetName()] = pre
+			// The API server's precondition check: the delete is refused while the
+			// object about to be deleted is not the one the precondition names.
+			current := obj.DeepCopyObject().(client.Object)
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+				return c.Delete(ctx, obj, opts...) // already gone: nothing left to bind to
+			}
+			if pre != nil && pre.UID != nil && *pre.UID != current.GetUID() {
+				return apierrors.NewConflict(schema.GroupResource{Group: "test", Resource: "objects"}, obj.GetName(),
+					fmt.Errorf("Precondition failed: UID in precondition: %v, UID in object meta: %v", *pre.UID, current.GetUID()))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}
+}
+
+// swap replaces the object at key once, right after the Get that returned
+// checkedUID: it is deleted and a different object is created under the same
+// name. Anything the controller held from that Get now refers to an object that
+// does not exist, and the name points at one no ownership check has seen.
+func (ro *replacedObject) swap(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object) {
+	if ro.err != nil || ro.swaps > 0 || key.Name != ro.target.Name || key.Namespace != ro.target.Namespace {
+		return
+	}
+	if obj.GetUID() != ro.checkedUID {
+		return // a different object already holds the name
+	}
+	if err := c.Delete(ctx, obj.DeepCopyObject().(client.Object)); err != nil {
+		ro.err = fmt.Errorf("staging the replacement: deleting %s: %w", key, err)
+		return
+	}
+	replacement := obj.DeepCopyObject().(client.Object)
+	replacement.SetUID(ro.replacementUID)
+	replacement.SetResourceVersion("")
+	if err := c.Create(ctx, replacement); err != nil {
+		ro.err = fmt.Errorf("staging the replacement: creating %s: %w", key, err)
+		return
+	}
+	ro.swaps++
+}
+
+// TestDeleteRefusesAReplacedObject pins the check-then-use race shared by the
+// three paths that verify a generated object's owner and then delete it by
+// name: deleteOwned (the finalizer), the drift deletion inside ensurePod, and
+// deletePod (the failed-Pod heal). In each, the object that was checked is
+// replaced -- same name, different UID -- before the delete reaches the API
+// server. The delete is bound to the UID that was checked (see
+// deletePrecondition), so it fails with a Conflict, the replacement survives,
+// and the caller re-reads rather than destroying an object it never vetted.
+func TestDeleteRefusesAReplacedObject(t *testing.T) {
+	const checkedUID = types.UID("checked-object-uid")
+
+	cases := []struct {
+		name string
+		// target is the object the path checks and deletes.
+		target types.NamespacedName
+		// empty returns a fresh, typed object for reading the target back.
+		empty func() client.Object
+		// seed returns the objects the path will find: the one at target carries
+		// checkedUID and this instance's ownership.
+		seed func(t *testing.T, scheme *runtime.Scheme) []client.Object
+		// call runs the path under test.
+		call func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error
+	}{
+		{
+			name:   "finalizer deleteOwned",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPVCName},
+			empty:  func() client.Object { return &corev1.PersistentVolumeClaim{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				now := metav1.Now()
+				inst := testInstance()
+				inst.DeletionTimestamp = &now
+				inst.Finalizers = []string{finalizerName}
+				spec := agentSpec()
+				pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
+				pvc.UID = checkedUID
+				pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
+				ownByTestInstance(t, scheme, pvc, pod, svc)
+				return []client.Object{inst, pvc, pod, svc}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testInstanceName}})
+				return err
+			},
+		},
+		{
+			name:   "ensurePod drift deletion",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPodName},
+			empty:  func() client.Object { return &corev1.Pod{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				spec := agentSpec()
+				stale := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				stale.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: "stale-rev"}
+				stale.UID = checkedUID
+				ownByTestInstance(t, scheme, stale)
+				return []client.Object{stale}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				spec := agentSpec()
+				desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				desired.Annotations = map[string]string{k8s.KubeconfigRevisionAnnotation: "rotated-rev"}
+				ownByTestInstance(t, r.Scheme, desired)
+				recreate, err := r.ensurePod(ctx, desired)
+				if recreate {
+					t.Errorf("ensurePod reported recreate=true for a Pod it did not delete: the caller would wait out the short requeue for a deletion that never happened")
+				}
+				return err
+			},
+		},
+		{
+			name:   "deletePod failed-pod heal",
+			target: types.NamespacedName{Namespace: testNamespace, Name: testPodName},
+			empty:  func() client.Object { return &corev1.Pod{} },
+			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
+				spec := agentSpec()
+				failed := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				failed.Status.Phase = corev1.PodFailed
+				failed.UID = checkedUID
+				ownByTestInstance(t, scheme, failed)
+				return []client.Object{failed}
+			},
+			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
+				spec := agentSpec()
+				desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+				ownByTestInstance(t, r.Scheme, desired)
+				return r.deletePod(ctx, desired)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := testScheme(t)
+			race := newReplacedObject(tc.target, checkedUID)
+			cl := interceptor.NewClient(testClientBuilder(scheme, tc.seed(t, scheme)...).Build(), race.funcs())
+			r := &AgentInstanceReconciler{Client: cl, Scheme: scheme, Cfg: testAgentCfg()}
+
+			err := tc.call(t, ctx, r)
+
+			if race.err != nil {
+				t.Fatalf("staging the race: %v", race.err)
+			}
+			if race.swaps != 1 {
+				t.Fatalf("the object at %s was replaced %d time(s), want 1: the delete under test was never reached", tc.target, race.swaps)
+			}
+			// The delete is bound to the object that was checked: its UID is the
+			// precondition.
+			pre, ok := race.deletes[tc.target.Name]
+			if !ok {
+				t.Fatalf("no delete of %s was attempted", tc.target)
+			}
+			if pre == nil || pre.UID == nil || *pre.UID != checkedUID {
+				t.Errorf("delete of %s carried precondition %+v, want UID %q (the object whose owner was checked)", tc.target, pre, checkedUID)
+			}
+
+			// The replacement is still there: nothing vetted it, so nothing may
+			// delete it.
+			got := tc.empty()
+			got.SetName(tc.target.Name)
+			got.SetNamespace(tc.target.Namespace)
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(got), got); err != nil {
+				t.Fatalf("the object at %s is gone: %v -- the delete hit the replacement instead of the object that was checked", tc.target, err)
+			}
+			if got.GetUID() != race.replacementUID {
+				t.Errorf("object at %s has uid %q, want the replacement %q", tc.target, got.GetUID(), race.replacementUID)
+			}
+
+			// Fail closed: the caller is told the object changed under it and
+			// re-reads, rather than carrying the delete out.
+			if err == nil {
+				t.Errorf("the path swallowed a failed delete precondition; want the Conflict returned so the caller re-reads")
+			} else if !apierrors.IsConflict(err) {
+				t.Errorf("err = %v, want a Conflict from the failed precondition", err)
+			}
+		})
 	}
 }

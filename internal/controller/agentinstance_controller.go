@@ -374,6 +374,13 @@ func (r *AgentInstanceReconciler) finalize(ctx context.Context, inst *v1alpha1.A
 // object owned by someone else is skipped and logged (never an error: the
 // caller is a finalizer, and failing on a foreign object would pin the
 // instance in deletion forever).
+//
+// An object that was ours when it was read but changed before the delete landed
+// is a different case and is NOT skipped: nothing has been verified about the
+// object now at that name, so the delete is refused by the precondition (see
+// deletePrecondition) and the error is returned. The caller then re-reads and
+// re-vets it, which converges -- unlike the foreign case, this is not a
+// permanent condition, so failing here cannot pin the instance.
 func (r *AgentInstanceReconciler) deleteOwned(ctx context.Context, inst *v1alpha1.AgentInstance, kind string, obj client.Object) error {
 	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -386,10 +393,36 @@ func (r *AgentInstanceReconciler) deleteOwned(ctx context.Context, inst *v1alpha
 			inst.Name, kind, obj.GetName(), controllerOwnerUID(obj), inst.UID)
 		return nil
 	}
-	if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, obj, deletePrecondition(obj)); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
+}
+
+// deletePrecondition binds a Delete to the exact object a preceding Get
+// returned, by passing that object's UID as a delete precondition. The API
+// server answers 409 Conflict when the UID of the object it is about to delete
+// no longer matches.
+//
+// Each delete below is a check-then-use pair: Get the object, verify its
+// controller owner is this instance, then delete it -- by name. The name alone
+// carries no identity, so an object replaced between the two steps (a different
+// object, same name, different UID) would make the *unverified* replacement the
+// one that gets deleted, while the ownership check that authorized the delete
+// was made against an object that is no longer there. The precondition closes
+// that window: the delete lands only while the object is still the one that was
+// checked. It is additional to the ownership checks, not a replacement for them
+// -- they decide whether to delete at all, it decides whether the object is
+// still the one they decided about.
+//
+// A Conflict from a failed precondition is deliberately not swallowed anywhere
+// (fail closed): the object at that name is no longer the object that was
+// checked, so the delete must not carry it out, and the caller has to re-read
+// and re-vet before acting. The callers' IsNotFound handling is unaffected --
+// an object that is already gone satisfies the delete's intent.
+func deletePrecondition(obj metav1.Object) client.DeleteOption {
+	uid := obj.GetUID()
+	return client.Preconditions{UID: &uid}
 }
 
 // setInstanceOwner makes inst the controller owner of each object, so the
@@ -585,7 +618,13 @@ func (r *AgentInstanceReconciler) ensurePod(ctx context.Context, pod *corev1.Pod
 		return true, nil
 	}
 	if !equality.Semantic.DeepEqual(securityFingerprint(&existing), securityFingerprint(pod)) {
-		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+		// The delete carries the UID of the Pod that was just vetted, so a Pod
+		// that replaced it in between is not the one deleted (see
+		// deletePrecondition). A Conflict from that precondition is returned, not
+		// folded into recreate=true: the replacement is an object nothing is
+		// known about, so it must not be waited on as if it were ours being
+		// deleted -- the caller fails the reconcile and the next one re-reads.
+		if err := r.Delete(ctx, &existing, deletePrecondition(&existing)); err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		return true, nil
@@ -620,7 +659,10 @@ func (r *AgentInstanceReconciler) deletePod(ctx context.Context, desired *corev1
 		return fmt.Errorf("pod %s is not owned by this AgentInstance (owner uid %q, expected %q): refusing to delete an existing object",
 			desired.Name, controllerOwnerUID(existing), controllerOwnerUID(desired))
 	}
-	if err := r.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+	// The precondition binds the delete to the Pod that was just checked, so a
+	// same-name replacement that landed in between is not deleted unverified
+	// (see deletePrecondition); a Conflict is returned and the caller requeues.
+	if err := r.Delete(ctx, existing, deletePrecondition(existing)); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
