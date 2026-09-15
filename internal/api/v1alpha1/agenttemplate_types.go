@@ -26,18 +26,6 @@ const (
 	RuntimeHermes AgentRuntime = "Hermes"
 )
 
-// IdentityMode is how an agent instance derives its platform-side identity
-// (design doc §4.4: user = run as the user identity; service = independent
-// service identity, phase 2+).
-type IdentityMode string
-
-const (
-	// IdentityModeUser runs with the creator/user identity (phase one default).
-	IdentityModeUser IdentityMode = "user"
-	// IdentityModeService runs as an independent service identity (phase 2+).
-	IdentityModeService IdentityMode = "service"
-)
-
 // TemplateProviderSpec is one OpenAI-compatible LLM provider of an
 // AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
 // A provider owns the endpoint and the credential once, and lists the backend

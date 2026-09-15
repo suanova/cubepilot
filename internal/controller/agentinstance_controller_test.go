@@ -48,10 +48,6 @@ func testInstance() *v1alpha1.AgentInstance {
 		Spec: v1alpha1.AgentInstanceSpec{
 			TemplateRef: "cubepilot",
 			Owner:       "zhang.wei",
-			Identity: v1alpha1.IdentitySpec{
-				Mode:         v1alpha1.IdentityModeUser,
-				PrincipalRef: v1alpha1.PrincipalRef{UserRef: "zhang.wei"},
-			},
 		},
 	}
 }

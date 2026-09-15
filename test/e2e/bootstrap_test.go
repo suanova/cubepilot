@@ -91,7 +91,6 @@ var _ = Describe("Builtin bootstrap", func() {
 				return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: name}, inst)
 			}).Should(Succeed(), "builtin instance %s for user %s should exist", name, user)
 			Expect(inst.Spec.TemplateRef).To(Equal(controller.BuiltinAgentName))
-			Expect(inst.Spec.Identity.PrincipalRef.UserRef).To(Equal(user))
 			Expect(inst.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
 		}
 	})

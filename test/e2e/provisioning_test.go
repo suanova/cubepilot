@@ -44,13 +44,6 @@ var _ = Describe("Instance provisioning", func() {
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: controller.BuiltinAgentName,
 				Owner:       "e2e.user",
-				Identity: v1alpha1.IdentitySpec{
-					Mode: v1alpha1.IdentityModeUser,
-					PrincipalRef: v1alpha1.PrincipalRef{
-						UserRef: "e2e.user",
-					},
-				},
-				Lifecycle: &v1alpha1.LifecycleSpec{Strategy: "resident"},
 			},
 		}
 		err := fw.CtrlClient.Create(ctx, inst)

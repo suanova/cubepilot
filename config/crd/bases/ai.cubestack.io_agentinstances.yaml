@@ -102,33 +102,6 @@ spec:
                 - Allowlist
                 - AlwaysAsk
                 type: string
-              credentials:
-                description: Credentials are the typed downstream credentials.
-                items:
-                  description: |-
-                    CredentialSpec is one typed downstream credential of an instance
-                    (design §4.4: identity = who I am; credentials[] = how I authenticate to
-                    downstreams).
-                    The actual secret is platform-managed; refs only, never plaintext.
-                  properties:
-                    ref:
-                      description: Ref is the platform-managed Secret reference (namespace/name
-                        or name).
-                      type: string
-                    target:
-                      description: 'Target is the downstream system: k8s | prometheus
-                        | harbor | llm | itsm | ...'
-                      type: string
-                    type:
-                      description: 'Type is the credential type: kubeconfig | api-key
-                        | oauth2 | bearer-token | ...'
-                      type: string
-                  required:
-                  - ref
-                  - target
-                  - type
-                  type: object
-                type: array
               dataVolume:
                 description: DataVolume is the per-instance data directory.
                 properties:
@@ -148,37 +121,6 @@ spec:
                 items:
                   type: string
                 type: array
-              identity:
-                description: Identity is the platform-side identity (mode + principal).
-                properties:
-                  mode:
-                    description: Mode must match the Agent definition (inherited,
-                      immutable).
-                    type: string
-                  principalRef:
-                    description: PrincipalRef binds the concrete principal.
-                    properties:
-                      serviceRef:
-                        description: ServiceRef binds a service identity (mode=service,
-                          phase 2+).
-                        type: string
-                      userRef:
-                        description: UserRef binds a user identity (mode=user).
-                        type: string
-                    type: object
-                required:
-                - mode
-                - principalRef
-                type: object
-              lifecycle:
-                description: Lifecycle overrides the definition defaults (within quota
-                  bounds).
-                properties:
-                  strategy:
-                    default: resident
-                    description: Strategy is resident | on-demand (default resident).
-                    type: string
-                type: object
               owner:
                 description: Owner is the user the instance belongs to.
                 type: string
@@ -201,7 +143,6 @@ spec:
                   instructions; cannot remove or weaken security/identity bounds).
                 type: string
             required:
-            - identity
             - owner
             - templateRef
             type: object

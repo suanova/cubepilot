@@ -184,9 +184,6 @@ func TestBootstrapEnsure(t *testing.T) {
 		if inst.Spec.TemplateRef != "cubepilot" {
 			t.Errorf("instance %s templateRef = %s", inst.Name, inst.Spec.TemplateRef)
 		}
-		if inst.Spec.Identity.Mode != v1alpha1.IdentityModeUser || inst.Spec.Identity.PrincipalRef.UserRef == "" {
-			t.Errorf("instance %s identity not bound to user", inst.Name)
-		}
 	}
 
 	// Idempotent: a second Ensure must not fail or duplicate.

@@ -174,15 +174,8 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		inst := &v1alpha1.AgentInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.cfg.Namespace},
 			Spec: v1alpha1.AgentInstanceSpec{
-				TemplateRef: templateRef,
-				Owner:       owner,
-				Identity: v1alpha1.IdentitySpec{
-					Mode: v1alpha1.IdentityModeUser,
-					PrincipalRef: v1alpha1.PrincipalRef{
-						UserRef: owner,
-					},
-				},
-				Lifecycle:        &v1alpha1.LifecycleSpec{Strategy: "resident"},
+				TemplateRef:      templateRef,
+				Owner:            owner,
 				SelectedModel:    strings.TrimSpace(body.SelectedModel),
 				EnabledSkills:    body.EnabledSkills,
 				UserInstructions: userInstructions,

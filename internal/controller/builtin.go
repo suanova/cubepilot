@@ -232,13 +232,6 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 			Spec: v1alpha1.AgentInstanceSpec{
 				TemplateRef: BuiltinAgentName,
 				Owner:       user,
-				Identity: v1alpha1.IdentitySpec{
-					Mode: v1alpha1.IdentityModeUser,
-					PrincipalRef: v1alpha1.PrincipalRef{
-						UserRef: user,
-					},
-				},
-				Lifecycle: &v1alpha1.LifecycleSpec{Strategy: "resident"},
 			},
 		}
 		if err := r.createIfMissing(ctx, inst); err != nil {
