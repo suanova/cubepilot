@@ -50,10 +50,10 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
   } = thread
   const chatTitle = title
 
-  // The tool cards the reader opened, by position. A card's resting state is
-  // derived -- open while its tool is in flight, closed once it has returned --
-  // so only the reader's own choices are recorded here, and a card left open is
-  // the one thing that does not change under them.
+  // The tool cards the reader opened, by position within the conversation. A
+  // card's resting state is derived -- open while its tool is in flight, closed
+  // once it has returned -- so only the reader's own choices are recorded here,
+  // and a card left open is the one thing that does not change under them.
   const [openedTools, setOpenedTools] = useState<Record<string, boolean>>({})
 
   // What the conversation is doing right now, and what it is waiting on. Both
@@ -136,7 +136,14 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                         screenful of raw output with the reply it produced
                         somewhere under it. */}
                     {b.tools.map((t, ti) => {
-                      const key = `${i}-${ti}`
+                      // Keyed by position *within the conversation*: the
+                      // position alone is not an identity, so switching chats
+                      // would otherwise open the card the new one happens to
+                      // have in the same place -- one the reader never
+                      // touched. The conversation is part of the key rather
+                      // than something to reset on, so reopening the same one
+                      // leaves the reader's cards as they left them.
+                      const key = `${currentSessionId ?? ''}-${i}-${ti}`
                       const running = !t.done && b.phase !== 'done'
                       const open = openedTools[key] ?? running
                       return (

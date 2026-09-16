@@ -81,6 +81,44 @@ describe('ChatView turn', () => {
 
     expect(screen.getByText(/pod\/nginx Running/)).toBeInTheDocument()
   })
+
+  it('leaves a card the reader opened in the conversation they opened it in', async () => {
+    gateway = installFakeGateway({
+      sessions: [
+        { sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' },
+        { sessionKey: 'agent:main:conv-2', title: 'GPU utilization' },
+      ],
+      history: [
+        { role: 'user', content: 'what is running in the cluster?' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Checking the default namespace.' },
+            { type: 'toolCall', id: 'h1', name: 'kubectl_get', arguments: '{"kind":"pods"}' },
+          ],
+        },
+        { role: 'toolResult', content: [{ type: 'text', text: 'pod/nginx Running' }] },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+
+    await user.click(await screen.findByText('Dev environment for nginx'))
+    const card = await screen.findByRole('button', { name: /kubectl_get/ })
+    expect(card).toHaveAttribute('aria-expanded', 'false')
+
+    await user.click(card)
+    expect(card).toHaveAttribute('aria-expanded', 'true')
+
+    // A card is opened in a conversation, not at a place on the page. The other
+    // conversation's cards are ones the reader never touched, even where its
+    // transcript puts a card in the same position as the one they opened.
+    await user.click(screen.getByText('GPU utilization'))
+
+    expect(await screen.findByRole('button', { name: /kubectl_get/ })).toHaveAttribute('aria-expanded', 'false')
+  })
 })
 
 const APPROVAL = [
