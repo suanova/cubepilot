@@ -1453,3 +1453,23 @@ func TestMapSecretToInstancesIgnoresForeignScope(t *testing.T) {
 		t.Errorf("mapSecretToInstances(non-Secret) = %v, want none", got)
 	}
 }
+
+// TestMapTemplateToInstancesIgnoresForeignTemplate verifies a template outside
+// the platform namespace is inert even when its name collides with one the
+// instances reference. Reconcile resolves templates in the platform namespace
+// only (templateFor), so a foreign template is not the object those instances
+// read -- waking them for it is exactly the fan-out this mapping removes. The
+// cache is namespace-scoped, so this is the belt-and-braces guard, mirroring
+// the Secret mapper.
+func TestMapTemplateToInstancesIgnoresForeignTemplate(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+	)
+
+	foreign := testTemplateWithCredential("cubepilot", "cubepilot-llm")
+	foreign.Namespace = "other"
+	if got := reqNames(r.mapTemplateToInstances(context.Background(), foreign)); len(got) != 0 {
+		t.Errorf("mapTemplateToInstances(template in namespace other) = %v, want none -- Reconcile never reads a template outside the platform namespace", got)
+	}
+}

@@ -352,9 +352,14 @@ func requestsFor(instances []v1alpha1.AgentInstance) []reconcile.Request {
 // the ModelConfigured condition, so a template change must re-reconcile its
 // instances -- but only those: another instance on a different template reads
 // nothing from this object.
+//
+// The namespace check is the same belt-and-braces guard as the Secret mapper's:
+// Reconcile resolves templates in the platform namespace only (templateFor), so
+// a foreign template sharing a platform template's name is not the object these
+// instances read and must not wake them.
 func (r *AgentInstanceReconciler) mapTemplateToInstances(_ context.Context, obj client.Object) []reconcile.Request {
 	tmpl, ok := obj.(*v1alpha1.AgentTemplate)
-	if !ok {
+	if !ok || tmpl.Namespace != r.Cfg.Namespace {
 		return nil
 	}
 	var matched []v1alpha1.AgentInstance
