@@ -935,9 +935,18 @@ export function useChatThread({
           }
           if (ev.type === 'text_replace') {
             // Snapshot superseding earlier text (e.g. commentary rewritten after
-            // a tool ran): replace, never append (issue #130).
+            // a tool ran): replace, never append (issue #130). The text it
+            // supersedes is kept rather than dropped -- it is what the user was
+            // reading when the rewrite landed, and a rewrite is not a reason to
+            // take it away from them (issue #204). Only a rewrite that would
+            // change nothing is discarded, so a repeated snapshot cannot pile up
+            // copies of the same text.
             setPhase(bubble, 'streaming')
-            bubble.text = ev.delta || ''
+            const next = ev.delta || ''
+            if (bubble.text && bubble.text !== next) {
+              bubble.superseded = [...(bubble.superseded || []), bubble.text]
+            }
+            bubble.text = next
             return
           }
           if (ev.type === 'message_done') {

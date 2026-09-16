@@ -138,7 +138,13 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 /* chat view */
 .chat-view{display:none;height:100%;flex-direction:column;padding:0}
 .chat-view.active{display:flex}
-.chat-body{flex:1;min-height:0;display:flex}
+/* The chat page is exactly one screen: the conversation scrolls, the header and
+   the composer do not. `flex:1` alone never did this -- `.content` is a block,
+   not a flex container, so the column grew with its content and the whole page
+   scrolled instead, taking the header and the composer with it. `height:100%`
+   resolves against `.content`'s definite height (it is a flex item of `.main`),
+   which is what lets the thread below be the only thing that scrolls. */
+.chat-body{height:100%;min-height:0;display:flex}
 .session-panel{width:252px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface)}
 .session-head{padding:12px 12px 8px;display:flex;align-items:center;gap:8px}
 .session-search{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;height:30px;padding:0 8px;color:var(--muted)}
@@ -156,8 +162,8 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .s-title{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
 .session-item.active .s-title{color:var(--accent-ink);font-weight:600}
 .s-meta{font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:6px}
-.chat-main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
-.thread{flex:1;overflow:auto;padding:22px 24px}
+.chat-main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+.thread{flex:1;min-height:0;overflow:auto;padding:22px 24px}
 .thread-inner{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .msg{display:flex;gap:12px}
 .msg .avatar{width:30px;height:30px}
@@ -170,8 +176,17 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .user .msg-meta{text-align:right}
 /* tool card */
 .tool-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.tool-head{display:flex;align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg)}
+.tool-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg)}
+/* Only the collapsible cards: an approval or question card keeps its divider,
+   and it is the button that marks a card as one the reader can open. */
+.tool-card:not(.tool-open) button.tool-head{border-bottom:none}
+button.tool-head:hover{background:var(--hover)}
 .tool-head .icon{width:15px;height:15px;color:var(--muted)}
+.tool-head .chevron{width:14px;height:14px;flex:none;transition:transform .12s}
+.tool-card.tool-open .chevron{transform:rotate(90deg)}
+.tool-name{font-family:var(--font-mono);font-size:12px;color:var(--fg);flex:none}
+/* The collapsed card's one line: what the tool was asked to do, cut to fit. */
+.tool-arg{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-cmd{font-family:var(--font-mono);font-size:12px;color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-body{padding:10px 12px;font-size:12.5px}
 .tool-body .mono{font-size:12px}
@@ -189,6 +204,17 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 /* final-answer panel: the assistant's closing text stands out from the tool log */
 .answer-panel{margin-top:12px;background:var(--accent-soft);border:1px solid var(--accent-soft);border-left:3px solid var(--accent-strong);border-radius:8px;padding:10px 12px;font-size:14.5px;line-height:1.75;color:var(--fg);word-break:break-word}
 .answer-panel .answer-label{display:block;font-size:11px;font-weight:650;letter-spacing:.05em;color:var(--accent-ink);margin-bottom:3px}
+/* While the turn is still running the same text is a reply in progress: the
+   gateway can rewrite it (see `superseded`), so it is drawn as an ordinary
+   panel rather than in the colour of a finished answer. */
+.answer-panel.in-progress{background:var(--surface);border-color:var(--border);border-left-color:var(--border)}
+.answer-panel.in-progress .answer-label{color:var(--muted)}
+/* Text a rewrite superseded, kept one click away instead of dropped. */
+.superseded{margin-top:12px;font-size:12.5px}
+.superseded summary{cursor:pointer;font-size:11.5px;font-weight:650;letter-spacing:.04em;color:var(--muted)}
+.superseded summary:hover{color:var(--fg)}
+.superseded-item{margin-top:8px;padding:8px 10px;border:1px dashed var(--border);border-radius:6px;color:var(--muted);line-height:1.7}
+.superseded-item .md{font-size:12.5px}
 /* markdown-rendered agent text */
 .bubble .md{font-size:13.5px;line-height:1.7}
 .answer-panel .md{font-size:14.5px;line-height:1.75}
@@ -219,6 +245,11 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .turn-banner .btn + .btn{margin-left:0}
 /* input bar */
 .composer{border-top:1px solid var(--border);padding:12px 24px 16px;background:var(--surface)}
+/* What the agent is parked on, drawn where the composer is: this part of the
+   screen does not scroll, so the controls for a blocked turn are always in
+   view. Capped, because a long question card would otherwise leave no room for
+   the conversation it belongs to. */
+.hitl-dock{max-width:760px;margin:0 auto 10px;display:flex;flex-direction:column;gap:8px;max-height:min(40vh,240px);overflow:auto}
 .composer-inner{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
 .composer-inner:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .composer textarea{flex:1;border:none;outline:none;resize:none;background:none;font-size:13.5px;line-height:1.5;max-height:120px;padding:4px 2px}
@@ -231,9 +262,21 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .send-btn .icon{width:16px;height:16px}
 .composer-hint{max-width:760px;margin:8px auto 0;font-size:11.5px;color:var(--muted)}
 .chat-head{flex:none;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
-.chat-head-main{max-width:760px;margin:0 auto}
+.chat-head-main{max-width:760px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.chat-head-title-block{flex:1;min-width:0}
 .chat-head-title{font-size:15px;font-weight:650;color:var(--fg)}
 .chat-head-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
+/* The turn's state, outside the scroll region: it answers "is it still working"
+   for as long as the question can be asked. The tone carries the answer too, so
+   a glance is enough. */
+.chat-head-status{display:flex;align-items:center;gap:6px;flex:none;max-width:55%;font-size:12px;color:var(--muted)}
+.chat-head-status .icon{width:14px;height:14px}
+.chat-head-status .spin{width:12px;height:12px}
+.chat-head-status-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-head-status.running{color:var(--accent-ink)}
+.chat-head-status.done{color:var(--success)}
+.chat-head-status.lost{color:var(--warn)}
+.chat-head-status.error{color:var(--danger)}
 .thread-empty{max-width:760px;margin:0 auto;text-align:center;padding:72px 20px;color:var(--muted)}
 .thread-empty .icon{width:36px;height:36px;margin:0 auto 14px;color:var(--border)}
 .thread-empty-title{font-size:14px;font-weight:650;color:var(--fg);margin-bottom:6px}

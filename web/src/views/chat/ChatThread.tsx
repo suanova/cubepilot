@@ -1,14 +1,17 @@
 // The conversation: header, thread, tool cards, composer.
 //
 // Rendered by ChatView beside a session list, and (issue #30) by the floating
-// widget on its own. It draws what `useChatThread` reports and holds no state
-// of its own, which is what lets the two callers share one implementation of
-// the turn rather than two.
+// widget on its own. It draws what `useChatThread` reports; the only state it
+// holds is which tool cards the reader opened, which is a property of looking
+// at the thread rather than of the conversation, and is why the two callers can
+// share one implementation of the turn.
+import { useState } from 'react'
 import { getCurrentUser } from '@/api/client'
+import { ApprovalCard } from './ApprovalCard'
 import { MdText } from './MdText'
 import { QuestionCard } from './QuestionCard'
-import { DoneCheckIcon, EmptyChatIcon, SendIcon, StopIcon, ToolIcon } from './icons'
-import { statusLine } from './model'
+import { ChevronIcon, DoneCheckIcon, EmptyChatIcon, SendIcon, StopIcon, ToolIcon } from './icons'
+import { headline, pendingCards, statusLine } from './model'
 import type { ChatThreadApi } from './useChatThread'
 
 const user = getCurrentUser()
@@ -47,214 +50,205 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
   } = thread
   const chatTitle = title
 
+  // The tool cards the reader opened, by position. A card's resting state is
+  // derived -- open while its tool is in flight, closed once it has returned --
+  // so only the reader's own choices are recorded here, and a card left open is
+  // the one thing that does not change under them.
+  const [openedTools, setOpenedTools] = useState<Record<string, boolean>>({})
+
+  // What the conversation is doing right now, and what it is waiting on. Both
+  // are drawn outside the scrolling thread: the header and the composer are the
+  // two parts of the screen that cannot be scrolled away from, which is the
+  // whole reason the state of a turn -- and the buttons that let it continue --
+  // live there rather than inside the bubble that produced them.
+  const turn = headline(bubbles)
+  const pending = pendingCards(bubbles)
+  const waiting = !!pending.confirm || pending.questions.length > 0
+
   return (
     <div className="chat-main">
       <div className="chat-head">
         <div className="chat-head-main">
-          <div className="chat-head-title">{chatTitle}</div>
-          <div className="chat-head-meta">
-            {loadingHistory ? 'Loading history...' : currentSessionId ? 'History loaded - continue the conversation' : 'Not started yet'}
+          <div className="chat-head-title-block">
+            <div className="chat-head-title">{chatTitle}</div>
+            <div className="chat-head-meta">
+              {loadingHistory ? 'Loading history...' : currentSessionId ? 'History loaded - continue the conversation' : 'Not started yet'}
+            </div>
           </div>
+          {turn && (
+            <div className={`chat-head-status ${turn.tone}`}>
+              {turn.tone === 'running' && <span className="spin" />}
+              {turn.tone === 'done' && <DoneCheckIcon />}
+              {/* The line is cut to fit beside the title, and the panel is
+                  narrow enough that it will be: the full text stays available
+                  on hover rather than being lost to the ellipsis. */}
+              <span className="chat-head-status-text" title={turn.text}>
+                {turn.text}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
       <div ref={threadEl} className="thread">
         <div className="thread-inner">
           {bubbles.length ? (
-            bubbles.map((b, i) => (
-              <div key={i} className={`msg ${b.kind}`}>
-                <div className="avatar">{b.kind === 'user' ? userInitials : 'AI'}</div>
-                <div className="bubble">
-                  {b.transportLost && (
-                    // Amber, not the red of `b.error` and not the green Done
-                    // check: the turn's outcome is unknown, not failed, and
-                    // the reason the stream gave up is kept underneath rather
-                    // than presented as the turn's error.
-                    <div className="tool-status lost-mark">
-                      <span>{statusLine(b)}</span>
-                    </div>
-                  )}
-                  {b.transportLost && (
-                    <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
-                      {b.transportLost}
-                    </div>
-                  )}
-                  {b.phase && b.phase !== 'done' && !b.transportLost && (
-                    <div className="tool-status">
-                      <span className="spin" />
-                      {statusLine(b)}
-                    </div>
-                  )}
-                  {b.phase === 'done' && b.stopped && (
-                    // A stopped turn gets the muted marker, not the green Done
-                    // check: it neither finished nor failed.
-                    <div className="tool-status">
-                      <StopIcon />
-                      {statusLine(b)}
-                    </div>
-                  )}
-                  {b.phase === 'done' && !b.stopped && !b.error && !b.transportLost && (
-                    <div className="tool-status done-mark">
-                      <DoneCheckIcon />
-                      {statusLine(b)}
-                    </div>
-                  )}
-                  {b.tools.map((t, ti) => (
-                    <div key={'t' + ti} className={`tool-card ${!t.done && b.phase !== 'done' ? 'tool-running' : ''}`}>
-                      <div className="tool-head">
-                        <ToolIcon />
-                        <span className="tool-cmd">{t.name}</span>
-                        {!t.done && b.phase !== 'done' ? (
-                          <span className="pill accent">Running...</span>
-                        ) : !t.done ? (
-                          // The turn was stopped while this tool was still in
-                          // flight: `message_done{stopped}` freezes the phase
-                          // to done, so the neutral "Done" pill would claim
-                          // completion for work that was interrupted.
-                          <span className="pill neutral">Stopped</span>
-                        ) : (
-                          <span className="pill neutral">Done</span>
-                        )}
+            bubbles.map((b, i) => {
+              // The turn is over and its outcome is its own: a stopped turn
+              // neither finished nor failed, and a turn whose stream was lost is
+              // still executing somewhere. Only a clean terminal gets to call
+              // the text it produced the final result of anything.
+              const settled = b.phase === 'done' && !b.stopped && !b.error && !b.transportLost
+              return (
+                <div key={i} className={`msg ${b.kind}`}>
+                  <div className="avatar">{b.kind === 'user' ? userInitials : 'AI'}</div>
+                  <div className="bubble">
+                    {b.transportLost && (
+                      // Amber, not the red of `b.error` and not the green Done
+                      // check: the turn's outcome is unknown, not failed, and
+                      // the reason the stream gave up is kept underneath rather
+                      // than presented as the turn's error.
+                      <div className="tool-status lost-mark">
+                        <span>{statusLine(b)}</span>
                       </div>
-                      {t.cmd && (
-                        <div className="tool-body">
-                          <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{t.cmd}</span>
-                        </div>
-                      )}
-                      {t.result && (
-                        <div
-                          className="mono"
-                          style={{
-                            marginTop: 8,
-                            background: 'rgba(0,0,0,.04)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 6,
-                            padding: '8px 10px',
-                            maxHeight: 220,
-                            overflow: 'auto',
-                            fontSize: 12,
-                            lineHeight: 1.6,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-all',
-                          }}
-                        >
-                          {t.result}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {/* A write awaiting (or resolved by) a human decision
-                      (issue #20 HITL). */}
-                  {b.confirm && (
-                    <div className="tool-card" style={{ borderColor: 'rgba(245,158,11,.45)' }}>
-                      <div className="tool-head">
-                        <ToolIcon />
-                        <span className="tool-cmd">Write confirmation</span>
-                        {b.confirm.resolved && b.confirm.approved === undefined ? (
-                          // Settled without a decision: the turn was stopped
-                          // while this write was parked. Neutral, not a
-                          // rejection the user never made.
-                          <span
-                            style={{
-                              fontSize: 12,
-                              borderRadius: 999,
-                              padding: '2px 10px',
-                              background: 'rgba(0,0,0,.07)',
-                              color: 'rgba(0,0,0,.55)',
-                            }}
-                          >
-                            Stopped
-                          </span>
-                        ) : b.confirm.resolved ? (
-                          <span
-                            style={{
-                              fontSize: 12,
-                              borderRadius: 999,
-                              padding: '2px 10px',
-                              background: b.confirm.approved ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)',
-                              color: b.confirm.approved ? '#15803d' : '#b91c1c',
-                            }}
-                          >
-                            {b.confirm.approved ? 'Approved' : 'Rejected'}
-                          </span>
-                        ) : (
-                          <span
-                            style={{
-                              fontSize: 12,
-                              borderRadius: 999,
-                              padding: '2px 10px',
-                              background: 'rgba(245,158,11,.15)',
-                              color: '#b45309',
-                            }}
-                          >
-                            Awaiting your decision
-                          </span>
-                        )}
+                    )}
+                    {b.transportLost && (
+                      <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        {b.transportLost}
                       </div>
-                      {b.confirm.command && (
-                        <div className="tool-body">
-                          <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{b.confirm.command}</span>
-                        </div>
-                      )}
-                      {b.confirm.message && (
-                        <div style={{ fontSize: 12.5, color: 'var(--muted, rgba(0,0,0,.55))', marginTop: 6, lineHeight: 1.5 }}>{b.confirm.message}</div>
-                      )}
-                      {!b.confirm.resolved && (
-                        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    )}
+                    {b.phase === 'done' && b.stopped && (
+                      // A stopped turn gets the muted marker, not the green Done
+                      // check: it neither finished nor failed.
+                      <div className="tool-status">
+                        <StopIcon />
+                        {statusLine(b)}
+                      </div>
+                    )}
+                    {b.phase === 'done' && !b.stopped && !b.error && !b.transportLost && (
+                      <div className="tool-status done-mark">
+                        <DoneCheckIcon />
+                        {statusLine(b)}
+                      </div>
+                    )}
+                    {/* One line per tool call, opened on demand (issue #204).
+                        Fully expanded, a turn that ran a dozen tools was a
+                        screenful of raw output with the reply it produced
+                        somewhere under it. */}
+                    {b.tools.map((t, ti) => {
+                      const key = `${i}-${ti}`
+                      const running = !t.done && b.phase !== 'done'
+                      const open = openedTools[key] ?? running
+                      return (
+                        <div key={'t' + ti} className={`tool-card ${running ? 'tool-running' : ''} ${open ? 'tool-open' : ''}`}>
                           <button
-                            onClick={() => decide(b.confirm!, 'reject')}
-                            disabled={!!b.confirm.busy}
-                            style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
+                            className="tool-head"
+                            aria-expanded={open}
+                            onClick={() => setOpenedTools((prev) => ({ ...prev, [key]: !open }))}
                           >
-                            Reject
+                            <ToolIcon />
+                            <span className="tool-name">{t.name}</span>
+                            {/* Closed, the command is the one thing that says
+                                what the card is; open, the body carries it in
+                                full and repeating it here would only truncate
+                                it twice. */}
+                            {!open && t.cmd && <span className="tool-arg">{t.cmd}</span>}
+                            {running ? (
+                              <span className="pill accent">Running...</span>
+                            ) : !t.done ? (
+                              // The turn was stopped while this tool was still
+                              // in flight: `message_done{stopped}` freezes the
+                              // phase to done, so the neutral "Done" pill would
+                              // claim completion for work that was interrupted.
+                              <span className="pill neutral">Stopped</span>
+                            ) : (
+                              <span className="pill neutral">Done</span>
+                            )}
+                            <ChevronIcon />
                           </button>
-                          <button
-                            onClick={() => decide(b.confirm!, 'approve')}
-                            disabled={!!b.confirm.busy}
-                            style={{ background: 'var(--accent, #3b82f6)', border: 'none', color: '#fff', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
-                          >
-                            {b.confirm.busy ? 'Sending…' : 'Approve'}
-                          </button>
-                          {allowAlwaysOk && (
-                            <button
-                              onClick={() => decide(b.confirm!, 'allow-always')}
-                              disabled={!!b.confirm.busy}
-                              title="Approve and add this command to your allowlist so it no longer asks"
-                              style={{ background: 'none', border: '1px solid var(--accent, #3b82f6)', color: 'var(--accent, #3b82f6)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}
-                            >
-                              Always allow
-                            </button>
+                          {open && (
+                            <div className="tool-body">
+                              {t.cmd && (
+                                <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{t.cmd}</span>
+                              )}
+                              {t.result && (
+                                <div
+                                  className="mono"
+                                  style={{
+                                    marginTop: t.cmd ? 8 : 0,
+                                    background: 'rgba(0,0,0,.04)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: 6,
+                                    padding: '8px 10px',
+                                    maxHeight: 220,
+                                    overflow: 'auto',
+                                    fontSize: 12,
+                                    lineHeight: 1.6,
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {t.result}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
-                      {b.confirm.error && (
-                        <div style={{ fontSize: 12.5, color: 'var(--danger)', marginTop: 6 }}>{b.confirm.error}</div>
-                      )}
-                    </div>
-                  )}
-                  {/* Questions the agent is blocked on until answered, one
-                      card each (issue #161). */}
-                  {(b.questions || []).map((q) => (
-                    <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
-                  ))}
-                  {/* When an assistant reply ran tools, its closing text is the
-                      takeaway: render it as a highlighted panel so it stands out
-                      from the tool log. Assistant text renders as Markdown; user
-                      messages stay plain text. */}
-                  {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
-                    <div className="answer-panel">
-                      <span className="answer-label">Final result</span>
+                      )
+                    })}
+                    {/* A write awaiting a human decision is drawn under the
+                        composer, where its buttons cannot scroll away; what is
+                        left here is the record of what was decided (issue
+                        #204). */}
+                    {b.confirm && b.confirm.resolved && (
+                      <ApprovalCard confirm={b.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />
+                    )}
+                    {/* Questions the agent is blocked on are drawn under the
+                        composer for the same reason; a settled one stays here
+                        as the record of what was asked and answered (issue
+                        #161). */}
+                    {(b.questions || [])
+                      .filter((q) => q.resolved)
+                      .map((q) => (
+                        <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+                      ))}
+                    {/* Text the gateway rewrote while the turn was running.
+                        Superseded is not lost: it is what the user was reading
+                        when the rewrite landed, so it stays one click away
+                        instead of being replaced out of existence (issue
+                        #204). */}
+                    {b.superseded?.length ? (
+                      <details className="superseded">
+                        <summary>Earlier ({b.superseded.length})</summary>
+                        {b.superseded.map((prev, pi) => (
+                          <div key={pi} className="superseded-item">
+                            <MdText text={prev} />
+                          </div>
+                        ))}
+                      </details>
+                    ) : null}
+                    {/* When an assistant reply ran tools, its closing text is the
+                        takeaway: render it as a highlighted panel so it stands out
+                        from the tool log. Assistant text renders as Markdown; user
+                        messages stay plain text. Until the turn is over the panel
+                        is neutral and says so -- a mid-turn snapshot is a reply
+                        being written, and labelling it the final result is what
+                        made the next rewrite read as the answer disappearing. */}
+                    {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
+                      <div className={`answer-panel ${settled ? '' : 'in-progress'}`}>
+                        <span className="answer-label">{settled ? 'Final result' : 'Reply'}</span>
+                        <MdText text={b.text} />
+                      </div>
+                    ) : b.kind === 'assistant' && b.text ? (
                       <MdText text={b.text} />
-                    </div>
-                  ) : b.kind === 'assistant' && b.text ? (
-                    <MdText text={b.text} />
-                  ) : b.text ? (
-                    <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>
-                  ) : null}
-                  {b.error && <div style={{ fontSize: 13, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>{b.error}</div>}
+                    ) : b.text ? (
+                      <div style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>
+                    ) : null}
+                    {b.error && <div style={{ fontSize: 13, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>{b.error}</div>}
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           ) : (
             <div className="thread-empty">
               <EmptyChatIcon />
@@ -325,6 +319,18 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                 {stoppingElsewhere ? 'Stopping…' : 'Stop'}
               </button>
             )}
+          </div>
+        )}
+        {/* The cards the agent is parked on (issue #204). Under the composer
+            rather than in the bubble that raised them: the thread scrolls, so a
+            card drawn in it is a card the user has to go looking for -- and the
+            turn stays parked for exactly as long as they are looking. */}
+        {waiting && (
+          <div className="hitl-dock">
+            {pending.confirm && <ApprovalCard confirm={pending.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />}
+            {pending.questions.map((q) => (
+              <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+            ))}
           </div>
         )}
         <div className="composer-inner">
