@@ -203,6 +203,48 @@ describe('ChatView write confirmation', () => {
 })
 
 describe('ChatView question', () => {
+  it('keeps the buttons of a form taller than the dock outside the scrolling part', async () => {
+    // A real ask-user form: several questions, several options each, most with a
+    // description. It is taller than any dock the composer can give it, and the
+    // dock is a flex column -- which shrank the card to its own height while
+    // `.tool-card`'s `overflow:hidden` clipped what no longer fit. The options
+    // stayed, the buttons went, and the user was left having picked an answer
+    // with nothing to submit it with. The part that scrolls is the options.
+    gateway!.setTurn([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      {
+        type: 'question_pending',
+        sessionId: 'agent:main:conv-1',
+        callId: 'q1',
+        question: {
+          questions: [
+            {
+              questionId: 'specs',
+              header: 'Compute',
+              question: 'What compute spec?',
+              options: [{ label: '4C / 16Gi', description: 'enough for CUDA work' }, { label: '8C / 32Gi' }],
+            },
+            {
+              questionId: 'image',
+              header: 'Image',
+              question: 'Which image?',
+              options: [{ label: 'pytorch/pytorch:2.3.1' }, { label: 'I will provide one' }],
+            },
+          ],
+        },
+      },
+    ])
+
+    render(<ChatView />)
+    await send('deploy something')
+
+    const submit = await screen.findByRole('button', { name: 'Submit' })
+    const body = submit.closest('.tool-card')?.querySelector('.question-body')
+    expect(body).not.toBeNull()
+    expect(body!.contains(submit)).toBe(false)
+    expect(body!.contains(screen.getByText('What compute spec?'))).toBe(true)
+  })
+
   it('posts the option the user picked and submitted', async () => {
     gateway!.setTurn([
       { type: 'message_start', sessionId: 'agent:main:conv-1' },

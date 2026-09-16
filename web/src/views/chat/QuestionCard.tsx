@@ -58,58 +58,65 @@ export function QuestionCard({
           </span>
         )}
       </div>
-      {question.items.map((item) => {
-        const picked = question.picked[item.questionId] || []
-        return (
-          <div key={item.questionId} style={{ padding: '10px 12px', borderTop: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              {item.header && (
-                <span style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted, rgba(0,0,0,.55))' }}>
-                  {item.header}
-                </span>
-              )}
-              {item.multiSelect && (
-                <span style={{ fontSize: 11, color: 'var(--muted, rgba(0,0,0,.55))' }}>select one or more</span>
-              )}
+      {/* The questions and their options are what scrolls when the form is
+          taller than the room the dock can give it. The buttons are the
+          controls, and a control that scrolls out of the box it was put in is
+          the failure the dock exists to prevent in the first place (issue
+          #204). */}
+      <div className="question-body">
+        {question.items.map((item) => {
+          const picked = question.picked[item.questionId] || []
+          return (
+            <div key={item.questionId} style={{ padding: '10px 12px', borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                {item.header && (
+                  <span style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted, rgba(0,0,0,.55))' }}>
+                    {item.header}
+                  </span>
+                )}
+                {item.multiSelect && (
+                  <span style={{ fontSize: 11, color: 'var(--muted, rgba(0,0,0,.55))' }}>select one or more</span>
+                )}
+              </div>
+              <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>{item.question}</div>
+              {/* role=group + aria-label give the options an accessible group and
+                  name; the selected state itself is exposed by aria-pressed on
+                  each button rather than by colour alone. */}
+              <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {item.options.map((o) => {
+                  const active = picked.includes(o.label)
+                  return (
+                    <button
+                      key={o.label}
+                      onClick={() => onPick(question, item, o.label)}
+                      disabled={locked || !!question.busy}
+                      aria-pressed={active}
+                      title={o.description}
+                      style={{
+                        background: active ? 'var(--accent, #3b82f6)' : 'none',
+                        border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
+                        color: active ? '#fff' : 'inherit',
+                        borderRadius: 6,
+                        padding: '6px 14px',
+                        cursor: settled ? 'default' : 'pointer',
+                        fontSize: 13,
+                        textAlign: 'left',
+                      }}
+                    >
+                      {o.label}
+                      {o.description && (
+                        <span style={{ display: 'block', fontSize: 11.5, opacity: 0.8, marginTop: 2 }}>{o.description}</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
-            <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>{item.question}</div>
-            {/* role=group + aria-label give the options an accessible group and
-                name; the selected state itself is exposed by aria-pressed on
-                each button rather than by colour alone. */}
-            <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {item.options.map((o) => {
-                const active = picked.includes(o.label)
-                return (
-                  <button
-                    key={o.label}
-                    onClick={() => onPick(question, item, o.label)}
-                    disabled={locked || !!question.busy}
-                    aria-pressed={active}
-                    title={o.description}
-                    style={{
-                      background: active ? 'var(--accent, #3b82f6)' : 'none',
-                      border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
-                      color: active ? '#fff' : 'inherit',
-                      borderRadius: 6,
-                      padding: '6px 14px',
-                      cursor: settled ? 'default' : 'pointer',
-                      fontSize: 13,
-                      textAlign: 'left',
-                    }}
-                  >
-                    {o.label}
-                    {o.description && (
-                      <span style={{ display: 'block', fontSize: 11.5, opacity: 0.8, marginTop: 2 }}>{o.description}</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
       {!settled && (
-        <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
+        <div className="question-actions" style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
           <button
             onClick={() => onDismiss(question)}
             disabled={locked || !!question.busy}
