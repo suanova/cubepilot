@@ -308,10 +308,13 @@ func (s *ApprovalService) settleSession(user, sessionKey string) (pendingApprova
 // It is not the same event as the Portal's own resolve: that path deletes the
 // record itself and then publishes, and its gateway call also produces a
 // broadcast, so this can arrive for a record that is already gone. Every branch
-// is therefore idempotent, and the reservation scan mirrors settleSession --
+// is therefore idempotent, and the reservation handling mirrors settleSession --
 // a Resolve in flight for this id must not restore the record afterwards, or the
 // broadcast that says the gateway resolved it would be undone by our own
-// bookkeeping.
+// bookkeeping. That window is also why the reservation is returned rather than
+// only marked: the record is out of the maps while its decision is in flight, so
+// a settle that reported "nothing" there would drop the very event the browser
+// needs to stop showing the card.
 //
 // Only a record the caller's user owns is returned, matching settleSession: the
 // gateway broadcast carries no user, so the caller passes the connection's user
@@ -323,12 +326,26 @@ func (s *ApprovalService) settleApproval(user, approvalID string) (pendingApprov
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if res, ok := s.inflight[approvalID]; ok && res.pending.User == user {
+	// A decision of our own may already be in flight for this id, which takes the
+	// record out of both maps for the duration of its gateway call. Mark the
+	// reservation -- that is what stops the pending call's restore from putting
+	// back what the gateway has just resolved -- and keep hold of it, because the
+	// maps cannot report a record they no longer have. Without returning it the
+	// caller publishes nothing, and a browser whose own decision lost the race
+	// keeps a card for an approval that no longer exists anywhere.
+	res, inflight := s.inflight[approvalID]
+	if inflight && res.pending.User != user {
+		inflight = false // another user's decision in flight: not this caller's to mark or report
+	}
+	if inflight {
 		res.settled = true
 	}
 
 	p, ok := s.byID[approvalID]
 	if !ok || p.User != user {
+		if inflight {
+			return res.pending, true
+		}
 		return pendingApproval{}, false
 	}
 	if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
