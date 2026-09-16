@@ -324,19 +324,108 @@ func (r *AgentInstanceReconciler) modelAvailable(ctx context.Context, agent *v1a
 	return false, nil
 }
 
-// mapAllToInstances turns any watched AgentTemplate / credential Secret change
-// into a reconcile of every AgentInstance, so the ModelConfigured condition is
-// refreshed when models or their credential Secrets appear/disappear.
-func (r *AgentInstanceReconciler) mapAllToInstances(_ context.Context, _ client.Object) []reconcile.Request {
+// listInstances returns every AgentInstance in the platform namespace. A list
+// error yields no requests: dropping the event is safe because the periodic
+// requeue reconciles every instance anyway, and a failed list would be a
+// transient cache/RBAC problem that the next event re-triggers.
+func (r *AgentInstanceReconciler) listInstances() []v1alpha1.AgentInstance {
 	var list v1alpha1.AgentInstanceList
 	if err := r.List(context.Background(), &list, client.InNamespace(r.Cfg.Namespace)); err != nil {
 		return nil
 	}
-	reqs := make([]reconcile.Request, 0, len(list.Items))
-	for i := range list.Items {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: list.Items[i].Namespace, Name: list.Items[i].Name}})
+	return list.Items
+}
+
+// requestsFor turns instances into the reconcile requests that wake them.
+func requestsFor(instances []v1alpha1.AgentInstance) []reconcile.Request {
+	reqs := make([]reconcile.Request, 0, len(instances))
+	for _, inst := range instances {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: inst.Namespace, Name: inst.Name}})
 	}
 	return reqs
+}
+
+// mapTemplateToInstances maps an AgentTemplate event to the instances that
+// reference it by spec.templateRef.
+//
+// An instance's AgentTemplate supplies the providers whose credentials decide
+// the ModelConfigured condition, so a template change must re-reconcile its
+// instances -- but only those: another instance on a different template reads
+// nothing from this object.
+func (r *AgentInstanceReconciler) mapTemplateToInstances(_ context.Context, obj client.Object) []reconcile.Request {
+	tmpl, ok := obj.(*v1alpha1.AgentTemplate)
+	if !ok {
+		return nil
+	}
+	var matched []v1alpha1.AgentInstance
+	for _, inst := range r.listInstances() {
+		if inst.Spec.TemplateRef == tmpl.Name {
+			matched = append(matched, inst)
+		}
+	}
+	return requestsFor(matched)
+}
+
+// mapSecretToInstances maps a Secret event to the instances whose reconcile
+// actually reads that Secret. Reconcile reads exactly three kinds of Secret:
+//
+//   - the shared platform kubeconfig every instance mounts, so it maps to all
+//     of them;
+//   - the per-user kubeconfig of the instance's owner (design §5.3 / issue #19
+//     Option B);
+//   - the credential Secret of a provider in the instance's AgentTemplate,
+//     which decides the ModelConfigured condition.
+//
+// Anything else maps to nothing. Every Secret in the namespace used to wake
+// every instance, so an unrelated Secret churned the whole fleet through a
+// reconcile that read none of it.
+func (r *AgentInstanceReconciler) mapSecretToInstances(_ context.Context, obj client.Object) []reconcile.Request {
+	secret, ok := obj.(*corev1.Secret)
+	if !ok || secret.Namespace != r.Cfg.Namespace {
+		return nil
+	}
+	instances := r.listInstances()
+	if secret.Name == k8s.KubeconfigSecretName {
+		return requestsFor(instances)
+	}
+
+	// Credential Secrets are referenced by the template, not the instance, so
+	// resolve each instance's template through a name index.
+	templates := r.templatesByName()
+	var matched []v1alpha1.AgentInstance
+	for _, inst := range instances {
+		if secret.Name == k8s.UserKubeconfigSecretFor(inst.Spec.Owner) ||
+			referencesCredential(templates[inst.Spec.TemplateRef], secret.Name) {
+			matched = append(matched, inst)
+		}
+	}
+	return requestsFor(matched)
+}
+
+// templatesByName indexes the namespace's AgentTemplates by name so a Secret
+// event can resolve many instances in one list.
+func (r *AgentInstanceReconciler) templatesByName() map[string]v1alpha1.AgentTemplate {
+	var list v1alpha1.AgentTemplateList
+	if err := r.List(context.Background(), &list, client.InNamespace(r.Cfg.Namespace)); err != nil {
+		return nil
+	}
+	byName := make(map[string]v1alpha1.AgentTemplate, len(list.Items))
+	for _, tmpl := range list.Items {
+		byName[tmpl.Name] = tmpl
+	}
+	return byName
+}
+
+// referencesCredential reports whether any of the template's providers reads the
+// named credential Secret. The zero AgentTemplate (an absent template) has no
+// providers and so references nothing.
+func referencesCredential(t v1alpha1.AgentTemplate, name string) bool {
+	for _, p := range t.Spec.Providers {
+		if p.CredentialRef != nil && p.CredentialRef.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // finalize removes the instance's data directory PVC (the data directory is
@@ -694,13 +783,17 @@ func isFailed(pod *corev1.Pod) bool {
 // SetupWithManager registers the reconciler with the given manager. It also
 // watches AgentTemplates and Secrets so the ModelConfigured condition is
 // refreshed as soon as models or their credential Secrets change.
+//
+// Both watches map to the instances that read the changed object, not to every
+// instance: an unrelated Secret or a template nobody references must not wake
+// the whole fleet (see mapSecretToInstances / mapTemplateToInstances).
 func (r *AgentInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.AgentInstance{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
-		Watches(&v1alpha1.AgentTemplate{}, handler.EnqueueRequestsFromMapFunc(r.mapAllToInstances)).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapAllToInstances)).
+		Watches(&v1alpha1.AgentTemplate{}, handler.EnqueueRequestsFromMapFunc(r.mapTemplateToInstances)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToInstances)).
 		Complete(r)
 }

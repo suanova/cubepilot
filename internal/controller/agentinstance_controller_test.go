@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1298,5 +1299,157 @@ func TestDeleteRefusesAReplacedObject(t *testing.T) {
 				t.Errorf("err = %v, want a Conflict from the failed precondition", err)
 			}
 		})
+	}
+}
+
+// ---- watch mapping ----
+//
+// The controller watches AgentTemplates and Secrets. Both map functions must
+// reconcile only the instances that actually depend on the object that changed:
+// the earlier "any change re-reconciles every instance" mapping re-ran N
+// reconciles for objects no instance reads (an unrelated Secret, another
+// user's kubeconfig, a template nobody references).
+
+// testInstanceNamed builds a namespaced instance. Unlike testInstance it sets
+// metadata.namespace: the map functions list by namespace (Cfg.Namespace), so a
+// namespace-less object would never be listed and the test would pass vacuously.
+func testInstanceNamed(name, template, owner string) *v1alpha1.AgentInstance {
+	return &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Spec:       v1alpha1.AgentInstanceSpec{TemplateRef: template, Owner: owner},
+	}
+}
+
+// testTemplateWithCredential builds a template whose single provider reads the
+// credential Secret credentialName.
+func testTemplateWithCredential(name, credentialName string) *v1alpha1.AgentTemplate {
+	return &v1alpha1.AgentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Spec: v1alpha1.AgentTemplateSpec{
+			Runtime: v1alpha1.RuntimeOpenClaw,
+			Providers: []v1alpha1.TemplateProviderSpec{{
+				Name:          "nvidia-proxy",
+				Endpoint:      "https://integrate.api.nvidia.com/v1",
+				Models:        []string{"meta/llama-3.1-8b-instruct"},
+				CredentialRef: &corev1.LocalObjectReference{Name: credentialName},
+			}},
+		},
+	}
+}
+
+// reqNames returns the sorted names of the mapped requests, so assertions do
+// not depend on list ordering.
+func reqNames(reqs []reconcile.Request) []string {
+	names := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		names = append(names, req.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestMapTemplateToInstancesMapsOnlyReferencingInstances verifies an
+// AgentTemplate event reconciles the instances whose spec.templateRef names it,
+// and leaves instances on other templates alone.
+func TestMapTemplateToInstancesMapsOnlyReferencingInstances(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testTemplateWithCredential("other", "other-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+		testInstanceNamed("b-other", "other", "b"),
+	)
+
+	got := reqNames(r.mapTemplateToInstances(context.Background(), testTemplateWithCredential("cubepilot", "cubepilot-llm")))
+	want := []string{"a-cubepilot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mapTemplateToInstances = %v, want %v -- a template change must reconcile only the instances referencing it", got, want)
+	}
+}
+
+// TestMapSecretToInstancesPlatformKubeconfigMapsAllInstances verifies the shared
+// platform kubeconfig maps to every instance: every reconcile reads it (its
+// resourceVersion feeds the Pod's kubeconfig-revision fingerprint).
+func TestMapSecretToInstancesPlatformKubeconfigMapsAllInstances(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+		testInstanceNamed("b-cubepilot", "cubepilot", "b"),
+	)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: testNamespace}}
+	got := reqNames(r.mapSecretToInstances(context.Background(), secret))
+	want := []string{"a-cubepilot", "b-cubepilot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mapSecretToInstances(%s) = %v, want %v -- the platform kubeconfig is read by every reconcile", k8s.KubeconfigSecretName, got, want)
+	}
+}
+
+// TestMapSecretToInstancesUserKubeconfigMapsOnlyItsOwner verifies a per-user
+// kubeconfig Secret maps to that user's instances only.
+func TestMapSecretToInstancesUserKubeconfigMapsOnlyItsOwner(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "zhang.wei"),
+		testInstanceNamed("b-cubepilot", "cubepilot", "li.na"),
+	)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor("zhang.wei"), Namespace: testNamespace}}
+	got := reqNames(r.mapSecretToInstances(context.Background(), secret))
+	want := []string{"a-cubepilot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mapSecretToInstances(%s) = %v, want %v -- another user's kubeconfig is not read by this instance's reconcile",
+			k8s.UserKubeconfigSecretFor("zhang.wei"), got, want)
+	}
+}
+
+// TestMapSecretToInstancesCredentialMapsReferencingInstances verifies a model
+// credential Secret maps to the instances whose template references it.
+func TestMapSecretToInstancesCredentialMapsReferencingInstances(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testTemplateWithCredential("other", "other-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+		testInstanceNamed("b-other", "other", "b"),
+	)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cubepilot-llm", Namespace: testNamespace}}
+	got := reqNames(r.mapSecretToInstances(context.Background(), secret))
+	want := []string{"a-cubepilot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mapSecretToInstances(cubepilot-llm) = %v, want %v -- only the instance whose template references the credential reads it", got, want)
+	}
+}
+
+// TestMapSecretToInstancesIgnoresUnrelatedSecret verifies a Secret no reconcile
+// reads maps to nothing, instead of waking every instance in the namespace.
+func TestMapSecretToInstancesIgnoresUnrelatedSecret(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+	)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "openclaw-config", Namespace: testNamespace}}
+	if got := reqNames(r.mapSecretToInstances(context.Background(), secret)); len(got) != 0 {
+		t.Errorf("mapSecretToInstances(openclaw-config) = %v, want none -- no reconcile reads that Secret", got)
+	}
+}
+
+// TestMapSecretToInstancesIgnoresForeignScope verifies the mapper is inert for
+// objects it does not own the mapping for: a Secret outside the platform
+// namespace (the cache is namespace-scoped, this is the belt-and-braces guard)
+// and a non-Secret object.
+func TestMapSecretToInstancesIgnoresForeignScope(t *testing.T) {
+	r, _ := newTestReconciler(t,
+		testTemplateWithCredential("cubepilot", "cubepilot-llm"),
+		testInstanceNamed("a-cubepilot", "cubepilot", "a"),
+	)
+
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: k8s.KubeconfigSecretName, Namespace: "kube-system"}}
+	if got := reqNames(r.mapSecretToInstances(context.Background(), foreign)); len(got) != 0 {
+		t.Errorf("mapSecretToInstances(secret in kube-system) = %v, want none", got)
+	}
+
+	if got := reqNames(r.mapSecretToInstances(context.Background(), testInstance())); len(got) != 0 {
+		t.Errorf("mapSecretToInstances(non-Secret) = %v, want none", got)
 	}
 }
