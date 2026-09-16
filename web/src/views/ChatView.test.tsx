@@ -357,7 +357,6 @@ describe('ChatView live turn status', () => {
     const head = document.querySelector('.chat-head') as HTMLElement
     expect(await within(head).findByText(/Still running/)).toBeInTheDocument()
     expect(document.querySelector('.composer')?.textContent).not.toMatch(/Still running/)
-    expect(document.querySelector('.turn-banner')).toBeNull()
 
     // Ending it is the composer's button, the same control that ends a turn this
     // view streams -- one button for "stop the turn", wherever it came from.
@@ -388,7 +387,6 @@ describe('ChatView live turn status', () => {
     // rather than offering a Stop that cannot do anything.
     expect(screen.getByLabelText('Send')).toBeInTheDocument()
     expect(screen.queryByLabelText('Stop')).not.toBeInTheDocument()
-    expect(document.querySelector('.turn-banner')).toBeNull()
   })
 
   it('says what the turn is parked on rather than that it is still running', async () => {

@@ -30,7 +30,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
     bubbles,
     loadingHistory,
     streaming,
-    bannerUp,
+    noStreamTurn,
     runningElsewhere,
     turnCheckFailed,
     stoppingElsewhere,
@@ -361,7 +361,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
               abort would need the very gateway channel whose absence is what
               failed the check, so Send stays and the header offers Retry
               instead. */}
-          {streaming || (bannerUp && runningElsewhere) ? (
+          {streaming || (noStreamTurn && runningElsewhere) ? (
             <button
               className="send-btn"
               aria-label="Stop"
@@ -371,7 +371,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
               <StopIcon />
             </button>
           ) : (
-            // Disabled while a banner Stop is in flight, so the refusal in
+            // Disabled while the Stop above is in flight, so the refusal in
             // `sendMessage` is something the user can see. Enter in the
             // textarea still reaches it -- the button is a shortcut, not the
             // only path -- which is why the refusal lives there too.

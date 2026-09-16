@@ -64,7 +64,7 @@ export type StopEvidence =
   // produce. Only a bubble carrying exactly that text may be relabelled, so a
   // newer turn another tab started cannot be relabelled by this one.
   | { text: string }
-  // A stop with no stream of this view's own (the banner): the transcript this
+  // A stop with no stream of this view's own: the transcript this
   // view had already rendered, as `transcriptShape`. See `applyStoppedTurn` for
   // what the reload has to look like.
   | { users: string[]; lastText: string }
