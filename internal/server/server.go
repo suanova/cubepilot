@@ -163,31 +163,48 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/metrics", metrics.Handler())
+	// REST-only services -- no kube-apiserver equivalent, so a client that can
+	// read and write the CRDs directly still has to come through this API for
+	// them. Conversation content and the HITL endpoints live in the
+	// per-instance runtime (design §3.6); audit is API-owned PVC state; a
+	// published skill is tar content on the API-owned repository, not a Skill
+	// CR.
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
-	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource)
+	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource) // {key}/messages|approval[/pending]|question[/pending]|abort|turn
 	mux.HandleFunc("/api/v1/messages", s.handleMessages)
-	mux.HandleFunc("/api/v1/tasks", s.handleTasks)
-	mux.HandleFunc("/api/v1/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/v1/audit", s.handleAudit)
-	mux.HandleFunc("/api/v1/agent/config", s.handleAgentConfig)
-	mux.HandleFunc("/api/v1/agent/approval", s.handleAgentApproval)
-	mux.HandleFunc("/api/v1/agent/status", s.handleAgentStatus)
+	mux.HandleFunc("/api/v1/skills/{name}/publish", s.handlePublishSkill)
+
+	// CRD facade -- the HTTP mirror of the six ai.cubestack.io CRDs, kept for
+	// HTTP-only clients (e.g. the open-source reference Portal). A client with
+	// kube-apiserver access may perform the same operations directly on the CRs,
+	// which are Namespaced (issue #146); the data-plane contract is recorded in
+	// issue #148.
+	// Three of these read or write more than one CR holds: agent/config and
+	// agent/approval recompute the template values the instance inherits
+	// (nothing merged is stored in status), approvalView adds the live HITL
+	// channel state, and llms writes AgentTemplate.spec.providers together with
+	// the credential Secret it references.
 	mux.HandleFunc("/api/v1/agenttemplates", s.handleAgentTemplates)
 	mux.HandleFunc("/api/v1/agenttemplates/", s.handleAgentTemplateByID)
 	mux.HandleFunc("/api/v1/instances", s.handleInstances)
+	mux.HandleFunc("/api/v1/agent/config", s.handleAgentConfig)
+	mux.HandleFunc("/api/v1/agent/approval", s.handleAgentApproval)
+	mux.HandleFunc("/api/v1/agent/status", s.handleAgentStatus)
 	mux.HandleFunc("/api/v1/llms", s.handleAddLLM)
-	// /api/v1/llms/{name} edits or removes a model the platform admin already
+	// /api/v1/llms/{name} edits or removes a provider the platform admin already
 	// added; the name is immutable, so every mutation is a PUT or a DELETE on
-	// an existing model (issue #170).
+	// an existing provider (issue #170).
 	mux.HandleFunc("/api/v1/llms/{name}", s.handleLLMByName)
 	mux.HandleFunc("/api/v1/skills", s.handleSkills)
-	mux.HandleFunc("/api/v1/skills/{name}/publish", s.handlePublishSkill)
 	mux.HandleFunc("/api/v1/skills/{name}/install", s.handleInstallSkill)
 	mux.HandleFunc("/api/v1/skills/{name}/uninstall", s.handleUninstallSkill)
 	mux.HandleFunc("/api/v1/tasktemplates", s.handleTaskTemplates)
+	mux.HandleFunc("/api/v1/tasks", s.handleTasks)
+	mux.HandleFunc("/api/v1/tasks/", s.handleTaskByID) // {id}[/run|/toggle|/reports]
 	mux.HandleFunc("/api/v1/taskruns", s.handleTaskRuns)
 	mux.HandleFunc("/api/v1/taskruns/", s.handleTaskRunByID)
-	mux.HandleFunc("/api/v1/kinds", s.handleKinds)
+	mux.HandleFunc("/api/v1/kinds", s.handleKinds) // CRD schema discovery
 	// Internal (cluster-only) endpoints -- the agent-side supervisor pulls
 	// its resolved config and the rendered gateway config here; not exposed
 	// through the Portal.
