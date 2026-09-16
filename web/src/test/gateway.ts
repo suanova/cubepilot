@@ -42,6 +42,12 @@ export interface FakeGateway {
    * on a turn that is genuinely still running. Call it before the app sends.
    */
   openTurn(): OpenTurn
+  /**
+   * Replaces the history this session is served. A conversation is not frozen
+   * while the user reads it: another client can add to it, and the view re-reads
+   * it -- so a test that reloads has to be able to serve something new.
+   */
+  setHistory(items: HistoryMessage[]): void
 }
 
 /** The wire form of one frame: an `event:` line, a `data:` line, a blank line. */
@@ -198,6 +204,10 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     setTurnRaw(chunks: string[]) {
       turnChunks = chunks
+    },
+    // In place, not reassigned: the handler closes over the array.
+    setHistory(items: HistoryMessage[]) {
+      history.splice(0, history.length, ...items)
     },
     openTurn() {
       openMode = true

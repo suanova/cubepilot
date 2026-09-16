@@ -189,14 +189,17 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                         screenful of raw output with the reply it produced
                         somewhere under it. */}
                     {b.tools.map((t, ti) => {
-                      // Keyed by position *within the conversation*: the
-                      // position alone is not an identity, so switching chats
-                      // would otherwise open the card the new one happens to
-                      // have in the same place -- one the reader never
-                      // touched. The conversation is part of the key rather
-                      // than something to reset on, so reopening the same one
-                      // leaves the reader's cards as they left them.
-                      const key = `${currentSessionId ?? ''}-${i}-${ti}`
+                      // Keyed by the tool call itself, because that is what the
+                      // reader opened: its id survives a re-read of the
+                      // conversation, where a position does not. A reload that
+                      // shifts the transcript -- another client's turn landing
+                      // in it, a stopped turn persisting its partial -- would
+                      // otherwise hand the reader's open card to whatever moved
+                      // into its place and take it away from the call they
+                      // opened. The conversation is part of the key, since ids
+                      // are only unique within a session; the position is left
+                      // as the fallback for a call the gateway gave no id.
+                      const key = `${currentSessionId ?? ''}-${t.callID || `p${i}-${ti}`}`
                       const running = !t.done && b.phase !== 'done'
                       const open = openedTools[key] ?? running
                       return (
