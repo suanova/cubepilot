@@ -310,6 +310,8 @@ describe('ChatView stop', () => {
 // Where a turn's state and its controls are drawn decides whether the user can
 // see them at all: the thread scrolls, the header and the composer do not.
 describe('ChatView live turn status', () => {
+  const SESSIONS = [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }]
+
   it('reports the running turn in the header, not in the scrollback', async () => {
     const turn = gateway!.openTurn()
 
@@ -337,6 +339,90 @@ describe('ChatView live turn status', () => {
     expect(document.querySelector('.thread')?.textContent).not.toMatch(/Running 1 tool/)
 
     turn.close()
+  })
+
+  it('reports a turn running in another view in the header, and stops it from the composer', async () => {
+    // A turn this view holds no stream for -- started in another tab, or left
+    // running across a reload. It is still the session on screen, and its state
+    // belongs with the conversation, in the line the header keeps for it: the
+    // strip that used to carry it sat directly above the input, in the one place
+    // the user is reading what they are typing.
+    gateway = installFakeGateway({ sessions: SESSIONS, turnActive: true })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const head = document.querySelector('.chat-head') as HTMLElement
+    expect(await within(head).findByText(/Still running/)).toBeInTheDocument()
+    expect(document.querySelector('.composer')?.textContent).not.toMatch(/Still running/)
+    expect(document.querySelector('.turn-banner')).toBeNull()
+
+    // Ending it is the composer's button, the same control that ends a turn this
+    // view streams -- one button for "stop the turn", wherever it came from.
+    await user.click(screen.getByLabelText('Stop'))
+
+    expect(gateway.requests.some((r) => r.path === '/api/v1/sessions/agent:main:conv-1/abort')).toBe(true)
+  })
+
+  it('keeps the way out beside the header status when the check itself failed', async () => {
+    // The API answers 502 when it cannot determine whether the turn is still
+    // running. That is not "idle", so it is reported, and the only controls that
+    // can get back to an answer are Retry and Dismiss -- in the header, beside
+    // the status they belong to.
+    gateway = installFakeGateway({ sessions: SESSIONS, turnCheckFails: true })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const head = document.querySelector('.chat-head') as HTMLElement
+    expect(await within(head).findByText(/Could not check/)).toBeInTheDocument()
+    expect(within(head).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(within(head).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+
+    // Nothing confirmed a turn here, and an abort with no gateway channel to
+    // issue its RPC over provably cannot work -- so the composer keeps Send
+    // rather than offering a Stop that cannot do anything.
+    expect(screen.getByLabelText('Send')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Stop')).not.toBeInTheDocument()
+    expect(document.querySelector('.turn-banner')).toBeNull()
+  })
+
+  it('says what the turn is parked on rather than that it is still running', async () => {
+    // The live case: the platform reports the session as running, and its run is
+    // parked on an answer. "Still running" is true and useless -- the answer is
+    // what the user is being asked for -- and the parked turn is not a finished
+    // one, so the header must not pair it with the done check either.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      turnActive: true,
+      pendingQuestions: [
+        {
+          id: 'q1',
+          questions: [
+            {
+              questionId: 'specs',
+              header: 'Compute',
+              question: 'What compute spec (CPU/memory/GPU)?',
+              options: [{ label: '4C / 16Gi' }],
+            },
+          ],
+        },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const head = document.querySelector('.chat-head') as HTMLElement
+    expect(await within(head).findByText('Awaiting your answer...')).toBeInTheDocument()
+    expect(within(head).queryByText(/Still running/)).not.toBeInTheDocument()
+    expect(head.querySelector('.chat-head-status.done')).toBeNull()
   })
 })
 
