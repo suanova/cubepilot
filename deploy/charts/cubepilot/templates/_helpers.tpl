@@ -14,6 +14,8 @@ config.Load() (internal/config), so they receive the same environment.
   value: {{ .Release.Namespace | quote }}
 - name: CUBEPILOT_AGENT_IMAGE
   value: {{ .Values.agents.image | quote }}
+- name: CUBEPILOT_AGENT_IMAGE_PULL_POLICY
+  value: {{ .Values.imagePullPolicy | quote }}
 - name: CUBEPILOT_GC_WINDOW
   value: {{ .Values.agents.gcWindow | quote }}
 - name: CUBEPILOT_GC_WATERMARK

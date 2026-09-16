@@ -48,3 +48,22 @@ func TestLoadLLMDefaultsFromEnv(t *testing.T) {
 		t.Fatalf("LLMModel = %q, want env value", cfg.LLMModel)
 	}
 }
+
+func TestLoadAgentImagePullPolicy(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "Always")
+	cfg := Load()
+	if cfg.AgentImagePullPolicy != "Always" {
+		t.Fatalf("AgentImagePullPolicy = %q, want Always", cfg.AgentImagePullPolicy)
+	}
+}
+
+// TestLoadAgentImagePullPolicyDefault pins the kind-friendly default: local
+// builds are side-loaded into the cluster, so an agent Pod must not go to the
+// registry for the image.
+func TestLoadAgentImagePullPolicyDefault(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "")
+	cfg := Load()
+	if cfg.AgentImagePullPolicy != "IfNotPresent" {
+		t.Fatalf("AgentImagePullPolicy = %q, want IfNotPresent", cfg.AgentImagePullPolicy)
+	}
+}

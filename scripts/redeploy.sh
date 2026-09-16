@@ -8,7 +8,9 @@
 # `make redeploy` prerequisite). It kind-loads the images, applies the chart's
 # CRDs (`helm upgrade` never applies a chart's crds/ directory), helm-upgrades
 # (preserving the release's stored values while the current chart defaults
-# refresh the rest; only the four image refs are overridden), rolls the
+# refresh the rest; only the four image refs and imagePullPolicy are
+# overridden -- IfNotPresent, so the run uses the images just kind-loaded
+# rather than pulling them back from the registry), rolls the
 # operator / api / web Deployments, then waits for the per-user agent pods to
 # converge on the new openclaw tag.
 #
@@ -108,6 +110,7 @@ fi
 helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
   --kube-context "$KUBE_CONTEXT" \
   "${values_file[@]}" \
+  --set imagePullPolicy=IfNotPresent \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
   --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \

@@ -46,6 +46,10 @@ func testAgentCfg() config.Config {
 		AgentImage:   "harbor.isuanova.com/suanova/cubepilot-openclaw:test",
 		GatewayToken: "test-gateway-token",
 		AgentPort:    18789,
+		// Deliberately not config.Load's IfNotPresent default: the Pod must
+		// carry whatever the operator was configured with, so a hardcoded
+		// policy cannot satisfy the assertion (issue #198).
+		AgentImagePullPolicy: "Always",
 	}
 }
 
@@ -87,6 +91,7 @@ func agentSpec() k8s.AgentSpec {
 	return k8s.AgentSpec{
 		Namespace:    testNamespace,
 		Image:        testAgentCfg().AgentImage,
+		PullPolicy:   corev1.PullPolicy(testAgentCfg().AgentImagePullPolicy),
 		GatewayToken: testAgentCfg().GatewayToken,
 		Port:         int32(testAgentCfg().AgentPort),
 		AgentUser:    "zhang.wei",
@@ -178,6 +183,15 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	var pod corev1.Pod
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &pod); err != nil {
 		t.Errorf("pod not created: %v", err)
+	}
+	// Both containers run the agent image, so both carry the operator's
+	// configured pull policy (issue #198).
+	for _, cs := range [][]corev1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
+		for _, c := range cs {
+			if want := corev1.PullPolicy(testAgentCfg().AgentImagePullPolicy); c.ImagePullPolicy != want {
+				t.Errorf("container %s: ImagePullPolicy = %q, want %q", c.Name, c.ImagePullPolicy, want)
+			}
+		}
 	}
 
 	// Pod not ready yet -> Creating, with the resource names in status.
@@ -765,6 +779,40 @@ func TestEnsurePodRecreatesOnSecurityDrift(t *testing.T) {
 	}
 	if got.Spec.Containers[0].Resources.Limits == nil {
 		t.Error("pod not rolled onto baseline: supervisor resource limits missing")
+	}
+}
+
+// TestEnsurePodRecreatesOnPullPolicyDrift pins issue #198: imagePullPolicy
+// cannot be patched onto a running container, so a Pod left over from before
+// the policy was configured must be recreated -- otherwise it keeps pulling
+// (or skipping the pull) under the old policy forever, which on kind means the
+// agent runs the registry image while the cluster has the freshly built one.
+func TestEnsurePodRecreatesOnPullPolicyDrift(t *testing.T) {
+	spec := agentSpec()
+	desired := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
+
+	r, cl := newTestReconciler(t)
+	ownByTestInstance(t, r.Scheme, desired)
+
+	// A Pod created under the previous policy (IfNotPresent, what the kubelet
+	// derives for the :local tag a kind run builds).
+	stale := desired.DeepCopy()
+	stale.Spec.InitContainers[0].ImagePullPolicy = corev1.PullIfNotPresent
+	stale.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+
+	ctx := context.Background()
+	if err := cl.Create(ctx, stale); err != nil {
+		t.Fatalf("seed stale pod: %v", err)
+	}
+	recreate, err := r.ensurePod(ctx, desired)
+	if err != nil {
+		t.Fatalf("ensurePod: %v", err)
+	}
+	if !recreate {
+		t.Fatal("expected recreate=true on pull-policy drift")
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("drift should delete without immediate re-create; got err=%v", err)
 	}
 }
 

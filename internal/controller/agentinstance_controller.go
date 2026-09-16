@@ -116,6 +116,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	spec := k8s.AgentSpec{
 		Namespace:    r.Cfg.Namespace,
 		Image:        r.Cfg.AgentImage,
+		PullPolicy:   corev1.PullPolicy(r.Cfg.AgentImagePullPolicy),
 		GatewayToken: r.Cfg.GatewayToken,
 		Port:         int32(r.Cfg.AgentPort),
 		AgentUser:    inst.Spec.Owner,
@@ -525,11 +526,11 @@ func (r *AgentInstanceReconciler) ensureService(ctx context.Context, svc *corev1
 
 // instanceSecurity captures the Pod spec fields that are both immutable after
 // creation and part of the design §6 minimum-privilege baseline: identity,
-// image, security contexts, resource limits and secret-backed volumes (the
-// kubeconfig mounts -- immutable and identity-bearing). Config-derived fields
-// (other env, non-secret mounts, probes) are deliberately excluded: the
-// supervisor applies config changes in place, so those must never trigger a
-// Pod delete.
+// image (and its pull policy), security contexts, resource limits and
+// secret-backed volumes (the kubeconfig mounts -- immutable and
+// identity-bearing). Config-derived fields (other env, non-secret mounts,
+// probes) are deliberately excluded: the supervisor applies config changes in
+// place, so those must never trigger a Pod delete.
 type instanceSecurity struct {
 	ServiceAccountName string
 	PodSecurityContext *corev1.PodSecurityContext
@@ -545,6 +546,7 @@ type instanceSecurity struct {
 
 type containerSecurity struct {
 	Image           string
+	ImagePullPolicy corev1.PullPolicy
 	SecurityContext *corev1.SecurityContext
 	Resources       corev1.ResourceRequirements
 }
@@ -561,10 +563,10 @@ func securityFingerprint(pod *corev1.Pod) instanceSecurity {
 		KubeconfigRevision: pod.Annotations[k8s.KubeconfigRevisionAnnotation],
 	}
 	for _, c := range pod.Spec.Containers {
-		f.Containers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+		f.Containers[c.Name] = containerSecurity{Image: c.Image, ImagePullPolicy: c.ImagePullPolicy, SecurityContext: c.SecurityContext, Resources: c.Resources}
 	}
 	for _, c := range pod.Spec.InitContainers {
-		f.InitContainers[c.Name] = containerSecurity{Image: c.Image, SecurityContext: c.SecurityContext, Resources: c.Resources}
+		f.InitContainers[c.Name] = containerSecurity{Image: c.Image, ImagePullPolicy: c.ImagePullPolicy, SecurityContext: c.SecurityContext, Resources: c.Resources}
 	}
 	for _, v := range pod.Spec.Volumes {
 		if v.Secret != nil {

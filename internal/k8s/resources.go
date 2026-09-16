@@ -15,8 +15,15 @@ func boolPtr(v bool) *bool    { return &v }
 // AgentSpec carries the inputs shared by the per-user agent resources. The
 // user identity is passed per call (each resource builder takes a user).
 type AgentSpec struct {
-	Namespace    string
-	Image        string
+	Namespace string
+	Image     string
+	// PullPolicy is the image pull policy for the instance Pod's containers,
+	// configured once for the whole deployment (chart value imagePullPolicy ->
+	// CUBEPILOT_AGENT_IMAGE_PULL_POLICY). It is always set explicitly: left
+	// empty, the kubelet derives it from the tag, and the default :latest agent
+	// tag would make every Pod pull from the registry -- ignoring an image that
+	// kind just side-loaded (issue #198).
+	PullPolicy   corev1.PullPolicy
 	GatewayToken string
 	Port         int32
 	// AgentUser is the instance owner (the supervisor's CUBEPILOT_AGENT_USER
@@ -149,9 +156,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				// the image layer is not writable, so the workspace must be on
 				// the PVC.
 				{
-					Name:    "seed-workspace",
-					Image:   s.Image,
-					Command: []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
+					Name:            "seed-workspace",
+					Image:           s.Image,
+					ImagePullPolicy: s.PullPolicy,
+					Command:         []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "data", MountPath: "/mnt/data"},
 					},
@@ -183,9 +191,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				// runs the OpenClaw gateway as a child process. Config changes
 				// trigger a graceful gateway restart -- the pod is never
 				// deleted, so sessions/PVC/IP survive (final architecture).
-				Name:    "supervisor",
-				Image:   s.Image,
-				Command: []string{"cubepilot-supervisor"},
+				Name:            "supervisor",
+				Image:           s.Image,
+				ImagePullPolicy: s.PullPolicy,
+				Command:         []string{"cubepilot-supervisor"},
 				// The supervisor needs a writable scratch dir (node caches, temp
 				// files) but the rest of the filesystem is read-only. RunAsUser
 				// is explicit because the image declares a non-numeric user
