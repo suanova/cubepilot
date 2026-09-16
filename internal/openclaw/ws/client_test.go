@@ -535,3 +535,54 @@ func TestClientReadFailureIsReportedToCallers(t *testing.T) {
 		t.Fatalf("err = %v, want the read failure (message too big) named in it", err)
 	}
 }
+
+// A caller that reaches the select after the pump has already failed must still
+// learn why. readPump queues the read error into the request's channel and then
+// closes done (defers run LIFO), so both are ready at once and select picks
+// between them at random -- without the drain in drainedOutcome, the generic
+// "connection closed" wins about half the time and the cause is lost, which is
+// the whole point of reporting it.
+//
+// The iteration count is what makes this a regression test rather than a coin
+// flip: before the fix each round had roughly even odds of reporting the wrong
+// error, so surviving all of them is not something a lost cause does. With the
+// drain, every round reports the frame and the outcome is fixed.
+func TestDrainedOutcomePrefersTheQueuedFailure(t *testing.T) {
+	const rounds = 50
+	c := &Client{done: make(chan struct{})}
+	close(c.done)
+
+	for i := 0; i < rounds; i++ {
+		_, err := c.drainedOutcome(bufferedFailedFrame("message too big: read limited at 32769 bytes"))
+		if err == nil {
+			t.Fatalf("round %d: got no error", i)
+		}
+		if !strings.Contains(err.Error(), "message too big") {
+			t.Fatalf("round %d: err = %v, want the queued read failure, not the generic close", i, err)
+		}
+	}
+}
+
+// With nothing queued the connection really did just close, and that is what
+// gets reported -- the drain must not invent a cause.
+func TestDrainedOutcomeFallsBackToGenericClose(t *testing.T) {
+	c := &Client{done: make(chan struct{})}
+	close(c.done)
+
+	_, err := c.drainedOutcome(make(chan responseFrame, 1))
+	if err == nil || err.Error() != "ws: connection closed" {
+		t.Fatalf("err = %v, want the generic close", err)
+	}
+}
+
+// A frame the pump delivered as it failed, in the shape failAllPending sends.
+func bufferedFailedFrame(msg string) <-chan responseFrame {
+	ch := make(chan responseFrame, 1)
+	ch <- responseFrame{
+		Type:  "res",
+		ID:    "m1",
+		OK:    false,
+		Error: &frameError{Code: "UNAVAILABLE", Message: msg},
+	}
+	return ch
+}

@@ -553,19 +553,51 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	}
 
 	select {
+	case res := <-ch:
+		return responseOutcome(res)
 	case <-ctx.Done():
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
 		return nil, ctx.Err()
-	case res := <-ch:
-		if !res.OK {
-			return nil, frameErrorOf(res)
-		}
-		return res.Payload, nil
 	case <-c.done:
-		return nil, fmt.Errorf("ws: connection closed")
+		return c.drainedOutcome(ch)
 	}
+}
+
+// responseOutcome unwraps one frame the pump delivered.
+func responseOutcome(res responseFrame) (json.RawMessage, error) {
+	if !res.OK {
+		return nil, frameErrorOf(res)
+	}
+	return res.Payload, nil
+}
+
+// drainedOutcome answers a request whose connection the pump has already given
+// up on, after taking whatever the pump queued there.
+//
+// Both this channel and c.done are usually ready by now, and select picks at
+// random among ready cases, so without the drain the frame carrying the reason
+// would be returned only about half the time and the rest would report a bare
+// "connection closed".
+//
+// The drain is what makes the reason deterministic, and it is needed for the
+// caller that arrives here late -- after the pump has already failed. A caller
+// that was parked in the select when the queue happened is handed the value
+// directly: the runtime dequeues the parked receiver's sudog and delivers to
+// it, so that select resumes on the frame's case and never reaches this one.
+// The late caller has no such commitment -- the value sits in the buffer and
+// both cases are ready -- which is exactly the window this closes.
+//
+// An empty queue falls through to the generic error: the connection really did
+// just close, with no frame to explain it.
+func (c *Client) drainedOutcome(ch <-chan responseFrame) (json.RawMessage, error) {
+	select {
+	case res := <-ch:
+		return responseOutcome(res)
+	default:
+	}
+	return nil, fmt.Errorf("ws: connection closed")
 }
 
 func (c *Client) failAllPending(err error) {
