@@ -98,6 +98,28 @@ func TestPodForSecurityBaseline(t *testing.T) {
 	assertNonPrivilegedContainer(t, containerByName(t, pod, "supervisor"))
 }
 
+// TestPodForImagePullPolicy verifies the operator's configured pull policy is
+// stamped onto both runtime containers. The agent image tag is :latest by
+// default, and Kubernetes defaults an empty imagePullPolicy to Always for that
+// tag -- which sends every agent Pod to the registry even on a kind cluster
+// that just side-loaded the image, so the local run tests a different image
+// than the one just built (issue #198).
+func TestPodForImagePullPolicy(t *testing.T) {
+	for _, want := range []corev1.PullPolicy{corev1.PullIfNotPresent, corev1.PullAlways} {
+		spec := testAgentSpec()
+		spec.PullPolicy = want
+		pod := spec.PodFor("agent-alice", "alice", "data-alice", "agent-alice")
+
+		// seed-workspace is an InitContainer, supervisor a Container: both run
+		// the agent image, so both must honor the policy.
+		for _, name := range []string{"seed-workspace", "supervisor"} {
+			if got := containerByName(t, pod, name).ImagePullPolicy; got != want {
+				t.Errorf("container %s: ImagePullPolicy = %q, want %q", name, got, want)
+			}
+		}
+	}
+}
+
 // TestPodForResourceLimits verifies the supervisor container declares resource
 // requests and limits so the pod is scheduleable and bounded.
 func TestPodForResourceLimits(t *testing.T) {

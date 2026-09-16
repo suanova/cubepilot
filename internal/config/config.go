@@ -27,6 +27,13 @@ type Config struct {
 	// AgentImage is the per-user OpenClaw agent image (with kubectl + skill catalog).
 	AgentImage string
 
+	// AgentImagePullPolicy is the image pull policy for the per-user agent Pods
+	// (one value for the whole deployment, alongside AgentImage). IfNotPresent
+	// is the default so a locally built image that was loaded into the cluster
+	// is used as-is; production installs that track rolling :latest builds set
+	// CUBEPILOT_AGENT_IMAGE_PULL_POLICY=Always.
+	AgentImagePullPolicy string
+
 	// GatewayToken is the bearer token used to authenticate against each agent
 	// gateway (mirrors gateway.auth.token in the injected openclaw.json).
 	GatewayToken string
@@ -87,10 +94,14 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	cfg := Config{
-		Listen:       getenv("CUBEPILOT_LISTEN", ":8080"),
-		Namespace:    getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
-		AgentImage:   getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
-		GatewayToken: os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
+		Listen:     getenv("CUBEPILOT_LISTEN", ":8080"),
+		Namespace:  getenv("CUBEPILOT_NAMESPACE", "cubepilot"),
+		AgentImage: getenv("CUBEPILOT_AGENT_IMAGE", "harbor.isuanova.com/suanova/cubepilot-openclaw:local"),
+		// IfNotPresent by default: the agent image tag is :latest on a chart
+		// install, and Kubernetes would otherwise default an unset policy to
+		// Always -- pulling over an image that kind just side-loaded.
+		AgentImagePullPolicy: getenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "IfNotPresent"),
+		GatewayToken:         os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
 		// Empty by default: no platform default model is seeded unless an
 		// endpoint + model are configured (the builtin template is then created
 		// model-less and LLMs are added from the Portal).

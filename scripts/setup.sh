@@ -163,7 +163,11 @@ log "applying CRDs from $CRDS_DIR"
 kubectl apply -f "$CRDS_DIR"
 
 log "deploying components via Helm"
+# IfNotPresent: the images were just loaded into the kind nodes, so nothing may
+# go to the registry for them. The agent Pods would, since an unset policy plus
+# the :latest tag resolves to Always.
 helm upgrade --install cubepilot "$CHART_DIR" -n "$NAMESPACE" \
+  --set imagePullPolicy=IfNotPresent \
   --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
   --set agents.llmEndpoint="$LLM_ENDPOINT" \
   --set agents.llmModel="$LLM_MODEL" \

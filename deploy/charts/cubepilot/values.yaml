@@ -6,7 +6,11 @@
 # unaffected.
 
 # --- shared ---------------------------------------------------------------
-# Image pull policy for all components.
+# Image pull policy for every image the platform runs: the operator / api /
+# web Deployments and the per-user agent Pods the operator creates. The default
+# suits a local kind install, where scripts/setup.sh side-loads the built
+# images instead of pushing them; an install that tracks the rolling :latest
+# builds published from main sets it to Always.
 imagePullPolicy: IfNotPresent
 
 # Agent runtime config (per-user OpenClaw instances, design §5).
