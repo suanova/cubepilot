@@ -27,7 +27,7 @@
 #   CUBEPILOT_KUBE_CONTEXT   kubeconfig context (kind-$CUBEPILOT_KIND_CLUSTER)
 #   CUBEPILOT_NAMESPACE      target namespace (cubepilot)
 #   CUBEPILOT_HELM_RELEASE   helm release name (cubepilot)
-#   CUBEPILOT_CHART_DIR      chart directory (deploy/charts/cubepilot)
+#   CUBEPILOT_CHART_DIR      chart directory (deploy/charts/cubepilot-chart)
 #
 # Requires: kind, kubectl, helm (v3). Run `make images` (or scripts/setup.sh)
 # first if the :$(CUBEPILOT_IMAGE_TAG) images are not built yet.
@@ -44,7 +44,7 @@ KIND_CLUSTER="${CUBEPILOT_KIND_CLUSTER:-cube}"
 KUBE_CONTEXT="${CUBEPILOT_KUBE_CONTEXT:-kind-$KIND_CLUSTER}"
 NAMESPACE="${CUBEPILOT_NAMESPACE:-cubepilot}"
 HELM_RELEASE="${CUBEPILOT_HELM_RELEASE:-cubepilot}"
-CHART_DIR="${CUBEPILOT_CHART_DIR:-deploy/charts/cubepilot}"
+CHART_DIR="${CUBEPILOT_CHART_DIR:-deploy/charts/cubepilot-chart}"
 case "$CHART_DIR" in /*) ;; *) CHART_DIR="$REPO_DIR/$CHART_DIR" ;; esac
 
 # The per-user agent pods carry this label; the roll + convergence wait selects

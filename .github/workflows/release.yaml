@@ -3,7 +3,7 @@
 #
 # Triggers and published tags:
 #   - push to main       images pushed as `latest`; chart pushed as
-#                        oci://.../suanova/cubepilot:<chartVersion>-latest
+#                        oci://.../suanova/cubepilot-chart:<chartVersion>-latest
 #                        (rolling dev artifact -- the `-latest` suffix keeps it
 #                        from colliding with a real <chartVersion> release)
 #   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
@@ -97,13 +97,16 @@ jobs:
             # Rolling dev artifact: chart version <chartVersion>-latest is a
             # distinct OCI tag, so a later main push never clobbers a released
             # <chartVersion> chart.
-            BASE_VERSION="$(grep '^version:' deploy/charts/cubepilot/Chart.yaml | awk '{print $2}')"
-            helm package deploy/charts/cubepilot \
+            BASE_VERSION="$(grep '^version:' deploy/charts/cubepilot-chart/Chart.yaml | awk '{print $2}')"
+            helm package deploy/charts/cubepilot-chart \
               --version "$BASE_VERSION-latest" --app-version latest -d .chart
           else
-            helm package deploy/charts/cubepilot \
+            helm package deploy/charts/cubepilot-chart \
               --version "$TAG" --app-version "$TAG" -d .chart
           fi
 
+      # The OCI repository the chart lands in is `<CHART_OCI>/<Chart.yaml name>`
+      # -- helm takes it from the chart metadata, not from the .tgz filename or
+      # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
-        run: helm push .chart/cubepilot-*.tgz "${{ env.CHART_OCI }}"
+        run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"

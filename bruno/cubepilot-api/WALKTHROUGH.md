@@ -42,7 +42,7 @@ PUT {{baseUrl}}/api/v1/agent/approval
 > 要手动补：
 >
 > ```bash
-> kubectl apply -f deploy/charts/cubepilot/crds/
+> kubectl apply -f deploy/charts/cubepilot-chart/crds/
 > ```
 
 ---

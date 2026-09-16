@@ -94,7 +94,7 @@ jobs:
 
       - name: helm lint
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: helm lint deploy/charts/cubepilot
+        run: helm lint deploy/charts/cubepilot-chart
 
   web:
     name: Web build (type-check + vite)

@@ -28,7 +28,7 @@ func UserServiceAccountName(user string) string {
 
 // PerUserKubeconfigYAML renders an in-cluster kubeconfig authenticating as the
 // per-user ServiceAccount token. The cluster server/CA mirror the chart's
-// agent-kubeconfig Secret (deploy/charts/cubepilot/templates/
+// agent-kubeconfig Secret (deploy/charts/cubepilot-chart/templates/
 // agent-kubeconfig.yaml): the CA path exists in every agent Pod because the
 // Pod mounts its own ServiceAccount. The token is inlined (the per-user SA
 // token is not projected into the Pod, so a tokenFile reference would be
