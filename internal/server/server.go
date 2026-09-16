@@ -128,6 +128,17 @@ func (s *Server) EnableHITL() error {
 			CreatedAt:  time.Now(),
 		})
 	}
+	// An approval the gateway ended by itself drops the platform's record of it
+	// and, if a view is attached, the card. Without this the record lives on in
+	// the ledger that reload recovery reads, so reopening the conversation shows
+	// a confirmation for an approval the gateway no longer has, and answering it
+	// fails. The gateway broadcasts the resolved event for a decision made
+	// anywhere (including the Portal's own, whose record Resolve has already
+	// removed) and for an approval that simply expired, so this has to be
+	// idempotent -- settleApproval is.
+	m.approvalResolved = func(user string, ev ws.ApprovalResolved) {
+		s.settleApprovalResolved(user, ev)
+	}
 	// Ask-user questions ride the same device connection (issue #161): a
 	// question the agent is blocked on is relayed onto the parked turn's SSE
 	// stream, and its resolution is addressed back to the same session.

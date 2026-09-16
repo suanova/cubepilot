@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -223,5 +225,238 @@ func TestHandleConfirm_OwnerScoped(t *testing.T) {
 	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice", map[string]any{"decision": "approve"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("alice confirm status = %d, want 200", rec.Code)
+	}
+}
+
+// An approval the gateway ends by itself -- it expired unanswered, or its run
+// was aborted or lost gateway-side -- has to leave the ledger. Nothing else
+// removes it: Resolve only runs when the Portal decides, and the abort settle
+// only runs when the platform stopped the run. Left behind, reload recovery
+// paints a card for an approval the gateway has forgotten, and the answer to it
+// fails. The gateway's exec.approval.resolved broadcast is the only signal that
+// this happened.
+func TestApprovalService_SettleApprovalResolvedByGateway(t *testing.T) {
+	hub := NewHub()
+	rec := httptest.NewRecorder()
+	if _, err := hub.Open("conv-1", rec, rec); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewApprovalService(hub, nil, t.Logf)
+	svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo"})
+
+	p, ok := svc.settleApproval("alice", "appr-1")
+	if !ok || p.SessionKey != "conv-1" {
+		t.Fatalf("settleApproval = %+v, %v; want the record claimed", p, ok)
+	}
+	if _, ok := svc.Pending("alice", "conv-1"); ok {
+		t.Fatal("a gateway-resolved approval must not stay pending: reload would resurrect its card")
+	}
+	// Idempotent: the same broadcast also follows the Portal's own decision and
+	// the abort settle, so a second delivery must be a harmless no-op rather than
+	// a second claim.
+	if _, ok := svc.settleApproval("alice", "appr-1"); ok {
+		t.Fatal("second settleApproval claimed the record again")
+	}
+	if p, ok := svc.settleApproval("alice", ""); ok || p.ApprovalID != "" {
+		t.Fatal("settleApproval with no id must claim nothing")
+	}
+}
+
+// The broadcast carries no user, so the connection's user is what scopes it:
+// another operator's record is not this caller's to clear.
+func TestApprovalService_SettleApprovalIsOwnerScoped(t *testing.T) {
+	svc := NewApprovalService(NewHub(), nil, t.Logf)
+	svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1"})
+
+	if _, ok := svc.settleApproval("bob", "appr-1"); ok {
+		t.Fatal("bob settled alice's approval")
+	}
+	if _, ok := svc.Pending("alice", "conv-1"); !ok {
+		t.Fatal("alice's approval must survive another user's settle")
+	}
+}
+
+// The server half: the broadcast drops the ledger record and tells an attached
+// view to drop the card, with Approved reported only for a decision the gateway
+// actually recorded -- an expiry is not a rejection the user made.
+func TestSettleApprovalResolved(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		decision     string
+		resolvedBy   string
+		wantApproved string // "" means the field must be absent
+	}{
+		// The cases the gateway produces for an approval it ended itself. Both
+		// carry no resolver, and the second is why Decision alone cannot decide
+		// what to show: the gateway fills an absent decision with "deny".
+		{"expiry reports no decision", "", "", ""},
+		{"cancelled run reports no decision", "deny", "", ""},
+		{"allow-once", "allow-once", "device-1", `"approved":true`},
+		{"deny", "deny", "device-1", `"approved":false`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := NewHub()
+			rec := httptest.NewRecorder()
+			if _, err := hub.Open("conv-1", rec, rec); err != nil {
+				t.Fatal(err)
+			}
+			srv := &Server{hub: hub, approvals: NewApprovalService(hub, nil, t.Logf)}
+			srv.approvals.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1"})
+
+			srv.settleApprovalResolved("alice", ws.ApprovalResolved{
+				ID:         "appr-1",
+				Decision:   tc.decision,
+				ResolvedBy: tc.resolvedBy,
+			})
+
+			if _, ok := srv.approvals.Pending("alice", "conv-1"); ok {
+				t.Fatal("record must be gone after the gateway resolves it")
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "event: approval_resolved") || !strings.Contains(body, `"callId":"appr-1"`) {
+				t.Fatalf("expected approval_resolved for appr-1, got %q", body)
+			}
+			if tc.wantApproved == "" {
+				if strings.Contains(body, `"approved":`) {
+					t.Fatalf("an undecided resolution must not report a decision, got %q", body)
+				}
+				return
+			}
+			if !strings.Contains(body, tc.wantApproved) {
+				t.Fatalf("expected %s in stream, got %q", tc.wantApproved, body)
+			}
+		})
+	}
+}
+
+// A reservation belonging to another user is neither marked nor reported.
+// Marking it is the dangerous half: it makes that user's own restore drop the
+// record, so one operator's settle would silently delete another operator's
+// confirmation card.
+func TestApprovalService_SettleApprovalIgnoresAnotherUsersReservation(t *testing.T) {
+	svc := NewApprovalService(NewHub(), nil, t.Logf)
+	svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", User: "alice"})
+
+	br := &blockingResolver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     errors.New("gateway gone"),
+	}
+	svc.SetResolver(br)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = svc.Resolve(context.Background(), "alice", "conv-1", "approve")
+	}()
+	<-br.entered // alice's decision is in flight; the record lives in her reservation
+
+	if _, ok := svc.settleApproval("bob", "appr-1"); ok {
+		t.Fatal("bob settled alice's reservation")
+	}
+
+	close(br.release)
+	<-done
+	// Alice's resolve failed and restored her record, because nothing marked her
+	// reservation settled on someone else's behalf.
+	if _, ok := svc.Pending("alice", "conv-1"); !ok {
+		t.Fatal("another user's settle suppressed alice's restore and dropped her card")
+	}
+}
+
+// The gateway can resolve an approval while one of our own decisions for it is
+// still inside the gateway call. Resolve has taken the record out of both maps
+// by then -- it is reachable only through inflight -- so the settle finds
+// nothing there to return. It still has to report what it found: the caller
+// publishes approval_resolved from that return value, and without it a browser
+// whose decision lost the race keeps a card that no longer matches anything,
+// until a reload happens to clear it.
+func TestApprovalService_SettleApprovalDuringBlockedResolve(t *testing.T) {
+	hub := NewHub()
+	rec := httptest.NewRecorder()
+	if _, err := hub.Open("conv-1", rec, rec); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewApprovalService(hub, nil, t.Logf)
+	svc.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1", Command: "kubectl delete pod foo"})
+
+	br := &blockingResolver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		// The losing decision: the approval is already gone gateway-side.
+		err: errors.New("approval expired or not found"),
+	}
+	svc.SetResolver(br)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Resolve(context.Background(), "alice", "conv-1", "approve")
+		done <- err
+	}()
+	<-br.entered // the record is now reserved and out of both maps
+
+	p, ok := svc.settleApproval("alice", "appr-1")
+	if !ok {
+		t.Fatal("a gateway resolution during a blocked Resolve must be reported: its caller publishes no approval_resolved otherwise")
+	}
+	if p.ApprovalID != "appr-1" || p.SessionKey != "conv-1" || p.User != "alice" {
+		t.Fatalf("settleApproval = %+v, want the reserved record", p)
+	}
+
+	close(br.release)
+	if err := <-done; err == nil {
+		t.Fatal("the losing Resolve should have failed")
+	}
+	// Marking the reservation is what stops the failed Resolve from putting the
+	// record back for an approval the gateway has already resolved.
+	if _, ok := svc.Pending("alice", "conv-1"); ok {
+		t.Fatal("the failed Resolve restored a record the gateway had already resolved")
+	}
+}
+
+// The same race, asserted where it is visible to the user: the resolved event
+// still reaches the attached stream.
+func TestSettleApprovalResolvedDuringBlockedResolve(t *testing.T) {
+	hub := NewHub()
+	rec := httptest.NewRecorder()
+	if _, err := hub.Open("conv-1", rec, rec); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{hub: hub, approvals: NewApprovalService(hub, nil, t.Logf)}
+	srv.approvals.Begin("alice", pendingApproval{ApprovalID: "appr-1", SessionKey: "conv-1"})
+
+	br := &blockingResolver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     errors.New("approval expired or not found"),
+	}
+	srv.approvals.SetResolver(br)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = srv.approvals.Resolve(context.Background(), "alice", "conv-1", "approve")
+	}()
+	<-br.entered
+
+	// Another resolver won the race (an operator on the gateway side).
+	srv.settleApprovalResolved("alice", ws.ApprovalResolved{
+		ID:         "appr-1",
+		Decision:   "deny",
+		ResolvedBy: "operator-2",
+	})
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: approval_resolved") || !strings.Contains(body, `"callId":"appr-1"`) {
+		t.Fatalf("a gateway resolution during a blocked Resolve must still drop the card, got %q", body)
+	}
+	if !strings.Contains(body, `"approved":false`) {
+		t.Fatalf("expected the winning decision on the stream, got %q", body)
+	}
+
+	close(br.release)
+	<-done
+	if _, ok := srv.approvals.Pending("alice", "conv-1"); ok {
+		t.Fatal("the record came back after the gateway resolved it")
 	}
 }

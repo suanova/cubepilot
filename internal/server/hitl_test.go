@@ -69,6 +69,7 @@ type fakeGatewayClient struct {
 	modelErr     error
 
 	// ask_user question channel (issue #161)
+	onApprovalResolved  func(ws.ApprovalResolved)
 	onQuestionRequested func(ws.QuestionRecord)
 	onQuestionResolved  func(ws.QuestionResolved)
 	questionResolves    []string // "id|resolvedBy|qid=label;qid2=a,b"
@@ -265,6 +266,11 @@ func (f *fakeGatewayClient) ResolveApproval(ctx context.Context, id, decision st
 	defer f.mu.Unlock()
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
+}
+func (f *fakeGatewayClient) OnApprovalResolved(cb func(ws.ApprovalResolved)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onApprovalResolved = cb
 }
 func (f *fakeGatewayClient) OnQuestionRequested(cb func(ws.QuestionRecord)) {
 	f.mu.Lock()

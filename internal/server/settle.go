@@ -3,8 +3,61 @@ package server
 import (
 	"context"
 
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
+
+// settleApprovalResolved handles the gateway's exec.approval.resolved broadcast:
+// an approval ended without the Portal deciding it -- it expired unanswered, or
+// its run was aborted or lost gateway-side. The record is dropped and, when a
+// view is attached, the card with it.
+//
+// It is the counterpart of settlePendingForSession for the case the platform
+// never learns about any other way. That one runs because *we* stopped the turn
+// and so know the run is gone; here the run ended somewhere this process cannot
+// see, and the broadcast is the only account of it. Without this the ledger that
+// reload recovery reads keeps the record indefinitely, so reopening the
+// conversation paints a confirmation card for an approval the gateway has
+// forgotten, and answering it fails against the gateway.
+//
+// Idempotent by construction, because the same broadcast also follows the
+// Portal's own decision and the abort path's settle: the claim simply finds
+// nothing, and no event is published for a record nobody held.
+func (s *Server) settleApprovalResolved(user string, ev ws.ApprovalResolved) {
+	if s.approvals == nil {
+		return
+	}
+	p, ok := s.approvals.settleApproval(user, ev.ID)
+	if !ok {
+		return
+	}
+	// Approved is reported only for a decision that was actually taken, which is
+	// what ResolvedBy records -- not what Decision says. Decision cannot carry
+	// that on its own: the gateway's publication path fills an absent decision
+	// with "deny" (`decision ?? "deny"`), so an approval that expired unanswered,
+	// or one cancelled because its run's authority closed, arrives here looking
+	// exactly like a denial. Reporting it as one would paint the user a red
+	// "Rejected" for a decision they never made, which is the mislabelling the
+	// client's absent-Approved branch exists to prevent: with no Approved it
+	// renders the neutral "Stopped", which is what actually happened.
+	var approved *bool
+	if ev.ResolvedBy != "" {
+		switch ev.Decision {
+		case "allow-once", "allow-always":
+			v := true
+			approved = &v
+		case "deny":
+			v := false
+			approved = &v
+		}
+	}
+	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+		Type:      agentruntime.EventApprovalResolved,
+		SessionID: p.SessionKey,
+		CallID:    p.ApprovalID,
+		Approved:  approved,
+	})
+}
 
 // settlePendingForSession closes out every human-in-the-loop record a stopped
 // turn left behind. Aborting the run settles these gateway-side, but the

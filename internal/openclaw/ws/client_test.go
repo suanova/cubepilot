@@ -406,3 +406,183 @@ func mustRaw(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// The read limit is load-bearing, so it is asserted rather than assumed. A
+// response larger than coder/websocket's 32 KiB default used to end the
+// connection: chat.history carries a whole session transcript in one frame, and
+// the status read and the abort liveness wait both go through it, so an ordinary
+// conversation took out the connection -- and with it whatever turn the same
+// per-user connection was driving.
+//
+// The frame here is deliberately over that default and under inboundReadLimit.
+// The mock gateway closes as soon as it has written, so the failure mode without
+// the SetReadLimit call is the read returning ErrMessageTooBig instead of the
+// payload; the assertion on the decoded value is what distinguishes them.
+func TestClientReadsResponseLargerThanLibraryDefault(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A transcript-sized payload: over the 32 KiB default, far under 16 MiB.
+	big := strings.Repeat("x", 96*1024)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		srv := &mockGateway{t: t, conn: conn}
+		srv.write(eventFrame{Type: "event", Event: challengeEvent, Payload: mustJSON(t, connectChallenge{Nonce: "nonce-1"})})
+		var req requestFrame
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			_ = json.Unmarshal(data, &req)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"type": "hello-ok", "protocol": 4,
+			"auth": map[string]any{"role": "operator", "scopes": []string{"operator.admin"}},
+		})
+		srv.write(responseFrame{Type: "res", ID: req.ID, OK: true, Payload: hello})
+
+		// One oversized chat.history response, then sit idle: nothing more is
+		// expected, and closing immediately would race the client's read.
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			var f requestFrame
+			if err := json.Unmarshal(data, &f); err == nil {
+				payload, _ := json.Marshal(map[string]any{
+					"sessionId":   "session-1",
+					"messages":    []any{map[string]any{"role": "user", "content": big}},
+					"inFlightRun": map[string]any{"runId": "run-1"},
+				})
+				srv.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	}))
+	defer ts.Close()
+
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cli.Close()
+
+	out, err := cli.sessionRunStatus(ctx, "agent:main:conv-1")
+	if err != nil {
+		t.Fatalf("sessionRunStatus over %d bytes: %v", len(big), err)
+	}
+	if !hasInFlightRun(out.InFlightRun) {
+		t.Fatalf("inFlightRun = %q, want the gateway's snapshot", out.InFlightRun)
+	}
+}
+
+// An oversized frame still costs the connection -- the limit bounds the damage
+// rather than removing it -- so the failure has to name itself. Before this, the
+// read error was dropped and every caller saw "ws connection closed", which is
+// indistinguishable from an ordinary peer close and left the cause of a killed
+// turn unrecorded.
+func TestClientReadFailureIsReportedToCallers(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		srv := &mockGateway{t: t, conn: conn}
+		srv.write(eventFrame{Type: "event", Event: challengeEvent, Payload: mustJSON(t, connectChallenge{Nonce: "nonce-1"})})
+		var req requestFrame
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			_ = json.Unmarshal(data, &req)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"type": "hello-ok", "protocol": 4,
+			"auth": map[string]any{"role": "operator", "scopes": []string{"operator.admin"}},
+		})
+		srv.write(responseFrame{Type: "res", ID: req.ID, OK: true, Payload: hello})
+
+		// Answer the next request with a frame past the limit, then hold the
+		// socket open long enough for the client's read pump to notice.
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			var f requestFrame
+			if err := json.Unmarshal(data, &f); err == nil {
+				oversized := strings.Repeat("y", inboundReadLimit+1024)
+				payload, _ := json.Marshal(map[string]any{"blob": oversized})
+				srv.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	}))
+	defer ts.Close()
+
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cli.Close()
+
+	_, err = cli.sessionRunStatus(ctx, "agent:main:conv-1")
+	if err == nil {
+		t.Fatal("sessionRunStatus succeeded against an oversized frame")
+	}
+	if !strings.Contains(err.Error(), "message too big") {
+		t.Fatalf("err = %v, want the read failure (message too big) named in it", err)
+	}
+}
+
+// A caller that reaches the select after the pump has already failed must still
+// learn why. readPump queues the read error into the request's channel and then
+// closes done (defers run LIFO), so both are ready at once and select picks
+// between them at random -- without the drain in drainedOutcome, the generic
+// "connection closed" wins about half the time and the cause is lost, which is
+// the whole point of reporting it.
+//
+// The iteration count is what makes this a regression test rather than a coin
+// flip: before the fix each round had roughly even odds of reporting the wrong
+// error, so surviving all of them is not something a lost cause does. With the
+// drain, every round reports the frame and the outcome is fixed.
+func TestDrainedOutcomePrefersTheQueuedFailure(t *testing.T) {
+	const rounds = 50
+	c := &Client{done: make(chan struct{})}
+	close(c.done)
+
+	for i := 0; i < rounds; i++ {
+		_, err := c.drainedOutcome(bufferedFailedFrame("message too big: read limited at 32769 bytes"))
+		if err == nil {
+			t.Fatalf("round %d: got no error", i)
+		}
+		if !strings.Contains(err.Error(), "message too big") {
+			t.Fatalf("round %d: err = %v, want the queued read failure, not the generic close", i, err)
+		}
+	}
+}
+
+// With nothing queued the connection really did just close, and that is what
+// gets reported -- the drain must not invent a cause.
+func TestDrainedOutcomeFallsBackToGenericClose(t *testing.T) {
+	c := &Client{done: make(chan struct{})}
+	close(c.done)
+
+	_, err := c.drainedOutcome(make(chan responseFrame, 1))
+	if err == nil || err.Error() != "ws: connection closed" {
+		t.Fatalf("err = %v, want the generic close", err)
+	}
+}
+
+// A frame the pump delivered as it failed, in the shape failAllPending sends.
+func bufferedFailedFrame(msg string) <-chan responseFrame {
+	ch := make(chan responseFrame, 1)
+	ch <- responseFrame{
+		Type:  "res",
+		ID:    "m1",
+		OK:    false,
+		Error: &frameError{Code: "UNAVAILABLE", Message: msg},
+	}
+	return ch
+}
