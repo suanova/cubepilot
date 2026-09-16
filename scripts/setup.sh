@@ -135,7 +135,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 # Platform default LLM credential (the builtin AgentTemplate references it; the
 # operator renders it into the gateway config). The agent-kubeconfig Secret is
-# rendered by the chart (deploy/charts/cubepilot/templates/agent-kubeconfig.yaml);
+# rendered by the chart (deploy/charts/cubepilot-chart/templates/agent-kubeconfig.yaml);
 # the openclaw-config Secret (gateway token + rendered openclaw.json) is created
 # by the operator.
 kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
@@ -156,7 +156,7 @@ kubectl -n "$NAMESPACE" create secret generic cubepilot-llm \
 # silent: the API server prunes the unknown field, so a provider write answers
 # 201 while storing nothing. Applying the directory is idempotent and matches
 # what `helm install` does once.
-CHART_DIR="$REPO_DIR/deploy/charts/cubepilot"
+CHART_DIR="$REPO_DIR/deploy/charts/cubepilot-chart"
 CRDS_DIR="$CHART_DIR/crds"
 [ -d "$CRDS_DIR" ] || { echo "error: chart CRDs dir not found: $CRDS_DIR" >&2; exit 1; }
 log "applying CRDs from $CRDS_DIR"

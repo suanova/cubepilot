@@ -32,7 +32,7 @@ IMAGE_REGISTRY ?= harbor.isuanova.com/suanova
 IMAGE_TAG    ?= local
 NAMESPACE    ?= cubepilot
 HELM_RELEASE ?= cubepilot
-CHART_DIR    ?= deploy/charts/cubepilot
+CHART_DIR    ?= deploy/charts/cubepilot-chart
 KUBECONFIG   ?= $(HOME)/.kube/config
 
 # Local kind cluster targeted by `make redeploy` (matches scripts/setup.sh's
