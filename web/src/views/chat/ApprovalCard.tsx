@@ -35,14 +35,21 @@ export function ApprovalCard({
           <span className="pill warn">Awaiting your decision</span>
         )}
       </div>
-      {confirm.command && (
-        <div className="tool-body">
-          <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{confirm.command}</span>
-        </div>
-      )}
-      {confirm.message && (
-        <div style={{ fontSize: 12.5, color: 'var(--muted, rgba(0,0,0,.55))', marginTop: 6, lineHeight: 1.5 }}>{confirm.message}</div>
-      )}
+      {/* What the write is, and why the agent wants it: the part that scrolls
+          when the dock cannot give the card its full height. The decision row
+          and the reason a decision failed are the controls and their feedback,
+          so they stay put -- a control that scrolls out of the box it was put
+          in is the failure the dock exists to prevent (issue #204). */}
+      <div className="approval-body">
+        {confirm.command && (
+          <div className="tool-body">
+            <span className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{confirm.command}</span>
+          </div>
+        )}
+        {confirm.message && (
+          <div style={{ fontSize: 12.5, color: 'var(--muted, rgba(0,0,0,.55))', marginTop: 6, lineHeight: 1.5 }}>{confirm.message}</div>
+        )}
+      </div>
       {!confirm.resolved && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button

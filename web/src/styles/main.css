@@ -253,10 +253,15 @@ button.tool-head:hover{background:var(--hover)}
    the reader had already answered. */
 .hitl-dock{max-width:760px;margin:0 auto 10px;display:flex;flex-direction:column;gap:8px;max-height:min(50vh,420px)}
 .hitl-dock .tool-card{display:flex;flex-direction:column;min-height:0}
-/* The parts that are not the form stay put; the form is what scrolls. */
-.hitl-dock .tool-card > .tool-head,
-.hitl-dock .tool-card > .question-actions{flex:none}
-.hitl-dock .question-body{flex:1 1 auto;min-height:0;overflow:auto}
+/* Everything the card draws stays put except its body, which is what scrolls.
+   Written as "all children, then the body" rather than a list of the parts that
+   happen to sit there today: a decision row, a failure line under it, a status
+   a later card adds -- each one is a thing the reader needs on screen, and a
+   child that has to be added to this list to survive the cap is a control that
+   goes missing until someone remembers. */
+.hitl-dock .tool-card > *{flex:none}
+.hitl-dock .tool-card > .question-body,
+.hitl-dock .tool-card > .approval-body{flex:1 1 auto;min-height:0;overflow:auto}
 .composer-inner{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
 .composer-inner:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .composer textarea{flex:1;border:none;outline:none;resize:none;background:none;font-size:13.5px;line-height:1.5;max-height:120px;padding:4px 2px}

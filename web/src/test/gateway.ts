@@ -22,6 +22,10 @@ export interface FakeGatewayInit {
   // A turn-status read that cannot answer (the API's 502), which is not the same
   // answer as "not running" and must not be rendered as one.
   turnCheckFails?: boolean
+  // A decision the API refuses (a 5xx, not the 404 of a card that was already
+  // settled). The card stays pending and has to say why, so the explanation is
+  // part of the card the user is still looking at.
+  decisionFails?: boolean
 }
 
 /** A turn whose stream stays open until the test closes it. */
@@ -166,6 +170,9 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'approval':
         case 'question':
           decisions.push(record)
+          // The request was made either way, so it is recorded either way; only
+          // the answer differs.
+          if (init.decisionFails) return json({ error: 'decision not recorded' }, 500)
           return json({})
         // Nothing parked answers 404, not an empty object: the client unwraps
         // `d.approval` / `d.questions`, so a bare `{}` would hand the caller

@@ -133,6 +133,21 @@ const APPROVAL = [
   },
 ] satisfies SSEEvent[]
 
+// A parked write whose card is taller than the dock can give it: a command long
+// enough to fill the cap, plus the agent's own explanation of what it does.
+const TALL_APPROVAL = [
+  { type: 'message_start', sessionId: 'agent:main:conv-1' },
+  {
+    type: 'approval_pending',
+    sessionId: 'agent:main:conv-1',
+    callId: 'a1',
+    name: 'kubectl_apply',
+    command: `kubectl apply -f ${'dev-'.repeat(30)}env.yaml`,
+    level: 'write',
+    message: 'This rewrites the dev environment in place.',
+  },
+] satisfies SSEEvent[]
+
 describe('ChatView write confirmation', () => {
   it('posts the approval the user picked', async () => {
     gateway!.setTurn(APPROVAL)
@@ -199,6 +214,47 @@ describe('ChatView write confirmation', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
 
     turn.close()
+  })
+
+  it('keeps the buttons of a write confirmation taller than the dock outside the scrolling part', async () => {
+    // The same docking as the ask-user form, and the same failure: the dock caps
+    // the card, the card is a flex column, and `.tool-card`'s `overflow:hidden`
+    // clips what no longer fits. The decision row is the last child, so a command
+    // long enough to reach the cap pushed it out of the card -- a parked write
+    // with no visible controls, and a turn that waits on a decision nobody can
+    // send. What scrolls is the command and the agent's explanation of it.
+    gateway!.setTurn(TALL_APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    const body = approve.closest('.tool-card')?.querySelector('.approval-body')
+    expect(body).not.toBeNull()
+    expect(body!.contains(approve)).toBe(false)
+    expect(body!.contains(screen.getByText(/dev-env\.yaml/))).toBe(true)
+    expect(body!.contains(screen.getByText('This rewrites the dev environment in place.'))).toBe(true)
+  })
+
+  it('keeps the reason a decision failed out of the scrolling part as well', async () => {
+    // A decision the API refused leaves the card pending and says why. That
+    // explanation is the reason to try again, so it belongs with the buttons and
+    // shares their fate: pinned, rather than scrolled to wherever in a long
+    // command the reader happens to be.
+    gateway = installFakeGateway({ decisionFails: true })
+    gateway.install()
+    gateway.setTurn(TALL_APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Approve' }))
+
+    const failure = await screen.findByText(/decision not recorded/)
+    const body = failure.closest('.tool-card')?.querySelector('.approval-body')
+    expect(body).not.toBeNull()
+    expect(body!.contains(failure)).toBe(false)
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
   })
 })
 
