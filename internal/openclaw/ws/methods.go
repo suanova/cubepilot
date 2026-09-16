@@ -126,33 +126,79 @@ func (c *Client) AbortChat(ctx context.Context, sessionKey, runID string) (bool,
 	return out.Aborted, nil
 }
 
-type chatHistoryParams struct {
+// sessionRunStatusParams is the chat.history request this client sends: a
+// session key and an explicit message cap.
+//
+// It is deliberately the narrowest shape the method accepts. There is no field
+// to carry a cursor, an offset or a char budget, because nothing here reads the
+// transcript and every one of those would enable a larger one. The cap is not
+// caller-settable either -- the type is unexported and its only construction
+// site sets it to sessionRunStatusLimit -- so a future caller cannot ask this
+// read for more history than it needs, only for the status it returns.
+type sessionRunStatusParams struct {
 	SessionKey string `json:"sessionKey"`
+	// Limit caps the transcript the response carries, in messages. The answer
+	// this client reads out of chat.history -- inFlightRun -- is a run
+	// descriptor computed from the gateway's run state, not a slice of the
+	// transcript, so asking for the transcript is pure cost: the whole
+	// conversation travels in one frame (bounded only by the gateway's 6 MiB
+	// history cap) purely to have a few hundred bytes looked at. One message is
+	// the least the gateway accepts (the schema's minimum is 1) and keeps the
+	// frame at transcript-independent size, which is what makes this read safe
+	// on a session of any length.
+	Limit int `json:"limit"`
 }
 
-// chatHistoryResult is the subset of chat.history's delta result this client
-// reads. The delta payload also carries messages and a deltaCursor that a future
-// stream re-attach would use; nothing here consumes them, and the gateway's
-// "reset" shape simply has no inFlightRun.
-type chatHistoryResult struct {
+// sessionRunStatusResult is the subset of chat.history's answer this client
+// reads. The payload also carries the transcript, session metadata and a
+// deltaCursor that a future stream re-attach would use; none of them are
+// declared here, so they are decoded away rather than handed to a caller. The
+// gateway's "reset" shape simply has no inFlightRun.
+type sessionRunStatusResult struct {
 	InFlightRun json.RawMessage `json:"inFlightRun"`
 }
 
-// sessionHistory reads the session's history projection (chat.history).
-func (c *Client) sessionHistory(ctx context.Context, sessionKey string) (chatHistoryResult, error) {
-	raw, err := c.Call(ctx, "chat.history", chatHistoryParams{SessionKey: sessionKey})
+// sessionRunStatusLimit is the value sessionRunStatusParams.Limit is always set
+// to. A named constant rather than a literal because the read depends on the
+// request staying transcript-independent, not on the number being 1 in
+// particular.
+const sessionRunStatusLimit = 1
+
+// sessionRunStatus asks whether the session has a run in flight, and returns
+// that run's descriptor. It is the only thing this client reads chat.history
+// for.
+//
+// It is named and shaped for the question it answers rather than for the RPC it
+// uses, because the RPC is a transcript projection and the difference is
+// load-bearing. chat.history with no limit answers with the whole conversation
+// in a single frame -- 126 KB for a 48-message session in the field -- against
+// coder/websocket's 32 KiB default read limit, so a status check large enough to
+// kill the connection took down whatever turn the same per-user connection was
+// driving. Two things keep that from coming back: the request caps the
+// transcript (sessionRunStatusLimit), and this function returns only the run
+// descriptor, so there is no transcript here for a later caller to reach for. A
+// reader that wants history wants a different call (see the HTTP history
+// surface), not this one widened.
+//
+// A caller must not treat the returned descriptor as opaque: hasInFlightRun
+// reads presence, and SessionInFlightRun reads the run id out of it.
+func (c *Client) sessionRunStatus(ctx context.Context, sessionKey string) (sessionRunStatusResult, error) {
+	raw, err := c.Call(ctx, "chat.history", sessionRunStatusParams{
+		SessionKey: sessionKey,
+		Limit:      sessionRunStatusLimit,
+	})
 	if err != nil {
-		return chatHistoryResult{}, fmt.Errorf("chat.history %q: %w", sessionKey, err)
+		return sessionRunStatusResult{}, fmt.Errorf("chat.history %q: %w", sessionKey, err)
 	}
-	var out chatHistoryResult
+	var out sessionRunStatusResult
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return chatHistoryResult{}, fmt.Errorf("decode chat.history: %w", err)
+		return sessionRunStatusResult{}, fmt.Errorf("decode chat.history: %w", err)
 	}
 	return out, nil
 }
 
-// hasInFlightRun reports whether chat.history described a run at all: the field
-// is absent (or explicitly null) when the session is idle.
+// hasInFlightRun reports whether the run descriptor describes a run at all: the
+// field is absent (or explicitly null) when the session is idle.
 func hasInFlightRun(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
@@ -163,7 +209,7 @@ func hasInFlightRun(raw json.RawMessage) bool {
 // whether a browser is attached, which is false after a reload while the run is
 // still going.
 func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, error) {
-	out, err := c.sessionHistory(ctx, sessionKey)
+	out, err := c.sessionRunStatus(ctx, sessionKey)
 	if err != nil {
 		return false, err
 	}
@@ -179,14 +225,14 @@ func (c *Client) SessionBusy(ctx context.Context, sessionKey string) (bool, erro
 // never learns it, but on the reload-takeover path the server has lost its own
 // copy too -- releaseLive dropped the local turn when the request driving it
 // ended, while the run it started can still be executing -- and chat.history is
-// then the only place the id exists. active reports whether chat.history
+// then the only place the id exists. active reports whether the status read
 // described a run at all: the inFlightRun payload is the gateway's own run
 // descriptor and so opaque to this schema, and a descriptor that carries no
 // runId yields active=true with an empty id. Reading that as "nothing is
 // running" is wrong -- it means a run exists that cannot be named, which a
 // caller about to issue a session-scoped abort in its place needs to know.
 func (c *Client) SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error) {
-	out, err := c.sessionHistory(ctx, sessionKey)
+	out, err := c.sessionRunStatus(ctx, sessionKey)
 	if err != nil {
 		return "", false, err
 	}

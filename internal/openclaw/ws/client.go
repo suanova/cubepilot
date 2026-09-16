@@ -22,6 +22,37 @@ const (
 
 	defaultClientVersion  = "cubepilot/2026.9"
 	defaultClientPlatform = "linux"
+
+	// inboundReadLimit is the largest single message this client will accept
+	// from the gateway.
+	//
+	// coder/websocket defaults to 32 KiB per message, and the gateway's
+	// responses are not that small: chat.history carries a session's whole
+	// transcript in one frame, so a conversation of ordinary length (62
+	// messages, ~127 KB in the field) exceeds the default. Exceeding it does
+	// not fail one call -- the library closes the connection with status 1009
+	// and the read pump exits, so every in-flight RPC on the connection fails
+	// and any turn being driven over it dies with them. The reload-takeover
+	// status read and the abort liveness wait both go through chat.history,
+	// which is how a conversation of that size made /turn answer 502 and Stop
+	// fail.
+	//
+	// 16 MiB rather than the library's default or an unlimited read: the frames
+	// that can legitimately be this large have documented bounds of their own.
+	// chat.history caps its messages payload at 6 MiB
+	// (maxChatHistoryMessagesBytes, 6291456) and truncates beyond it, and tool
+	// output -- what a live-turn session.message event carries -- is capped in
+	// the low MiB range. 16 MiB sits above both with margin while still
+	// bounding what a single message can allocate. An unlimited read
+	// (SetReadLimit(-1)) would remove the last bound on this client's memory,
+	// which is not a trade worth making for a constant that only has to clear an
+	// observed maximum.
+	//
+	// This is a raised cliff, not a removed one: a frame above it still costs
+	// the connection. The structural half of the fix is that the readers which
+	// only need a small answer no longer pull the transcript at all -- see
+	// sessionRunStatus, which asks for one message.
+	inboundReadLimit = 16 << 20
 )
 
 // Client is one gateway-protocol WebSocket connection to a gateway, acting as a
@@ -158,6 +189,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ws dial %s: %w", c.url, err)
 	}
+	// Set before the handshake, not after: the challenge, the hello and every
+	// response that follows are all read at this limit, and applying it late
+	// would leave the first frames on the library default. It is a property of
+	// the connection, so a re-dial sets it again -- storing it as a Client field
+	// and applying it once would silently leave every reconnected client back at
+	// 32 KiB.
+	conn.SetReadLimit(inboundReadLimit)
 
 	// Read the connect.challenge event for its nonce.
 	challenge, err := c.readChallenge(ctx, conn)
@@ -354,16 +392,30 @@ func (c *Client) writeReq(ctx context.Context, conn *websocket.Conn, method stri
 // readPump dispatches responses and events until the connection dies.
 func (c *Client) readPump(conn *websocket.Conn) {
 	defer close(c.done)
+	// readErr is reported to the callers the pump fails, rather than a bare
+	// "connection closed". It is the only account of *why* the connection died:
+	// a close from the peer and a message rejected at inboundReadLimit both end
+	// the loop here, and the frame that caused it is not otherwise logged, so an
+	// unreported cause turns every such failure into an unattributable
+	// "connection closed" for whoever is looking at the API's log. Written and
+	// read on the pump's own goroutine; the deferred func runs before close(done)
+	// lets anyone else observe the closure.
+	var readErr error
 	defer func() {
 		c.connMu.Lock()
 		c.connected = false
 		c.connMu.Unlock()
 		_ = conn.Close(websocket.StatusNormalClosure, "pump exit")
+		if readErr != nil {
+			c.failAllPending(fmt.Errorf("ws connection closed: %w", readErr))
+			return
+		}
 		c.failAllPending(fmt.Errorf("ws connection closed"))
 	}()
 	for {
 		_, data, err := conn.Read(context.Background())
 		if err != nil {
+			readErr = err
 			return
 		}
 		var frame struct {

@@ -51,6 +51,7 @@ type gatewayClient interface {
 	Connected() bool
 	Connect(ctx context.Context) error
 	OnApprovalRequested(f func(ws.ApprovalRequested))
+	OnApprovalResolved(f func(ws.ApprovalResolved))
 	OnQuestionRequested(f func(ws.QuestionRecord))
 	OnQuestionResolved(f func(ws.QuestionResolved))
 	OnEvent(f func(evName string, payload []byte))
@@ -108,6 +109,12 @@ type gatewayConns struct {
 	// bridge is set by the server so a gateway approval can reach the
 	// ApprovalService (which resolves Portal decisions and injects SSE).
 	bridge func(user string, ev ws.ApprovalRequested)
+
+	// approvalResolved is set by the server so an approval the gateway ends by
+	// itself -- expiry, or a run aborted or lost gateway-side -- drops the
+	// platform's record of it. Without it the record outlives the approval and
+	// reload recovery resurrects a card that cannot be answered.
+	approvalResolved func(user string, ev ws.ApprovalResolved)
 
 	// questionRequested / questionResolved are set by the server so gateway
 	// question broadcasts reach the parked turn's SSE stream (issue #161).
@@ -271,6 +278,15 @@ func (m *gatewayConns) conn(ctx context.Context, user string) (gatewayClient, er
 		}
 		if m.bridge != nil {
 			m.bridge(user, ev)
+		}
+	})
+	// An approval the gateway resolved on its own: drop the platform's record so
+	// it cannot resurface as a card on reload. Registered alongside the requested
+	// hook and for the same reason -- both are broadcast, so a connection that is
+	// not listening at the moment an approval ends misses it for good.
+	gw.OnApprovalResolved(func(ev ws.ApprovalResolved) {
+		if m.approvalResolved != nil {
+			m.approvalResolved(user, ev)
 		}
 	})
 	// Asker questions (issue #161): a question the agent is blocked on is

@@ -406,3 +406,132 @@ func mustRaw(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// The read limit is load-bearing, so it is asserted rather than assumed. A
+// response larger than coder/websocket's 32 KiB default used to end the
+// connection: chat.history carries a whole session transcript in one frame, and
+// the status read and the abort liveness wait both go through it, so an ordinary
+// conversation took out the connection -- and with it whatever turn the same
+// per-user connection was driving.
+//
+// The frame here is deliberately over that default and under inboundReadLimit.
+// The mock gateway closes as soon as it has written, so the failure mode without
+// the SetReadLimit call is the read returning ErrMessageTooBig instead of the
+// payload; the assertion on the decoded value is what distinguishes them.
+func TestClientReadsResponseLargerThanLibraryDefault(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A transcript-sized payload: over the 32 KiB default, far under 16 MiB.
+	big := strings.Repeat("x", 96*1024)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		srv := &mockGateway{t: t, conn: conn}
+		srv.write(eventFrame{Type: "event", Event: challengeEvent, Payload: mustJSON(t, connectChallenge{Nonce: "nonce-1"})})
+		var req requestFrame
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			_ = json.Unmarshal(data, &req)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"type": "hello-ok", "protocol": 4,
+			"auth": map[string]any{"role": "operator", "scopes": []string{"operator.admin"}},
+		})
+		srv.write(responseFrame{Type: "res", ID: req.ID, OK: true, Payload: hello})
+
+		// One oversized chat.history response, then sit idle: nothing more is
+		// expected, and closing immediately would race the client's read.
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			var f requestFrame
+			if err := json.Unmarshal(data, &f); err == nil {
+				payload, _ := json.Marshal(map[string]any{
+					"sessionId":   "session-1",
+					"messages":    []any{map[string]any{"role": "user", "content": big}},
+					"inFlightRun": map[string]any{"runId": "run-1"},
+				})
+				srv.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	}))
+	defer ts.Close()
+
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cli.Close()
+
+	out, err := cli.sessionRunStatus(ctx, "agent:main:conv-1")
+	if err != nil {
+		t.Fatalf("sessionRunStatus over %d bytes: %v", len(big), err)
+	}
+	if !hasInFlightRun(out.InFlightRun) {
+		t.Fatalf("inFlightRun = %q, want the gateway's snapshot", out.InFlightRun)
+	}
+}
+
+// An oversized frame still costs the connection -- the limit bounds the damage
+// rather than removing it -- so the failure has to name itself. Before this, the
+// read error was dropped and every caller saw "ws connection closed", which is
+// indistinguishable from an ordinary peer close and left the cause of a killed
+// turn unrecorded.
+func TestClientReadFailureIsReportedToCallers(t *testing.T) {
+	dev, err := GenerateDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		srv := &mockGateway{t: t, conn: conn}
+		srv.write(eventFrame{Type: "event", Event: challengeEvent, Payload: mustJSON(t, connectChallenge{Nonce: "nonce-1"})})
+		var req requestFrame
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			_ = json.Unmarshal(data, &req)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"type": "hello-ok", "protocol": 4,
+			"auth": map[string]any{"role": "operator", "scopes": []string{"operator.admin"}},
+		})
+		srv.write(responseFrame{Type: "res", ID: req.ID, OK: true, Payload: hello})
+
+		// Answer the next request with a frame past the limit, then hold the
+		// socket open long enough for the client's read pump to notice.
+		if _, data, err := conn.Read(context.Background()); err == nil {
+			var f requestFrame
+			if err := json.Unmarshal(data, &f); err == nil {
+				oversized := strings.Repeat("y", inboundReadLimit+1024)
+				payload, _ := json.Marshal(map[string]any{"blob": oversized})
+				srv.write(responseFrame{Type: "res", ID: f.ID, OK: true, Payload: payload})
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	}))
+	defer ts.Close()
+
+	cli := NewClient(strings.Replace(ts.URL, "http", "ws", 1)+"/gateway", "token", dev)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cli.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cli.Close()
+
+	_, err = cli.sessionRunStatus(ctx, "agent:main:conv-1")
+	if err == nil {
+		t.Fatal("sessionRunStatus succeeded against an oversized frame")
+	}
+	if !strings.Contains(err.Error(), "message too big") {
+		t.Fatalf("err = %v, want the read failure (message too big) named in it", err)
+	}
+}
