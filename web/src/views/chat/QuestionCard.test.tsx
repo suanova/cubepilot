@@ -16,9 +16,8 @@ import { useChatThread } from './useChatThread'
 let gateway: FakeGateway | undefined
 
 beforeEach(() => {
+  // No fake installed here: openQuestion() installs the test's own.
   localStorage.setItem('cubepilot.user', 'alice')
-  gateway = installFakeGateway()
-  gateway.install()
 })
 
 afterEach(() => {
