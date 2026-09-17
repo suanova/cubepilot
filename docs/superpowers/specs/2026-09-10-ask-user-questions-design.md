@@ -126,6 +126,7 @@ type QuestionItem struct {
     Question    string           `json:"question"`
     Options     []QuestionOption `json:"options"`
     MultiSelect bool             `json:"multiSelect,omitempty"`
+    IsOther     bool             `json:"isOther,omitempty"`
 }
 type QuestionPrompt struct {
     Questions      []QuestionItem `json:"questions"`
@@ -142,7 +143,8 @@ browser.
 // question_pending
 { "type": "question_pending", "session_id": "...", "call_id": "<gateway question id>",
   "question": { "questions": [ { "questionId": "where", "header": "Target",
-                  "question": "...", "options": [ {"label": "..."} ], "multiSelect": false } ],
+                  "question": "...", "options": [ {"label": "..."} ],
+                  "multiSelect": false, "isOther": true } ],
                 "timeoutSeconds": 842 } }
 // question_resolved
 { "type": "question_resolved", "session_id": "...", "call_id": "...",
