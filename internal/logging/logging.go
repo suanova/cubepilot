@@ -46,6 +46,12 @@ var _ logr.LogSink = (*sink)(nil)
 // which hex-dumps the body whole -- Secret bodies included. Raise the level
 // past 7 only to watch actual API traffic, and expect that.
 func New(level int) logr.Logger {
+	// A negative level is a typo or a parse artifact, not a real request for
+	// less than V(0); flooring it keeps V(0) and Error visible instead of
+	// silencing the component.
+	if level < 0 {
+		level = 0
+	}
 	return logr.New(newSink(os.Stderr, level))
 }
 
@@ -146,9 +152,6 @@ func key(k any) string {
 // error, a namespaced name) is asked for its own rendering.
 func value(v any) string {
 	if v == nil {
-		return "null"
-	}
-	if err, ok := v.(error); ok && err == nil {
 		return "null"
 	}
 	s := fmt.Sprint(v)

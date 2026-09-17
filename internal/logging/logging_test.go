@@ -93,3 +93,15 @@ func TestValueWithSpaceIsQuoted(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// New floors a negative level at 0 instead of letting it silence V(0) and
+// making a misconfigured component look merely quiet.
+func TestNewFloorsNegativeLevelAtZero(t *testing.T) {
+	l := New(-1)
+	if !l.Enabled() {
+		t.Error("New(-1).Enabled() = false, want true (V(0) must stay visible)")
+	}
+	if l.V(1).Enabled() {
+		t.Error("New(-1).V(1).Enabled() = true, want false (level must floor at 0, not go negative)")
+	}
+}
