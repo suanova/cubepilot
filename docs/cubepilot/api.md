@@ -434,16 +434,17 @@ agent 调用 `ask_user` 工具时，回合同样暂停：
 event: question_pending
 data: {"type":"question_pending","sessionId":"...","callId":"<question id>",
        "question":{"questions":[{"questionId","header","question",
-                                 "options":[{"label","description"?}],"multiSelect"?,"isOther"?}],
+                                 "options":[{"label","description"?}],"multiSelect"?,"isOther":true}],
                    "timeoutSeconds":n}}
 ```
 
 **注意 `callId` 是问答会话的 id，`question.questions[].questionId` 是每个问题的 id**，
 提交答案时用的是后者。
 
-`isOther: true` 表示该问题在选项之外还接受人类自己的文本（`ask_user` 的每个问题都会带这个
-标记），Portal 会在选项下方渲染一个输入框。`options` 为空的问题是**纯自由文本**，只渲染输入框；
-两种形式都由同一条 `question_pending` 下发，不需要客户端分支。
+`isOther` 是 `omitempty` 字段：`ask_user` 的每个问题都会带 `isOther: true`（表示该问题在选项之外
+还接受人类自己的文本），但别的生产者（例如 `question.request`）可能不带，客户端要按缺省处理。
+带这个标记的问题，Portal 会在选项下方渲染一个输入框；`options` 为空的问题是**纯自由文本**，只渲染
+输入框；两种形式都由同一条 `question_pending` 下发，不需要客户端分支。
 
 ```ts
 // 回答：选项 label
