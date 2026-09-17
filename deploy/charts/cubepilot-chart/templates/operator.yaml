@@ -31,6 +31,12 @@ spec:
               value: {{ .Values.operator.metricsAddr | quote }}
             - name: CUBEPILOT_PROBE_ADDR
               value: {{ .Values.operator.probeAddr | quote }}
+            - name: CUBEPILOT_LOG_LEVEL
+              value: {{ .Values.operator.logLevel | quote }}
+            # The agent Pods the operator creates carry this value, not the
+            # operator's own -- see values.yaml.
+            - name: CUBEPILOT_AGENT_LOG_LEVEL
+              value: {{ .Values.agents.logLevel | quote }}
           ports:
             - name: metrics
               containerPort: 8082

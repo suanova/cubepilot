@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -35,6 +36,9 @@ type AgentSpec struct {
 	// secondary discovery mount, never the default (issue #100 removed the
 	// placeholder-identity fallback).
 	UserKubeconfigSecret string
+	// LogLevel is the supervisor's CUBEPILOT_LOG_LEVEL inside the Pod. It
+	// comes from the operator's AgentLogLevel, not its own LogLevel.
+	LogLevel int
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -230,6 +234,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					// Supervisor wiring: which user's resolved config to pull.
 					{Name: "CUBEPILOT_AGENT_USER", Value: s.AgentUser},
 					{Name: "CUBEPILOT_WORKSPACE", Value: "/home/node/.openclaw/workspace"},
+					// The supervisor's own verbosity. Set from the operator's
+					// CUBEPILOT_AGENT_LOG_LEVEL so it stays independent of the
+					// operator's level.
+					{Name: "CUBEPILOT_LOG_LEVEL", Value: strconv.Itoa(s.LogLevel)},
 					// The supervisor pulls its config from the platform API in its
 					// OWN namespace (issue #172). The chart installs into any
 					// namespace, so the URL is derived from the Pod's namespace via

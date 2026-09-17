@@ -36,7 +36,7 @@ import (
 func main() {
 	cfg := config.Load()
 
-	ctrllog.SetLogger(logging.New(0))
+	ctrllog.SetLogger(logging.New(cfg.LogLevel))
 
 	restCfg, err := k8s.NewRestConfig()
 	if err != nil {
