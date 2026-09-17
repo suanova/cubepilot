@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"strings"
 	"testing"
 
@@ -252,5 +254,37 @@ func TestBootstrapEnsureRejectsCollidingUsers(t *testing.T) {
 	}
 	if err := r.Ensure(context.Background()); err == nil {
 		t.Fatal("Ensure should reject sanitize-colliding identities")
+	}
+}
+
+func TestKindOfResolvesTypedObjects(t *testing.T) {
+	r := &BuiltinBootstrapReconciler{Scheme: testScheme(t), Cfg: config.Config{}}
+
+	// A typed literal with no TypeMeta -- exactly how the bootstrapped objects
+	// are built, and why GetObjectKind().GroupVersionKind().Kind is empty.
+	if got := r.kindOf(&corev1.ServiceAccount{}); got != "ServiceAccount" {
+		t.Fatalf("kindOf = %q, want %q", got, "ServiceAccount")
+	}
+}
+
+func TestCreateIfMissingNamesTheKind(t *testing.T) {
+	scheme := testScheme(t)
+	// A bare client: createIfMissing only needs Get to miss and Create to
+	// succeed, and the kind comes from the scheme, not from a seeded object.
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &BuiltinBootstrapReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{}}
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	obj := &corev1.ServiceAccount{}
+	obj.Name = "admin-cubepilot"
+	if err := r.createIfMissing(context.Background(), obj); err != nil {
+		t.Fatalf("createIfMissing: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "bootstrap: created ServiceAccount/admin-cubepilot") {
+		t.Fatalf("log = %q, want it to contain %q", got, "bootstrap: created ServiceAccount/admin-cubepilot")
 	}
 }

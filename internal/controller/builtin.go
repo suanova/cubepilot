@@ -329,8 +329,21 @@ func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj cl
 		}
 		return err
 	}
-	log.Printf("bootstrap: created %s/%s", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
+	log.Printf("bootstrap: created %s/%s", r.kindOf(obj), obj.GetName())
 	return nil
+}
+
+// kindOf resolves an object's Kind through the scheme.
+//
+// GetObjectKind().GroupVersionKind().Kind is empty for the objects bootstrapped
+// here: they are built as typed Go literals with no TypeMeta, so the method
+// returns "" and the log line reads "bootstrap: created /admin-cubepilot". The
+// scheme knows the type even when the object does not.
+func (r *BuiltinBootstrapReconciler) kindOf(obj client.Object) string {
+	if kinds, _, err := r.Scheme.ObjectKinds(obj); err == nil && len(kinds) > 0 {
+		return kinds[0].Kind
+	}
+	return "unknown"
 }
 
 // InstanceNameFor builds the AgentInstance name for (user, agent) -- the

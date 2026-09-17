@@ -229,7 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, "no such endpoint")
 	})
-	return logRequests(mux)
+	return s.logRequests(mux)
 }
 
 // handleSessionSubresource routes the per-session subresources under
@@ -259,10 +259,105 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func logRequests(next http.Handler) http.Handler {
+// logRequests records one line per request: method, path, status, response
+// size and duration.
+//
+// Two kinds of traffic are skipped rather than logged at a lower level. An
+// access log belongs with the component's own messages, which are always
+// visible, and both of the following would bury what a human is looking for:
+//
+//   - Probe paths: the kubelet polls /healthz and /readyz every few seconds,
+//     and Prometheus scrapes /metrics on its own interval.
+//   - The /internal/ surface: the supervisor's poll loop ticks every 10s
+//     (supervisor.go's PollInterval) and each tick makes two calls into this
+//     surface, fetchConfig and syncCredentials -- machine traffic, never
+//     human- or browser-facing, that would otherwise add up to thousands of
+//     lines a day per agent Pod.
+func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		if isProbePath(r.URL.Path) || isInternalAPIPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		// EscapedPath, not Path: Path is percent-decoded, so an unauthenticated
+		// request to /%0aFAKE_RECORD would arrive here with a real newline and
+		// turn one request into two log records, the second forged. The escaped
+		// form keeps every request on exactly one line.
+		s.logf("%s %s %d %dB %s", r.Method, r.URL.EscapedPath(), rec.status, rec.bytes,
+			time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// isProbePath reports whether path is polled on a fixed interval by the
+// kubelet or by Prometheus scraping. Only /healthz and /metrics are registered
+// today (server.go:175-176); /readyz is listed because a readiness endpoint is
+// the obvious next one and the cost of the extra case is nothing.
+func isProbePath(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/metrics":
+		return true
+	}
+	return false
+}
+
+// isInternalAPIPath reports whether path is one of the supervisor-to-api
+// machine routes registered under /internal/ (server.go:222-224): agent
+// config, gateway credentials and skill tarball pulls. None of these are
+// human- or browser-facing, so they get the same access-log skip as probes,
+// for a different reason -- fixed-interval polling volume rather than
+// infrastructure noise.
+func isInternalAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/internal/")
+}
+
+// statusRecorder captures what the handler wrote, which the wrapped
+// ResponseWriter does not expose.
+//
+// Flush is required, not optional: SSE handlers assert w.(http.Flusher)
+// (handlers.go:153) and a wrapper without it turns every streaming response
+// into a failure.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+	// final is set once a non-informational status has been recorded. net/http
+	// ignores a second WriteHeader and logs "superfluous response.WriteHeader
+	// call", so recording the latest value would report a status the client
+	// never received.
+	final bool
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	// 1xx is provisional, not final: 103 Early Hints precedes the real status,
+	// and the handler may still send it. 101 is the exception -- it ends the
+	// HTTP exchange rather than preceding anything.
+	if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(status)
+		return
+	}
+	if !r.final {
+		r.status = status
+		r.final = true
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write needs no status bookkeeping: status starts at StatusOK, which is the
+// status net/http sends for a body written without a WriteHeader call.
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // logf is a small helper for handler-side logging.

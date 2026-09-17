@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -72,6 +73,10 @@ type Config struct {
 	// from the credential Secrets) for the gateway's file secret provider.
 	// Empty disables the credential sync.
 	CredentialsPath string
+	// LogLevel is the verbosity handed to client-go through klog. 0 emits V(0)
+	// and every error; level 8 is client-go's request/response body dump,
+	// which prints whole objects -- Secret bodies included.
+	LogLevel int
 }
 
 // LoadFromEnv builds a Config from the environment with sane defaults.
@@ -84,6 +89,7 @@ func LoadFromEnv() Config {
 		PollInterval:    10 * time.Second,
 		ConfigPath:      getenv("OPENCLAW_CONFIG_PATH", "/home/node/.openclaw/openclaw.json"),
 		CredentialsPath: getenv("CUBEPILOT_CREDENTIALS_PATH", k8s.CredentialsPath),
+		LogLevel:        getInt("CUBEPILOT_LOG_LEVEL", 0),
 	}
 }
 
@@ -92,6 +98,18 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // SystemPrompt markers: the supervisor owns only the section of AGENTS.md
@@ -449,12 +467,22 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 	if s.current == cfg.Revision {
 		return false, nil // no change -- skills are current
 	}
-	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
+	log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
 	if err := s.syncSkills(ctx, cfg); err != nil {
 		return false, fmt.Errorf("sync skills: %w", err)
 	}
 	s.current = cfg.Revision
 	return true, nil
+}
+
+// revisionLabel names the revision a config sync is replacing. The first sync
+// has no previous revision, and printing the empty string produced
+// "config revision  -> 42c94f84db82".
+func revisionLabel(from string) string {
+	if from == "" {
+		return "(initial)"
+	}
+	return from
 }
 
 // syncInstructions reconciles the marker-guarded instructions section of the

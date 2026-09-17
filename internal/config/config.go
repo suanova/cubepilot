@@ -85,6 +85,18 @@ type Config struct {
 	// ("0" disables).
 	ProbeAddr string
 
+	// LogLevel is the verbosity handed to controller-runtime and client-go.
+	// 0 emits V(0) and every error; each increment admits one more V level.
+	// Level 8 is client-go's request/response body dump, which prints whole
+	// objects -- Secret bodies included.
+	LogLevel int
+
+	// AgentLogLevel is the level the operator passes to the per-user agent
+	// Pods for their supervisor. Separate from LogLevel because the
+	// supervisor's client-go calls read Secrets: raising the operator's level
+	// to debug it must not raise theirs.
+	AgentLogLevel int
+
 	// SkillsDir is the skill repository root (shared volume). Owned by the API
 	// server (publish + seed + serve); agent Pods never mount it (the
 	// supervisor pulls over HTTP).
@@ -105,17 +117,19 @@ func Load() Config {
 		// Empty by default: no platform default model is seeded unless an
 		// endpoint + model are configured (the builtin template is then created
 		// model-less and LLMs are added from the Portal).
-		LLMEndpoint: getenv("CUBEPILOT_LLM_ENDPOINT", ""),
-		LLMModel:    getenv("CUBEPILOT_LLM_MODEL", ""),
-		Replicas:    getInt("CUBEPILOT_REPLICAS", 1),
-		GCWindow:    getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
-		GCWatermark: getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
-		DefaultUser: getenv("CUBEPILOT_DEFAULT_USER", "admin"),
-		AgentPort:   getInt("CUBEPILOT_AGENT_PORT", 18789),
-		DataDir:     getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
-		MetricsAddr: getenv("CUBEPILOT_METRICS_ADDR", "0"),
-		ProbeAddr:   getenv("CUBEPILOT_PROBE_ADDR", "0"),
-		SkillsDir:   getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
+		LLMEndpoint:   getenv("CUBEPILOT_LLM_ENDPOINT", ""),
+		LLMModel:      getenv("CUBEPILOT_LLM_MODEL", ""),
+		Replicas:      getInt("CUBEPILOT_REPLICAS", 1),
+		GCWindow:      getDuration("CUBEPILOT_GC_WINDOW", 72*time.Hour),
+		GCWatermark:   getFloat("CUBEPILOT_GC_WATERMARK", 0.7),
+		DefaultUser:   getenv("CUBEPILOT_DEFAULT_USER", "admin"),
+		AgentPort:     getInt("CUBEPILOT_AGENT_PORT", 18789),
+		DataDir:       getenv("CUBEPILOT_DATA_DIR", "/opt/cubepilot/data"),
+		MetricsAddr:   getenv("CUBEPILOT_METRICS_ADDR", "0"),
+		ProbeAddr:     getenv("CUBEPILOT_PROBE_ADDR", "0"),
+		SkillsDir:     getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
+		LogLevel:      getInt("CUBEPILOT_LOG_LEVEL", 0),
+		AgentLogLevel: getInt("CUBEPILOT_AGENT_LOG_LEVEL", 0),
 	}
 	users := getenv("CUBEPILOT_USERS", "admin")
 	for _, u := range strings.Split(users, ",") {

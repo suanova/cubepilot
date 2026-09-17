@@ -120,6 +120,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		GatewayToken: r.Cfg.GatewayToken,
 		Port:         int32(r.Cfg.AgentPort),
 		AgentUser:    inst.Spec.Owner,
+		LogLevel:     r.Cfg.AgentLogLevel,
 	}
 	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
 	// kubectl must run with the USER's own credentials, so the per-user
