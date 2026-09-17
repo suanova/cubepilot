@@ -7,16 +7,20 @@
 #                        (rolling dev artifact -- the `-latest` suffix keeps it
 #                        from colliding with a real <chartVersion> release)
 #   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
-#                        pinned to X.Y.Z regardless of Chart.yaml); also creates
-#                        a GitHub Release with generated notes
-#   - workflow_dispatch  publish under the semver tag supplied in the input, but
-#                        create no GitHub Release -- this path is for
-#                        re-publishing and for exercising the workflow without
-#                        leaving a release behind
+#                        pinned to X.Y.Z regardless of Chart.yaml)
+#   - workflow_dispatch  publish under the semver tag supplied in the input
+#                        (re-publishing, and exercising the workflow without
+#                        cutting a tag)
 #
-# A release tag is validated as semver before the build steps: a tag that either
-# the chart packager or the registry would reject must not leave images pushed
-# with no chart beside them.
+# Publishing is all this workflow does. Creating the GitHub Release stays a
+# deliberate, human step done from the UI -- a release page carries written
+# context that no generated changelog has, and it is where the tag gets cut.
+# What must be automatic is that the artifacts behind a tag reach Harbor.
+#
+# A release tag is validated as semver before the build steps: a malformed tag
+# is not caught by anything downstream (see the "Resolve and validate publish
+# tag" step), and publishing under it would put a version that is not semver --
+# or an unbootable image reference -- into the registry.
 #
 # Bumping Chart.yaml's version/appVersion is not required for a release -- both
 # are overridden at package time -- but keeping them in step with the next
@@ -159,32 +163,3 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
-
-  # Tag pushes only, so a workflow_dispatch re-publish (or the rolling main
-  # publish) leaves no release behind. A separate job rather than a step in
-  # `publish` so the write token never shares a job with the Harbor credentials
-  # -- `publish` keeps `contents: read`.
-  #
-  # Runs after `publish` so a release is never created for a tag whose images or
-  # chart failed to publish.
-  github-release:
-    name: Create GitHub Release
-    needs: publish
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      # gh resolves the repository from the working tree, so it needs a checkout.
-      - uses: actions/checkout@v7
-
-      # Notes are GitHub's generated ones; there is no notes file in the repo.
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag
