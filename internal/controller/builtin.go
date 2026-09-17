@@ -153,8 +153,11 @@ Attach an evidence chain to any finding, classify by P0/P1/P2; no write operatio
 // left untouched; missing ones are created).
 type BuiltinBootstrapReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Cfg    config.Config
+	// APIReader reads straight from the API server, past the manager's cache.
+	// Writing the per-user kubeconfig Secret needs it: see ensureSecretData.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Cfg       config.Config
 }
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates;skills;tasktemplates;agentinstances;tasks;taskruns,verbs=get;list;watch;create;update;patch;delete
@@ -304,7 +307,7 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
 		Data:       map[string][]byte{"config": k8s.PerUserKubeconfigYAML(token)},
 	}
-	if err := ensureSecretData(ctx, r.Client, kc); err != nil {
+	if err := ensureSecretData(ctx, r.Client, r.APIReader, kc); err != nil {
 		return err
 	}
 	return nil

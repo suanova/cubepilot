@@ -26,8 +26,11 @@ import (
 // (issue #6).
 type OpenClawConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Cfg    config.Config
+	// APIReader reads straight from the API server, past the manager's cache.
+	// Writing the Secret needs it: see ensureSecretData.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Cfg       config.Config
 }
 
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agenttemplates,verbs=get;list;watch
@@ -113,7 +116,7 @@ func (r *OpenClawConfigReconciler) Reconcile(ctx context.Context, _ reconcile.Re
 	// The Secret is written from one desired state: the token the helper above
 	// settled on -- it is how every agent Pod and the API process authenticate,
 	// so a re-render must reuse it -- plus the config just rendered.
-	return ctrl.Result{}, ensureSecretData(ctx, r.Client, &corev1.Secret{
+	return ctrl.Result{}, ensureSecretData(ctx, r.Client, r.APIReader, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.ConfigSecretName, Namespace: r.Cfg.Namespace},
 		Data: map[string][]byte{
 			"gatewayToken":  []byte(token),

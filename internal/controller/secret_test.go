@@ -31,32 +31,30 @@ func (c *countingClient) Update(ctx context.Context, obj client.Object, opts ...
 	return c.Client.Update(ctx, obj, opts...)
 }
 
-// staleFirstReadClient hides key from its first read and rejects the create
-// that follows, standing in for the two ways a create can lose: another writer
-// got there first, or the caller's cached client has not caught up with a
-// create that did land. The re-read is left to pass through, because it is what
-// the caller has to fall back on.
-type staleFirstReadClient struct {
+// alwaysStaleClient never sees key and never wins the create for it, standing
+// in for the production client: a manager client reads Secrets through the
+// controller-runtime cache while writes go straight to the API server, so an
+// object that exists can be missing from every read this client makes.
+type alwaysStaleClient struct {
 	client.Client
-	key   types.NamespacedName
-	stale bool
+	key types.NamespacedName
 }
 
-func (c *staleFirstReadClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if c.stale && key == c.key {
-		c.stale = false
+func (c *alwaysStaleClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key == c.key {
 		return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
 	}
 	return c.Client.Get(ctx, key, obj, opts...)
 }
 
-func (c *staleFirstReadClient) Create(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+func (c *alwaysStaleClient) Create(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
 	return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "secrets"}, obj.GetName())
 }
 
 // staleReadAtClient reports the nth read of key as not found while the object
-// is really there, and rejects every create. That is the cache-behind-the-
-// API-server case from the caller's side: the only way out is the re-read.
+// is really there, and rejects every create. It stands in for a manager client
+// whose cache is behind on the object at that one read: the way out is the
+// caller's uncached reader, not this client.
 type staleReadAtClient struct {
 	client.Client
 	key   types.NamespacedName
@@ -86,7 +84,7 @@ func TestEnsureSecretDataCreates(t *testing.T) {
 		Data:       map[string][]byte{"gatewayToken": []byte("tok"), "openclaw.json": []byte("{}")},
 	}
 
-	if err := ensureSecretData(context.Background(), cl, want); err != nil {
+	if err := ensureSecretData(context.Background(), cl, cl, want); err != nil {
 		t.Fatalf("ensureSecretData: %v", err)
 	}
 
@@ -114,12 +112,12 @@ func TestEnsureSecretDataWritesNothingWhenUnchanged(t *testing.T) {
 			Data:       map[string][]byte{"gatewayToken": []byte("tok"), "openclaw.json": []byte("{}")},
 		}
 	}
-	if err := ensureSecretData(ctx, cl, want()); err != nil {
+	if err := ensureSecretData(ctx, cl, cl, want()); err != nil {
 		t.Fatalf("ensureSecretData: %v", err)
 	}
 
 	counted := &countingClient{Client: cl}
-	if err := ensureSecretData(ctx, counted, want()); err != nil {
+	if err := ensureSecretData(ctx, counted, cl, want()); err != nil {
 		t.Fatalf("ensureSecretData #2: %v", err)
 	}
 	if counted.creates != 0 || counted.updates != 0 {
@@ -140,7 +138,7 @@ func TestEnsureSecretDataUpdatesChangedData(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Data:       map[string][]byte{"gatewayToken": []byte("tok"), "openclaw.json": []byte(`{"new":true}`)},
 	}
-	if err := ensureSecretData(ctx, cl, want); err != nil {
+	if err := ensureSecretData(ctx, cl, cl, want); err != nil {
 		t.Fatalf("ensureSecretData: %v", err)
 	}
 
@@ -153,10 +151,10 @@ func TestEnsureSecretDataUpdatesChangedData(t *testing.T) {
 	}
 }
 
-// TestEnsureSecretDataConvergesAfterLostCreate pins the create race: when the
-// create loses, the re-read's object is the one that must end up holding the
-// desired data -- dropping out here would leave the Secret half-written and
-// depend on a later reconcile to finish the job.
+// TestEnsureSecretDataConvergesAfterLostCreate pins the create race: the caller's
+// client misses the Secret on every read and loses the create, so the fallback
+// read has to go past that client to reach the object that is really there --
+// otherwise the desired data is dropped for a later reconcile to write.
 func TestEnsureSecretDataConvergesAfterLostCreate(t *testing.T) {
 	winner := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "openclaw-config", Namespace: "cubepilot"},
@@ -164,13 +162,13 @@ func TestEnsureSecretDataConvergesAfterLostCreate(t *testing.T) {
 	}
 	base := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(winner).Build()
 	key := types.NamespacedName{Namespace: "cubepilot", Name: "openclaw-config"}
-	cl := &staleFirstReadClient{Client: base, key: key, stale: true}
+	cl := &alwaysStaleClient{Client: base, key: key}
 
 	want := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Data:       map[string][]byte{"gatewayToken": []byte("winner"), "openclaw.json": []byte("{}")},
 	}
-	if err := ensureSecretData(context.Background(), cl, want); err != nil {
+	if err := ensureSecretData(context.Background(), cl, base, want); err != nil {
 		t.Fatalf("ensureSecretData: %v", err)
 	}
 

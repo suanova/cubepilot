@@ -20,11 +20,14 @@ import (
 // want's metadata is used as-is on create and left alone on update -- an
 // existing Secret keeps the labels it was created with.
 //
-// A create that loses -- to a concurrent writer, or to a caller's cached client
-// that has not observed a create that did land -- falls through to a re-read so
-// the desired data is written onto the persisted object instead of being
-// dropped for a later reconcile to pick up.
-func ensureSecretData(ctx context.Context, cl client.Client, want *corev1.Secret) error {
+// A create that loses -- to a concurrent writer, or to a caller's client that
+// has not observed a create that did land -- falls through to a read of the
+// persisted object, so the desired data is written onto it instead of being
+// dropped for a later reconcile to pick up. That read goes through reader,
+// which must not be cache-backed: a cached client can miss the object on every
+// read it makes, including this one, and then the write is lost after all. Pass
+// the manager's API reader (mgr.GetAPIReader()) for it.
+func ensureSecretData(ctx context.Context, cl client.Client, reader client.Reader, want *corev1.Secret) error {
 	key := types.NamespacedName{Namespace: want.Namespace, Name: want.Name}
 	var sec corev1.Secret
 	err := cl.Get(ctx, key, &sec)
@@ -35,7 +38,7 @@ func ensureSecretData(ctx context.Context, cl client.Client, want *corev1.Secret
 		} else if !apierrors.IsAlreadyExists(err) {
 			return err
 		}
-		if err := cl.Get(ctx, key, &sec); err != nil {
+		if err := reader.Get(ctx, key, &sec); err != nil {
 			return err
 		}
 	case err != nil:

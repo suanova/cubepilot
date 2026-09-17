@@ -25,7 +25,7 @@ func TestOpenClawConfigReconcile(t *testing.T) {
 		Data:       map[string][]byte{"apiKey": []byte("sk-real")},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin, cred).Build()
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -67,7 +67,7 @@ func TestOpenClawConfigReconcileSkipsDuplicateProvider(t *testing.T) {
 	loser := providerTemplate("zzz-second", "http://second.example/v1", "m-two")
 	winner := providerTemplate("aaa-first", "http://first.example/v1", "m-one")
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(loser, winner).Build()
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -106,7 +106,7 @@ func TestOpenClawConfigReconcileSkipsMissingCredential(t *testing.T) {
 	builtin := BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash") // references cubepilot-llm, which is absent
 	builtin.Namespace = "cubepilot"
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin).Build()
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -143,9 +143,10 @@ func TestOpenClawConfigReconcileConvergesOnStaleRead(t *testing.T) {
 	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin, cred, settled).Build()
 	key := types.NamespacedName{Namespace: "cubepilot", Name: k8s.ConfigSecretName}
 	// The token helper reads the Secret first; the reconciler's own read is the
-	// second, and it is the one that misses.
+	// second, and it is the one that misses. The API reader is left fresh, which
+	// is what the write falls back on.
 	cl := &staleReadAtClient{Client: base, key: key, at: 2}
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: base, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -174,7 +175,7 @@ func TestOpenClawConfigReconcileKeepsGatewayToken(t *testing.T) {
 		Data:       map[string][]byte{"apiKey": []byte("sk-real")},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin, cred).Build()
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 	ctx := context.Background()
 	key := types.NamespacedName{Namespace: "cubepilot", Name: k8s.ConfigSecretName}
 
@@ -227,7 +228,7 @@ func TestOpenClawConfigReconcileWritesNothingWhenUnchanged(t *testing.T) {
 		Data:       map[string][]byte{"apiKey": []byte("sk-real")},
 	}
 	cl := &countingClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(builtin, cred).Build()}
-	r := &OpenClawConfigReconciler{Client: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
+	r := &OpenClawConfigReconciler{Client: cl, APIReader: cl, Scheme: scheme, Cfg: config.Config{Namespace: "cubepilot"}}
 	ctx := context.Background()
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{}); err != nil {
