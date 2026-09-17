@@ -12,11 +12,21 @@ import (
 	"os/signal"
 	"syscall"
 
+	"k8s.io/klog/v2"
+
+	"github.com/suanova/cubepilot/internal/logging"
 	"github.com/suanova/cubepilot/internal/supervisor"
 )
 
 func main() {
 	cfg := supervisor.LoadFromEnv()
+
+	// The supervisor runs no controller-runtime, so there is no context for a
+	// logger to travel in: client-go's klog.FromContext falls back to
+	// klog.Background(). Background returns the logger set here only when
+	// ContextualLogger is set, so that option is load-bearing rather than
+	// decorative.
+	klog.SetLoggerWithOptions(logging.New(cfg.LogLevel), klog.ContextualLogger(true))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

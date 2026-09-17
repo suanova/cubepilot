@@ -19,12 +19,14 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/logging"
 	"github.com/suanova/cubepilot/internal/server"
 	"github.com/suanova/cubepilot/internal/skill"
 	"github.com/suanova/cubepilot/internal/store"
@@ -32,6 +34,12 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// Route controller-runtime and client-go logs into the platform sink.
+	// Without this, controller-runtime fulfils its deferred root logger with a
+	// NullLogSink after 30s and prints a stack trace -- everything this process
+	// would have logged is discarded.
+	ctrllog.SetLogger(logging.New(cfg.LogLevel))
 
 	restCfg, err := k8s.NewRestConfig()
 	if err != nil {
