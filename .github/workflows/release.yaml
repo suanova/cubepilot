@@ -81,17 +81,23 @@ jobs:
           # rolling artifact published from main and is exempt; a tag pushed as
           # vX.Y.Z has already had its `v` stripped above.
           #
-          # Accepted: X.Y.Z or X.Y.Z-<prerelease>, numbers without leading
-          # zeros. This is stricter than any single downstream step, because
-          # two bad tags would otherwise get past them:
+          # SemVer, without build metadata. Each of the three dotted numbers is
+          # `0` or has no leading zero, and each dot-separated prerelease
+          # identifier is either numeric with no leading zero or contains a
+          # letter or hyphen -- so `1.0.0-01` and `1.0.0-alpha..1` are rejected
+          # rather than published as a malformed version.
+          #
+          # This is stricter than any single downstream step, because two bad
+          # tags would otherwise get past them all:
           #   - helm accepts a malformed version like `1.0` or `v1` and writes
           #     it into the chart verbatim, so a release would ship a version
           #     that is not semver and no step would complain;
           #   - build metadata (`0.1.0+build`) is valid semver and helm takes
           #     it, but `+` is not legal in an image tag, so the job would die
           #     inside `make images` with "invalid reference format".
-          if [ "$TAG" != "latest" ] &&
-             ! printf '%s' "$TAG" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+
+          if [ "$TAG" != "latest" ] && ! printf '%s' "$TAG" | grep -Eq "$SEMVER"; then
             echo "::error::'$TAG' is not a release tag; expected X.Y.Z or X.Y.Z-<prerelease>"
             exit 1
           fi

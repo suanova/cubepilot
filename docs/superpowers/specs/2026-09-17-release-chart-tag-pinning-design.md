@@ -98,9 +98,12 @@ form. Only the tag-push and `workflow_dispatch` paths are validated — `latest`
 bypasses it, as does a `workflow_dispatch` input of `latest`, which re-publishes the rolling
 artifact.
 
-Accepted form: `X.Y.Z` or `X.Y.Z-<prerelease>`, with no leading zeros in the numbers — a real
-semver check, which is stricter than any single downstream step (see the problem statement).
-This also rejects build metadata: `+` is valid semver but not a legal image tag.
+Accepted form: SemVer — `X.Y.Z` or `X.Y.Z-<prerelease>`, where each dotted number is `0` or has no
+leading zero, and each dot-separated prerelease identifier is either numeric with no leading zero
+or contains a letter or hyphen. That is fully SemVer, not a shape check: `1.0.0-01` and
+`1.0.0-alpha..1` are rejected, not published as a malformed version. This is stricter than any
+single downstream step (see the problem statement), and it also rejects build metadata — `+` is
+valid semver but not a legal image tag.
 
 The dispatch input is passed through `env` rather than interpolated into the `run` block. The
 existing code pasted `${{ github.event.inputs.tag }}` straight into the script; only
@@ -148,8 +151,13 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
     `helm template t /tmp/cubepilot-chart-9.9.9.tgz` → all four images end in `:9.9.9`
   - same with `--app-version latest` → all four end in `:latest`
   - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`
-- The tag regex, against: `0.1.0`, `1.0.0`, `0.0.0`, `0.1.0-rc1`, `0.1.0-rc.1`, `latest`
-  (accept); `1.0`, `v`, `v1`, `01.0.0`, `_foo`, `0.1.0-`, `0.1.0+build`, empty (reject)
+- The tag regex, against a white list of `0.1.0`, `1.0.0`, `0.0.0`, `10.20.30`, `1.0.0-rc1`,
+  `1.0.0-alpha`, `1.0.0-alpha.1`, `1.0.0-0.3.7`, `1.0.0-x.7.z.92`, `1.0.0-0`, `1.0.0-0a`,
+  `1.0.0-alpha-1`, `1.0.0-a-b`, `latest` and a black list of `1.0`, `1`, `v1`, `01.0.0`,
+  `1.0.00`, `1.0.0-01`, `1.0.0-00`, `1.0.0-alpha..1`, `1.0.0-alpha.`, `1.0.0-.a`, `1.0.0-`,
+  `1.0.0+build`, `1.0.0foo`, `_foo`, empty. The regex is read back out of the workflow file and
+  scored against the whole set, so the check covers what the workflow carries rather than a copy
+  of it
 - The claim that nothing downstream catches these, re-probed against helm 3.16.4 and Docker:
   `1.0` and `v1` are accepted by `helm package` and land in the chart as-is; `0.1.0+build` is
   accepted by helm and rejected by `docker build`; `_foo` and `latest` are rejected by helm
