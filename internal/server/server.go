@@ -323,12 +323,30 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status int
 	bytes  int
+	// final is set once a non-informational status has been recorded. net/http
+	// ignores a second WriteHeader and logs "superfluous response.WriteHeader
+	// call", so recording the latest value would report a status the client
+	// never received.
+	final bool
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
+	// 1xx is provisional, not final: 103 Early Hints precedes the real status,
+	// and the handler may still send it. 101 is the exception -- it ends the
+	// HTTP exchange rather than preceding anything.
+	if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(status)
+		return
+	}
+	if !r.final {
+		r.status = status
+		r.final = true
+	}
 	r.ResponseWriter.WriteHeader(status)
 }
+
+// Write needs no status bookkeeping: status starts at StatusOK, which is the
+// status net/http sends for a body written without a WriteHeader call.
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)

@@ -116,8 +116,61 @@ func TestLogRequestsPreservesFlusher(t *testing.T) {
 	h := s.logRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, got = w.(http.Flusher)
 	}))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/sessions/x/messages", nil))
+	// Wrapped so the access line for this request does not leak into the test
+	// output of every run.
+	captureLog(t, func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/sessions/x/messages", nil))
+	})
 	if !got {
 		t.Fatal("the wrapped ResponseWriter no longer satisfies http.Flusher: SSE would break")
+	}
+}
+
+// The logged status must be the status the client actually received. net/http
+// ignores a second WriteHeader and treats 1xx as provisional, so recording the
+// latest value would both report a status that was never sent and let a
+// provisional 103 become the final answer.
+func TestLogRequestsRecordsTheEffectiveStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler func(w http.ResponseWriter)
+		want    string
+	}{
+		{
+			name: "a repeated WriteHeader logs the first final status",
+			handler: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			want: "200",
+		},
+		{
+			name: "Early Hints are provisional, not the final status",
+			handler: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusEarlyHints)
+				w.WriteHeader(http.StatusTeapot)
+			},
+			want: "418",
+		},
+		{
+			name: "a body written without WriteHeader is a 200",
+			handler: func(w http.ResponseWriter) {
+				_, _ = w.Write([]byte("hi"))
+			},
+			want: "200",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{}
+			h := s.logRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				tc.handler(w)
+			}))
+			got := captureLog(t, func() {
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil))
+			})
+			if !strings.Contains(got, " "+tc.want+" ") {
+				t.Errorf("access line %q does not report status %s", got, tc.want)
+			}
+		})
 	}
 }
