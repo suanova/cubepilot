@@ -92,8 +92,9 @@ the four images plus the Helm chart (as an OCI artifact) into
 | tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z` |
 | `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>` |
 
-A tag push must be `X.Y.Z` or `X.Y.Z-<prerelease>`; the workflow rejects anything
-else before it builds, so a release version is always valid semver.
+A tag push must be `vX.Y.Z` or `vX.Y.Z-<prerelease>`: the workflow triggers on
+`v*` tags, so a tag pushed without the prefix starts no run at all. The version
+is validated as semver before the build, so a malformed tag publishes nothing.
 
 Publishing artifacts is all the workflow does. The GitHub Release itself is
 created by hand from the UI, which is also where the tag gets cut.
