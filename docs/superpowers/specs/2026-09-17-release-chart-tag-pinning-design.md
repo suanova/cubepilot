@@ -12,10 +12,15 @@ produces a chart that does not reference the images it was released with.
    rolling `:latest` images. Pinning a release today means overriding all four refs by hand
    (`--set operator.image=...,api.image=...,web.image=...,agents.image=...`), which
    `README.md` currently instructs.
-2. **A malformed tag fails late.** The tag is resolved but never validated. A non-semver tag
-   such as `v1.0` is only rejected by `helm package --version`, which runs *after* the
-   `Build images` / `Push images` steps. The job dies with the images already in the registry
-   and no matching chart published.
+2. **A malformed tag is never caught.** The tag is resolved but never validated, and the two
+   things that can go wrong with it are both missed by every downstream step (verified against
+   helm 3.16.4 and Docker):
+   - helm accepts a malformed version *silently*. `--version 1.0` and `--version v1` both
+     succeed and are written into the chart verbatim as `version: "1.0"`, so a release ships a
+     version that is not semver and nothing complains.
+   - A tag carrying build metadata (`0.1.0+build`) is valid semver and helm takes it, but `+`
+     is not legal in an image tag, so the job dies inside `make images` with the cryptic
+     `invalid reference format`.
 3. **No GitHub Release.** Pushing a tag leaves no release record and no notes anywhere.
 
 ## Version semantics (what the three numbers mean)
@@ -87,12 +92,22 @@ tags local builds `:local`, so a bare install never matched the local images eit
 
 ### 2. Validate the tag before anything is pushed
 
-The first step of the `publish` job resolves the tag; it also validates it there. Only the
-tag-push and `workflow_dispatch` paths are validated — `latest` (push to main) bypasses it.
+The first step of the `publish` job resolves the tag; it also validates it there, so the tag is
+checked while nothing has been built or pushed and the failure message can name the expected
+form. Only the tag-push and `workflow_dispatch` paths are validated — `latest` (push to main)
+bypasses it, as does a `workflow_dispatch` input of `latest`, which re-publishes the rolling
+artifact.
 
-Accepted form: `X.Y.Z` or `X.Y.Z-<prerelease>`. Build metadata (`+`) is rejected even though
-it is valid semver, because `+` is not legal in a Docker image tag and would fail later at
-`docker push`. A rejected tag exits before `Build images`, so a bad tag publishes nothing.
+Accepted form: `X.Y.Z` or `X.Y.Z-<prerelease>`, with no leading zeros in the numbers — a real
+semver check, which is stricter than any single downstream step (see the problem statement).
+This also rejects build metadata: `+` is valid semver but not a legal image tag.
+
+The dispatch input is passed through `env` rather than interpolated into the `run` block. The
+existing code pasted `${{ github.event.inputs.tag }}` straight into the script; only
+maintainers can dispatch, but the input is free-form text and validating it does not make
+pasting it into a shell safe. Validating it *does* close the equivalent hole in the later
+`helm package` step, whose `${{ steps.tag.outputs.tag }}` can now only ever be a validated tag
+or `latest`.
 
 ### 3. GitHub Release on tag pushes
 
@@ -133,8 +148,11 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
     `helm template t /tmp/cubepilot-chart-9.9.9.tgz` → all four images end in `:9.9.9`
   - same with `--app-version latest` → all four end in `:latest`
   - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`
-- Validate the tag step's regex against: `0.1.0`, `0.1.0-rc1` (accept);
-  `1.0`, `v`, `0.1.0+build`, `0.1.0-` (reject)
+- The tag regex, against: `0.1.0`, `1.0.0`, `0.0.0`, `0.1.0-rc1`, `0.1.0-rc.1`, `latest`
+  (accept); `1.0`, `v`, `v1`, `01.0.0`, `_foo`, `0.1.0-`, `0.1.0+build`, empty (reject)
+- The claim that nothing downstream catches these, re-probed against helm 3.16.4 and Docker:
+  `1.0` and `v1` are accepted by `helm package` and land in the chart as-is; `0.1.0+build` is
+  accepted by helm and rejected by `docker build`; `_foo` and `latest` are rejected by helm
 - `scripts/setup.sh` still deploys a working stack (kind + e2e path)
 - End to end: the workflow has never run its release path — no tag exists on upstream. A
   `workflow_dispatch` run with a throwaway tag exercises image+chart publish without creating
