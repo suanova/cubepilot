@@ -728,3 +728,20 @@ func TestFetchConfigKeepsDeviceKey(t *testing.T) {
 		t.Fatalf("devicePublicKey = %q, want PUBKEY", cfg.DevicePublicKey)
 	}
 }
+
+func TestRevisionLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		from string
+		want string
+	}{
+		{"first sync has no previous revision", "", "(initial)"},
+		{"later syncs name the revision being replaced", "42c94f84db82", "42c94f84db82"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := revisionLabel(tc.from); got != tc.want {
+				t.Errorf("revisionLabel(%q) = %q, want %q", tc.from, got, tc.want)
+			}
+		})
+	}
+}

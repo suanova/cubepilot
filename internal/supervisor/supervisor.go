@@ -467,12 +467,22 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 	if s.current == cfg.Revision {
 		return false, nil // no change -- skills are current
 	}
-	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
+	log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
 	if err := s.syncSkills(ctx, cfg); err != nil {
 		return false, fmt.Errorf("sync skills: %w", err)
 	}
 	s.current = cfg.Revision
 	return true, nil
+}
+
+// revisionLabel names the revision a config sync is replacing. The first sync
+// has no previous revision, and printing the empty string produced
+// "config revision  -> 42c94f84db82".
+func revisionLabel(from string) string {
+	if from == "" {
+		return "(initial)"
+	}
+	return from
 }
 
 // syncInstructions reconciles the marker-guarded instructions section of the
