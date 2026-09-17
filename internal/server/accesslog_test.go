@@ -62,6 +62,30 @@ func TestLogRequestsSkipsProbePaths(t *testing.T) {
 	}
 }
 
+// TestLogRequestsSkipsInternalAPIPaths guards the supervisor-to-api surface:
+// the poll loop hits these routes every 10s, and without the skip that is
+// thousands of access-log lines a day per agent Pod.
+func TestLogRequestsSkipsInternalAPIPaths(t *testing.T) {
+	for _, path := range []string{"/internal/agents/admin/config", "/internal/gateway/config/admin"} {
+		if !isInternalAPIPath(path) {
+			t.Errorf("isInternalAPIPath(%q) = false, want true", path)
+		}
+	}
+
+	s := &Server{}
+	h := s.logRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	for _, path := range []string{"/internal/agents/admin/config", "/internal/gateway/config/admin"} {
+		got := captureLog(t, func() {
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+		})
+		if got != "" {
+			t.Errorf("internal api path %q was logged: %q", path, got)
+		}
+	}
+}
+
 // SSE depends on this: handlers.go:153 asserts w.(http.Flusher), so a wrapper
 // that swallows it breaks every streaming response.
 func TestLogRequestsPreservesFlusher(t *testing.T) {

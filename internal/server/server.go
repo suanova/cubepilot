@@ -262,14 +262,20 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 // logRequests records one line per request: method, path, status, response
 // size and duration.
 //
-// Probe paths are skipped rather than logged at a lower level. An access log
-// belongs with the component's own messages, which are always visible, and the
-// kubelet polls /healthz and /readyz every few seconds -- logging them buries
-// what a human is looking for. That is not hypothetical: one tier down, 578 of
-// 812 nginx lines are kube-probe hits.
+// Two kinds of traffic are skipped rather than logged at a lower level. An
+// access log belongs with the component's own messages, which are always
+// visible, and both of the following would bury what a human is looking for:
+//
+//   - Probe paths: the kubelet polls /healthz and /readyz every few seconds,
+//     and Prometheus scrapes /metrics on its own interval.
+//   - The /internal/ surface: the supervisor's poll loop ticks every 10s
+//     (supervisor.go's PollInterval) and each tick makes two calls into this
+//     surface, fetchConfig and syncCredentials -- machine traffic, never
+//     human- or browser-facing, that would otherwise add up to thousands of
+//     lines a day per agent Pod.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isProbePath(r.URL.Path) {
+		if isProbePath(r.URL.Path) || isInternalAPIPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -291,6 +297,16 @@ func isProbePath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// isInternalAPIPath reports whether path is one of the supervisor-to-api
+// machine routes registered under /internal/ (server.go:222-224): agent
+// config, gateway credentials and skill tarball pulls. None of these are
+// human- or browser-facing, so they get the same access-log skip as probes,
+// for a different reason -- fixed-interval polling volume rather than
+// infrastructure noise.
+func isInternalAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/internal/")
 }
 
 // statusRecorder captures what the handler wrote, which the wrapped
