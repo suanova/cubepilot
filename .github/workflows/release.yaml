@@ -7,16 +7,20 @@
 #                        (rolling dev artifact -- the `-latest` suffix keeps it
 #                        from colliding with a real <chartVersion> release)
 #   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
-#                        pinned to X.Y.Z regardless of Chart.yaml); also creates
-#                        a GitHub Release with generated notes
-#   - workflow_dispatch  publish under the semver tag supplied in the input, but
-#                        create no GitHub Release -- this path is for
-#                        re-publishing and for exercising the workflow without
-#                        leaving a release behind
+#                        pinned to X.Y.Z regardless of Chart.yaml)
+#   - workflow_dispatch  publish under the semver tag supplied in the input
+#                        (re-publishing, and exercising the workflow without
+#                        cutting a tag)
 #
-# A release tag is validated as semver before the build steps: a tag that either
-# the chart packager or the registry would reject must not leave images pushed
-# with no chart beside them.
+# Publishing is all this workflow does. Creating the GitHub Release stays a
+# deliberate, human step done from the UI -- a release page carries written
+# context that no generated changelog has, and it is where the tag gets cut.
+# What must be automatic is that the artifacts behind a tag reach Harbor.
+#
+# A release tag is validated as semver before the build steps: a malformed tag
+# is not caught by anything downstream (see the "Resolve and validate publish
+# tag" step), and publishing under it would put a version that is not semver --
+# or an unbootable image reference -- into the registry.
 #
 # Bumping Chart.yaml's version/appVersion is not required for a release -- both
 # are overridden at package time -- but keeping them in step with the next
@@ -159,61 +163,3 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
-
-  # Tag pushes only, so a workflow_dispatch re-publish (or the rolling main
-  # publish) leaves no release behind. A separate job rather than a step in
-  # `publish` so the write token never shares a job with the Harbor credentials
-  # -- `publish` keeps `contents: read`.
-  #
-  # Runs after `publish` so a release is never created for a tag whose images or
-  # chart failed to publish.
-  github-release:
-    name: Create GitHub Release
-    needs: publish
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      # gh resolves the repository from the working tree, so it needs a checkout.
-      - uses: actions/checkout@v7
-
-      # Notes are GitHub's generated ones; there is no notes file in the repo.
-      #
-      # Idempotent on purpose. A maintainer creating the release from the GitHub
-      # UI creates the tag with it, and that tag push is what triggers this run
-      # -- so by the time this job starts, the release it is about to create
-      # already exists and `gh release create` fails with
-      # "Release.tag_name already exists". Publishing artifacts is this
-      # workflow's job; the release page is not, so an existing release is left
-      # as its author wrote it rather than overwritten with generated notes.
-      # A re-run of this job after a transient failure lands here too.
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          # Asked through the API rather than `gh release view`, which exits
-          # nonzero both for "there is no release" and for a transient API or
-          # auth failure. Reading its status alone would send the latter down
-          # the create path, reporting a confusing error instead of the real
-          # one. Only a 404 means there is nothing to preserve; anything else
-          # fails here with the original message.
-          api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
-          if out=$(gh api "$api" 2>&1); then
-            echo "release $GITHUB_REF_NAME already exists; leaving it untouched"
-            exit 0
-          fi
-          case "$out" in
-            *"HTTP 404"*) ;;  # no release for this tag yet -- fall through and create it
-            *)
-              echo "::error::could not look up the release for $GITHUB_REF_NAME: $out"
-              exit 1 ;;
-          esac
-
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag
