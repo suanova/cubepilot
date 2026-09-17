@@ -156,10 +156,11 @@ The sink fixes four things:
 | `WithName(n) { return &stdLogr{n} }` | compose as `parent/child` | nested loggers lose their prefix |
 | `Info` ignores its `level` | honor it | levels below and above the cap |
 
-`Enabled` is what does the work: logr calls it from `Logger.V`, and a false
-returns a null logger, so the call site -- including `hex.Dump` -- is skipped
-rather than filtered after the fact. The cost of a suppressed V(8) is one
-comparison.
+`Enabled` is what does the work, but not because logr calls it from `Logger.V`
+-- `V` only accumulates the requested level and never consults `Enabled`. It is
+client-go's own call sites that consult it before doing expensive work, the way
+`rest/request.go`'s `logBody` does: `if loggerV := logger.V(8); loggerV.Enabled()
+{ ... hex.Dump ... }`. The cost of a suppressed V(8) is one comparison.
 
 Rendering: `msg key=value`, with an empty `kv` printing nothing (no `[]`),
 values containing whitespace quoted (`err="secrets \"user-admin-kubeconfig\" not

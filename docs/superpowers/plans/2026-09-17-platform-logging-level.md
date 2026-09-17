@@ -208,9 +208,21 @@ func newSink(w io.Writer, level int) *sink {
 
 func (l *sink) Init(logr.RuntimeInfo) {}
 
-// Enabled is the level gate. logr calls it from Logger.V and returns a null
-// logger on false, so a suppressed call site never runs -- including the
-// hex.Dump that would have built the argument.
+// Enabled is the level gate, and it is what makes the configured level
+// authoritative for dependency verbosity -- but not because logr's own
+// Logger.V consults it. V only accumulates the requested level; it never
+// calls Enabled and never returns a null logger. The gate bites at call
+// sites that ask Enabled before doing expensive work, the way client-go's
+// rest/request.go logBody does:
+//
+//	if loggerV := logger.V(8); loggerV.Enabled() {
+//		loggerV.Info(prefix, "body", hex.Dump(body))
+//	}
+//
+// The Enabled() check precedes hex.Dump, so a false answer means the dump is
+// never built. A call site that instead passes an already-computed value to
+// Logger.Info is evaluated regardless of level -- Info runs after Go has
+// already built the argument -- and must guard itself the same way.
 func (l *sink) Enabled(level int) bool { return level <= l.max }
 
 func (l *sink) Info(level int, msg string, kv ...any) {
