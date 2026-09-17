@@ -434,22 +434,34 @@ agent 调用 `ask_user` 工具时，回合同样暂停：
 event: question_pending
 data: {"type":"question_pending","sessionId":"...","callId":"<question id>",
        "question":{"questions":[{"questionId","header","question",
-                                 "options":[{"label","description"?}],"multiSelect"?}],
+                                 "options":[{"label","description"?}],"multiSelect"?,"isOther"?}],
                    "timeoutSeconds":n}}
 ```
 
 **注意 `callId` 是问答会话的 id，`question.questions[].questionId` 是每个问题的 id**，
 提交答案时用的是后者。
 
+`isOther: true` 表示该问题在选项之外还接受人类自己的文本（`ask_user` 的每个问题都会带这个
+标记），Portal 会在选项下方渲染一个输入框。`options` 为空的问题是**纯自由文本**，只渲染输入框；
+两种形式都由同一条 `question_pending` 下发，不需要客户端分支。
+
 ```ts
-// 回答
+// 回答：选项 label
 POST /api/v1/sessions/{key}/question
 body: {"id": "<call_id>", "answers": {"<questionId>": ["选项 label"]}}
+
+// 或回答人类自己的文本（`isOther` 或 `options` 为空的问题）
+POST /api/v1/sessions/{key}/question
+body: {"id": "<call_id>", "answers": {"<questionId>": ["<自由文本>"]}}
 
 // 或取消（让 agent 继续而不是等到超时）
 POST /api/v1/sessions/{key}/question
 body: {"id": "<call_id>", "cancel": true}
 ```
+
+服务端**原样转发**、不与选项做校验（它不知道网关的答案语义）。网关侧的约束：非多选问题只接受
+**一个**答案（给多个 → `400 does not allow multiple answers`），多选问题可以给多个；Portal 的卡片
+一律按"二选一"提交，不混用 label 与自由文本。
 
 `answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400 {"error":"send either answers or cancel"}`。
 
@@ -499,7 +511,7 @@ GET /api/v1/sessions/{key}/question/pending
 | POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
 | POST | `/api/v1/sessions/{key}/approval` | `{"decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
 | GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approval":{"sessionId","approvalId","tool","command","level","message"}}` | 否 |
-| POST | `/api/v1/sessions/{key}/question` | `{"id","answers"\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
+| POST | `/api/v1/sessions/{key}/question` | `{"id","answers":{qid:[label\|text]}\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
 | GET | `/api/v1/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
 | POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
 | GET | `/api/v1/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
