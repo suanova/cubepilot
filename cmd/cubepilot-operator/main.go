@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,7 +37,16 @@ import (
 func main() {
 	cfg := config.Load()
 
-	ctrllog.SetLogger(logging.New(cfg.LogLevel))
+	// Route controller-runtime and client-go logs into the platform sink.
+	logger := logging.New(cfg.LogLevel)
+	ctrllog.SetLogger(logger)
+	// ctrllog.SetLogger does not bridge klog: controller-runtime never calls
+	// klog.SetLogger. Loggers that travel in a reconcile context still reach
+	// the sink, but client-go calls made on a context that carries none --
+	// startup, and anything reading klog.Background() -- would fall through to
+	// klog's unconfigured global and ignore CUBEPILOT_LOG_LEVEL. Installing the
+	// same logger here closes that gap.
+	klog.SetLoggerWithOptions(logger, klog.ContextualLogger(true))
 
 	restCfg, err := k8s.NewRestConfig()
 	if err != nil {

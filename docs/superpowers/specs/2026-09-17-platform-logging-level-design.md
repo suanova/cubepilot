@@ -190,19 +190,29 @@ No two of these are the same call, because no two components sit in the same
 place:
 
 ```go
-// operator (cmd/cubepilot-operator/main.go:39) -- replaces logrlog
-ctrllog.SetLogger(logging.New(cfg.LogLevel))
-
-// api (cmd/cubepilot-api/main.go) -- currently absent; this also fixes the
-// discarded controller-runtime output, since it fulfils the deferred root
-// logger before the 30s NullLogSink timer fires
-ctrllog.SetLogger(logging.New(cfg.LogLevel))
+// operator (cmd/cubepilot-operator/main.go) and api (cmd/cubepilot-api/main.go)
+// -- both install ONE logger into both sinks. ctrllog.SetLogger covers the
+// controller-runtime output and the loggers that travel in a reconcile or
+// leader-election context; klog.SetLoggerWithOptions covers everything that
+// reads klog.FromContext on a plain context, which is where client-go's rest
+// client looks. Neither call bridges the other.
+logger := logging.New(cfg.LogLevel)
+ctrllog.SetLogger(logger)
+klog.SetLoggerWithOptions(logger, klog.ContextualLogger(true))
 
 // supervisor (cmd/cubepilot-supervisor/main.go) -- no controller-runtime, so
 // there is no context to carry a logger: FromContext falls back to
 // klog.Background(), which returns the logger only when ContextualLogger is set
 klog.SetLoggerWithOptions(logging.New(cfg.LogLevel), klog.ContextualLogger(true))
 ```
+
+The klog line is not redundant on the operator and api. `ctrllog.SetLogger`
+only sets controller-runtime's root logger, and controller-runtime never calls
+`klog.SetLogger`, so a Kubernetes call made on a context that carries no logger
+-- the api has no manager at all, and its handlers run on plain request
+contexts -- reaches `klog.FromContext`, falls through to the unconfigured klog
+global, and ignores the level. Installing the same logger into klog is what
+makes `api.logLevel` govern client-go rather than leaving it inert above 0.
 
 `ContextualLogger(true)` is load-bearing, not decoration: without it
 `Background()` ignores the logger set here and returns the klog-backed one
@@ -285,11 +295,24 @@ It is installed as the outermost middleware
 capability the API does not have. Implement it: method, path, status, response
 bytes and duration, through `s.logf`. `/healthz`, `/readyz` and `/metrics` are
 skipped by default -- otherwise the probes dominate the log, which is exactly
-what already happens one tier down, where 578 of 812 nginx lines are
-`kube-probe/1.32`.
+what already happens one tier down, where a single measured window showed 578 of
+812 nginx lines coming from `kube-probe/1.32`.
 
-Skipping rather than leveling them is deliberate: an access log is at the level
-of the component's own logs, which section 3 says are always visible.
+The whole `/internal/` surface is skipped for the same reason, a different
+source: those routes are supervisor-to-api machine calls, never human- or
+browser-facing, and the supervisor's poll loop hits two of them every 10
+seconds. Logging them would add roughly 12 lines a minute per agent Pod, about
+17k a day, scaling with agent count -- the volume problem this section exists to
+avoid, relocated from the probes to the poll.
+
+Log `URL.EscapedPath()`, not `URL.Path`. `Path` is percent-decoded, so an
+unauthenticated request to `/%0aFAKE_RECORD` reaches the log carrying a real
+newline and splits one request into two records, the second chosen by the
+caller. The escaped form keeps every request on exactly one line while leaving
+the path readable.
+
+Skipping rather than leveling the probes is deliberate: an access log is at the
+level of the component's own logs, which section 3 says are always visible.
 
 ## Risks and deliberately unhandled
 
