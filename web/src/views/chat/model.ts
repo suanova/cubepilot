@@ -122,13 +122,13 @@ export function newBubbleQuestion(sessionId: string, questionId: string, items: 
 }
 
 // answerFor is the answer submitted for one question: the human's own text when
-// they typed one, otherwise the labels they selected. The card never combines
-// them -- one question takes one answer. The gateway would accept both on a
-// multiSelect question, but it rejects more than one value on a single-select
-// one, so mixing is not offered.
+// they typed one, otherwise the labels they selected. The text is sent exactly
+// as typed, whitespace included -- the trim only decides whether there is an
+// answer at all, and canonicalization belongs to the gateway. The card never
+// combines text and labels: one question takes one answer.
 export function answerFor(q: BubbleQuestion, item: QuestionItem): string[] {
-  const typed = (q.free[item.questionId] || '').trim()
-  if (typed) return [typed]
+  const typed = q.free[item.questionId] || ''
+  if (typed.trim()) return [typed]
   return q.picked[item.questionId] || []
 }
 
