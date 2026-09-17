@@ -28,7 +28,7 @@ import (
 	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/k8s"
-	"github.com/suanova/cubepilot/internal/logrlog"
+	"github.com/suanova/cubepilot/internal/logging"
 	"github.com/suanova/cubepilot/internal/runner"
 	"github.com/suanova/cubepilot/internal/scheduler"
 )
@@ -36,7 +36,7 @@ import (
 func main() {
 	cfg := config.Load()
 
-	ctrllog.SetLogger(logrlog.New())
+	ctrllog.SetLogger(logging.New(0))
 
 	restCfg, err := k8s.NewRestConfig()
 	if err != nil {
