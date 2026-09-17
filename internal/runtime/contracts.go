@@ -49,6 +49,10 @@ type QuestionItem struct {
 	Question    string           `json:"question"`
 	Options     []QuestionOption `json:"options"`
 	MultiSelect bool             `json:"multiSelect,omitempty"`
+	// IsOther is ask_user's declaration that free text is offered alongside the
+	// options, so the card draws a text input beside them. A question with no
+	// options is free text only.
+	IsOther bool `json:"isOther,omitempty"`
 }
 
 // QuestionPrompt is the runtime-neutral projection of a pending question.

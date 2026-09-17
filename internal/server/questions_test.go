@@ -109,7 +109,8 @@ func TestQuestionRelayProjectsPending(t *testing.T) {
 // normalizer stamps isOther:true on every question it emits (that flag declares
 // that free text is offered alongside the options -- see
 // ask-user-tool-normalization.ts), so a record copy is not a representative
-// fixture: this one carries the flags the tool actually sets.
+// fixture: this one carries the flags the tool actually sets. The flag must
+// reach the browser, because it is what tells the card to offer the text input.
 func TestQuestionRelayProjectsRealAskUserRecord(t *testing.T) {
 	req := questionRecord("ask_1", questionTestSession)
 	req.Questions[0].IsOther = true
@@ -125,6 +126,45 @@ func TestQuestionRelayProjectsRealAskUserRecord(t *testing.T) {
 	if ev["callId"] != "ask_1" {
 		t.Errorf("event = %+v, want call_id ask_1", ev)
 	}
+	q, _ := ev["question"].(map[string]any)
+	items, _ := q["questions"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("questions = %#v, want one item", q["questions"])
+	}
+	item, _ := items[0].(map[string]any)
+	if item["isOther"] != true {
+		t.Errorf("projected item = %+v, want isOther true: the flag is what offers the human free text", item)
+	}
+}
+
+// TestQuestionRelayProjectsFreeTextQuestion: a question with no options is
+// answerable as free text, so it is projected rather than dropped. The item
+// carries an empty option list, which is what the card reads as "text only".
+func TestQuestionRelayProjectsFreeTextQuestion(t *testing.T) {
+	req := questionRecord("ask_1", questionTestSession)
+	req.Questions[0].Options = nil
+
+	gw := &fakeGatewayClient{}
+	s, rec := questionTestServer(t, gw, questionTestSession)
+	s.relayQuestionRequested(req)
+
+	ev := eventOfType(sseEvents(t, rec.Body.String()), "question_pending")
+	if ev == nil {
+		t.Fatalf("a free-text question was not projected: %q", rec.Body.String())
+	}
+	q, _ := ev["question"].(map[string]any)
+	items, _ := q["questions"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("questions = %#v, want one item", q["questions"])
+	}
+	item, _ := items[0].(map[string]any)
+	opts, ok := item["options"].([]any)
+	if !ok || len(opts) != 0 {
+		t.Errorf("options = %#v, want an empty option list", item["options"])
+	}
+	if item["questionId"] != "where" {
+		t.Errorf("question item = %+v", item)
+	}
 }
 
 // TestQuestionRelayDropsUnsupportedVariant: the admin connection sees every
@@ -137,9 +177,6 @@ func TestQuestionRelayDropsUnsupportedVariant(t *testing.T) {
 	}{
 		{"isSecret", func(r *ws.QuestionRecord) { r.Questions[0].IsSecret = true }},
 		{"secretStore", func(r *ws.QuestionRecord) { r.Questions[0].SecretStore = json.RawMessage(`{"name":"TOKEN"}`) }},
-		// A free-text-only question (no options) has nothing to render as
-		// buttons, and this version offers no text input.
-		{"no options", func(r *ws.QuestionRecord) { r.Questions[0].Options = nil }},
 		{"no questions", func(r *ws.QuestionRecord) { r.Questions = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,6 +245,27 @@ func TestHandleQuestionAnswers(t *testing.T) {
 	}
 	if len(gw.questionResolves) != 1 || gw.questionResolves[0] != "ask_1|alice|where=workspace" {
 		t.Errorf("resolves = %v, want ask_1 answered by alice as where=workspace", gw.questionResolves)
+	}
+}
+
+// TestHandleQuestionRelaysFreeTextAnswer: the human's own text is just another
+// answer. The platform does not know the gateway's answer semantics, so it
+// relays the text verbatim rather than validating it against the offered
+// labels -- it travels as the single element of the answer list.
+func TestHandleQuestionRelaysFreeTextAnswer(t *testing.T) {
+	const typed = "under /srv/data"
+	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
+		"ask_1": questionRecord("ask_1", questionTestSession),
+	}}
+	s, _ := questionTestServer(t, gw, questionTestSession)
+
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {typed}}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(gw.questionResolves) != 1 || gw.questionResolves[0] != "ask_1|alice|where="+typed {
+		t.Errorf("resolves = %v, want the typed answer relayed unchanged", gw.questionResolves)
 	}
 }
 
