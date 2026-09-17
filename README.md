@@ -92,13 +92,22 @@ the four images plus the Helm chart (as an OCI artifact) into
 | tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z` |
 | `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>` |
 
-The chart's default image tags are `:latest` (tracking main builds); pin a
-specific release with `--set operator.image=...,api.image=...,web.image=...,agents.image=...`
-or your own values file. Install a published chart with:
+A tag push must be `X.Y.Z` or `X.Y.Z-<prerelease>`; the workflow rejects anything
+else before it builds, so a release version is always valid semver. A tag push
+also creates a GitHub Release with generated notes -- `workflow_dispatch` does
+not, so the workflow can be exercised without leaving one behind.
+
+Every image in the chart is a repository + tag pair, and an empty `tag` resolves
+to the chart's `appVersion`. Installing a published release therefore pulls the
+images released with it, with no overrides:
 
 ```bash
-helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --version 0.1.0
+helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --version 1.0.0
 ```
+
+The rolling chart published from `main` resolves to `:latest` the same way (it
+is packaged with `appVersion: latest`). Point any component elsewhere by
+overriding either half, e.g. `--set operator.image.tag=v1.2.3`.
 
 The workflow needs the GitHub variable `CI_BOT_NAME` (Harbor username) and
 secret `CI_BOT_PASSWORD` (Harbor password/token), ideally a Harbor bot account

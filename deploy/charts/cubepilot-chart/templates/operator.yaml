@@ -19,7 +19,7 @@ spec:
       serviceAccountName: {{ .Values.serviceAccounts.operator }}
       containers:
         - name: operator
-          image: {{ .Values.operator.image }}
+          image: {{ include "cubepilot.image" (dict "image" .Values.operator.image "root" .) }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           env:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}

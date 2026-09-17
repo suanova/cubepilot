@@ -1,0 +1,183 @@
+# Release chart pins the released images (issue #206)
+
+## Problem
+
+The `release` workflow publishes four images and the Helm chart, but a tag-push release
+produces a chart that does not reference the images it was released with.
+
+1. **The released chart pulls rolling images.** All four image references in
+   `deploy/charts/cubepilot-chart/values.yaml` are complete, hardcoded refs ending in
+   `:latest`, and no template reads `.Chart.AppVersion`. `helm package --app-version X.Y.Z`
+   writes only metadata, so `helm install cubepilot-chart --version X.Y.Z` still deploys the
+   rolling `:latest` images. Pinning a release today means overriding all four refs by hand
+   (`--set operator.image=...,api.image=...,web.image=...,agents.image=...`), which
+   `README.md` currently instructs.
+2. **A malformed tag is never caught.** The tag is resolved but never validated, and the two
+   things that can go wrong with it are both missed by every downstream step (verified against
+   helm 3.16.4 and Docker):
+   - helm accepts a malformed version *silently*. `--version 1.0` and `--version v1` both
+     succeed and are written into the chart verbatim as `version: "1.0"`, so a release ships a
+     version that is not semver and nothing complains.
+   - A tag carrying build metadata (`0.1.0+build`) is valid semver and helm takes it, but `+`
+     is not legal in an image tag, so the job dies inside `make images` with the cryptic
+     `invalid reference format`.
+3. **No GitHub Release.** Pushing a tag leaves no release record and no notes anywhere.
+
+## Version semantics (what the three numbers mean)
+
+`Chart.yaml`'s `version` and `appVersion` are independent of each other and of the git tag:
+
+- `version` — the chart's own version. Helm gives it real semantics: it must be valid semver,
+  it is the selector for `helm install --version` / `helm pull --version`, and it becomes the
+  OCI tag. It versions the templates+values contract.
+- `appVersion` — the version of the application the chart deploys, as an informational
+  string. Helm requires nothing of it and does nothing with it; it is exposed to templates as
+  `.Chart.AppVersion`. Helm's convention is that for a container-image application this is the
+  image tag, but Helm does not enforce or check that — it holds only if the chart author makes
+  it hold.
+- the git tag — an identifier for the source snapshot. Orthogonal to both.
+
+This repo collapses all three onto the git tag for releases: the workflow overrides `version`
+and `appVersion` with the tag. That stays. What changes is that `appVersion` stops being
+decorative — it becomes the default image tag, so the collapsed version number reaches the
+image references.
+
+## Design
+
+### 1. Chart image values: `repository` + `tag`
+
+Each of the four images becomes a pair, with an empty `tag` meaning "use the chart's
+appVersion":
+
+```yaml
+operator:
+  image:
+    repository: harbor.isuanova.com/suanova/cubepilot-operator
+    tag: ""    # empty -> .Chart.AppVersion
+```
+
+A template helper resolves the pair once:
+
+```
+{{- define "cubepilot.image" -}}
+{{- printf "%s:%s" .image.repository (.image.tag | default .root.Chart.AppVersion) -}}
+{{- end -}}
+```
+
+called as `{{ include "cubepilot.image" (dict "image" .Values.operator.image "root" .) }}`
+from the three workload templates and from the agent-image env in `_helpers.tpl`.
+
+This needs no special-casing at package time, because the two packaging paths already set
+`appVersion` to exactly the right value:
+
+| Chart packaged by | `--app-version` | `.Chart.AppVersion` | default image tag |
+|---|---|---|---|
+| push to `main` | `latest` | `latest` | `latest` (unchanged) |
+| tag `vX.Y.Z` | `X.Y.Z` | `X.Y.Z` | `X.Y.Z` |
+| `workflow_dispatch` | `<input>` | `<input>` | `<input>` |
+
+So main's rolling chart behaves exactly as before, and a release chart pins the released
+images with no `--set` at all.
+
+**Behavior change to note.** Installing from a source checkout
+(`helm install ./deploy/charts/cubepilot-chart`) now resolves to the on-disk
+`appVersion` (`0.1.0`) instead of `:latest`. That flow is already unsupported — `make images`
+tags local builds `:local`, so a bare install never matched the local images either —
+`scripts/setup.sh` is the supported path and always passes explicit refs, as does
+`scripts/redeploy.sh`. Both move to the new field names:
+
+```bash
+--set agents.image.repository="$IMAGE_REPO/cubepilot-openclaw" --set agents.image.tag="$IMAGE_TAG"
+```
+
+### 2. Validate the tag before anything is pushed
+
+The first step of the `publish` job resolves the tag; it also validates it there, so the tag is
+checked while nothing has been built or pushed and the failure message can name the expected
+form. Only the tag-push and `workflow_dispatch` paths are validated — `latest` (push to main)
+bypasses it, as does a `workflow_dispatch` input of `latest`, which re-publishes the rolling
+artifact.
+
+Accepted form: SemVer — `X.Y.Z` or `X.Y.Z-<prerelease>`, where each dotted number is `0` or has no
+leading zero, and each dot-separated prerelease identifier is either numeric with no leading zero
+or contains a letter or hyphen. That is fully SemVer, not a shape check: `1.0.0-01` and
+`1.0.0-alpha..1` are rejected, not published as a malformed version. This is stricter than any
+single downstream step (see the problem statement), and it also rejects build metadata — `+` is
+valid semver but not a legal image tag.
+
+The dispatch input is passed through `env` rather than interpolated into the `run` block. The
+existing code pasted `${{ github.event.inputs.tag }}` straight into the script; only
+maintainers can dispatch, but the input is free-form text and validating it does not make
+pasting it into a shell safe. Validating it *does* close the equivalent hole in the later
+`helm package` step, whose `${{ steps.tag.outputs.tag }}` can now only ever be a validated tag
+or `latest`.
+
+### 3. GitHub Release on tag pushes
+
+A second job, `github-release`, runs `needs: publish` and only on tag pushes
+(`github.event_name == 'push' && github.ref_type == 'tag'`). It checks out (the `gh` CLI
+resolves the repository from the working tree) and creates the release with
+`gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag`, using GitHub's
+generated notes — **no notes file is committed to the repository**.
+
+Running after `publish` means a release is never created for artifacts that failed to
+publish. Gating on tag pushes only means a `workflow_dispatch` verification run leaves no
+junk release behind.
+
+The write permission stays on this job alone: `publish` keeps `contents: read` and the Harbor
+credentials, while only `github-release` gets `contents: write`, and it never sees the Harbor
+secrets.
+
+## Affected files
+
+- `deploy/charts/cubepilot-chart/Chart.yaml` — `version` and `appVersion` bumped to `1.0.0`
+- `deploy/charts/cubepilot-chart/values.yaml` — four image refs become `repository`/`tag`
+- `deploy/charts/cubepilot-chart/templates/_helpers.tpl` — new `cubepilot.image` helper;
+  agent-image env uses it
+- `deploy/charts/cubepilot-chart/templates/{operator,api,web}.yaml` — use the helper
+- `scripts/setup.sh`, `scripts/redeploy.sh` — pass the new field names
+- `.github/workflows/release.yaml` — tag validation, `github-release` job, header comment
+- `README.md` — values doc, the install example, the release table, GitHub Release
+
+Breaking change to the chart's values interface. The project is pre-release, so no
+compatibility shim is kept and no fallback branch reads the old `image` key.
+
+## Verification
+
+- `helm lint deploy/charts/cubepilot-chart`
+- Prove the pinning by rendering a packaged chart, which is the only way to control
+  `appVersion`:
+  - `helm package --version 9.9.9 --app-version 9.9.9 -d /tmp <chart>` then
+    `helm template t /tmp/cubepilot-chart-9.9.9.tgz` → all four images end in `:9.9.9`
+  - same with `--app-version latest` → all four end in `:latest`
+  - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`
+- The tag regex, against a white list of `0.1.0`, `1.0.0`, `0.0.0`, `10.20.30`, `1.0.0-rc1`,
+  `1.0.0-alpha`, `1.0.0-alpha.1`, `1.0.0-0.3.7`, `1.0.0-x.7.z.92`, `1.0.0-0`, `1.0.0-0a`,
+  `1.0.0-alpha-1`, `1.0.0-a-b`, `latest` and a black list of `1.0`, `1`, `v1`, `01.0.0`,
+  `1.0.00`, `1.0.0-01`, `1.0.0-00`, `1.0.0-alpha..1`, `1.0.0-alpha.`, `1.0.0-.a`, `1.0.0-`,
+  `1.0.0+build`, `1.0.0foo`, `_foo`, empty. The regex is read back out of the workflow file and
+  scored against the whole set, so the check covers what the workflow carries rather than a copy
+  of it
+- The claim that nothing downstream catches these, re-probed against helm 3.16.4 and Docker:
+  `1.0` and `v1` are accepted by `helm package` and land in the chart as-is; `0.1.0+build` is
+  accepted by helm and rejected by `docker build`; `_foo` and `latest` are rejected by helm
+- `scripts/setup.sh` still deploys a working stack (kind + e2e path)
+- End to end: the workflow has never run its release path — no tag exists on upstream. A
+  `workflow_dispatch` run with a throwaway tag exercises image+chart publish without creating
+  a GitHub Release; the final proof is tagging `v0.1.0`.
+
+## Out of scope
+
+- **Making the on-disk `Chart.yaml` agree with the tag.** The disk values are overridden at
+  package time, and the disk `version` is used only for main's `<version>-latest` chart tag.
+  Enforcing `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release,
+  contradicting the one-version-per-release design, and buys only a tidier rolling tag name.
+  The disk values are instead kept aligned with the next release by hand -- this change bumps
+  both to `1.0.0` -- and nothing depends on them being right. One visible consequence: main's
+  rolling chart becomes `1.0.0-latest` (it was `0.1.0-latest`), leaving the old tag orphaned
+  in Harbor. Images are unaffected, since the `main` path still packages with
+  `--app-version latest`.
+- **Atomic publish.** Images and the chart are pushed in separate steps, so a mid-job failure
+  still leaves one without the other. Every tag the job pushes is deterministic, so re-running
+  it converges; no rollback machinery.
+- Multi-arch builds, image signing, and a committed `CHANGELOG.md`.

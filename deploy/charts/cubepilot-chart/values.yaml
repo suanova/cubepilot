@@ -1,7 +1,10 @@
 # CubePilot Helm values -- registry-addressed defaults
-# (harbor.isuanova.com/suanova). The default :latest tags track the rolling
-# builds published from main (see .github/workflows/release.yaml); pin a real
-# release by overriding the image refs (e.g. --set operator.image=...:0.1.0).
+# (harbor.isuanova.com/suanova). Every image below is a repository + tag pair,
+# and an EMPTY tag resolves to the chart's appVersion (templates/_helpers.tpl).
+# That is what pins a release: a chart published by a vX.Y.Z tag is packaged
+# with --app-version X.Y.Z, so its images default to :X.Y.Z. The rolling chart
+# published from main is packaged with --app-version latest, so it still
+# resolves to :latest. Override either half to point at another build.
 # scripts/setup.sh always passes explicit image refs, so local development is
 # unaffected.
 
@@ -17,7 +20,9 @@ imagePullPolicy: IfNotPresent
 # runtime names the agent runtime image family: openclaw today, hermes later.
 agents:
   runtime: openclaw
-  image: harbor.isuanova.com/suanova/cubepilot-openclaw:latest
+  image:
+    repository: harbor.isuanova.com/suanova/cubepilot-openclaw
+    tag: ""    # empty -> .Chart.AppVersion
   # Comma-separated operator identities, one independent instance each.
   # Default: a single 'admin'. Add users here and re-deploy -- the operator
   # mints a per-user identity (SA + kubeconfig Secret) for each at deploy time.
@@ -46,7 +51,9 @@ agents:
 operator:
   name: cubepilot-operator
   replicas: 2
-  image: harbor.isuanova.com/suanova/cubepilot-operator:latest
+  image:
+    repository: harbor.isuanova.com/suanova/cubepilot-operator
+    tag: ""    # empty -> .Chart.AppVersion
   # controller-runtime metrics + health/ready probes ("0" disables).
   metricsAddr: :8082
   probeAddr: :8081
@@ -58,7 +65,9 @@ operator:
 api:
   name: cubepilot-api
   replicas: 1
-  image: harbor.isuanova.com/suanova/cubepilot-api:latest
+  image:
+    repository: harbor.isuanova.com/suanova/cubepilot-api
+    tag: ""    # empty -> .Chart.AppVersion
   # One claim backs both the API's JSON metadata (at the {{ .Values.api.dataDir }}
   # root) and the skill repository ({{ .Values.api.dataDir }}/skills -- the app
   # mkdirs them).
@@ -95,7 +104,9 @@ web:
   enabled: true
   name: cubepilot-web
   replicas: 2
-  image: harbor.isuanova.com/suanova/cubepilot-web:latest
+  image:
+    repository: harbor.isuanova.com/suanova/cubepilot-web
+    tag: ""    # empty -> .Chart.AppVersion
   resources: {}
   nodeSelector: {}
   tolerations: []

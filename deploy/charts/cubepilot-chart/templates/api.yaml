@@ -28,7 +28,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
-          image: {{ .Values.api.image }}
+          image: {{ include "cubepilot.image" (dict "image" .Values.api.image "root" .) }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           env:
             {{- include "cubepilot.agentEnv" . | nindent 12 }}

@@ -7,8 +7,21 @@
 #                        (rolling dev artifact -- the `-latest` suffix keeps it
 #                        from colliding with a real <chartVersion> release)
 #   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
-#                        pinned to X.Y.Z regardless of Chart.yaml)
-#   - workflow_dispatch  publish under the semver tag supplied in the input
+#                        pinned to X.Y.Z regardless of Chart.yaml); also creates
+#                        a GitHub Release with generated notes
+#   - workflow_dispatch  publish under the semver tag supplied in the input, but
+#                        create no GitHub Release -- this path is for
+#                        re-publishing and for exercising the workflow without
+#                        leaving a release behind
+#
+# A release tag is validated as semver before the build steps: a tag that either
+# the chart packager or the registry would reject must not leave images pushed
+# with no chart beside them.
+#
+# Bumping Chart.yaml's version/appVersion is not required for a release -- both
+# are overridden at package time -- but keeping them in step with the next
+# release is what names the rolling chart on main (see the "Package Helm chart"
+# step below).
 #
 # Required GitHub variable + secret (a Harbor bot account with push rights on
 # the `suanova` project):
@@ -42,13 +55,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Resolve publish tag
+      - name: Resolve and validate publish tag
         id: tag
+        env:
+          # Passed through env rather than interpolated into the script: an
+          # input is attacker-shaped text, and `${{ }}` inside a run block is
+          # pasted into the shell verbatim.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
             workflow_dispatch)
-              TAG="${{ github.event.inputs.tag }}" ;; # explicit semver input
+              TAG="$INPUT_TAG"                          # explicit semver input
+              ;;
             push)
               if [ "$GITHUB_REF_TYPE" = "tag" ]; then
                 TAG="${GITHUB_REF_NAME#v}"            # v0.1.0 -> 0.1.0
@@ -57,6 +76,32 @@ jobs:
               fi ;;
             *) echo "::error::unsupported trigger: $GITHUB_EVENT_NAME"; exit 1 ;;
           esac
+
+          # Fail here, before anything is built or pushed. `latest` is the
+          # rolling artifact published from main and is exempt; a tag pushed as
+          # vX.Y.Z has already had its `v` stripped above.
+          #
+          # SemVer, without build metadata. Each of the three dotted numbers is
+          # `0` or has no leading zero, and each dot-separated prerelease
+          # identifier is either numeric with no leading zero or contains a
+          # letter or hyphen -- so `1.0.0-01` and `1.0.0-alpha..1` are rejected
+          # rather than published as a malformed version.
+          #
+          # This is stricter than any single downstream step, because two bad
+          # tags would otherwise get past them all:
+          #   - helm accepts a malformed version like `1.0` or `v1` and writes
+          #     it into the chart verbatim, so a release would ship a version
+          #     that is not semver and no step would complain;
+          #   - build metadata (`0.1.0+build`) is valid semver and helm takes
+          #     it, but `+` is not legal in an image tag, so the job would die
+          #     inside `make images` with "invalid reference format".
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+
+          if [ "$TAG" != "latest" ] && ! printf '%s' "$TAG" | grep -Eq "$SEMVER"; then
+            echo "::error::'$TAG' is not a release tag; expected X.Y.Z or X.Y.Z-<prerelease>"
+            exit 1
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Install helm
@@ -101,6 +146,10 @@ jobs:
             helm package deploy/charts/cubepilot-chart \
               --version "$BASE_VERSION-latest" --app-version latest -d .chart
           else
+            # A release. The tag becomes the chart version, its appVersion, and
+            # -- through the appVersion default in templates/_helpers.tpl -- the
+            # images the chart resolves to, so installing this chart pulls the
+            # images released with it with no --set at all.
             helm package deploy/charts/cubepilot-chart \
               --version "$TAG" --app-version "$TAG" -d .chart
           fi
@@ -110,3 +159,32 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
+
+  # Tag pushes only, so a workflow_dispatch re-publish (or the rolling main
+  # publish) leaves no release behind. A separate job rather than a step in
+  # `publish` so the write token never shares a job with the Harbor credentials
+  # -- `publish` keeps `contents: read`.
+  #
+  # Runs after `publish` so a release is never created for a tag whose images or
+  # chart failed to publish.
+  github-release:
+    name: Create GitHub Release
+    needs: publish
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # gh resolves the repository from the working tree, so it needs a checkout.
+      - uses: actions/checkout@v7
+
+      # Notes are GitHub's generated ones; there is no notes file in the repo.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
