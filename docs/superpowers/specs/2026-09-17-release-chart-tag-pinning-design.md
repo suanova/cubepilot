@@ -112,6 +112,7 @@ secrets.
 
 ## Affected files
 
+- `deploy/charts/cubepilot-chart/Chart.yaml` — `version` and `appVersion` bumped to `1.0.0`
 - `deploy/charts/cubepilot-chart/values.yaml` — four image refs become `repository`/`tag`
 - `deploy/charts/cubepilot-chart/templates/_helpers.tpl` — new `cubepilot.image` helper;
   agent-image env uses it
@@ -142,9 +143,14 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
 ## Out of scope
 
 - **Making the on-disk `Chart.yaml` agree with the tag.** The disk values are overridden at
-  package time and are only used for main's `<version>-latest` chart tag. Enforcing
-  `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release, contradicting
-  the one-version-per-release design, and buys only a tidier rolling tag name.
+  package time, and the disk `version` is used only for main's `<version>-latest` chart tag.
+  Enforcing `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release,
+  contradicting the one-version-per-release design, and buys only a tidier rolling tag name.
+  The disk values are instead kept aligned with the next release by hand -- this change bumps
+  both to `1.0.0` -- and nothing depends on them being right. One visible consequence: main's
+  rolling chart becomes `1.0.0-latest` (it was `0.1.0-latest`), leaving the old tag orphaned
+  in Harbor. Images are unaffected, since the `main` path still packages with
+  `--app-version latest`.
 - **Atomic publish.** Images and the chart are pushed in separate steps, so a mid-job failure
   still leaves one without the other. Every tag the job pushes is deterministic, so re-running
   it converges; no rollback machinery.
