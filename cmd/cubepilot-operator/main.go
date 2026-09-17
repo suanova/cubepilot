@@ -113,16 +113,18 @@ func main() {
 		log.Fatalf("agentinstance controller: %v", err)
 	}
 	if err := (&controller.BuiltinBootstrapReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Cfg:    cfg,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Cfg:       cfg,
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("builtin bootstrap controller: %v", err)
 	}
 	if err := (&controller.OpenClawConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Cfg:    cfg,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Cfg:       cfg,
 	}).SetupWithManager(mgr); err != nil {
 		log.Fatalf("openclaw-config controller: %v", err)
 	}
@@ -161,9 +163,10 @@ func main() {
 // Ensure; kept here so the operator performs the initial create directly).
 func bootstrapEnsure(ctx context.Context, mgr ctrl.Manager, cfg config.Config) error {
 	b := &controller.BuiltinBootstrapReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Cfg:    cfg,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Cfg:       cfg,
 	}
 	return b.Ensure(ctx)
 }

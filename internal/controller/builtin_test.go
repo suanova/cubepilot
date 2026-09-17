@@ -108,8 +108,9 @@ func TestBootstrapEnsure(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 
 	r := &BuiltinBootstrapReconciler{
-		Client: cl,
-		Scheme: scheme,
+		Client:    cl,
+		APIReader: cl,
+		Scheme:    scheme,
 		Cfg: config.Config{
 			Namespace:   "cubepilot",
 			Users:       users,
@@ -217,9 +218,10 @@ func TestBootstrapEnsureNoDefaultModel(t *testing.T) {
 	scheme := testScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &BuiltinBootstrapReconciler{
-		Client: cl,
-		Scheme: scheme,
-		Cfg:    config.Config{Namespace: "cubepilot"},
+		Client:    cl,
+		APIReader: cl,
+		Scheme:    scheme,
+		Cfg:       config.Config{Namespace: "cubepilot"},
 	}
 	if err := r.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -243,9 +245,10 @@ func TestBootstrapEnsureRejectsCollidingUsers(t *testing.T) {
 	scheme := testScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &BuiltinBootstrapReconciler{
-		Client: cl,
-		Scheme: scheme,
-		Cfg:    config.Config{Namespace: "cubepilot", Users: []string{"zhang.wei", "Zhang Wei"}},
+		Client:    cl,
+		APIReader: cl,
+		Scheme:    scheme,
+		Cfg:       config.Config{Namespace: "cubepilot", Users: []string{"zhang.wei", "Zhang Wei"}},
 	}
 	if err := r.Ensure(context.Background()); err == nil {
 		t.Fatal("Ensure should reject sanitize-colliding identities")
