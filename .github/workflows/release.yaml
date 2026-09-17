@@ -193,10 +193,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          set -euo pipefail
+
+          # Asked through the API rather than `gh release view`, which exits
+          # nonzero both for "there is no release" and for a transient API or
+          # auth failure. Reading its status alone would send the latter down
+          # the create path, reporting a confusing error instead of the real
+          # one. Only a 404 means there is nothing to preserve; anything else
+          # fails here with the original message.
+          api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+          if out=$(gh api "$api" 2>&1); then
             echo "release $GITHUB_REF_NAME already exists; leaving it untouched"
             exit 0
           fi
+          case "$out" in
+            *"HTTP 404"*) ;;  # no release for this tag yet -- fall through and create it
+            *)
+              echo "::error::could not look up the release for $GITHUB_REF_NAME: $out"
+              exit 1 ;;
+          esac
+
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
