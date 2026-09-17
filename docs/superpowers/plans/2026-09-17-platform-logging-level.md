@@ -33,7 +33,7 @@ Replaces `internal/logrlog`, switches the operator to it, and deletes the old pa
 - Create: `internal/logging/logging.go`
 - Create: `internal/logging/logging_test.go`
 - Modify: `cmd/cubepilot-operator/main.go:31` (import) and `:39` (call)
-- Delete: `internal/logrlog/` (both files)
+- Delete: `internal/logrlog/` (one file, `logrlog.go`)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -773,10 +773,10 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ### Task 5: Render the first config sync as `(initial)`
 
-`supervisor.go:452` prints `config revision  -> 42c94f84db82` on the first sync, because there is no previous revision yet.
+The config-sync log call prints `config revision  -> 42c94f84db82` on the first sync, because there is no previous revision yet.
 
 **Files:**
-- Modify: `internal/supervisor/supervisor.go:452`
+- Modify: `internal/supervisor/supervisor.go` (the config-sync `log.Printf` call)
 - Modify: `internal/supervisor/supervisor_test.go` (append; the file already exists in package `supervisor`)
 
 **Interfaces:**
@@ -820,7 +820,7 @@ Expected: FAIL to build -- `undefined: revisionLabel`.
 
 - [ ] **Step 3: Implement it and use it**
 
-In `internal/supervisor/supervisor.go`, change line 452 from:
+In `internal/supervisor/supervisor.go`, change the config-sync call from:
 
 ```go
 	log.Printf("supervisor: config revision %s -> %s", s.current, cfg.Revision)
