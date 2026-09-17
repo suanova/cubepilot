@@ -229,6 +229,32 @@ func TestAgentInstanceReconcileProvisions(t *testing.T) {
 	}
 }
 
+// TestAgentInstanceReconcilePodUsesAgentLogLevel pins the source of the level
+// the Pod carries: it must be the operator's AgentLogLevel, never its own
+// LogLevel. The supervisor's client-go calls read Secrets, so wiring the wrong
+// field would silently widen the credential surface with no test to catch it.
+func TestAgentInstanceReconcilePodUsesAgentLogLevel(t *testing.T) {
+	r, cl := newTestReconciler(t, testTemplate(), testInstance())
+	r.Cfg.LogLevel = 3
+	r.Cfg.AgentLogLevel = 7
+	provisionInstance(r, t)
+
+	var pod corev1.Pod
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &pod); err != nil {
+		t.Fatalf("pod not created: %v", err)
+	}
+	for _, c := range pod.Spec.Containers {
+		for _, env := range c.Env {
+			if env.Name != "CUBEPILOT_LOG_LEVEL" {
+				continue
+			}
+			if env.Value != "7" {
+				t.Errorf("container %s: CUBEPILOT_LOG_LEVEL = %q, want %q (AgentLogLevel, not LogLevel)", c.Name, env.Value, "7")
+			}
+		}
+	}
+}
+
 // TestAgentInstanceReconcileReady verifies a Ready Pod transitions the
 // instance to status.phase = Ready (AC: creating an instance -> Ready).
 func TestAgentInstanceReconcileReady(t *testing.T) {
