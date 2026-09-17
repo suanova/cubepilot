@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: {{ .Values.web.image }}
+          image: {{ include "cubepilot.image" (dict "image" .Values.web.image "root" .) }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           ports:
             - containerPort: 80

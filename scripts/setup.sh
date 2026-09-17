@@ -165,15 +165,20 @@ kubectl apply -f "$CRDS_DIR"
 log "deploying components via Helm"
 # IfNotPresent: the images were just loaded into the kind nodes, so nothing may
 # go to the registry for them. The agent Pods would, since an unset policy plus
-# the :latest tag resolves to Always.
+# a :latest tag resolves to Always. Both halves of every image are pinned
+# explicitly, so the chart's appVersion default never applies here.
 helm upgrade --install cubepilot "$CHART_DIR" -n "$NAMESPACE" \
   --set imagePullPolicy=IfNotPresent \
-  --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
+  --set agents.image.repository="$IMAGE_REPO/cubepilot-openclaw" \
+  --set agents.image.tag="$IMAGE_TAG" \
   --set agents.llmEndpoint="$LLM_ENDPOINT" \
   --set agents.llmModel="$LLM_MODEL" \
-  --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
-  --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
-  --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
+  --set operator.image.repository="$IMAGE_REPO/cubepilot-operator" \
+  --set operator.image.tag="$IMAGE_TAG" \
+  --set api.image.repository="$IMAGE_REPO/cubepilot-api" \
+  --set api.image.tag="$IMAGE_TAG" \
+  --set web.image.repository="$IMAGE_REPO/cubepilot-web" \
+  --set web.image.tag="$IMAGE_TAG"
 
 # Provision the CubeStack operator CRDs (ai.cubestack.io) so the platform's
 # builtin skills / chat can create them. They are vendored from suanova/cubestack

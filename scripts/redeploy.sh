@@ -111,10 +111,14 @@ helm upgrade --install "$HELM_RELEASE" "$CHART_DIR" -n "$NAMESPACE" \
   --kube-context "$KUBE_CONTEXT" \
   "${values_file[@]}" \
   --set imagePullPolicy=IfNotPresent \
-  --set agents.image="$IMAGE_REPO/cubepilot-openclaw:$IMAGE_TAG" \
-  --set operator.image="$IMAGE_REPO/cubepilot-operator:$IMAGE_TAG" \
-  --set api.image="$IMAGE_REPO/cubepilot-api:$IMAGE_TAG" \
-  --set web.image="$IMAGE_REPO/cubepilot-web:$IMAGE_TAG"
+  --set agents.image.repository="$IMAGE_REPO/cubepilot-openclaw" \
+  --set agents.image.tag="$IMAGE_TAG" \
+  --set operator.image.repository="$IMAGE_REPO/cubepilot-operator" \
+  --set operator.image.tag="$IMAGE_TAG" \
+  --set api.image.repository="$IMAGE_REPO/cubepilot-api" \
+  --set api.image.tag="$IMAGE_TAG" \
+  --set web.image.repository="$IMAGE_REPO/cubepilot-web" \
+  --set web.image.tag="$IMAGE_TAG"
 
 # ---- roll operator / api / web -------------------------------------------
 # The image tag is unchanged between iterations and imagePullPolicy is
