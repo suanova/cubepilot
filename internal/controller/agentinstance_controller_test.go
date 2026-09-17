@@ -244,13 +244,21 @@ func TestAgentInstanceReconcilePodUsesAgentLogLevel(t *testing.T) {
 		t.Fatalf("pod not created: %v", err)
 	}
 	for _, c := range pod.Spec.Containers {
+		found := false
 		for _, env := range c.Env {
 			if env.Name != "CUBEPILOT_LOG_LEVEL" {
 				continue
 			}
+			found = true
 			if env.Value != "7" {
 				t.Errorf("container %s: CUBEPILOT_LOG_LEVEL = %q, want %q (AgentLogLevel, not LogLevel)", c.Name, env.Value, "7")
 			}
+		}
+		// Without this the test passes when the variable is absent entirely:
+		// the inner loop simply never matches, and the supervisor would fall
+		// back to its own default of 0.
+		if !found {
+			t.Errorf("container %s: CUBEPILOT_LOG_LEVEL is missing", c.Name)
 		}
 	}
 }

@@ -115,6 +115,14 @@ func (l *sink) WithName(name string) logr.LogSink {
 
 // line renders "<RFC3339 millis> <LEVEL> <logger>: <msg> <k=v ...>", with the
 // name carried by WithValues first so a line still names its subject.
+// recordEscaper keeps every rendered field on one physical line. A name,
+// message, key or value carrying a carriage return or a newline would otherwise
+// split one record into two, and in a record that feeds an access or audit log
+// the caller would choose the second. Values are the likeliest source: value()
+// quotes a string containing LF, but a lone CR takes the unquoted path, and the
+// name and message are written verbatim.
+var recordEscaper = strings.NewReplacer("\r", `\r`, "\n", `\n`)
+
 func (l *sink) line(level, msg string, kv []any) string {
 	var b strings.Builder
 	b.WriteString(time.Now().UTC().Format(rfc3339Millis))
@@ -125,16 +133,16 @@ func (l *sink) line(level, msg string, kv []any) string {
 	}
 	b.WriteString(" ")
 	if l.name != "" {
-		b.WriteString(l.name)
+		b.WriteString(recordEscaper.Replace(l.name))
 		b.WriteString(": ")
 	}
-	b.WriteString(msg)
+	b.WriteString(recordEscaper.Replace(msg))
 	for _, group := range [][]any{l.values, kv} {
 		for i := 0; i+1 < len(group); i += 2 {
 			b.WriteString(" ")
-			b.WriteString(key(group[i]))
+			b.WriteString(recordEscaper.Replace(key(group[i])))
 			b.WriteString("=")
-			b.WriteString(value(group[i+1]))
+			b.WriteString(recordEscaper.Replace(value(group[i+1])))
 		}
 	}
 	return b.String()

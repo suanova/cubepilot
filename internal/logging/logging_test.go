@@ -121,3 +121,24 @@ func TestNewFloorsNegativeLevelAtZero(t *testing.T) {
 		t.Error("New(-1).V(1).Enabled() = true, want false (level must floor at 0, not go negative)")
 	}
 }
+
+// One record is one line, whatever the fields contain. value() quotes a string
+// carrying LF, but a lone CR takes the unquoted path, and the logger name and
+// message are written verbatim -- so a field could otherwise split a record and
+// let its caller choose the second half.
+func TestEveryFieldStaysOnOneLine(t *testing.T) {
+	s, buf := newTestSink(0)
+	s.WithName("ctor\rFORGED").
+		WithValues("key\nFORGED", "value\rFORGED").
+		Error(errors.New("boom\nFORGED"), "msg\rFORGED")
+	got := out(buf)
+
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("a rendered field produced a real CR or LF: %q", got)
+	}
+	for _, want := range []string{`ctor\rFORGED`, `key\nFORGED`, `value\rFORGED`, `msg\rFORGED`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("field %s was not escaped into the line: %q", want, got)
+		}
+	}
+}

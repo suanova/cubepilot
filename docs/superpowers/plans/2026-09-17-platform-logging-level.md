@@ -596,9 +596,9 @@ The api currently discards its controller-runtime output through `NullLogSink`; 
 
 - [ ] **Step 1: Wire the api**
 
-In `cmd/cubepilot-api/main.go`, add the import
+In `cmd/cubepilot-api/main.go`, add the imports
 `sigs.k8s.io/controller-runtime/pkg/log` as `ctrllog` (alongside the existing
-`sigs.k8s.io/controller-runtime/pkg/client`), add
+`sigs.k8s.io/controller-runtime/pkg/client`) and `"k8s.io/klog/v2"`, add
 `"github.com/suanova/cubepilot/internal/logging"` to the cubepilot group, and
 add immediately after `cfg := config.Load()`:
 
@@ -607,8 +607,21 @@ add immediately after `cfg := config.Load()`:
 	// Without this, controller-runtime fulfils its deferred root logger with a
 	// NullLogSink after 30s and prints a stack trace -- everything this process
 	// would have logged is discarded.
-	ctrllog.SetLogger(logging.New(cfg.LogLevel))
+	logger := logging.New(cfg.LogLevel)
+	ctrllog.SetLogger(logger)
+	// ctrllog.SetLogger does not bridge klog: controller-runtime never calls
+	// klog.SetLogger, and this process has no manager carrying a logger through
+	// a reconcile context. Its Kubernetes calls run on plain signal and request
+	// contexts, so client-go's rest client -- which reads klog.FromContext --
+	// would fall through to klog's unconfigured global and ignore
+	// CUBEPILOT_LOG_LEVEL entirely. Installing the same logger here is what
+	// makes api.logLevel govern client-go.
+	klog.SetLoggerWithOptions(logger, klog.ContextualLogger(true))
 ```
+
+The klog call was added after review: the original step installed only the
+controller-runtime logger, which left `api.logLevel` inert above 0 because this
+binary has no manager and its handlers run on plain request contexts.
 
 - [ ] **Step 2: Wire the supervisor**
 
