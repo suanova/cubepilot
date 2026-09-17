@@ -42,6 +42,11 @@ export interface FakeGateway {
   setTurn(frames: SSEEvent[]): void
   setTurnRaw(chunks: string[]): void
   /**
+   * Flips what /turn answers, so a test can end a turn the view holds no stream
+   * for and assert that the view notices without being reloaded.
+   */
+  setTurnActive(active: boolean): void
+  /**
    * Leaves the next turn's stream open instead of ending it, so a test can act
    * on a turn that is genuinely still running. Call it before the app sends.
    */
@@ -106,6 +111,9 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   let openMode = false
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null
   let held: string[] = []
+  // What /turn answers. Mutable, so a test can end a turn the view is not
+  // streaming and watch it notice.
+  let turnActive = init.turnActive ?? false
 
   const handler = async (input: RequestInfo | URL, opts: RequestInit = {}): Promise<Response> => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -161,7 +169,7 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
           // answer when the gateway channel cannot be reached, and a fake that
           // answered "not running" would let the client collapse the two.
           if (init.turnCheckFails) return json({ error: 'cannot determine turn state' }, 502)
-          return json({ active: init.turnActive ?? false })
+          return json({ active: turnActive })
         // In production `/abort` does not answer until the session has settled;
         // here it answers at once, so a test using it proves the request was
         // made rather than that the view copes with a slow stop.
@@ -211,6 +219,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     setTurnRaw(chunks: string[]) {
       turnChunks = chunks
+    },
+    /**
+     * Flips what /turn answers, so a test can end a turn the view holds no
+     * stream for and assert that the view notices without being reloaded.
+     */
+    setTurnActive(active: boolean) {
+      turnActive = active
     },
     // In place, not reassigned: the handler closes over the array.
     setHistory(items: HistoryMessage[]) {

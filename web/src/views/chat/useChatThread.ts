@@ -55,6 +55,15 @@ export interface ChatThreadApi {
 
 const user = getCurrentUser()
 
+// How often a view holding no stream for the session's turn asks whether that
+// turn is still running. Asking is the only way it can learn the turn ended, and
+// the turning point is exactly when the reply it is missing becomes available in
+// the history -- so the interval is the delay on the tail of an answer the user
+// is already reading. Two seconds: quick enough that the rest of the reply lands
+// while they are still looking at it, slow enough that a turn running for
+// minutes does not become a request storm.
+const noStreamTurnPollInterval = 2000
+
 export function useChatThread({
   initialSessionKey,
   onSessionStarted,
@@ -167,6 +176,49 @@ export function useChatThread({
     // render would reload history over a turn the hook is already streaming.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // A turn this view holds no stream for is only ever observed by asking, and
+  // its output arrives on the next history refresh -- this is what performs that
+  // refresh. Without it nothing here learns the turn ended: the reply stays as
+  // truncated as the history snapshot the view loaded, and the header keeps
+  // claiming a turn that is already over, until the user switches sessions or
+  // reloads. A stream that died mid-turn lands in exactly this state, which is
+  // what makes that half-answer permanent.
+  //
+  // The poll ends with the state it is keyed on: the refresh below calls
+  // clearTurnElsewhere, and a session switch or a new chat bumps the generation
+  // the in-flight answer is checked against.
+  useEffect(() => {
+    if (!runningElsewhere) return
+    const id = currentSessionId
+    if (!id) return
+    const gen = streamGenRef.current
+    let cancelled = false
+    const timer = setInterval(() => {
+      void (async () => {
+        let active: boolean
+        try {
+          ;({ active } = await api.sessionTurn(id))
+        } catch {
+          // "Cannot tell" is not "finished", so keep asking -- the same reading
+          // the header's own check refuses to collapse into "idle".
+          return
+        }
+        if (cancelled || streamGenRef.current !== gen) return
+        if (active) return
+        clearTurnElsewhere()
+        // keepVisible: the conversation on screen is being completed, not
+        // replaced, and blanking it to refill with the same thread plus a tail
+        // is a flash the user did not ask for.
+        void loadHistory(id, true)
+      })()
+    }, noStreamTurnPollInterval)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningElsewhere, currentSessionId])
 
   // A turn this view holds no stream for -- confirmed, or uncheckable -- is the
   // session's live state: the composer's Stop is the direct way to end it, and a

@@ -421,6 +421,46 @@ describe('ChatView live turn status', () => {
     expect(gateway.requests.some((r) => r.path === '/api/v1/sessions/agent:main:conv-1/abort')).toBe(true)
   })
 
+  it('catches up on a turn it is not streaming once that turn ends', async () => {
+    // A turn with no stream of this view's own is only visible through the
+    // history that was loaded when the view arrived, so the view has to notice
+    // the turn ending: while it does not, the reply stays as truncated as that
+    // snapshot was, and the header keeps claiming a turn that is already over.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      turnActive: true,
+      history: [{ role: 'assistant', content: [{ type: 'text', text: 'Investigating the node.' }] }],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const head = document.querySelector('.chat-head') as HTMLElement
+    expect(await within(head).findByText(/Still running/)).toBeInTheDocument()
+
+    // The run ends in the gateway, and the rest of its reply is now in the
+    // history. Nothing tells this view directly -- it holds no stream.
+    //
+    // History first, then the answer that says the turn is over: the view asks
+    // on its own schedule, and a poll that lands between the two must find the
+    // turn still running rather than reload a history that is missing its tail.
+    gateway.setHistory([
+      { role: 'assistant', content: [{ type: 'text', text: 'Investigating the node.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'The node is healthy.' }] },
+    ])
+    gateway.setTurnActive(false)
+
+    // A regex, like every assertion on assistant text: the reply is rendered
+    // through the markdown path, which does not leave it as one text node.
+    expect(await screen.findByText(/The node is healthy\./, undefined, { timeout: 5000 })).toBeInTheDocument()
+    expect(within(head).queryByText(/Still running/)).not.toBeInTheDocument()
+    // The view asks on a timer, so this test waits on one. Its budget is
+    // generous so that a slow machine fails the assertion (which says what is
+    // missing) rather than the test (which says only that it timed out).
+  }, 15000)
+
   it('keeps the way out beside the header status when the check itself failed', async () => {
     // The API answers 502 when it cannot determine whether the turn is still
     // running. That is not "idle", so it is reported, and the only controls that
