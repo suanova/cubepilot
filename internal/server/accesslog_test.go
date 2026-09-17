@@ -86,6 +86,28 @@ func TestLogRequestsSkipsInternalAPIPaths(t *testing.T) {
 	}
 }
 
+// Log injection: URL.Path is percent-decoded, so a request for /%0aFAKE_RECORD
+// arrives carrying a real newline. Logging it raw splits one request into two
+// records, and the attacker chooses the second one -- enough to forge a line in
+// an audit trail. EscapedPath keeps every request on exactly one line.
+func TestLogRequestsKeepsOneRecordPerRequest(t *testing.T) {
+	s := &Server{}
+	h := s.logRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeNotFound(w, "no such endpoint")
+	}))
+
+	got := captureLog(t, func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/%0aFAKE_RECORD", nil))
+	})
+
+	if trimmed := strings.TrimRight(got, "\n"); strings.Contains(trimmed, "\n") {
+		t.Errorf("a decoded path injected a second log line: %q", got)
+	}
+	if !strings.Contains(got, "%0aFAKE_RECORD") {
+		t.Errorf("the path should still be visible, escaped: %q", got)
+	}
+}
+
 // SSE depends on this: handlers.go:153 asserts w.(http.Flusher), so a wrapper
 // that swallows it breaks every streaming response.
 func TestLogRequestsPreservesFlusher(t *testing.T) {

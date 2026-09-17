@@ -282,7 +282,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		s.logf("%s %s %d %dB %s", r.Method, r.URL.Path, rec.status, rec.bytes,
+		// EscapedPath, not Path: Path is percent-decoded, so an unauthenticated
+		// request to /%0aFAKE_RECORD would arrive here with a real newline and
+		// turn one request into two log records, the second forged. The escaped
+		// form keeps every request on exactly one line.
+		s.logf("%s %s %d %dB %s", r.Method, r.URL.EscapedPath(), rec.status, rec.bytes,
 			time.Since(start).Round(time.Millisecond))
 	})
 }
