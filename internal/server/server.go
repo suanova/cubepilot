@@ -229,7 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, "no such endpoint")
 	})
-	return logRequests(mux)
+	return s.logRequests(mux)
 }
 
 // handleSessionSubresource routes the per-session subresources under
@@ -259,10 +259,67 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func logRequests(next http.Handler) http.Handler {
+// logRequests records one line per request: method, path, status, response
+// size and duration.
+//
+// Probe paths are skipped rather than logged at a lower level. An access log
+// belongs with the component's own messages, which are always visible, and the
+// kubelet polls /healthz and /readyz every few seconds -- logging them buries
+// what a human is looking for. That is not hypothetical: one tier down, 578 of
+// 812 nginx lines are kube-probe hits.
+func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		if isProbePath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		s.logf("%s %s %d %dB %s", r.Method, r.URL.Path, rec.status, rec.bytes,
+			time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// isProbePath reports whether path is polled on a fixed interval by the
+// kubelet or by Prometheus scraping. Only /healthz and /metrics are registered
+// today (server.go:175-176); /readyz is listed because a readiness endpoint is
+// the obvious next one and the cost of the extra case is nothing.
+func isProbePath(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/metrics":
+		return true
+	}
+	return false
+}
+
+// statusRecorder captures what the handler wrote, which the wrapped
+// ResponseWriter does not expose.
+//
+// Flush is required, not optional: SSE handlers assert w.(http.Flusher)
+// (handlers.go:153) and a wrapper without it turns every streaming response
+// into a failure.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // logf is a small helper for handler-side logging.
