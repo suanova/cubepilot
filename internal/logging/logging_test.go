@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,21 @@ func TestValueWithSpaceIsQuoted(t *testing.T) {
 	s.Error(errors.New(`secrets "user-admin-kubeconfig" not found`), "Reconciler error")
 	if got := out(buf); !strings.Contains(got, `err="secrets \"user-admin-kubeconfig\" not found"`) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// rfc3339MillisLinePattern pins the rendered line to the wire format the
+// design treats it as: RFC3339 with milliseconds and a trailing Z, a space,
+// the level padded to five characters, a space, then the message.
+var rfc3339MillisLinePattern = regexp.MustCompile(
+	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z (INFO |ERROR) hi$`)
+
+func TestLineFormatIsPinned(t *testing.T) {
+	s, buf := newTestSink(0)
+	s.Info(0, "hi")
+	got := out(buf)
+	if !rfc3339MillisLinePattern.MatchString(got) {
+		t.Fatalf("line %q does not match the pinned format %s", got, rfc3339MillisLinePattern)
 	}
 }
 
