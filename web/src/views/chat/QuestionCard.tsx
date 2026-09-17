@@ -6,11 +6,13 @@ import { questionAnswered, type BubbleQuestion } from './model'
 export function QuestionCard({
   question,
   onPick,
+  onType,
   onSubmit,
   onDismiss,
 }: {
   question: BubbleQuestion
   onPick: (q: BubbleQuestion, item: QuestionItem, label: string) => void
+  onType: (q: BubbleQuestion, item: QuestionItem, text: string) => void
   onSubmit: (q: BubbleQuestion) => void
   onDismiss: (q: BubbleQuestion) => void
 }) {
@@ -81,36 +83,67 @@ export function QuestionCard({
               <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>{item.question}</div>
               {/* role=group + aria-label give the options an accessible group and
                   name; the selected state itself is exposed by aria-pressed on
-                  each button rather than by colour alone. */}
-              <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {item.options.map((o) => {
-                  const active = picked.includes(o.label)
-                  return (
-                    <button
-                      key={o.label}
-                      onClick={() => onPick(question, item, o.label)}
-                      disabled={locked || !!question.busy}
-                      aria-pressed={active}
-                      title={o.description}
-                      style={{
-                        background: active ? 'var(--accent, #3b82f6)' : 'none',
-                        border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
-                        color: active ? '#fff' : 'inherit',
-                        borderRadius: 6,
-                        padding: '6px 14px',
-                        cursor: settled ? 'default' : 'pointer',
-                        fontSize: 13,
-                        textAlign: 'left',
-                      }}
-                    >
-                      {o.label}
-                      {o.description && (
-                        <span style={{ display: 'block', fontSize: 11.5, opacity: 0.8, marginTop: 2 }}>{o.description}</span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
+                  each button rather than by colour alone. Rendered only when
+                  there are options: a free-text-only question has none, and an
+                  empty named group would be noise for a screen reader. */}
+              {item.options.length > 0 && (
+                <div role="group" aria-label={item.question} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {item.options.map((o) => {
+                    const active = picked.includes(o.label)
+                    return (
+                      <button
+                        key={o.label}
+                        onClick={() => onPick(question, item, o.label)}
+                        disabled={locked || !!question.busy}
+                        aria-pressed={active}
+                        title={o.description}
+                        style={{
+                          background: active ? 'var(--accent, #3b82f6)' : 'none',
+                          border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
+                          color: active ? '#fff' : 'inherit',
+                          borderRadius: 6,
+                          padding: '6px 14px',
+                          cursor: settled ? 'default' : 'pointer',
+                          fontSize: 13,
+                          textAlign: 'left',
+                        }}
+                      >
+                        {o.label}
+                        {o.description && (
+                          <span style={{ display: 'block', fontSize: 11.5, opacity: 0.8, marginTop: 2 }}>{o.description}</span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {/* ask_user declares free text with isOther, and a question with no
+                  options offers nothing else: both draw the input. Typing it is
+                  the whole answer to the question, so the server receives the
+                  text where it would receive a selected label. */}
+              {(item.isOther || item.options.length === 0) && (
+                <input
+                  type="text"
+                  value={question.free[item.questionId] || ''}
+                  onChange={(e) => onType(question, item, e.target.value)}
+                  disabled={locked || !!question.busy}
+                  aria-label="Or type your own answer"
+                  placeholder="Or type your own answer"
+                  style={{
+                    display: 'block',
+                    boxSizing: 'border-box',
+                    width: '100%',
+                    marginTop: item.options.length > 0 ? 8 : 0,
+                    padding: '6px 10px',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    background: 'none',
+                    color: 'inherit',
+                    font: 'inherit',
+                    fontSize: 13,
+                  }}
+                />
+              )}
             </div>
           )
         })}

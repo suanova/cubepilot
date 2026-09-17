@@ -45,6 +45,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
     dismissTurnCheck,
     decide,
     pick,
+    typeAnswer,
     submitQuestion,
     dismissQuestion,
   } = thread
@@ -273,7 +274,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                     {(b.questions || [])
                       .filter((q) => q.resolved)
                       .map((q) => (
-                        <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+                        <QuestionCard key={q.questionId} question={q} onPick={pick} onType={typeAnswer} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
                       ))}
                     {/* Text the gateway rewrote while the turn was running.
                         Superseded is not lost: it is what the user was reading
@@ -331,7 +332,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
           <div className="hitl-dock">
             {pending.confirm && <ApprovalCard confirm={pending.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />}
             {pending.questions.map((q) => (
-              <QuestionCard key={q.questionId} question={q} onPick={pick} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
+              <QuestionCard key={q.questionId} question={q} onPick={pick} onType={typeAnswer} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
             ))}
           </div>
         )}

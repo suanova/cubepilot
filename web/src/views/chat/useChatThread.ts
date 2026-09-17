@@ -13,6 +13,7 @@ import { getCurrentUser } from '@/api/client'
 import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem } from '@/api/types'
 import { showToast } from '@/stores/toast'
 import {
+  answerFor,
   attachToolResult,
   newBubbleQuestion,
   setPhase,
@@ -49,6 +50,7 @@ export interface ChatThreadApi {
   dismissTurnCheck(): void
   decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always'): Promise<void>
   pick(q: BubbleQuestion, item: QuestionItem, label: string): void
+  typeAnswer(q: BubbleQuestion, item: QuestionItem, text: string): void
   submitQuestion(q: BubbleQuestion): Promise<void>
   dismissQuestion(q: BubbleQuestion): Promise<void>
 }
@@ -1066,6 +1068,21 @@ export function useChatThread({
     } else {
       q.picked[item.questionId] = cur.length === 1 && cur[0] === label ? [] : [label]
     }
+    // Choosing an option is the whole answer to that question, so it drops the
+    // text typed as the other form of it.
+    delete q.free[item.questionId]
+    q.error = ''
+    setBubbles([...bubblesRef.current])
+  }
+
+  // typeAnswer records the human's own answer for a question. It replaces the
+  // selection rather than joining it: the card treats them as alternatives. The
+  // gateway rejects more than one value on a single-select question and allows
+  // mixing on a multiSelect one, but this card applies the same rule to both.
+  // Text that is empty once trimmed is no answer at all, so the selection stays.
+  function typeAnswer(q: BubbleQuestion, item: QuestionItem, text: string) {
+    q.free[item.questionId] = text
+    if (text.trim()) delete q.picked[item.questionId]
     q.error = ''
     setBubbles([...bubblesRef.current])
   }
@@ -1084,7 +1101,12 @@ export function useChatThread({
     q.error = ''
     setBubbles([...bubblesRef.current])
     try {
-      await api.postQuestion(session, q.questionId, q.picked)
+      // The answer is whatever the card settled on per question: the labels the
+      // human picked, or the text they typed instead. The server relays it
+      // unchanged -- it does not know the gateway's answer semantics.
+      const answers: Record<string, string[]> = {}
+      for (const it of q.items) answers[it.questionId] = answerFor(q, it)
+      await api.postQuestion(session, q.questionId, answers)
       q.resolved = true
       q.outcome = 'answered'
     } catch (e) {
@@ -1189,6 +1211,7 @@ export function useChatThread({
     dismissTurnCheck,
     decide,
     pick,
+    typeAnswer,
     submitQuestion,
     dismissQuestion,
   }

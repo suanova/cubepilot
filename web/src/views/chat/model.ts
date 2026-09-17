@@ -43,6 +43,12 @@ export interface BubbleQuestion {
   // the API, and lets the shared 1s ticker drive it.
   deadline?: number
   picked: Record<string, string[]> // questionId -> selected option labels
+  // questionId -> the human's own answer. Kept apart from `picked` because the
+  // card treats the two as alternatives: a question takes either a label or the
+  // human's text. Mixing them is legal upstream only on a multiSelect question
+  // (the gateway rejects more than one value otherwise), and this card does not
+  // offer it.
+  free: Record<string, string>
   resolved?: boolean
   outcome?: string // answered | cancelled | expired
   busy?: boolean
@@ -111,12 +117,25 @@ export function newBubbleQuestion(sessionId: string, questionId: string, items: 
     items,
     deadline: timeoutSeconds ? Date.now() + timeoutSeconds * 1000 : undefined,
     picked: {},
+    free: {},
   }
 }
 
-// questionAnswered reports whether every question in the card has a selection.
+// answerFor is the answer submitted for one question: the human's own text when
+// they typed one, otherwise the labels they selected. The card never combines
+// them -- one question takes one answer. The gateway would accept both on a
+// multiSelect question, but it rejects more than one value on a single-select
+// one, so mixing is not offered.
+export function answerFor(q: BubbleQuestion, item: QuestionItem): string[] {
+  const typed = (q.free[item.questionId] || '').trim()
+  if (typed) return [typed]
+  return q.picked[item.questionId] || []
+}
+
+// questionAnswered reports whether every question in the card has an answer,
+// picked or typed.
 export function questionAnswered(q: BubbleQuestion): boolean {
-  return q.items.every((it) => (q.picked[it.questionId] || []).length > 0)
+  return q.items.every((it) => answerFor(q, it).length > 0)
 }
 
 // attachToolResult pairs a tool's output with the tool call that produced it:

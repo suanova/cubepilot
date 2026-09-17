@@ -212,6 +212,10 @@ export interface QuestionItem {
   question: string
   options: QuestionOption[]
   multiSelect?: boolean
+  // ask_user declares with this that the human may answer in their own words
+  // instead of one of the options, so the card offers a text input beside them.
+  // A question with no options is free text only.
+  isOther?: boolean
 }
 
 export interface QuestionPrompt {
