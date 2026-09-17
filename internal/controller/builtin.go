@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -298,33 +297,17 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		return fmt.Errorf("per-user token for %s not ready yet (token secret %s)", user, tokenSecretName)
 	}
 
-	// Kubeconfig Secret consumed by the AgentInstance controller (PR #94).
+	// Kubeconfig Secret consumed by the AgentInstance controller (PR #94). It is
+	// rewritten when the token it was minted from changed, so a recreated token
+	// Secret refreshes the kubeconfig instead of leaving a stale one behind.
 	kc := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
 		Data:       map[string][]byte{"config": k8s.PerUserKubeconfigYAML(token)},
 	}
-	if err := r.ensureSecretData(ctx, kc, "config"); err != nil {
+	if err := ensureSecretData(ctx, r.Client, kc); err != nil {
 		return err
 	}
 	return nil
-}
-
-// ensureSecretData creates the Secret when absent and updates the given key's
-// data when it changed, so a recreated token Secret (new token) refreshes the
-// kubeconfig instead of leaving a stale one behind.
-func (r *BuiltinBootstrapReconciler) ensureSecretData(ctx context.Context, want *corev1.Secret, key string) error {
-	var existing corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: want.Namespace, Name: want.Name}, &existing); err != nil {
-		if apierrors.IsNotFound(err) {
-			return r.Create(ctx, want)
-		}
-		return err
-	}
-	if bytes.Equal(existing.Data[key], want.Data[key]) {
-		return nil
-	}
-	existing.Data = want.Data
-	return r.Update(ctx, &existing)
 }
 
 func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj client.Object) error {
