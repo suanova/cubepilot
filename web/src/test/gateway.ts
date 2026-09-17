@@ -4,7 +4,7 @@
 // nothing here stands in for our own code. It answers the routes the Portal
 // calls, records what it was asked, and serves the turn route as a genuine SSE
 // body so the parser meets the same byte stream it meets in production.
-import type { HistoryMessage, SessionInfo, SSEEvent } from '@/api/types'
+import type { HistoryMessage, PendingQuestion, SessionInfo, SSEEvent } from '@/api/types'
 
 export interface RecordedRequest {
   path: string
@@ -16,6 +16,16 @@ export interface FakeGatewayInit {
   sessions?: SessionInfo[]
   history?: HistoryMessage[]
   turnActive?: boolean
+  // A session parked on a human answer: what `/question/pending` serves, so the
+  // restore-on-open path can be exercised without a stream.
+  pendingQuestions?: PendingQuestion[]
+  // A turn-status read that cannot answer (the API's 502), which is not the same
+  // answer as "not running" and must not be rendered as one.
+  turnCheckFails?: boolean
+  // A decision the API refuses (a 5xx, not the 404 of a card that was already
+  // settled). The card stays pending and has to say why, so the explanation is
+  // part of the card the user is still looking at.
+  decisionFails?: boolean
 }
 
 /** A turn whose stream stays open until the test closes it. */
@@ -36,6 +46,12 @@ export interface FakeGateway {
    * on a turn that is genuinely still running. Call it before the app sends.
    */
   openTurn(): OpenTurn
+  /**
+   * Replaces the history this session is served. A conversation is not frozen
+   * while the user reads it: another client can add to it, and the view re-reads
+   * it -- so a test that reloads has to be able to serve something new.
+   */
+  setHistory(items: HistoryMessage[]): void
 }
 
 /** The wire form of one frame: an `event:` line, a `data:` line, a blank line. */
@@ -141,6 +157,10 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'messages':
           return known ? json({ items: history }) : json(NOT_FOUND, 404)
         case 'turn':
+          // 502, not `{active:false}`: "could not determine" is the API's own
+          // answer when the gateway channel cannot be reached, and a fake that
+          // answered "not running" would let the client collapse the two.
+          if (init.turnCheckFails) return json({ error: 'cannot determine turn state' }, 502)
           return json({ active: init.turnActive ?? false })
         // In production `/abort` does not answer until the session has settled;
         // here it answers at once, so a test using it proves the request was
@@ -150,6 +170,9 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'approval':
         case 'question':
           decisions.push(record)
+          // The request was made either way, so it is recorded either way; only
+          // the answer differs.
+          if (init.decisionFails) return json({ error: 'decision not recorded' }, 500)
           return json({})
         // Nothing parked answers 404, not an empty object: the client unwraps
         // `d.approval` / `d.questions`, so a bare `{}` would hand the caller
@@ -159,7 +182,7 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'approval/pending':
           return json({ error: 'no pending approval' }, 404)
         case 'question/pending':
-          return json({ questions: [] })
+          return json({ questions: init.pendingQuestions ?? [] })
         default:
           break
       }
@@ -188,6 +211,10 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     setTurnRaw(chunks: string[]) {
       turnChunks = chunks
+    },
+    // In place, not reassigned: the handler closes over the array.
+    setHistory(items: HistoryMessage[]) {
+      history.splice(0, history.length, ...items)
     },
     openTurn() {
       openMode = true

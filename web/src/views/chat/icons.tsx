@@ -82,6 +82,17 @@ export function ToolIcon() {
   )
 }
 
+// The disclosure marker on a collapsed card. It points at the content rather
+// than down at it, and rotates open, so the state is legible without reading
+// the card's contents.
+export function ChevronIcon() {
+  return (
+    <svg className="icon chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  )
+}
+
 
 // AssistantIcon is the floating widget's button: a spark, not a speech bubble,
 // because the bubble is already the Chat nav item and the two entries lead to

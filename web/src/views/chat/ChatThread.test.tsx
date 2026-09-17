@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { installFakeGateway, type FakeGateway } from '@/test/gateway'
+import type { HistoryMessage } from '@/api/types'
 import { ChatThread } from './ChatThread'
 import { useChatThread } from './useChatThread'
 
@@ -30,6 +31,42 @@ function Standalone({ sessionKey }: { sessionKey?: string }) {
   const thread = useChatThread({ initialSessionKey: sessionKey, onSessionStarted: () => {} })
   return <ChatThread thread={thread} title="Assistant" />
 }
+
+// The same, plus the widget's reopen: closing the panel and opening it again
+// re-reads the conversation, which is the one refresh a user performs.
+function Reopenable({ sessionKey }: { sessionKey?: string }) {
+  const thread = useChatThread({ initialSessionKey: sessionKey, onSessionStarted: () => {} })
+  return (
+    <>
+      <button onClick={thread.refresh}>reopen</button>
+      <ChatThread thread={thread} title="Assistant" />
+    </>
+  )
+}
+
+// One tool card, found by what it ran. Its command is on the card either way --
+// in the header while closed, in the body once open -- so this names the same
+// card in both states.
+function cardFor(cmd: string): HTMLElement {
+  const card = [...document.querySelectorAll('.tool-card')].find((c) => c.textContent?.includes(cmd))
+  if (!card) throw new Error(`no tool card for ${cmd}`)
+  return card as HTMLElement
+}
+function expandStateOf(cmd: string): string | null {
+  return cardFor(cmd).querySelector('button.tool-head')?.getAttribute('aria-expanded') ?? null
+}
+
+const PODS_TURN = [
+  { role: 'user', content: 'is nginx up?' },
+  {
+    role: 'assistant',
+    content: [
+      { type: 'text', text: 'Checking the pods.' },
+      { type: 'toolCall', id: 'c1', name: 'kubectl_get', arguments: '{"kind":"pods"}' },
+    ],
+  },
+  { role: 'toolResult', content: [{ type: 'text', text: 'pod/nginx Running' }] },
+] satisfies HistoryMessage[]
 
 describe('a conversation with no session list', () => {
   it('opens the given conversation and continues it', async () => {
@@ -72,5 +109,45 @@ describe('a conversation with no session list', () => {
 
     expect(await screen.findByText('Start a new conversation')).toBeInTheDocument()
     expect(screen.queryByText(/History load failed/)).not.toBeInTheDocument()
+  })
+
+  it("keeps the reader's open card on the card they opened when the transcript is reloaded", async () => {
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: KEY, title: 'Assistant' }],
+      history: PODS_TURN,
+    })
+    gateway.install()
+
+    render(<Reopenable sessionKey={KEY} />)
+    const pods = await screen.findByText('Checking the pods.')
+    expect(pods).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(cardFor('pods').querySelector('button.tool-head')!)
+    expect(expandStateOf('pods')).toBe('true')
+
+    // Another client's turn lands in the same conversation, in front of the card
+    // the reader has open. Reopening the panel re-reads the transcript, and a
+    // card's *place* in it is not an identity: the new turn pushes the reader's
+    // card along, and carries a card of its own into the spot the reader's open
+    // card used to hold. Keyed by position, the reader's choice is handed to a
+    // card they never touched -- and taken away from the one they did.
+    gateway.setHistory([
+      { role: 'user', content: 'how many nodes?' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Checking the nodes.' },
+          { type: 'toolCall', id: 'c0', name: 'kubectl_get', arguments: '{"kind":"nodes"}' },
+        ],
+      },
+      { role: 'toolResult', content: [{ type: 'text', text: 'node/cube-control-plane Ready' }] },
+      ...PODS_TURN,
+    ])
+    await user.click(screen.getByText('reopen'))
+
+    expect(await screen.findByText('Checking the nodes.')).toBeInTheDocument()
+    expect(expandStateOf('nodes')).toBe('false')
+    expect(expandStateOf('pods')).toBe('true')
   })
 })

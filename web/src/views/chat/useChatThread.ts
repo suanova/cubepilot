@@ -29,10 +29,10 @@ export interface ChatThreadApi {
   bubbles: BubbleMsg[]
   loadingHistory: boolean
   streaming: boolean
-  bannerUp: boolean
+  noStreamTurn: boolean
   runningElsewhere: boolean
   // The turn-status check itself failed. Kept apart from `runningElsewhere` so
-  // the banner never claims a turn nobody confirmed.
+  // the header never claims a turn nobody confirmed.
   turnCheckFailed: boolean
   stoppingElsewhere: boolean
   allowAlwaysOk: boolean
@@ -76,13 +76,13 @@ export function useChatThread({
   // stream re-attach is out of scope.
   const [runningElsewhere, setRunningElsewhere] = useState(false)
   // The turn-status check itself failed. It is kept apart from
-  // `runningElsewhere` so the banner never claims a turn nobody confirmed, and
+  // `runningElsewhere` so the header never claims a turn nobody confirmed, and
   // it is still shown: the API answers 502 when it cannot determine, and
   // "cannot tell" is not "idle" -- hiding Stop here would strand exactly the
   // user whose turn is running.
   const [turnCheckFailed, setTurnCheckFailed] = useState(false)
-  // The session whose banner Stop is waiting on `/abort`, or null. The server
-  // answers only once the turn has settled -- seconds -- so the banner's Stop
+  // The session whose composer Stop is waiting on `/abort`, or null. The
+  // server answers only once the turn has settled -- seconds -- so the header
   // reads "Stopping…" and the composer's Send is disabled for the whole window.
   // It is also what refuses a send in that window, because Enter reaches
   // `sendMessage` past the disabled button.
@@ -165,17 +165,17 @@ export function useChatThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // The without-a-stream banner is on screen: a turn this view holds no stream
-  // for, so the banner's Stop is the direct way to end it -- and a send while it
-  // is up is a redirect, which `sendMessage` runs through its own
+  // A turn this view holds no stream for -- confirmed, or uncheckable -- is the
+  // session's live state: the composer's Stop is the direct way to end it, and a
+  // send while it is up is a redirect, which `sendMessage` runs through its own
   // stop-then-send sequence.
-  const bannerUp = (runningElsewhere || turnCheckFailed) && !streaming
+  const noStreamTurn = (runningElsewhere || turnCheckFailed) && !streaming
   // ...and that Stop is waiting on the server for the session on screen. The
   // turn is then still running, so a send must not go out yet: it would be
-  // POSTed against a session whose turn is still settling, and retiring the
-  // banner would take away that turn's only Stop control. Both the controls and
+  // POSTed against a session whose turn is still settling, and retiring this
+  // state would take away that turn's only Stop control. Both the controls and
   // the refusal in `sendMessage` read this.
-  const stoppingElsewhere = bannerUp && stoppingSession === currentSessionId
+  const stoppingElsewhere = noStreamTurn && stoppingSession === currentSessionId
 
 
   function scrollThread() {
@@ -233,7 +233,7 @@ export function useChatThread({
   // answer is applied only while the view still holds it -- the same
   // capture-then-re-check the redirect continuation uses. A session switch or a
   // new chat in the window runs dropStream(), and an answer for the session the
-  // user left must not paint a banner onto the view they moved to.
+  // user left must not paint a status onto the view they moved to.
   async function checkTurnElsewhere(id: string, gen: number) {
     try {
       const { active } = await api.sessionTurn(id)
@@ -249,9 +249,9 @@ export function useChatThread({
     }
   }
 
-  // retryTurnCheck re-asks after a failed check. Without it an "unknown" banner
-  // would have no way back to a definite answer short of leaving the session,
-  // which is a poor trade for one cheap GET. The banner is withdrawn while the
+  // retryTurnCheck re-asks after a failed check. Without it a "could not check"
+  // status would have no way back to a definite answer short of leaving the
+  // session, which is a poor trade for one cheap GET. It is withdrawn while the
   // retry is in flight and returns if the check fails again.
   function retryTurnCheck() {
     if (!currentSessionId) return
@@ -259,12 +259,12 @@ export function useChatThread({
     void checkTurnElsewhere(currentSessionId, streamGenRef.current)
   }
 
-  // dismissTurnCheck withdraws the "could not check" banner on request. Retry is
+  // dismissTurnCheck withdraws the "could not check" status on request. Retry is
   // the way back to an answer, but it is not a way *out*: for a channel this
   // process cannot use, every retry fails the same way, and a reload fails the
-  // check again, so the banner would sit over a conversation that is otherwise
-  // perfectly usable with no control that removes it. Dismissing claims nothing
-  // -- the next reload, session switch or Retry asks again, and a send is
+  // check again, so the status would sit in the header of a conversation that is
+  // otherwise perfectly usable, with no control that removes it. Dismissing claims
+  // nothing -- the next reload, session switch or Retry asks again, and a send is
   // unaffected -- it only stops the alarm from being permanent.
   function dismissTurnCheck() {
     clearTurnElsewhere()
@@ -392,7 +392,7 @@ export function useChatThread({
   // produced is the partial the abort will persist -- and a turn stopped before
   // it produced any text persists no row at all (the gateway captures an aborted
   // partial only when the run's text buffer has content), so there is nothing to
-  // mark and no evidence to record. With no stream -- the banner -- the only
+  // mark and no evidence to record. With no stream of this view's own, the only
   // thing this view can recognise the row by later is the transcript it has
   // already rendered.
   function stopEvidence(): StopEvidence | null {
@@ -497,10 +497,10 @@ export function useChatThread({
   // The streaming flag is cleared here rather than left to the retiring
   // stream's own `finally`, which sees itself as stale and refuses to touch it.
   //
-  // The without-a-stream banner is retired with it -- both describe a turn this
+  // The no-stream turn status is retired with it -- both describe a turn this
   // view is leaving behind -- and the generation bump discards a turn-status
   // check still in flight for it, whose snapshot could otherwise re-arm a
-  // banner that has just been retired.
+  // status that has just been retired.
   function dropStream() {
     streamGenRef.current++
     abortRef.current?.abort()
@@ -508,7 +508,7 @@ export function useChatThread({
     clearTurnElsewhere()
   }
 
-  // clearTurnElsewhere retires the without-a-stream banner, both states at once
+  // clearTurnElsewhere retires the no-stream turn state, both parts at once
   // so they can never disagree. The paths that leave a session's turn behind --
   // a switch, a new chat, a stop -- all go through dropStream; a send clears it
   // alongside its own generation bump; and the check's own answer is the third.
@@ -547,7 +547,7 @@ export function useChatThread({
     activeSessionRef.current = id
     void loadHistory(id, true)
     // A turn may have started elsewhere while the panel was shut; asking is the
-    // only way to find out, and the banner's Stop is then the only control that
+    // only way to find out, and the composer's Stop is then the only control that
     // can end it.
     void checkTurnElsewhere(id, streamGenRef.current)
   }
@@ -611,13 +611,13 @@ export function useChatThread({
   // already contains the stopped turn's partial output.
   //
   // It shares `stoppingRef` with the streaming Stop: both issue the same
-  // gateway abort. The banner's button is still on screen for the whole round
+  // gateway abort. The composer's button is still on screen for the whole round
   // trip -- it is only withdrawn once the server has answered -- and it is
   // disabled in the meantime, but `stoppingRef` is what actually refuses a
   // click that arrives before that re-render: a second POST for a turn that is
   // already settling is redundant at best. A stop the server refuses is an
   // expected outcome -- 504 means it did not settle in time, 502 that the
-  // channel was unavailable -- so it is surfaced as a toast and the banner
+  // channel was unavailable -- so it is surfaced as a toast and the status
   // stays, because the turn is then still running.
   async function stopElsewhere() {
     const session = currentSessionId
@@ -651,9 +651,9 @@ export function useChatThread({
     // stopped, and only this tab knows it (see stoppedTurnsRef).
     markStoppedTurn(session, evidence)
     if (streamGenRef.current !== gen) return
-    // dropStream, not clearTurnElsewhere: the banner is done, and the
+    // dropStream, not clearTurnElsewhere: the state is done, and the
     // generation bump discards a turn-status check still in flight for it,
-    // whose pre-stop snapshot would otherwise re-arm the banner the stop just
+    // whose pre-stop snapshot would otherwise re-arm the status the stop just
     // retired.
     dropStream()
     await loadHistory(session)
@@ -665,38 +665,38 @@ export function useChatThread({
     if (sendingRef.current) return
     const text = el.value.trim()
     if (!text) return
-    // A banner Stop is in flight for the session on screen, so its turn is
+    // A composer Stop is in flight for the session on screen, so its turn is
     // still running server-side and its outcome is not known yet. Refusing here
     // keeps this send from racing it: the stop-then-send branch below would find
     // the stop already in flight and abandon the send anyway, retiring the
-    // banner and, with it, the running turn's only Stop control. The composer's
-    // Send is disabled and the banner's Stop reads "Stopping…" for the same
+    // status and, with it, the running turn's only Stop control. The composer's
+    // Send is disabled and the header reads "Stopping…" for the same
     // window, so this is not a click swallowed in silence; and it is
     // deliberately not a queue -- the text stays in the box, and Enter again
     // once the stop answers sends it.
     if (stoppingElsewhere) return
-    // `streaming` and `bannerUp` are the same situation from the send's point of
-    // view: a turn is running for the session on screen and this send is the
-    // user redirecting it. A banner send has to take the stop-then-send route
-    // too, not just the streaming one. Left on the plain path it gets one of two
-    // wrong outcomes, neither of them a refusal the user could act on: the
+    // `streaming` and `noStreamTurn` are the same situation from the send's
+    // point of view: a turn is running for the session on screen and this
+    // send is the user redirecting it. A send in this state has to take the
+    // stop-then-send route too, not just the streaming one. Left on the plain
+    // path it gets one of two wrong outcomes, neither of them a refusal the
     // pre-reload stream is still registered server-side, so the POST is refused
     // with a raw 409; or that stream has closed while the run has not, and the
     // gateway's default queueMode steers the text into the running turn -- no
     // stop, no new turn, and the message swallowed, which is the steering
     // behaviour the design declares a non-goal. `/abort` answers only once the
     // session has settled, so the send that follows it can do neither. (A
-    // turnCheckFailed banner takes the same route: the check failed, so a turn
+    // turnCheckFailed state takes the same route: the check failed, so a turn
     // may well be running, and an abort is a no-op when none is.)
-    if (streaming || bannerUp) {
+    if (streaming || noStreamTurn) {
       // Redirect: stop the running turn first. The server only answers once the
       // turn has settled, so the send below cannot hit the 409 guard. What
-      // happens when the stop does not take is decided below, per banner: a
+      // happens when the stop does not take is decided below, per state: a
       // confirmed turn keeps the text and the Stop button, the un-checkable one
       // sends anyway.
       //
       // The guard is held for the whole stop-then-send sequence -- including the
-      // banner's history reload -- and released on every exit path: the
+      // state's history reload -- and released on every exit path: the
       // abandoned redirect below, the throw out of the stop, and the send that
       // follows. It has to span the reload too. The stop settling to the
       // textarea being cleared is where the composer looks most idle: nothing
@@ -720,13 +720,13 @@ export function useChatThread({
       // switched to. The re-check is what makes the switch win; a check only
       // before the send cannot see a switch that has not happened yet.
       const genAtSend = streamGenRef.current
-      // The banner's own Stop control is on screen with nothing to show for the
-      // wait, so the round trip is made visible the same way the banner's Stop
-      // makes it visible: the composer's Send is disabled and the banner reads
-      // "Stopping…" for the whole sequence, reload included. Held here rather
+      // The Stop control is on screen with nothing to show for the wait, so the
+      // round trip is made visible the same way the header's status is: the
+      // composer's Send is disabled and the header reads "Stopping…" for the
+      // whole sequence, reload included. Held here rather
       // than left to `stopTurn`/`stopElsewhere`, which release it as soon as the
       // abort answers -- before the reload that is the rest of the wait.
-      const holdVisibleStop = bannerUp && !!currentSessionId
+      const holdVisibleStop = noStreamTurn && !!currentSessionId
       if (holdVisibleStop) setStoppingSession(currentSessionId)
       sendingRef.current = true
       let stopped = false
@@ -742,14 +742,14 @@ export function useChatThread({
           // still running is the 409-or-silent-steer outcome the stop-then-send
           // route exists to prevent.
           //
-          // The "could not check" banner is the exception, and it is the state
+          // The "could not check" state is the exception, and it is the state
           // that would otherwise be a dead end. Nothing there confirmed a turn,
           // and the stop is refused for the same reason the check failed -- a
-          // gateway channel this process cannot use -- so the banner's Stop
+          // gateway channel this process cannot use -- so an abort from here
           // provably cannot work either. The send is then the only request left
           // that re-dials the channel (it is the turn path that calls `conn`,
           // see the API's PreTurn), and refusing it leaves no in-page recovery
-          // at all: the user retries, reloads, and lands on the same banner,
+          // at all: the user retries, reloads, and lands on the same status,
           // because the next /turn check fails the same way. So it falls through
           // to the ordinary send below.
           //
@@ -760,8 +760,8 @@ export function useChatThread({
           // knowingly, and only here: a confirmed turn never falls through, and
           // the alternative is a state whose only exit is "New chat".
           if (!turnCheckFailed) return
-        } else if (bannerUp) {
-          // The banner's turn had no stream in this view, so nothing in it ever
+        } else if (noStreamTurn) {
+          // That turn had no stream in this view, so nothing in it ever
           // carried that turn's stopped marker: the only record of what happened
           // is the history the abort has just persisted. Re-render it -- with
           // `stoppedTurnsRef` marking its own row -- before the new turn's
@@ -780,7 +780,7 @@ export function useChatThread({
     // so the local stopped marker no longer describes it: a later history render
     // must not mark the new turn stopped.
     if (currentSessionId) stoppedTurnsRef.current.delete(currentSessionId)
-    // This view is about to drive its own turn: the without-a-stream banner
+    // This view is about to drive its own turn: the no-stream turn status
     // describes the turn being left behind, and would otherwise reappear when
     // the new stream ends.
     clearTurnElsewhere()
@@ -832,7 +832,7 @@ export function useChatThread({
             // exception: it is a transport failure, not the superseded turn
             // ending, so it closes nothing (see the handler below) and the
             // session is not re-checked -- this view has left that session, and
-            // dropStream already retired its banner. Turn *output* is different
+            // dropStream already retired its status. Turn *output* is different
             // and stays dropped: deltas, tool calls and fresh pending cards
             // carry content from the superseded turn's own conversation, which
             // is exactly what the user redirected away from. The session-switch
@@ -935,9 +935,18 @@ export function useChatThread({
           }
           if (ev.type === 'text_replace') {
             // Snapshot superseding earlier text (e.g. commentary rewritten after
-            // a tool ran): replace, never append (issue #130).
+            // a tool ran): replace, never append (issue #130). The text it
+            // supersedes is kept rather than dropped -- it is what the user was
+            // reading when the rewrite landed, and a rewrite is not a reason to
+            // take it away from them (issue #204). Only a rewrite that would
+            // change nothing is discarded, so a repeated snapshot cannot pile up
+            // copies of the same text.
             setPhase(bubble, 'streaming')
-            bubble.text = ev.delta || ''
+            const next = ev.delta || ''
+            if (bubble.text && bubble.text !== next) {
+              bubble.superseded = [...(bubble.superseded || []), bubble.text]
+            }
+            bubble.text = next
             return
           }
           if (ev.type === 'message_done') {
@@ -955,13 +964,13 @@ export function useChatThread({
               bubble.transportLost = ev.error || 'the stream ended before the turn finished'
               setBubbles([...bubblesRef.current])
               // The turn may still be running with no stream of this view's
-              // own, which is exactly the state the banner describes -- and the
-              // banner's Stop is then the only control that can end it. Ask the
+              // own, which is exactly the state the header describes -- and the
+              // composer's Stop is then the only control that can end it. Ask the
               // server rather than assert it: a run that really did settle
-              // answers `active: false` and raises no banner. The check is
+              // answers `active: false` and raises no status. The check is
               // issued only for the current stream (a superseded one has left
               // its session behind, and dropStream already retired that
-              // banner).
+              // status).
               if (!stale() && turnSession) void checkTurnElsewhere(turnSession, streamGenRef.current)
               return
             }
@@ -1162,7 +1171,7 @@ export function useChatThread({
     bubbles,
     loadingHistory,
     streaming,
-    bannerUp,
+    noStreamTurn,
     runningElsewhere,
     turnCheckFailed,
     stoppingElsewhere,

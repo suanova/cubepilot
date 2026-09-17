@@ -64,7 +64,7 @@ export type StopEvidence =
   // produce. Only a bubble carrying exactly that text may be relabelled, so a
   // newer turn another tab started cannot be relabelled by this one.
   | { text: string }
-  // A stop with no stream of this view's own (the banner): the transcript this
+  // A stop with no stream of this view's own: the transcript this
   // view had already rendered, as `transcriptShape`. See `applyStoppedTurn` for
   // what the reload has to look like.
   | { users: string[]; lastText: string }
@@ -88,6 +88,12 @@ export interface BubbleMsg {
   // HITL cards are left live and answerable. Carries the reason the stream gave
   // up, for display.
   transportLost?: string
+  // Commentary the gateway rewrote (`text_replace`, a snapshot that supersedes
+  // what it streamed before). Kept rather than dropped: the rewrite is what the
+  // reply reads now, and the text it replaced is what the user was reading when
+  // the tool it introduces asked for their approval. Rendered as a disclosure
+  // under the reply -- the reply is what they need, not the archaeology.
+  superseded?: string[]
   // Every question this turn has asked, in order. The agent can ask several in
   // one turn (a blocked ask_user resumes, then another follows), so they are
   // kept as a collection rather than one slot that a later question replaces --
@@ -256,5 +262,62 @@ export function statusLine(b: BubbleMsg): string {
     case 'done':
       return 'Done'
   }
+}
+
+// TurnHeadline is the conversation's own state, as the header reports it. The
+// tone drives the colour, so "still working" and "finished" are distinguishable
+// without reading the text.
+export interface TurnHeadline {
+  text: string
+  tone: 'running' | 'done' | 'stopped' | 'lost' | 'error'
+}
+
+// headline is what the header says about the conversation: the state of its
+// newest turn.
+//
+// It carries the same line the bubble used to render, and that is the point of
+// moving it: a turn's state is a fact about the turn, not a paragraph of it, and
+// drawn inside the bubble it left the screen as soon as the turn produced a
+// screenful of output -- exactly when the user starts wondering whether it is
+// still going. Drawn in the header, it cannot scroll away.
+export function headline(bubbles: BubbleMsg[]): TurnHeadline | null {
+  const last = bubbles[bubbles.length - 1]
+  // A turn starts when its prompt is sent: with the prompt newest, the turn it
+  // belongs to has not begun and there is nothing to report about it.
+  if (!last || last.kind !== 'assistant') return null
+  const text = statusLine(last)
+  if (!text) return null
+  if (last.transportLost) return { text, tone: 'lost' }
+  // An error does not get its message here: it can be a paragraph, and the
+  // bubble it belongs to still carries it verbatim.
+  if (last.error) return { text: 'Failed', tone: 'error' }
+  if (last.stopped) return { text, tone: 'stopped' }
+  if (last.phase === 'done') return { text, tone: 'done' }
+  return { text, tone: 'running' }
+}
+
+// PendingCards is what the agent is blocked on, split by kind because the two
+// are answered by different controls.
+export interface PendingCards {
+  confirm?: BubbleConfirm
+  questions: BubbleQuestion[]
+}
+
+// pendingCards collects the cards still waiting for the user.
+//
+// They are collected across the whole thread rather than read off the newest
+// bubble, because a parked write can belong to a turn several bubbles back (a
+// redirect leaves the older turn's card live; a reload restores it as a bubble
+// of its own), and it is still waiting for the user either way. The platform
+// holds one pending approval per session, so the last one seen is the only one
+// there is; questions are a set, and the agent can be parked on several.
+export function pendingCards(bubbles: BubbleMsg[]): PendingCards {
+  let confirm: BubbleConfirm | undefined
+  const questions: BubbleQuestion[] = []
+  for (const b of bubbles) {
+    if (b.confirm && !b.confirm.resolved) confirm = b.confirm
+    for (const q of b.questions || []) if (!q.resolved) questions.push(q)
+  }
+  return { confirm, questions }
 }
 
