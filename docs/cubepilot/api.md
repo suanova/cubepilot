@@ -182,7 +182,7 @@ X-CubePilot-User: <用户名>
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
 | **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
-| **504** | `the run did not settle in time; try again`（`/abort`）· `the session delete did not finish in time; retrying it is safe and idempotent`（`DELETE /api/v1/sessions/{key}`） | 重试 |
+| **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
 | **201** | 创建成功：`POST /api/v1/instances`、`POST /api/v1/tasks`、`POST /api/v1/llms`、`POST .../publish` | 正常成功。注意它**不是** 200 |
 | **200** | `POST /api/v1/instances` 在实例已存在时返回 200 + `alreadyExists: true` | 正常成功（幂等重复）|
@@ -417,8 +417,15 @@ DELETE /api/v1/sessions/{key}   → {"deleted":true,"archived":[]}
   结尾——没有任何子资源接受 DELETE，所以 DELETE 永远指的是路径所命名的那个会话。给会话起名时
   不必绕开这些后缀。
 - 不加热实例。请求没有 body。
-- 网关调用有 5 秒上限；超时返回 `504`。删除可能已经生效，重试一次即可（幂等）。客户端断开
-  不会取消这次删除（调用与请求解绑），所以按下「清空」后再离开页面，会话照样会被清空。
+- 网关调用有 **30 秒**上限。这个数是从网关的行为推出来的，不是随手取的：删除之前网关会先把会话里
+  活跃的工作停下来，而它给这个排空的上限是 15 秒，删除和清理工作树都在这之后、同一次调用里；上限
+  低于排空就会把一次正常的删除报成超时。超时返回 `504`，删除可能已经生效，重试一次即可（幂等）。
+  客户端断开不会取消这次删除（调用与请求解绑），所以按下「清空」后再离开页面，会话照样会被清空。
+- **删除成功之后才回答**：API 还会等这个会话的 SSE 流释放（有上限）再返回 `200`，所以紧接着用同一个
+  key 发下一轮不会撞上 `409 another turn is already streaming`。这一步等不到时返回 `504`——这时
+  会话**已经删掉了**，按幂等重试即可。
+- **400**：网关拒绝这个请求本身（例如受保护的 `agent:main:main`、模型选择被锁定的会话），
+  重试无用。
 - **409**：会话仍在活跃，或者在你读取之后发生了变化。这不是调用方的错，也不用先 abort，
   等这一轮结束再重试一次即可。
 - **502**：网关往返失败。其中 `FORBIDDEN` 一类是**平台自己的问题**（配对的设备没有被授予
