@@ -265,10 +265,17 @@ const attachCap = time.Hour
 // here, and its terminal chat frame is the authoritative end, which the gateway
 // broadcasts to every session subscriber including one that joined late.
 //
+// revalidate, when non-nil, runs once the subscription is in place and before
+// anything is observed: it is the caller's chance to re-check the state it
+// gated the attach on, because that state can change while the subscription is
+// being established. A non-nil result ends the attach there -- the caller is
+// reporting that the events this stream was opened for have already been
+// broadcast, which no late subscription can undo.
+//
 // It reports the same TurnOutcome RunLiveTurn does, so an observing caller
 // terminal-writes through liveTurnDone and cannot report a run another tab
 // stopped as a plain completion.
-func (m *gatewayConns) AttachLiveTurn(ctx context.Context, user, sessionKey, runID string, sink func(agentruntime.Event) error) (agentruntime.TurnOutcome, error) {
+func (m *gatewayConns) AttachLiveTurn(ctx context.Context, user, sessionKey, runID string, sink func(agentruntime.Event) error, revalidate func() error) (agentruntime.TurnOutcome, error) {
 	gw, err := m.conn(ctx, user)
 	if err != nil {
 		return agentruntime.TurnOutcome{}, err
@@ -279,6 +286,11 @@ func (m *gatewayConns) AttachLiveTurn(ctx context.Context, user, sessionKey, run
 	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
 		m.sayf("attach %s: %s: subscribe: %v", user, sessionKey, err)
 		return agentruntime.TurnOutcome{}, err
+	}
+	if revalidate != nil {
+		if err := revalidate(); err != nil {
+			return agentruntime.TurnOutcome{}, err
+		}
 	}
 	select {
 	case <-t.done:

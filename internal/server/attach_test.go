@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,7 @@ func TestAttachLiveTurnObservesAParkedRun(t *testing.T) {
 			got = append(got, ev)
 			mu.Unlock()
 			return nil
-		})
+		}, nil)
 		done <- attachResult{outcome: outcome, err: err}
 	}()
 
@@ -117,7 +118,7 @@ func TestAttachLiveTurnReportsAStoppedRun(t *testing.T) {
 
 	done := make(chan attachResult, 1)
 	go func() {
-		outcome, err := m.AttachLiveTurn(context.Background(), "alice", "conv-1", "run-1", func(agentruntime.Event) error { return nil })
+		outcome, err := m.AttachLiveTurn(context.Background(), "alice", "conv-1", "run-1", func(agentruntime.Event) error { return nil }, nil)
 		done <- attachResult{outcome: outcome, err: err}
 	}()
 	waitFor(t, "the attach to subscribe", func() bool { return len(gw.subscribedSessions()) == 1 })
@@ -241,6 +242,89 @@ func TestSessionStreamCarriesTheResumedTurn(t *testing.T) {
 	}
 	if err, ok := byType["message_done"]["error"]; ok && err != nil && err != "" {
 		t.Errorf("message_done carried %v, want a clean end", err)
+	}
+}
+
+// TestAttachLiveTurnReportsADecisionResolvedDuringSetup: the parked check and
+// the subscription are two steps, and revalidate is what closes the gap between
+// them. A decision answered in that window leaves the attach with nothing to
+// observe -- the resumed run's frames were broadcast to nobody -- so it must
+// report that rather than wait for a terminal that will not come (issue #167).
+func TestAttachLiveTurnReportsADecisionResolvedDuringSetup(t *testing.T) {
+	gw := &fakeGatewayClient{}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	revalidated := false
+	done := make(chan attachResult, 1)
+	go func() {
+		outcome, err := m.AttachLiveTurn(context.Background(), "alice", "conv-1", "run-1", func(agentruntime.Event) error {
+			return nil
+		}, func() error {
+			revalidated = true
+			return errDecisionResolved
+		})
+		done <- attachResult{outcome: outcome, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, errDecisionResolved) {
+			t.Fatalf("err = %v, want errDecisionResolved", res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attach waited for a terminal frame after its revalidation failed")
+	}
+	if !revalidated {
+		t.Error("the revalidation never ran: it must follow the subscription, not the gate")
+	}
+	// The subscription the attach made has to go with it, or the session's feed
+	// stays subscribed to a run nobody observes.
+	if subs := gw.unsubscribedSessions(); len(subs) != 1 || subs[0] != "conv-1" {
+		t.Errorf("unsubscribed = %v, want the attach's own subscription dropped", subs)
+	}
+	if _, ok := m.LiveRunID("alice", "conv-1"); ok {
+		t.Error("the attach is still registered as the session's live turn")
+	}
+}
+
+// TestSessionStreamEndsWhenTheDecisionIsAnsweredDuringSetup: the same window,
+// driven through the route -- the answer lands on the gateway while this process
+// is subscribing. The stream must end promptly and without a terminal, because
+// there is no run for it to report on: holding the session's one stream until
+// the attach cap would leave the browser with no continuation *and* every other
+// tab with a 409 (issue #167).
+func TestSessionStreamEndsWhenTheDecisionIsAnsweredDuringSetup(t *testing.T) {
+	parked := questionRecord("ask_1", attachSession)
+	parked.RunID = "run-1"
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{parked}}
+	gw.onSubscribe = func(string) { gw.resolvePendingQuestions() }
+	s := attachTestServer(t, gw)
+
+	rr := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/stream", nil)
+		req.Header.Set("X-CubePilot-User", "alice")
+		s.Handler().ServeHTTP(rr, req)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attach did not end: it is waiting on a run whose terminal frame was broadcast before it subscribed")
+	}
+	// No terminal: the browser's stream helper synthesizes one for a stream that
+	// ends without it, and the attach path refuses to read that as the turn
+	// ending. A message_done here would settle the card on a turn this stream
+	// never saw.
+	if body := strings.TrimSpace(rr.Body.String()); body != "" {
+		t.Errorf("stream body = %q, want nothing", body)
+	}
+	if s.hub.Active(attachSession) {
+		t.Error("the session's stream is still held after the attach gave up")
+	}
+	if _, ok := s.gatewayConns.LiveRunID("alice", attachSession); ok {
+		t.Error("the attach is still registered as the session's live turn")
 	}
 }
 

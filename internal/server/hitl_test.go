@@ -63,10 +63,15 @@ type fakeGatewayClient struct {
 	sendRecorded chan struct{}
 	waits        []string // runIds passed to agent.wait
 	subscribeErr error
-	sendErr      error
-	waitErr      error
-	createErr    error
-	modelErr     error
+	// onSubscribe runs inside SubscribeSessionMessages, once the subscription is
+	// recorded. It is where a test stages what happens on the gateway *while* an
+	// attach is subscribing -- a decision answered in that window is the one the
+	// attach cannot see (issue #167).
+	onSubscribe func(key string)
+	sendErr     error
+	waitErr     error
+	createErr   error
+	modelErr    error
 
 	// ask_user question channel (issue #161)
 	onApprovalResolved  func(ws.ApprovalResolved)
@@ -141,9 +146,17 @@ func (f *fakeGatewayClient) OnEvent(cb func(evName string, payload []byte)) {
 }
 func (f *fakeGatewayClient) SubscribeSessionMessages(ctx context.Context, key string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.subscribes = append(f.subscribes, key)
-	return f.subscribeErr
+	err := f.subscribeErr
+	onSubscribe := f.onSubscribe
+	f.mu.Unlock()
+	// Run the hook outside the lock: it is what a test uses to model a decision
+	// resolved on the gateway while a subscription is being established, so it
+	// touches the same fields the fake reads.
+	if onSubscribe != nil {
+		onSubscribe(key)
+	}
+	return err
 }
 func (f *fakeGatewayClient) UnsubscribeSessionMessages(ctx context.Context, key string) error {
 	f.mu.Lock()
@@ -354,6 +367,15 @@ func (f *fakeGatewayClient) sentMessages() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sends...)
+}
+
+// resolvePendingQuestions models the human answering on the gateway: the
+// records the pending list serves are gone, so a parked check made before the
+// answer no longer holds when it is repeated.
+func (f *fakeGatewayClient) resolvePendingQuestions() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pendingQuestions = nil
 }
 
 // subscribedSessions returns a copy of the recorded SubscribeSessionMessages keys.

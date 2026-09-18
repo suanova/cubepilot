@@ -18,9 +18,11 @@ import (
 // to the browser that answers.
 
 // handleSessionStream serves GET /api/v1/sessions/{key}/stream, an SSE stream
-// that observes a turn the caller did not start. It ends -- always with a
-// message_done -- when the run goes terminal, when the client disconnects, or at
-// the manager's attach cap.
+// that observes a turn the caller did not start. It ends with a message_done
+// when the run goes terminal, when the client disconnects, or at the manager's
+// attach cap -- and, alone among the ways it can end, without one when the
+// decision it attached to was answered before its subscription was ready: there
+// is then no run for this stream to report on (see the revalidation below).
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -36,17 +38,14 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	}
-	// Only a parked decision is attachable. It is also the only state in which the
-	// attach cannot miss anything while it is being set up: the run is waiting for
-	// a human, so it is producing no events.
-	runID, parked, err := s.parkedQuestionRun(r.Context(), user, sessionKey)
+	// Only a parked decision is attachable. It is also the state in which the
+	// attach is set up without racing the run's output: the run is waiting for a
+	// human, so it is producing nothing while the subscription is established.
+	runID, parked, err := s.parkedTurn(r.Context(), user, sessionKey)
 	if err != nil {
 		s.logf("attach %s: %s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
-	}
-	if !parked {
-		_, parked = s.approvals.Pending(user, sessionKey)
 	}
 	if !parked {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no parked turn for this session"})
@@ -80,10 +79,38 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		s.recordToolCall(user, ev)
 		return stream.Send(ev)
 	}
-	outcome, attachErr := s.gatewayConns.AttachLiveTurn(r.Context(), user, sessionKey, runID, emit)
+	outcome, attachErr := s.gatewayConns.AttachLiveTurn(r.Context(), user, sessionKey, runID, emit, func() error {
+		// The parked check above says the run was waiting for a human; it cannot
+		// promise the run is *still* waiting by the time this subscription is up.
+		// The answer route is independent of both, so it can resolve the decision
+		// in that window -- the web path opens the card before it opens the
+		// stream, so a quick answer is enough. Everything the resumed run
+		// produced since went to nobody, and no subscription can recover it:
+		// what this stream must not do is keep waiting for a terminal frame that
+		// has already been broadcast (issue #167).
+		_, stillParked, err := s.parkedTurn(r.Context(), user, sessionKey)
+		if err != nil {
+			return err
+		}
+		if !stillParked {
+			return errDecisionResolved
+		}
+		return nil
+	})
 	// A cancelled context means the browser went away; there is nobody to tell and
 	// nothing to log beyond the attach path's own lines.
 	if r.Context().Err() != nil {
+		return
+	}
+	if errors.Is(attachErr, errDecisionResolved) {
+		// Ending without a terminal is the honest report, and the shape the
+		// browser already handles: its stream helper synthesizes a terminal for a
+		// stream that ends without one, and the attach path reads a synthesized
+		// terminal as exactly this -- a stream that observed no run, so nothing
+		// for it to settle on the card (see attachTurn). A liveTurnDone here
+		// would instead mark a turn this stream never saw as over, and paint the
+		// race on the user as an error.
+		s.logf("attach %s: %s: %v", user, sessionKey, errDecisionResolved)
 		return
 	}
 	if attachErr != nil {
@@ -93,6 +120,28 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	// a run another tab stopped is terminal but not a failure, so it must not
 	// reach the browser as a plain completion (issue #166).
 	_ = stream.Send(liveTurnDone(sessionKey, outcome, attachErr))
+}
+
+// errDecisionResolved reports that the decision an attach was gated on was
+// answered before the attach got its subscription in place, so the resumed run's
+// output has already gone out to nobody (issue #167). It is not a failure of the
+// attach: it is the one outcome in which the caller is told, by the stream simply
+// ending, that there was nothing here to observe.
+var errDecisionResolved = errors.New("the parked decision was resolved before the stream was ready")
+
+// parkedTurn reports the run a session is parked on -- the gate of the attach
+// route, applied twice: once to decide whether there is anything to attach to,
+// and once more once the subscription is up, to catch a decision answered in
+// between. A question carries the run it belongs to, which the attach uses to
+// scope what it observes; a write approval parks the run the same way but names
+// no run of its own, so the session is the whole of that gate.
+func (s *Server) parkedTurn(ctx context.Context, user, sessionKey string) (string, bool, error) {
+	runID, parked, err := s.parkedQuestionRun(ctx, user, sessionKey)
+	if err != nil || parked {
+		return runID, parked, err
+	}
+	_, parked = s.approvals.Pending(user, sessionKey)
+	return "", parked, nil
 }
 
 // parkedQuestionRun reports the run a session is parked on because of a question,

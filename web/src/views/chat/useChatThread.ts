@@ -7,9 +7,8 @@
 // the parked-card races are the parts it would be worst to have two of.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
-import { ApiError } from '@/api/client'
+import { ApiError, getCurrentUser } from '@/api/client'
 import { streamSSE } from '@/api/sse'
-import { getCurrentUser } from '@/api/client'
 import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem, SSEEvent } from '@/api/types'
 import { showToast } from '@/stores/toast'
 import {
@@ -52,8 +51,6 @@ export interface ChatThreadApi {
   submitQuestion(q: BubbleQuestion): Promise<void>
   dismissQuestion(q: BubbleQuestion): Promise<void>
 }
-
-const user = getCurrentUser()
 
 // How often a view holding no stream for the session's turn asks whether that
 // turn is still running. Asking is the only way it can learn the turn ended, and
@@ -252,13 +249,22 @@ export function useChatThread({
   // -- blanking and refilling is a visible flash on every reopen, and the
   // content is about to be the same conversation.
   async function loadHistory(id: string, keepVisible = false) {
+    // The generation this read belongs to, checked again once it answers. The
+    // check cannot be left to the caller: the response is applied here, and a
+    // session switch during the request has to win -- otherwise a slower answer
+    // for the session the user left paints its thread under the header of the
+    // one they moved to. The attach's catch-up made that reachable with no user
+    // action at all, but the race is the same one a switch already had.
+    const gen = streamGenRef.current
     setLoadingHistory(true)
     if (!keepVisible) setBubbles([])
     try {
       const items = await api.sessionHistory(id)
+      if (streamGenRef.current !== gen) return
       renderHistory(items, id)
       void recoverPending(id)
     } catch (e) {
+      if (streamGenRef.current !== gen) return
       // A 404 is "this conversation has not started", which is not a failure:
       // every conversation is in that state until its first message reaches the
       // server. Painting it as one would make a brand-new conversation look
@@ -270,8 +276,12 @@ export function useChatThread({
         setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
       }
     } finally {
-      setLoadingHistory(false)
-      requestAnimationFrame(scrollThread)
+      // Only while this read is still the view's: a superseding load owns the
+      // flag, and its own finally is the one that clears it.
+      if (streamGenRef.current === gen) {
+        setLoadingHistory(false)
+        requestAnimationFrame(scrollThread)
+      }
     }
   }
 
@@ -289,12 +299,18 @@ export function useChatThread({
   // capture-then-re-check the redirect continuation uses. A session switch or a
   // new chat in the window runs dropStream(), and an answer for the session the
   // user left must not paint a status onto the view they moved to.
-  async function checkTurnElsewhere(id: string, gen: number) {
+  //
+  // `onIdle` is the caller's follow-up for a turn the server reports as over --
+  // the attach's catch-up is the one caller that needs it. It runs only for an
+  // answer this view still holds the generation for, so it can never be the
+  // session the user left.
+  async function checkTurnElsewhere(id: string, gen: number, onIdle?: () => void) {
     try {
       const { active } = await api.sessionTurn(id)
       if (streamGenRef.current !== gen) return
       setRunningElsewhere(!!active)
       setTurnCheckFailed(false)
+      if (!active) onIdle?.()
     } catch {
       // Never folded into "not running": the API answers 502 exactly when it
       // could not determine whether the turn is still going.
@@ -383,8 +399,13 @@ export function useChatThread({
       p = await api.pendingApproval(id)
     } catch {
       // No pending approval for this session; a restored question still needs the
-      // stream its answer's output comes back on.
-      if (attachBubble) void attachTurn(id, attachBubble)
+      // stream its answer's output comes back on. The card was appended before
+      // this lookup went out, so this path can land after a switch, with
+      // dropStream already run -- attaching then would open an invisible stream
+      // for the session the user left, holding its one stream against every
+      // legitimate client until the next switch or the server's cap. Same guard
+      // as the success path below.
+      if (attachBubble && activeSessionRef.current === id) void attachTurn(id, attachBubble)
       return
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
@@ -738,22 +759,37 @@ export function useChatThread({
     attachRef.current?.abort()
     const ctl = new AbortController()
     attachRef.current = ctl
+    const gen = streamGenRef.current
+    // Whether the server's own terminal reached this stream, which is the one
+    // thing that separates a stream that observed the run from one that ended
+    // without observing it. The helper's *synthesized* terminal says nothing of
+    // the sort -- it is a statement about the transport -- and the attach never
+    // lets it reach the bubble (see below).
+    let observedTerminal = false
+    // A refused attach is not a stream that ended: nothing was established, and
+    // the tab that holds the session's stream is the one carrying the run.
+    let refused = false
     try {
       await streamSSE(
         `/api/v1/sessions/${encodeURIComponent(id)}/stream`,
-        {},
+        // streamSSE fetches directly, so the identity every other request gets
+        // from apiFetch has to be passed here explicitly, as the turn stream
+        // does. Without it the server resolves the default user -- and a card
+        // restored under a selected one is then attached on a gateway that
+        // holds nothing for that session, which answers 404.
+        { headers: { 'X-CubePilot-User': getCurrentUser() } },
         (_evName, ev) => {
           // An aborted stream is this view walking away, not a failed turn.
           if (ctl.signal.aborted) return
           // A synthesized terminal is the stream helper's own, emitted when the
-          // request failed before any response arrived (see streamSSE). It has
-          // nothing to say about this bubble: the attach never carried a turn, so
-          // there is no turn of this card's to end -- passing it on would mark a
-          // card restored from the pending endpoint as `transportLost` over a
-          // connection that never opened. Failing to attach is silent here, the
-          // same as the 409 below: the card is on screen and the answer paths
-          // report their own errors.
+          // request failed before any response arrived, or when the stream ended
+          // without the server's terminal (see streamSSE). It has nothing to say
+          // about this bubble: the attach never carried a turn, so there is no
+          // turn of this card's to end -- passing it on would mark a card
+          // restored from the pending endpoint as `transportLost` over a
+          // connection that never opened.
           if (ev.type === 'message_done' && ev.synthetic) return
+          if (ev.type === 'message_done') observedTerminal = true
           applyTurnEvent(bubble, ev)
           // An observed turn that really ended answers the header's question:
           // nothing is running any more, so its Stop must not sit there offering
@@ -765,11 +801,24 @@ export function useChatThread({
         // event, so there is nothing for this one to show. Anything else (no
         // channel, a gateway failure) is silent too: the card is on screen and
         // the answer paths report their own errors.
-        () => {},
+        () => {
+          refused = true
+        },
       )
     } catch {
       /* the request never started; the card stays as it is */
     }
+    if (observedTerminal || refused || ctl.signal.aborted) return
+    // The stream ended without ever observing the run. That is what the server
+    // reports when the decision was answered before this attach was ready: the
+    // resumed run's output has already gone past, and it exists only in the
+    // transcript now. So catch up from it -- but ask first, because a run that
+    // is still going is the no-stream turn status's job, and that status is
+    // already polling for the moment its output lands (see the effect above).
+    // A connection that merely dropped lands here too, which is the same
+    // situation: an attach that observed nothing is one to re-establish or to
+    // catch up on, never one to leave the tab silent about.
+    void checkTurnElsewhere(id, gen, () => void loadHistory(id, true))
   }
 
   // applyTurnEvent folds one SSE event into the bubble it belongs to. It is the
@@ -1071,7 +1120,7 @@ export function useChatThread({
         '/api/v1/messages',
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': user },
+          headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': getCurrentUser() },
           body: JSON.stringify({ sessionId: currentSessionId, content: text }),
         },
         (_evName, ev) => {

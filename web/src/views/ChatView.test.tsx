@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ChatView from './ChatView'
 import { installFakeGateway, type FakeGateway } from '@/test/gateway'
@@ -574,5 +574,182 @@ describe('ChatView rewritten reply text', () => {
 
     expect(await screen.findByText('Final result')).toBeInTheDocument()
     turn.close()
+  })
+})
+
+// A card restored after a page load (or any turn this view did not start) is
+// answered through a stream the tab attaches to itself: the request that carried
+// the turn died with the page (issue #167).
+describe('ChatView re-attach', () => {
+  const SESSIONS = [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }]
+  const parkedCard = [
+    {
+      id: 'q1',
+      questions: [
+        {
+          questionId: 'specs',
+          header: 'Compute',
+          question: 'What compute spec?',
+          options: [{ label: '4C / 16Gi' }],
+        },
+      ],
+    },
+  ]
+
+  // The attach stream is opened by the app rather than by a click, so a test
+  // waits for the request instead of driving it.
+  async function attachRequest() {
+    await waitFor(() => {
+      expect(gateway!.requests.some((r) => r.path.endsWith('/stream'))).toBe(true)
+    })
+    return gateway!.requests.find((r) => r.path.endsWith('/stream'))!
+  }
+
+  it('identifies itself as the user the card was restored for', async () => {
+    // streamSSE fetches directly rather than through the API client, so the
+    // identity every other request carries has to be put on this one by hand.
+    // Without it the server resolves the default user, and a card restored under
+    // a selected one is attached on a gateway that holds nothing for the
+    // session: a 404, and the answer's output has nowhere to land.
+    localStorage.setItem('cubepilot.user', 'bob')
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      turnActive: true,
+      pendingQuestions: parkedCard,
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+    expect(await screen.findByText('What compute spec?')).toBeInTheDocument()
+
+    const attach = await attachRequest()
+    expect(attach.headers?.['X-CubePilot-User']).toBe('bob')
+    // The same identity the card was restored with, which is what makes the two
+    // halves find the same session.
+    expect(
+      gateway!.requests.find((r) => r.path.endsWith('/question/pending'))?.headers?.['X-CubePilot-User'],
+    ).toBe('bob')
+  })
+
+  it('catches up when the attach ends without ever observing the run', async () => {
+    // The decision can be answered between the server's parked check and the
+    // subscription it opens, and the resumed run's output then goes out to
+    // nobody. The attach reports that by ending without a terminal -- and the
+    // tab has to catch up from the transcript, which is the only place that
+    // output exists now. Without it the card settles and the tab sits on a
+    // truncated reply, which is the bug the attach exists to fix.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      history: [{ role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] }],
+      pendingQuestions: parkedCard,
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+    expect(await screen.findByText('What compute spec?')).toBeInTheDocument()
+    await attachRequest()
+
+    // The answer landed before the attach was ready, the run went on to finish,
+    // and its output is in the history by now.
+    gateway.setHistory([
+      { role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'All nodes are ready.' }] },
+    ])
+    gateway.endAttach()
+
+    expect(await screen.findByText(/All nodes are ready\./, undefined, { timeout: 5000 })).toBeInTheDocument()
+  }, 15000)
+})
+
+// A request that outlives the session it was made for. Both halves of the race
+// are ordinary: the user answers or switches while something is still in
+// flight, and what comes back belongs to the conversation they left.
+describe('ChatView requests that outlive their session', () => {
+  const SESSIONS = [
+    { sessionKey: 'agent:main:conv-a', title: 'nginx dev environment' },
+    { sessionKey: 'agent:main:conv-b', title: 'redis dev environment' },
+  ]
+
+  // A macrotask boundary: everything the view does with an answer it has just
+  // been given runs in microtasks, so one turn of the event loop is past all of
+  // it. That is what lets an assertion below be about what did *not* happen.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+  it('does not paint a history response onto the session the user moved to', async () => {
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      historyFor: {
+        'agent:main:conv-a': [
+          { role: 'assistant', content: [{ type: 'text', text: 'The nginx namespace is ready.' }] },
+        ],
+        'agent:main:conv-b': [
+          { role: 'assistant', content: [{ type: 'text', text: 'The redis namespace is ready.' }] },
+        ],
+      },
+    })
+    gateway.install()
+
+    // The first conversation's read is held: the user leaves it while it is
+    // still in flight, which is the whole of how a slow answer loses this race.
+    const release = gateway.holdPath('agent:main:conv-a/messages')
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('nginx dev environment'))
+    await user.click(await screen.findByText('redis dev environment'))
+    expect(await screen.findByText(/The redis namespace is ready\./)).toBeInTheDocument()
+
+    release()
+    await settle()
+
+    // The read that was in flight for the conversation the user left landed
+    // after the one they moved to. Rendering it would put nginx's thread under
+    // the redis header -- history is the truth for the session it was read for,
+    // and for no other.
+    expect(screen.getByText(/The redis namespace is ready\./)).toBeInTheDocument()
+    expect(screen.queryByText(/The nginx namespace is ready\./)).not.toBeInTheDocument()
+  })
+
+  it('does not attach a stream for a card whose session the user left', async () => {
+    // A restored question card is drawn before the approval lookup that follows
+    // it is answered. Switching sessions in that window leaves the attach with a
+    // session to open a stream for -- and that stream is the session's only one:
+    // it would hold it against every legitimate client until the next switch,
+    // with nothing on screen to explain why.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      pendingQuestions: [
+        {
+          id: 'q1',
+          questions: [
+            {
+              questionId: 'specs',
+              header: 'Compute',
+              question: 'What compute spec?',
+              options: [{ label: '4C / 16Gi' }],
+            },
+          ],
+        },
+      ],
+    })
+    gateway.install()
+
+    // No pending approval, and the answer is held until the user has moved on.
+    const release = gateway.holdPath('agent:main:conv-a/approval/pending')
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('nginx dev environment'))
+    expect(await screen.findByText('What compute spec?')).toBeInTheDocument()
+
+    await user.click(await screen.findByText('redis dev environment'))
+    release()
+    await settle()
+
+    expect(gateway.requests.filter((r) => r.path.includes('conv-a/stream'))).toEqual([])
   })
 })
