@@ -328,16 +328,16 @@ func TestSettlePendingForSessionMatchesRawRecordKey(t *testing.T) {
 
 // A settle cancels the session's questions whether or not the Portal could
 // render them. The run is dead, so a record the render filters drop -- expired,
-// or a secret/free-text question this version has no input for -- is still an
-// open question nobody can answer any more; closing it is what stops a card
-// being left behind.
+// or a secret question this version has no input for -- is still an open
+// question nobody can answer any more; closing it is what stops a card being
+// left behind.
 func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 	expired := questionRecord("ask_expired", questionTestSession)
 	expired.ExpiresAtMs = time.Now().Add(-time.Minute).UnixMilli()
-	freeText := questionRecord("ask_freeform", questionTestSession)
-	freeText.Questions[0].Options = nil // nothing to render as buttons
+	secret := questionRecord("ask_secret", questionTestSession)
+	secret.Questions[0].IsSecret = true // a variant the render filters drop
 
-	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{expired, freeText}}
+	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{expired, secret}}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 
 	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
@@ -346,7 +346,7 @@ func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 	for _, c := range gw.questionCancels {
 		got[c] = true
 	}
-	for _, want := range []string{"ask_expired|alice", "ask_freeform|alice"} {
+	for _, want := range []string{"ask_expired|alice", "ask_secret|alice"} {
 		if !got[want] {
 			t.Errorf("question %q not cancelled; cancels = %v", want, gw.questionCancels)
 		}

@@ -68,8 +68,8 @@ type QuestionOption struct {
 }
 // Question keeps the variants we do not project (isSecret/secretStore) so an
 // unsupported record is filtered explicitly rather than silently decoded into a
-// lossy shape. isOther is decoded for completeness but is never a reason to
-// drop: ask_user sets it on every question.
+// lossy shape. isOther is projected so the card can offer its text input, and is
+// never a reason to drop: ask_user sets it on every question.
 type Question struct {
     QuestionID  string           `json:"questionId"`
     Header      string           `json:"header"`
@@ -126,6 +126,7 @@ type QuestionItem struct {
     Question    string           `json:"question"`
     Options     []QuestionOption `json:"options"`
     MultiSelect bool             `json:"multiSelect,omitempty"`
+    IsOther     bool             `json:"isOther,omitempty"`
 }
 type QuestionPrompt struct {
     Questions      []QuestionItem `json:"questions"`
@@ -142,7 +143,8 @@ browser.
 // question_pending
 { "type": "question_pending", "session_id": "...", "call_id": "<gateway question id>",
   "question": { "questions": [ { "questionId": "where", "header": "Target",
-                  "question": "...", "options": [ {"label": "..."} ], "multiSelect": false } ],
+                  "question": "...", "options": [ {"label": "..."} ],
+                  "multiSelect": false, "isOther": true } ],
                 "timeoutSeconds": 842 } }
 // question_resolved
 { "type": "question_resolved", "session_id": "...", "call_id": "...",
@@ -157,16 +159,17 @@ live relay and reload recovery. This is not defensive coding -- the admin
 connection receives *every* `question.*` event on that gateway, so a
 `question.request` from another producer reaches this bridge too.
 
-A record is dropped when it has no questions, or any question is `isSecret`,
-carries a `secretStore` binding, or has no options (free text only, which this
-version cannot render). The reason is logged, so a dropped question is
+A record is dropped when it has no questions, or any question is `isSecret` or
+carries a `secretStore` binding. The reason is logged, so a dropped question is
 diagnosable rather than silent.
 
-`isOther` is deliberately **not** a reason to drop: it reads like "the human may
-answer something else", but `ask_user`'s normalizer stamps `isOther: true` on
-every question it emits (it declares that free text is offered alongside the
-options). Treating it as unsupported rejects the entire feature -- which is
-exactly what happened when it was first written this way.
+A question with no options is **not** dropped: it is free text only, and the card
+renders the text input for it. `isOther` is likewise never a reason to drop: it
+reads like "the human may answer something else", but `ask_user`'s normalizer
+stamps it on every question it emits -- it is how the tool declares that free
+text is offered alongside the options. Treating it as unsupported rejects the
+entire feature, which is exactly what happened when it was first written this
+way.
 
 **Relay and routing.** In `hitl.go`'s `conn()`, `OnEvent` routes
 `question.requested` / `question.resolved` to a new `questionBridge` (symmetric
@@ -260,11 +263,12 @@ arguments fully overlap the question card, and the card would otherwise sit on
   event on the right session with the remaining seconds, and routes
   `question.resolved` via the index; handler tests for resolve / cancel /
   pending; status mapping per failure. Negative tests: session mismatch,
-  non-projectable `isSecret` / `secretStore` / no-option record, expired record
-  on recovery, and multiple pending records for one session. One positive test
-  uses a record carrying the flags `ask_user` actually emits (`isOther: true`),
-  because a copy of an unset record does not catch a filter that rejects the
-  real thing.
+  non-projectable `isSecret` / `secretStore` record, expired record on recovery,
+  and multiple pending records for one session. One positive test uses a record
+  carrying the flags `ask_user` actually emits (`isOther: true`), because a copy
+  of an unset record does not catch a filter that rejects the real thing; another
+  covers a free-text question (no options), which is projected with an empty
+  option list.
 - `livetools`: an `ask_user` `tool_call` / `tool_result` pair produces no tool
   card, while other tools are unaffected.
 
@@ -272,7 +276,4 @@ arguments fully overlap the question card, and the card would otherwise sit on
 
 - `isSecret` / `secretStore` questions: not produced by `ask_user`, and not
   projected when they arrive from another producer.
-- Free-text answers. `isOther` questions are projected and their options are
-  answerable, but this version renders no text input, so a free-text-only
-  question (no options) is dropped rather than shown unanswerable.
 - Any change on the OpenClaw side.

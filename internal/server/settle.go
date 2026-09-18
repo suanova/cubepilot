@@ -109,10 +109,10 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 		// nothing -- it closes the records of a run that is now dead. A card the
 		// browser already holds can still be on screen (a countdown that ran out
 		// leaves it locked until a question_resolved arrives), and a record this
-		// Portal never rendered -- a secret or free-text question the other paths
-		// drop -- is still an open question of the dead run, not one left to
-		// answer. Closing one that has no card is harmless: the client ignores a
-		// resolved event it cannot match.
+		// Portal never rendered -- a secret question the other paths drop -- is
+		// still an open question of the dead run, not one left to answer. Closing
+		// one that has no card is harmless: the client ignores a resolved event it
+		// cannot match.
 		if canonicalSessionKey(rec.SessionKey) != sessionKey || rec.Status != "pending" {
 			continue
 		}

@@ -62,19 +62,23 @@ func (r *questionRoutes) take(id string) (string, bool) {
 }
 
 // unsupportedQuestionReason returns "" when the Portal can render a question
-// record as a choice card, or a short reason when it cannot. Callers log the
-// reason, so a silently dropped question is diagnosable.
+// record, or a short reason when it cannot. Callers log the reason, so a
+// silently dropped question is diagnosable.
 //
 // The admin device connection receives every question.* event on the gateway,
 // not only the ones ask_user produced, so a record from another producer must
-// be filtered out rather than rendered as an ordinary choice prompt.
+// be filtered out rather than rendered as an ordinary question card.
 //
-// Note what is NOT a reason to drop a record: isOther. It reads like "the human
-// may answer something else", which sounds like an unsupported variant, but
-// ask_user's own normalizer stamps isOther:true on every question it emits
-// (ask-user-tool-normalization.ts) -- it is how the tool declares that free
-// text is offered alongside the options, so treating it as unsupported rejects
-// the entire feature.
+// Note what is NOT a reason to drop a record:
+//
+//   - isOther. It reads like "the human may answer something else", which
+//     sounds like an unsupported variant, but ask_user's own normalizer stamps
+//     isOther:true on every question it emits (ask-user-tool-normalization.ts)
+//     -- it is how the tool declares that free text is offered alongside the
+//     options, so treating it as unsupported rejects the entire feature.
+//   - no options. That is a free-text-only question, and the card has a text
+//     input for it; a question with neither options nor text would be the only
+//     thing that is unanswerable, and ask_user never asks one.
 func unsupportedQuestionReason(rec ws.QuestionRecord) string {
 	if len(rec.Questions) == 0 {
 		return "record carries no questions"
@@ -85,10 +89,6 @@ func unsupportedQuestionReason(rec ws.QuestionRecord) string {
 			return "secret question"
 		case len(q.SecretStore) > 0:
 			return "secret-store question"
-		case len(q.Options) == 0:
-			// Free text only: nothing to render as buttons, and this version
-			// offers no text input.
-			return "free-text-only question"
 		}
 	}
 	return ""
@@ -131,6 +131,7 @@ func questionPrompt(rec ws.QuestionRecord) *agentruntime.QuestionPrompt {
 			Question:    q.Question,
 			Options:     opts,
 			MultiSelect: q.MultiSelect,
+			IsOther:     q.IsOther,
 		})
 	}
 	return &agentruntime.QuestionPrompt{
@@ -375,7 +376,9 @@ func (m *gatewayConns) ListQuestions(ctx context.Context, user string) ([]ws.Que
 }
 
 // ResolveQuestion answers a pending question on the user's gateway connection.
-// answers maps each question id to the selected option labels.
+// answers maps each question id to the human's answer: the selected option
+// labels, or their own text for a question that offers free input. The text is
+// relayed as-is -- the platform does not know the gateway's answer semantics.
 func (m *gatewayConns) ResolveQuestion(ctx context.Context, user, id string, answers map[string][]string) error {
 	gw, ok := m.liveConn(user)
 	if !ok {
