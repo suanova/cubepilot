@@ -969,12 +969,22 @@ describe('ChatView narration from history', () => {
       sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],
       history: [
         { role: 'user', content: '看看 default' },
+        // The shape the gateway actually records: the step is its own assistant
+        // row, marked as commentary, and the tool call is the next one. The
+        // marker is what says "this is a step", since a step and the answer are
+        // both assistant text.
         {
           role: 'assistant',
-          content: [
-            { type: 'text', text: '先看看 default 有哪些 Pod。' },
-            { type: 'toolCall', id: 'c1', name: 'exec', arguments: { command: 'kubectl get pods -n default' } },
-          ],
+          content: [{ type: 'text', text: '先看看 default 有哪些 Pod。' }],
+          openclawStreamFallback: {
+            itemId: 'commentary-0',
+            source: 'segment',
+            replacementText: '\n\n先看看 default 有哪些 Pod。\n\n',
+          },
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'c1', name: 'exec', arguments: { command: 'kubectl get pods -n default' } }],
         },
         { role: 'toolResult', content: [{ type: 'text', text: 'qwen38-vllm-0 Running' }] },
         { role: 'assistant', content: [{ type: 'text', text: '结论：一切正常。' }] },

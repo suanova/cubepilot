@@ -212,21 +212,23 @@ func TestLiveProjector_TextReplace(t *testing.T) {
 	}
 }
 
-// commentary builds an assistant frame the way the gateway publishes the agent's
-// between-tool narration: a full-text snapshot, always replace, phase-marked.
-func commentary(text string) string {
-	return `{"sessionKey":"` + conv + `","runId":"r1","stream":"assistant","data":{"text":"` +
-		text + `","delta":"` + text + `","replace":true,"phase":"commentary"}}`
+// preamble builds the item frame the gateway publishes the agent's between-tool
+// narration as: an item of kind "preamble" whose progressText is the whole step,
+// folded onto one line by the gateway. This is the surface the Control UI reads,
+// and the one the deployed gateway was observed to send (the assistant stream
+// carries the answer alone).
+func preamble(text string) string {
+	return `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"preamble","title":"Preamble","phase":"update","progressText":"` + text + `"}}`
 }
 
 func TestLiveProjector_Narration(t *testing.T) {
 	p := newLiveProjector()
-	got, _ := p.feed(conv, "agent", []byte(commentary("打算这样查：")))
+	got, _ := p.feed(conv, "agent", []byte(preamble("先看看 default 有哪些 Pod。")))
 	if len(got) != 1 || got[0].Type != openclaw.EventNarration {
-		t.Fatalf("commentary = %+v, want one narration event", got)
+		t.Fatalf("preamble = %+v, want one narration event", got)
 	}
-	if got[0].Text != "打算这样查：" {
-		t.Fatalf("text = %q, want the snapshot", got[0].Text)
+	if got[0].Text != "先看看 default 有哪些 Pod。" {
+		t.Fatalf("text = %q, want the preamble text", got[0].Text)
 	}
 	if got[0].BlockID == "" {
 		t.Fatal("block id is empty; a block that cannot be identified cannot be replaced")
@@ -235,24 +237,25 @@ func TestLiveProjector_Narration(t *testing.T) {
 
 func TestLiveProjector_NarrationReplacesWithinOneBlock(t *testing.T) {
 	p := newLiveProjector()
-	first, _ := p.feed(conv, "agent", []byte(commentary("打算这样查：")))
-	second, _ := p.feed(conv, "agent", []byte(commentary("打算这样查：1. 只读操作")))
+	first, _ := p.feed(conv, "agent", []byte(preamble("先看看")))
+	// The gateway re-emits a step as it grows, so the same block arrives again.
+	second, _ := p.feed(conv, "agent", []byte(preamble("先看看 default 有哪些 Pod。")))
 	if len(first) != 1 || len(second) != 1 {
-		t.Fatalf("expected one event per snapshot, got %d then %d", len(first), len(second))
+		t.Fatalf("expected one event per update, got %d then %d", len(first), len(second))
 	}
 	if first[0].BlockID != second[0].BlockID {
 		t.Fatalf("block id changed within one block: %q -> %q", first[0].BlockID, second[0].BlockID)
 	}
-	if second[0].Text != "打算这样查：1. 只读操作" {
-		t.Fatalf("text = %q, want the newer snapshot", second[0].Text)
+	if second[0].Text != "先看看 default 有哪些 Pod。" {
+		t.Fatalf("text = %q, want the newer text", second[0].Text)
 	}
 }
 
 func TestLiveProjector_NarrationAdvancesOnToolStart(t *testing.T) {
 	p := newLiveProjector()
-	before, _ := p.feed(conv, "agent", []byte(commentary("先查 Pod")))
+	before, _ := p.feed(conv, "agent", []byte(preamble("先查 Pod")))
 	p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"tool","data":{"phase":"start","name":"exec","toolCallId":"call_1"}}`))
-	after, _ := p.feed(conv, "agent", []byte(commentary("再查事件")))
+	after, _ := p.feed(conv, "agent", []byte(preamble("再查事件")))
 	if len(before) != 1 || len(after) != 1 {
 		t.Fatalf("expected one narration each side of the tool, got %d then %d", len(before), len(after))
 	}
@@ -263,14 +266,14 @@ func TestLiveProjector_NarrationAdvancesOnToolStart(t *testing.T) {
 
 func TestLiveProjector_NarrationAdvancesOnSuppressedToolStart(t *testing.T) {
 	p := newLiveProjector()
-	before, _ := p.feed(conv, "agent", []byte(commentary("我需要确认一下")))
+	before, _ := p.feed(conv, "agent", []byte(preamble("我需要确认一下")))
 	// ask_user's card is suppressed, so nothing is emitted for it -- and a block
 	// id that advanced only on emitted events would merge the two narrations into
 	// one paragraph across the question.
 	if got, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"tool","data":{"phase":"start","name":"ask_user","toolCallId":"call_q"}}`)); len(got) != 0 {
 		t.Fatalf("ask_user start = %+v, want no card", got)
 	}
-	after, _ := p.feed(conv, "agent", []byte(commentary("好，那我继续")))
+	after, _ := p.feed(conv, "agent", []byte(preamble("好，那我继续")))
 	if len(before) != 1 || len(after) != 1 {
 		t.Fatalf("expected one narration each side of the question, got %d then %d", len(before), len(after))
 	}
@@ -279,41 +282,31 @@ func TestLiveProjector_NarrationAdvancesOnSuppressedToolStart(t *testing.T) {
 	}
 }
 
-func TestLiveProjector_NarrationIgnoresNonCommentary(t *testing.T) {
+func TestLiveProjector_NarrationDropsBlankText(t *testing.T) {
+	p := newLiveProjector()
+	// A step that narrated nothing must not draw an empty line between two cards.
+	got, _ := p.feed(conv, "agent", []byte(preamble("   ")))
+	if len(got) != 0 {
+		t.Fatalf("blank preamble = %+v, want no narration", got)
+	}
+}
+
+func TestLiveProjector_NarrationIgnoresOtherFrames(t *testing.T) {
 	p := newLiveProjector()
 	cases := map[string]string{
-		"final answer phase": `{"sessionKey":"` + conv + `","stream":"assistant","data":{"text":"结论是这样的","delta":"结论","phase":"final_answer"}}`,
-		"no phase":           `{"sessionKey":"` + conv + `","stream":"assistant","data":{"text":"no phase marker","delta":"no phase marker"}}`,
+		// The answer rides the assistant stream, and the chat stream carries it
+		// too; projecting it here as well would print it twice.
+		"assistant answer": `{"sessionKey":"` + conv + `","stream":"assistant","data":{"text":"结论是这样的","delta":"结论是这样的"}}`,
+		// Tool and command items are cards, not narration.
+		"tool item":    `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","toolCallId":"c9"}}`,
+		"command item": `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"command","phase":"update","toolCallId":"c9"}}`,
 	}
 	for name, payload := range cases {
 		got, _ := p.feed(conv, "agent", []byte(payload))
-		if len(got) != 0 {
-			t.Fatalf("%s = %+v, want no narration", name, got)
+		for _, ev := range got {
+			if ev.Type == openclaw.EventNarration {
+				t.Fatalf("%s produced a narration: %+v", name, ev)
+			}
 		}
-	}
-}
-
-func TestLiveProjector_NarrationDropsBlankSnapshots(t *testing.T) {
-	p := newLiveProjector()
-	// The gateway publishes a step's whole snapshot, and a step that narrated
-	// nothing is "\n\n" -- drawing it would put an empty block between two cards.
-	got, _ := p.feed(conv, "agent", []byte(commentary(`\n\n`)))
-	if len(got) != 0 {
-		t.Fatalf("blank snapshot = %+v, want no narration", got)
-	}
-}
-
-func TestLiveProjector_NarrationIsVerbatim(t *testing.T) {
-	p := newLiveProjector()
-	// The emptiness check may not double as a rewrite: a narration that opens
-	// with an indented Markdown code block is a code block because of that
-	// indentation, and trimming the snapshot would render it as prose.
-	const snapshot = "    kubectl get pods -n default\n"
-	got, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"assistant","data":{"text":"    kubectl get pods -n default\n","replace":true,"phase":"commentary"}}`))
-	if len(got) != 1 || got[0].Type != openclaw.EventNarration {
-		t.Fatalf("commentary = %+v, want one narration event", got)
-	}
-	if got[0].Text != snapshot {
-		t.Fatalf("text = %q, want the snapshot verbatim (%q)", got[0].Text, snapshot)
 	}
 }

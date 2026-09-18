@@ -20,6 +20,16 @@ export interface HistoryContentBlock {
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'toolResult'
   content: string | HistoryContentBlock[]
+  // What the gateway records on a durable assistant row it published as
+  // commentary. `itemId` (e.g. commentary-0) is what marks the row as a step
+  // rather than the answer, and `replacementText` is that step's text in full --
+  // the live lane carries the same step folded onto one line, so this is what a
+  // reload reads to put the step back whole (issue #216).
+  openclawStreamFallback?: {
+    itemId?: string
+    replacementText?: string
+    source?: string
+  }
 }
 
 export interface Task {

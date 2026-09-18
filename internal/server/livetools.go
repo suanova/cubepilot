@@ -22,9 +22,10 @@ import (
 //   - agent stream="item" / "command_output"           (tool+command lifecycle
 //     and streamed output; kept as a richer/back-compat source, deduped per
 //     call id)
-//   - agent stream="assistant" phase="commentary"      (the agent's between-tool
-//     narration, projected as EventNarration; the gateway's own chat lane drops
-//     it on purpose, so this is the only surface that carries it)
+//   - agent stream="item" kind="preamble"              (the agent's between-tool
+//     narration, projected as EventNarration; the gateway classifies that text
+//     as commentary and publishes it here rather than on the assistant stream,
+//     which carries the answer alone -- this is also what the Control UI reads)
 //   - chat  state status/delta/final/aborted/error     (startup status and
 //     visible assistant text; aborted/error mark the run terminal)
 
@@ -99,6 +100,9 @@ type agentItem struct {
 	Meta       string `json:"meta"`
 	Title      string `json:"title"`
 	ToolCallID string `json:"toolCallId"`
+	// ProgressText is the preamble item's text: the agent's between-tool
+	// narration, folded onto one line by the gateway.
+	ProgressText string `json:"progressText"`
 }
 
 type agentOutput struct {
@@ -106,16 +110,6 @@ type agentOutput struct {
 	ToolCallID string `json:"toolCallId"`
 	Output     string `json:"output"`
 	Summary    string `json:"summary"`
-}
-
-// agentAssistant is the assistant-text stream: the agent's between-tool
-// narration while phase is "commentary", and the run's answer while it is
-// "final_answer". Phase is the gateway's own marker (its live chat projection
-// uses the same one to keep commentary out of the answer), so it is read rather
-// than guessed at from position or timing.
-type agentAssistant struct {
-	Phase string `json:"phase"`
-	Text  string `json:"text"`
 }
 
 // chatDelta is the visible-text event the gateway broadcasts to session
@@ -147,11 +141,17 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 		switch fr.Stream {
 		case "tool":
 			return p.toolEvent(sessionKey, fr.Data), false
-		case "assistant":
-			return p.narrationEvent(sessionKey, fr.Data), false
 		case "item":
 			var it agentItem
-			if err := json.Unmarshal(fr.Data, &it); err != nil || it.ToolCallID == "" {
+			if err := json.Unmarshal(fr.Data, &it); err != nil {
+				return nil, false
+			}
+			// The narration arrives on this stream, as an item of its own kind
+			// and with no tool call id, so it is read before the tool items are.
+			if it.Kind == "preamble" {
+				return p.preambleEvent(sessionKey, it), false
+			}
+			if it.ToolCallID == "" {
 				return nil, false
 			}
 			if it.Kind == "tool" && it.Phase == "start" {
@@ -297,29 +297,23 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 	return out
 }
 
-// narrationEvent projects the agent's between-tool commentary (issue #216).
+// preambleEvent projects the agent's between-tool narration (issue #216).
 //
-// It is read from this stream and nowhere else: the `chat` stream carries the
-// run's visible text, and the gateway's own projection drops commentary from it
-// on purpose (a chat message is the answer, not the agent's musings). Without
-// this the browser shows tool cards appearing one after another with nothing
-// between them, while a reader of the transcript sees every step.
+// The gateway publishes it as an `item` of kind "preamble", and nowhere else:
+// the assistant text it comes from is classified as commentary, which its own
+// live chat projection drops on purpose (a chat message is the answer, not the
+// agent's musings) and re-emits here as a preamble instead. This is the same
+// event the Control UI renders (ui/src/pages/chat/tool-stream-preamble.ts), so
+// the projection is reading the surface the gateway intends a client to read --
+// verified against the deployed gateway, where the assistant stream carries the
+// answer alone and every step arrives as one of these.
 //
-// Text is the block's whole snapshot -- the gateway publishes this lane as
-// snapshot+replace, so nothing is accumulated here and a frame carrying only a
-// delta is skipped rather than guessed at. A step that narrated nothing (the
-// gateway sends "\n\n") is dropped: it is not a paragraph, and drawing it would
-// put an empty block between two cards. That check is not a rewrite -- a
-// non-blank snapshot is passed through exactly as it arrived, indentation and
-// trailing newlines included, because those are what make it the text the
-// gateway chose (a narration that opens with an indented code block is a code
-// block because of that indentation).
-func (p *liveProjector) narrationEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
-	var a agentAssistant
-	if err := json.Unmarshal(data, &a); err != nil || a.Phase != "commentary" {
-		return nil
-	}
-	text := a.Text
+// progressText is the block's whole text, already folded onto one line by the
+// gateway, so nothing is accumulated here. A block that folds to nothing is
+// dropped: it is not a paragraph, and drawing it would put an empty line
+// between two cards.
+func (p *liveProjector) preambleEvent(sessionKey string, it agentItem) []agentruntime.Event {
+	text := it.ProgressText
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}

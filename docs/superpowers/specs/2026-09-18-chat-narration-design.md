@@ -25,61 +25,64 @@ assistant message:
 
 The model produced it, the transcript recorded it, the stream dropped it.
 
-## Verified facts (OpenClaw 2026.8.2, source-grounded)
+## What the deployment actually sends (measured)
 
-**The gateway publishes assistant text on two lanes with different semantics.**
+The first version of this design was read out of the gateway source and got the
+lane wrong. The frames below are from a real turn against the deployed gateway
+(OpenClaw 2026.8.2), logged at the API's own gateway boundary while the turn
+ran, with a prompt that makes the agent state its plan before running it.
 
-- The `chat` lane is a *display projection*: it deliberately drops
-  `phase == "commentary"` assistant text and keeps only the final answer
-  (`src/gateway/live-chat-projector.ts:161`,
-  `shouldSuppressAssistantEventForLiveChat`). This is a product decision for
-  chat surfaces -- one chat message is the answer, not the agent's musings.
-- The `agent` lane publishes the same text as `stream: "assistant"` events
-  (`src/gateway/server-chat.ts:1289-1299` for the uncoalesced path, `:1632` for
-  the visible path), both reaching session-message subscribers through
-  `broadcast("agent", …, {sessionKeys})`.
+**The narration is an `item` of kind `preamble`:**
 
-Both lanes are gated identically (`SESSION_SUBSCRIPTION_EVENTS`,
-`server-broadcast.ts:112-121`; scope `[READ_SCOPE]`, `:43-45`), so a client that
-receives `chat` frames receives `agent` frames too. The Portal's own tool cards
-prove it receives `agent` frames.
-
-**Commentary frames are block snapshots, not deltas.**
-
-```js
-// src/agents/embedded-agent-subscribe.handlers.messages.update.ts:258
-buildAssistantStreamData({ text, replace: true, phase: "commentary", itemId })
+```
+ev=agent stream="item" phase="update" kind="preamble"
+   progressText="我先说明查询方式，然后执行。 **查…"
 ```
 
-`text` is the block's full text so far and `replace` is always true, so a
-consumer never has to diff. `phase` is the gateway's own marker:
-`type AssistantPhase = "commentary" | "final_answer"`
-(`src/shared/chat-message-content.ts:24`). Our provider lane does stamp it --
-`packages/ai/src/transports/openai-completions-stream.ts:564` tags the text
-preceding a tool-call delta as commentary, and `:702` re-tags when the message
-ends with `stopReason === "toolUse"`; `:696` *clears* the provisional tags when
-it does not, which is what makes "followed by a tool call" the definition rather
-than a guess.
+One per step, arriving before the tool card that step introduces. This is the
+surface the Control UI reads (`ui/src/pages/chat/tool-stream-preamble.ts`), and
+the gateway builds it in `src/agents/embedded-agent-subscribe.reply-delivery.ts`
+by *rewriting* an assistant event classified as `phase === "commentary"` -- so
+commentary never leaves the runtime as assistant text at all.
 
-**Two properties of our deployment that shape the contract.**
+**The assistant lane carries the answer alone**: one frame per turn, with no
+`phase` field (`keys=[text,delta]`), and the `chat` lane's deltas carry the same
+answer. The source-level reading -- "commentary is an assistant event with
+`phase == "commentary"` that the chat lane drops" -- describes the gateway's
+internals correctly, but what a client receives for a step is the preamble item.
 
-- `itemId` is absent on the completions lane: `emitAssistantCommentaryStreamData`
-  passes it only for the Responses API
-  (`src/agents/embedded-agent-subscribe.handlers.messages.stream.ts:201`). The
-  Portal cannot use the gateway's block id; it must assign its own.
-- Narration arrives as one block, not token by token. Our `qwen38-27b` turns
-  carry `openclawDelivery.textPhaseRequiresTerminal: true` (confirmed on the
-  probe transcript, on both the tool-calling and the final message), which makes
-  `update.ts:283` withhold that message's deltas until the message ends. The
-  block therefore lands immediately *before* the tool card it announces --
-  live, but not streamed character by character. Narrowing this would mean
-  changing the gateway's phase resolution; the Portal does not.
+**Two properties of this lane shape the contract:**
 
-**This is a regression from #130.** Before the WS-only chat switch
-(2026-09-08), the Portal read text from the OpenAI-compatible HTTP stream, which
-writes every `stream: "assistant"` delta as content with no phase filter
-(`src/gateway/openai-http.ts:1287`). That path carried the narration; the WS
-live-chat lane that replaced it does not.
+- `progressText` is the step **folded onto one line** by the gateway
+  (`data.text.replace(/\s+/g, " ").trim()`), so the live narration is a
+  single-line summary of the step rather than its Markdown layout.
+- The live item carries **no `itemId`** in this gateway version (measured:
+  `itemId=""`), which is a known gateway bug, fixed later in
+  `fb598bdc7d3`. The projection therefore numbers blocks itself.
+
+**The durable row is marked, and holds the step in full.** In the transcript a
+step is its own assistant row:
+
+```json
+{"role":"assistant","content":[{"type":"text","text":"\n\n先说明查询方案：…"}],
+ "openclawStreamFallback":{"itemId":"commentary-0","source":"segment",
+                           "replacementText":"\n\n先说明查询方案：…"}}
+```
+
+That marker is how the Control UI reconciles a replayed row with the live item
+(`ui/src/pages/chat/stream-reconciliation.ts`), and it is the only thing that
+tells a step from the answer in history: both are assistant text, and neither
+carries a tool call.
+
+**Why the previous reading was wrong**, recorded so it is not repeated: it looked
+for `phase == "commentary"` on the `agent` lane and concluded the narration was
+never published. It was published all along, as an item whose `kind` the probe
+did not log. Reading a lane from the source is not the same as watching it.
+
+**On the OpenAI-compatible path this replaced (#130)**, the commentary was
+reachable through its own fallback (`src/gateway/openai-http.ts:1106`, `:1394`),
+so the WS lane that replaced it needs the preamble item read explicitly to keep
+the same content in front of a reader.
 
 ## Design
 
@@ -114,31 +117,26 @@ answer*. That is the point of a separate event: the three places that reuse
 `liveProjector.feed` gains one case in its `agent` branch:
 
 ```
-stream == "assistant" && data.phase == "commentary"
-  -> narration{sessionId, blockId: <current block>, text: data.text}
+stream == "item" && data.kind == "preamble"
+  -> narration{sessionId, blockId: <current block>, text: data.progressText}
 ```
 
-Three rules, each with a reason:
+Four rules, each with a reason:
 
-- **Only `phase == "commentary"`.** Untagged assistant frames are not consumed:
-  the gateway does not treat them as commentary either (its own
-  `server-chat.agent-events.test.ts` asserts "Untagged text frame must not
-  mirror"), and on the visible lane they carry the reply, which would duplicate
-  the `chat` lane.
-- **Stateless passthrough.** The lane is snapshot+replace by construction, so
-  the projector forwards `data.text` without accumulating anything. Keeping a
-  second copy would only add a way for the two to drift.
-- **Whitespace-only snapshots are dropped** (`strings.TrimSpace(text) == ""`).
-  The probe turn's first assistant text is literally `"\n\n"`; emitting it would
-  put an empty grey paragraph in the bubble.
-
-**How `blockId` advances.** The projector keeps the current block ordinal and
-advances it every time it sees a tool call *start* -- including `ask_user`,
-whose card is suppressed. The defining property of a commentary block is "an
-assistant message that ended in a tool call", so a tool start is exactly the
-boundary, and it stays exact for the one flow where event adjacency would fail:
-a suppressed `ask_user` emits no card, and narration after the human answers
-must not merge into the narration before the question.
+- **Read before the tool items.** A preamble carries no `toolCallId`, and the
+  item branch drops frames without one; the narration has to be taken first.
+- **Only `kind == "preamble"`.** Assistant frames on this lane are the answer
+  (the `chat` lane carries the same text, so projecting them would print it
+  twice), and `kind == "tool"` / `"command"` items are cards, not narration.
+- **Stateless passthrough.** `progressText` is the step's whole text, already
+  folded onto one line by the gateway, so nothing is accumulated here. A step
+  that folds to nothing is dropped -- it is not a paragraph, and drawing it
+  would put an empty line between two cards.
+- **`blockId` advances on every tool call that starts**, including `ask_user`,
+  whose card is suppressed. A step is what a tool call ends, so a tool start is
+  exactly the boundary -- and it stays exact for the one flow where adjacency
+  would fail: no card is emitted for a suppressed `ask_user`, and narration on
+  either side of a human's answer must not merge into one paragraph.
 
 ### 3. Client model (`web/src/views/chat/model.ts`)
 
@@ -228,6 +226,13 @@ The history builder gains the transcript's own rule, which is also the
 gateway's: **an assistant message that contains a tool call contributes its text
 as narration; a message without one contributes its text as the reply.**
 
+- **A step is recognised by the gateway's own marker**, not by shape:
+  `openclawStreamFallback.itemId` is set on the rows the gateway published as
+  commentary (the same field the Control UI reconciles by), and its
+  `replacementText` holds the step in full -- which is what a reload reads, since
+  the live lane only ever carried it folded onto one line. A row with text and a
+  tool call counts as a step too, which is the gateway's live rule for
+  commentary; the answer is the assistant row that is neither.
 - Narration is rebuilt in document order, so a reloaded turn looks like the
   turn did live -- one narration block per assistant message, interleaved with
   the tool cards it introduced.

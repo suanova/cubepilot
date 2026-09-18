@@ -580,22 +580,20 @@ export function useChatThread({
         const hasText = content.some((c) => c.type === 'text' && c.text)
         if (!hasTool && !hasText) continue
         openAssistant()
-        // A message that calls a tool is a step, not the answer: the gateway
-        // ends that step *by* calling the tool, so its text is what the agent
-        // narrated before it, and the message that answers the turn is the one
-        // with no tool call. This is the gateway's own rule for the live stream
-        // (phase "commentary" is exactly "this text is followed by a tool call"),
-        // applied to the transcript so a reload draws the same turn the stream
-        // drew -- rather than appending every step's text to the reply, which
-        // fuses the narration and the answer into one blob under the cards.
-        const narration = hasTool
-          ? content
-              .map((c) => (c.type === 'text' && c.text ? c.text : ''))
-              .join('')
-              .trim()
-          : ''
-        if (narration) {
-          last!.items.push({ kind: 'narration', blockId: `h${++narrationBlocks}`, text: narration })
+        // A step, not the answer. Two things say so, and both come from the
+        // gateway's own rule for the live stream: it marks the rows it published
+        // as commentary (`openclawStreamFallback`, the same marker the Control UI
+        // reconciles by), and it classifies text that is followed by a tool call
+        // in the same message as commentary too. The answer is the row that is
+        // neither -- so a turn can no longer fuse its steps and its answer into
+        // one blob, which is what appending every row's text did.
+        const fallback = it.openclawStreamFallback
+        const marked = typeof fallback?.itemId === 'string' && fallback.itemId !== ''
+        const stepText = (fallback?.replacementText || content
+          .map((c) => (c.type === 'text' && c.text ? c.text : ''))
+          .join('')).trim()
+        if (stepText && (marked || hasTool)) {
+          last!.items.push({ kind: 'narration', blockId: `h${++narrationBlocks}`, text: stepText })
         }
         for (const c of content) {
           if (c.type === 'toolCall') {
@@ -603,9 +601,8 @@ export function useChatThread({
               kind: 'tool',
               tool: { name: c.name || 'exec', cmd: toolArgsDisplay(c.arguments), callID: c.id || '', done: true },
             })
-          } else if (c.type === 'text' && c.text && !hasTool) {
-            // The reply, and only ever one per turn: the newest one wins, so a
-            // turn cannot end up with two answers concatenated.
+          } else if (c.type === 'text' && c.text && !marked && !hasTool) {
+            // The reply, and only ever one per turn: the newest one wins.
             last!.text = c.text
           }
         }
