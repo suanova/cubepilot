@@ -888,9 +888,11 @@ export function useChatThread({
       // The agent's between-tool narration (issue #216). The text is the block's
       // whole snapshot, not an increment, so the same blockId replaces what this
       // view holds and a new one starts a new block. The block belongs where it
-      // arrived: between the cards it introduces.
-      const text = (ev.text || '').trim()
-      if (!text) return
+      // arrived: between the cards it introduces. A blank snapshot is not a
+      // paragraph, but nothing else about the text is this view's to change --
+      // trimming it would rewrite what the gateway chose to say.
+      const text = ev.text || ''
+      if (!text.trim()) return
       setPhase(bubble, 'thinking')
       const previous = bubble.items[bubble.items.length - 1]
       if (previous && previous.kind === 'narration' && previous.blockId === ev.blockId) {

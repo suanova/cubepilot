@@ -302,3 +302,18 @@ func TestLiveProjector_NarrationDropsBlankSnapshots(t *testing.T) {
 		t.Fatalf("blank snapshot = %+v, want no narration", got)
 	}
 }
+
+func TestLiveProjector_NarrationIsVerbatim(t *testing.T) {
+	p := newLiveProjector()
+	// The emptiness check may not double as a rewrite: a narration that opens
+	// with an indented Markdown code block is a code block because of that
+	// indentation, and trimming the snapshot would render it as prose.
+	const snapshot = "    kubectl get pods -n default\n"
+	got, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"assistant","data":{"text":"    kubectl get pods -n default\n","replace":true,"phase":"commentary"}}`))
+	if len(got) != 1 || got[0].Type != openclaw.EventNarration {
+		t.Fatalf("commentary = %+v, want one narration event", got)
+	}
+	if got[0].Text != snapshot {
+		t.Fatalf("text = %q, want the snapshot verbatim (%q)", got[0].Text, snapshot)
+	}
+}

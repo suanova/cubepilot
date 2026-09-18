@@ -309,14 +309,18 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 // snapshot+replace, so nothing is accumulated here and a frame carrying only a
 // delta is skipped rather than guessed at. A step that narrated nothing (the
 // gateway sends "\n\n") is dropped: it is not a paragraph, and drawing it would
-// put an empty block between two cards.
+// put an empty block between two cards. That check is not a rewrite -- a
+// non-blank snapshot is passed through exactly as it arrived, indentation and
+// trailing newlines included, because those are what make it the text the
+// gateway chose (a narration that opens with an indented code block is a code
+// block because of that indentation).
 func (p *liveProjector) narrationEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
 	var a agentAssistant
 	if err := json.Unmarshal(data, &a); err != nil || a.Phase != "commentary" {
 		return nil
 	}
-	text := strings.TrimSpace(a.Text)
-	if text == "" {
+	text := a.Text
+	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	return []agentruntime.Event{{

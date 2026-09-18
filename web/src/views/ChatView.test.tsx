@@ -898,6 +898,26 @@ describe('ChatView narration', () => {
     turn.close()
   }, 15000)
 
+  it('keeps the narration block exactly as the gateway wrote it', async () => {
+    gateway!.setTurn([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      // An indented block is a code block because of its indentation: a view
+      // that trims the snapshot sends it back as prose.
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '1', text: '    kubectl get pods -n default\n' },
+      { type: 'message_done', sessionId: 'agent:main:conv-1' },
+    ])
+
+    render(<ChatView />)
+    await send('看看 default')
+
+    const narration = (await waitFor(() => {
+      const el = document.querySelector('.narration')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })) as HTMLElement
+    expect(narration.querySelector('pre')?.textContent).toContain('kubectl get pods -n default')
+  })
+
   it('keeps a decided confirmation where it happened, not after every card', async () => {
     gateway!.setTurn([
       { type: 'message_start', sessionId: 'agent:main:conv-1' },
