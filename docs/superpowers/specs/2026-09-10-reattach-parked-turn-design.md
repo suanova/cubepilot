@@ -56,8 +56,9 @@ start. It is an *observation*, not a turn:
 - **Gate: the session must have something parked.** A pending, unexpired, projectable
   question (`question.list`) or a pending approval (`ApprovalService.Pending`), else
   `404`. This is the state in which the Portal has a card to answer, and it is also the
-  state in which the run is *guaranteed idle* -- so nothing produced between the
-  disconnect and this attach is missed. It also bounds the stream's life.
+  state in which the *run* is idle, so the attach has nothing racing it out of the
+  gateway -- the one thing that does race it is the answer request itself, which no gate
+  can exclude (see the ordering note below). It also bounds the stream's life.
 - **`409` when the session already has an active stream.** One stream per session is
   the existing hub invariant; the tab holding it already receives every event, so the
   attaching tab stays quiet instead of competing for the same feed.
@@ -65,14 +66,37 @@ start. It is an *observation*, not a turn:
 - The handler opens a hub stream, subscribes the session's live message stream and
   registers a live turn for it (section 2). It sends `message_done` when the run goes
   terminal, when the client disconnects, or when the hard cap (1h) is reached, so a
-  stream can never outlive the process's interest in it.
+  stream can never outlive the process's interest in it -- with one exception, the
+  decision resolved during setup (see the ordering note below): there the stream ends
+  without a terminal, which is the one honest thing to say about a stream that
+  observed no run.
 - Authentication and the `503`/`400` handling mirror `handleQuestion`; the route is
   added to the same switch, so it inherits the server's user header handling.
 
 Ordering note: the hub stream is opened before the gateway subscription (the stream is
-an in-process object, the subscription a round trip). Events produced in that gap would
-be missed, and none can be: the run is parked on a human decision, and the answer can
-only be submitted by a browser that has already seen the card.
+an in-process object, the subscription a round trip), and `SubscribeSessionMessages`
+does not replay what was broadcast before it completed. A run parked on a human
+decision produces nothing in that gap -- but the *answer* is a separate request, and
+nothing serialises it against the subscription: the tab that restored a card renders it
+and then does more work (the pending-approval lookup) before it attaches, so a quick
+answer can land in the window. The resumed run's first frames then go out to nobody.
+
+That is unrecoverable for this stream -- no late subscription brings those frames back --
+so the design does not pretend otherwise. What it guarantees instead:
+
+- `AttachLiveTurn` re-runs the gate once the subscription is in place (`revalidate`,
+  section 2) and reports `errDecisionResolved` when the decision it attached to is gone.
+  The route ends the stream without a terminal rather than waiting out the 1h cap on a
+  frame already broadcast, which also frees the session's one stream.
+- The browser reads a stream that ends without the server's terminal as "this attach
+  observed nothing" (its SSE helper synthesizes a terminal for it, which the attach path
+  refuses to apply to the card) and catches up instead: `GET /turn`, then the durable
+  history once the run is over -- that output exists only in the transcript by then --
+  or the no-stream turn status and its poll while it is still going.
+
+So the gap costs the *live* delivery of the tail in that one tab, never the output: it
+is in the transcript either way. That is the same recovery a turn this view holds no
+stream for already uses.
 
 ### 2. `hitlManager.AttachLiveTurn`
 
@@ -80,18 +104,21 @@ only be submitted by a browser that has already seen the card.
 // AttachLiveTurn subscribes the session's live message stream and registers a live
 // turn for it without sending a message: the caller observes a run that is already in
 // flight and parked on a human decision. It returns when the run goes terminal, the
-// context is cancelled, or deadline elapses.
+// context is cancelled, or deadline elapses. revalidate, when non-nil, runs once the
+// subscription is in place and before anything is observed: it is how the caller
+// re-checks the state it gated the attach on, which can change while the subscription
+// is being established (see the ordering note in section 1).
 func (m *hitlManager) AttachLiveTurn(ctx context.Context, user, sessionKey, runID string,
-    sink func(agentruntime.Event) error) error
+    sink func(agentruntime.Event) error, revalidate func() error) error
 ```
 
 Mirrors `RunLiveTurn` minus the session prep and the send: `conn` -> `registerLive` ->
-`setRunID(runID)` -> `SubscribeSessionMessages` -> wait on `t.done` / `ctx.Done()`,
-with `defer releaseLive`. It deliberately does **not** call `agent.wait`: the terminal
-chat frame is the authoritative end of an observed run, and the attach has no run it
-started to wait on. `runID` seeds `liveTurn.acceptRun` so a foreign run of the same
-session cannot leak into the stream; an empty value (approvals) accepts any run of the
-session.
+`setRunID(runID)` -> `SubscribeSessionMessages` -> `revalidate` -> wait on `t.done` /
+`ctx.Done()`, with `defer releaseLive`. It deliberately does **not** call `agent.wait`:
+the terminal chat frame is the authoritative end of an observed run, and the attach has
+no run it started to wait on. `runID` seeds `liveTurn.acceptRun` so a foreign run of the
+same session cannot leak into the stream; an empty value (approvals) accepts any run of
+the session.
 
 The attach counts as neither a message nor a turn: `cubepilot_messages_total`,
 `sessions_total` and `turns_total` are untouched. Its emit path still calls
@@ -147,6 +174,20 @@ Two gaps made this bug hard to see, both closed here:
   this view has for one. It is retired when the attached stream reports a *real*
   terminal -- this view then knows nothing is running, and a Stop offering to abort a
   finished turn would be the wrong control.
+- The attach carries the same `X-CubePilot-User` the turn stream does. `streamSSE`
+  fetches directly, so the header `apiFetch` adds to every other request does not reach
+  it, and a card restored under a selected user would attach on the default user's
+  gateway -- which holds nothing for that session, and answers `404`.
+- An attach that ends without the server's own terminal (the decision resolved during
+  setup, or a connection that dropped) catches up rather than leaving the tab on a
+  truncated reply: `GET /turn`, then the history reload once the run is over, or the
+  no-stream turn status and its poll while it is still going -- section 1's ordering
+  note.
+- The two races the attach shares with the rest of the hook are guarded like the hook's
+  other stale responses: a restored card starts no attach for a session the user has
+  left, and a history response is rendered only while the view still holds the
+  generation it was read under (a slower answer for the session the user left must not
+  paint its thread under the header of the one they moved to).
 
 ## Testing
 
@@ -154,6 +195,9 @@ Two gaps made this bug hard to see, both closed here:
   no HITL -> 503, missing session key -> 400; the happy path against the fake gateway
   (subscribe recorded, a terminal chat frame produces `message_done`); a question
   resolved while attached delivers `question_resolved` plus the continuation.
+- `server`: a decision resolved between the gate and the subscription (`revalidate`) ends
+  the stream promptly and without a terminal, with the stream and the live turn released;
+  the gateway subscription is dropped with it.
 - `server`: `AttachLiveTurn` registers/releases the live turn and routes a
   session-message frame to the sink; a foreign run id is rejected when seeded; a run
   another tab stopped comes back as `TurnOutcome{Stopped: true}`, not as an error.
@@ -161,15 +205,20 @@ Two gaps made this bug hard to see, both closed here:
   drop, and the existing tests that assert nothing is published keep passing.
 - `server`: the projector emits nothing for a call whose start predates it (the tail
   an attach sees), while a call it saw start still reports normally.
+- `web`: the recovered-card attach carries the selected user's header; an attach that
+  ends without a terminal catches up from the history; and a response that lands after a
+  session switch neither renders its thread nor starts an attach for the session left.
 
 ## Out of scope
 
 - Content generated between a disconnect and a later attach, i.e. observing a turn that
   is actively generating. Every card is only on screen while the run is parked, so this
-  flow loses nothing. Widening the gate to "any run in flight" would need the in-flight
-  signal #166 has since landed (`/turn`, from `chat.history`'s `inFlightRun`); it is not
-  this change, and keeping the gate narrow is also what stops an idle observer from
-  holding a session's single stream.
+  flow loses no *output*: the one window in which output is missed live is the decision
+  answered during setup, and that is covered by the history catch-up rather than by
+  observing a running turn (section 1's ordering note). Widening the gate to "any run in
+  flight" would need the in-flight signal #166 has since landed (`/turn`, from
+  `chat.history`'s `inFlightRun`); it is not this change, and keeping the gate narrow is
+  also what stops an idle observer from holding a session's single stream.
 - Stopping or redirecting a turn, and any "is this session busy" indicator -- #166.
 - Free-text answers and `isSecret` questions -- #161's scope.
 - More than one stream per session. The attach takes the session's single stream, so a
