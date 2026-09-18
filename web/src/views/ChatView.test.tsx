@@ -633,6 +633,38 @@ describe('ChatView re-attach', () => {
     ).toBe('bob')
   })
 
+  it('catches up when the card is answered before the attach arrives', async () => {
+    // The answer can beat the attach request to the gate, which then answers 404
+    // -- "nothing is parked". Only a 409 means another tab owns the stream, so
+    // reading every refusal as one leaves this tab on a truncated reply while the
+    // run it was watching finishes in the transcript.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      history: [{ role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] }],
+      pendingQuestions: parkedCard,
+    })
+    gateway.install()
+
+    // The attach is held at the gate until the answer has gone out.
+    const release = gateway.holdPath('conv-1/stream')
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+    expect(await screen.findByText('What compute spec?')).toBeInTheDocument()
+    await attachRequest()
+
+    await user.click(screen.getByRole('button', { name: '4C / 16Gi' }))
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    gateway.setHistory([
+      { role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'All nodes are ready.' }] },
+    ])
+    release()
+
+    expect(await screen.findByText(/All nodes are ready\./, undefined, { timeout: 5000 })).toBeInTheDocument()
+  }, 15000)
+
   it('catches up when the attach ends without ever observing the run', async () => {
     // The decision can be answered between the server's parked check and the
     // subscription it opens, and the resumed run's output then goes out to

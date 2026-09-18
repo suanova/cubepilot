@@ -328,6 +328,39 @@ func TestSessionStreamEndsWhenTheDecisionIsAnsweredDuringSetup(t *testing.T) {
 	}
 }
 
+// TestSessionStreamLeavesTheCardAnswerableWhenTheAttachFailsToSetUp: a
+// subscription that never opened proves nothing about the run -- it may still be
+// parked on the very question the card on screen says. A terminal there would be
+// this stream reporting an outcome it never saw, and the browser settles the card
+// on one (settleBubbleCards): the only control that can unblock that run would go
+// with it (issue #167).
+func TestSessionStreamLeavesTheCardAnswerableWhenTheAttachFailsToSetUp(t *testing.T) {
+	parked := questionRecord("ask_1", attachSession)
+	parked.RunID = "run-1"
+	gw := &fakeGatewayClient{
+		pendingQuestions: []ws.QuestionRecord{parked},
+		subscribeErr:     errors.New("gateway refused the subscription"),
+	}
+	s := attachTestServer(t, gw)
+
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "" {
+		t.Errorf("stream body = %q, want nothing: a setup failure is not the turn's terminal", body)
+	}
+	if s.hub.Active(attachSession) {
+		t.Error("the session's stream is still held after the attach failed")
+	}
+	// The decider is what has to survive: the run is still parked, so the card
+	// that answers it must still be served and still be answerable.
+	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
+	if pending.Code != http.StatusOK || !strings.Contains(pending.Body.String(), "ask_1") {
+		t.Errorf("pending = %d %s, want the parked question still answerable", pending.Code, pending.Body.String())
+	}
+}
+
 // TestQuestionRelayLogsADroppedPush: a push with no stream to carry it used to
 // vanish silently, which is what made issue #167 hard to see.
 func TestQuestionRelayLogsADroppedPush(t *testing.T) {

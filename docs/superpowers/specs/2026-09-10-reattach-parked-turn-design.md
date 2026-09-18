@@ -64,12 +64,12 @@ start. It is an *observation*, not a turn:
   attaching tab stays quiet instead of competing for the same feed.
 - `503` when HITL is not configured, matching the other session sub-resources.
 - The handler opens a hub stream, subscribes the session's live message stream and
-  registers a live turn for it (section 2). It sends `message_done` when the run goes
-  terminal, when the client disconnects, or when the hard cap (1h) is reached, so a
-  stream can never outlive the process's interest in it -- with one exception, the
-  decision resolved during setup (see the ordering note below): there the stream ends
-  without a terminal, which is the one honest thing to say about a stream that
-  observed no run.
+  registers a live turn for it (section 2). It ends with `message_done` when the run
+  goes terminal. It ends *without* one when the attach never reached the run at all --
+  the subscription did not open, the decision was resolved during setup, or the hard cap
+  (1h) expired -- because a stream that observed no run has no outcome to report, and a
+  reported one would settle the card (see the ordering note below). Either way the
+  stream cannot outlive the process's interest in it.
 - Authentication and the `503`/`400` handling mirror `handleQuestion`; the route is
   added to the same switch, so it inherits the server's user header handling.
 
@@ -88,11 +88,21 @@ so the design does not pretend otherwise. What it guarantees instead:
   section 2) and reports `errDecisionResolved` when the decision it attached to is gone.
   The route ends the stream without a terminal rather than waiting out the 1h cap on a
   frame already broadcast, which also frees the session's one stream.
+- The rule generalises to every failure that is not the run's own terminal: the
+  subscription did not open, the revalidation failed, the run outlived the cap. None of
+  those is evidence about how the run ended, and the card on screen may still be the
+  live decision it is parked on -- a terminal would settle that card
+  (`settleBubbleCards`), closing the only control that can unblock the run. So
+  `AttachLiveTurn` marks them all with `errAttachSetup` and the route reports only
+  outcomes it observed.
 - The browser reads a stream that ends without the server's terminal as "this attach
   observed nothing" (its SSE helper synthesizes a terminal for it, which the attach path
   refuses to apply to the card) and catches up instead: `GET /turn`, then the durable
   history once the run is over -- that output exists only in the transcript by then --
-  or the no-stream turn status and its poll while it is still going.
+  or the no-stream turn status and its poll while it is still going. The same reading
+  covers a refusal that never became a stream: an attach answered `404` (the card was
+  answered before the request reached the gate) caught up like any other, while `409`
+  is the one refusal that means another tab is carrying the run.
 
 So the gap costs the *live* delivery of the tail in that one tab, never the output: it
 is in the transcript either way. That is the same recovery a turn this view holds no
@@ -197,7 +207,8 @@ Two gaps made this bug hard to see, both closed here:
   resolved while attached delivers `question_resolved` plus the continuation.
 - `server`: a decision resolved between the gate and the subscription (`revalidate`) ends
   the stream promptly and without a terminal, with the stream and the live turn released;
-  the gateway subscription is dropped with it.
+  the gateway subscription is dropped with it. A subscription that fails leaves the
+  parked question answerable instead of reporting a terminal for it.
 - `server`: `AttachLiveTurn` registers/releases the live turn and routes a
   session-message frame to the sink; a foreign run id is rejected when seeded; a run
   another tab stopped comes back as `TurnOutcome{Stopped: true}`, not as an error.
@@ -206,8 +217,9 @@ Two gaps made this bug hard to see, both closed here:
 - `server`: the projector emits nothing for a call whose start predates it (the tail
   an attach sees), while a call it saw start still reports normally.
 - `web`: the recovered-card attach carries the selected user's header; an attach that
-  ends without a terminal catches up from the history; and a response that lands after a
-  session switch neither renders its thread nor starts an attach for the session left.
+  ends without a terminal, and one the gate refuses with `404`, each catch up from the
+  history; and a response that lands after a session switch neither renders its thread
+  nor starts an attach for the session left.
 
 ## Out of scope
 

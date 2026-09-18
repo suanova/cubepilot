@@ -240,6 +240,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         // it waits for the human, and the stream the browser opened for it stays
         // up for as long as that lasts.
         case 'stream': {
+          // The route's gate, as the server applies it: a session with nothing
+          // parked is a 404, which is what a card answered before the request
+          // arrived gets. (The fake's approval lookup always answers 404, so a
+          // pending question is the whole of what it can be parked on.)
+          if (!pendingQuestions.length) {
+            return json({ error: 'no parked turn for this session' }, 404)
+          }
           const body = new ReadableStream<Uint8Array>({
             start(c) {
               attachController = c

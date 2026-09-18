@@ -19,10 +19,10 @@ import (
 
 // handleSessionStream serves GET /api/v1/sessions/{key}/stream, an SSE stream
 // that observes a turn the caller did not start. It ends with a message_done
-// when the run goes terminal, when the client disconnects, or at the manager's
-// attach cap -- and, alone among the ways it can end, without one when the
-// decision it attached to was answered before its subscription was ready: there
-// is then no run for this stream to report on (see the revalidation below).
+// when the run goes terminal -- and without one when it never got that far: a
+// stream that observed no run of its own has no outcome to report, and reporting
+// one would settle the browser's card on a decision that may still be the live
+// one blocking the run (see errAttachSetup and the revalidation below).
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
@@ -102,19 +102,21 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		return
 	}
-	if errors.Is(attachErr, errDecisionResolved) {
-		// Ending without a terminal is the honest report, and the shape the
-		// browser already handles: its stream helper synthesizes a terminal for a
-		// stream that ends without one, and the attach path reads a synthesized
-		// terminal as exactly this -- a stream that observed no run, so nothing
-		// for it to settle on the card (see attachTurn). A liveTurnDone here
-		// would instead mark a turn this stream never saw as over, and paint the
-		// race on the user as an error.
-		s.logf("attach %s: %s: %v", user, sessionKey, errDecisionResolved)
-		return
-	}
 	if attachErr != nil {
 		s.logf("attach %s: %s: %v", user, sessionKey, attachErr)
+	}
+	// Only an outcome the attach actually observed may become a terminal here.
+	// Everything else it can fail with -- a subscription that never opened, a
+	// decision answered before the subscription was ready, a run that outlived
+	// the cap -- says nothing about how the run ended, and the card on screen may
+	// still be the live decision that run is parked on. liveTurnDone there would
+	// be a confirmed terminal for a turn this stream never saw: the browser
+	// settles the card on one (settleBubbleCards), closing the only control that
+	// can unblock that run. Ending without a terminal is what it reads as "this
+	// attach observed nothing": the card stays answerable and the tab catches up
+	// from the transcript instead (see attachTurn).
+	if errors.Is(attachErr, errAttachSetup) {
+		return
 	}
 	// The single terminal event, chosen by the same rule a started turn uses:
 	// a run another tab stopped is terminal but not a failure, so it must not
@@ -126,7 +128,9 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 // answered before the attach got its subscription in place, so the resumed run's
 // output has already gone out to nobody (issue #167). It is not a failure of the
 // attach: it is the one outcome in which the caller is told, by the stream simply
-// ending, that there was nothing here to observe.
+// ending, that there was nothing here to observe. AttachLiveTurn wraps it in
+// errAttachSetup, which is what the route reacts to -- both mean the same thing
+// to the browser: no terminal, and catch up from the transcript.
 var errDecisionResolved = errors.New("the parked decision was resolved before the stream was ready")
 
 // parkedTurn reports the run a session is parked on -- the gate of the attach

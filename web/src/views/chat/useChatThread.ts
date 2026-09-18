@@ -766,8 +766,14 @@ export function useChatThread({
     // the sort -- it is a statement about the transport -- and the attach never
     // lets it reach the bubble (see below).
     let observedTerminal = false
-    // A refused attach is not a stream that ended: nothing was established, and
-    // the tab that holds the session's stream is the one carrying the run.
+    // A refused attach is not a stream that ended -- nothing was established --
+    // and 409 is the one refusal that means another tab has this run: it holds
+    // the session's stream and receives every event, so there is nothing for
+    // this one to show and nothing to catch up on either. Every other refusal is
+    // about *this* request and says nothing about the run; a 404 in particular
+    // is the gate answering that nothing is parked any more, which is the
+    // decision answered before the request even arrived -- and the output it
+    // produced is in the transcript, so that one has to catch up like any other.
     let refused = false
     try {
       await streamSSE(
@@ -797,20 +803,17 @@ export function useChatThread({
           if (ev.type === 'message_done') clearTurnElsewhere()
         },
         ctl.signal,
-        // 409: another tab already holds this session's stream and receives every
-        // event, so there is nothing for this one to show. Anything else (no
-        // channel, a gateway failure) is silent too: the card is on screen and
-        // the answer paths report their own errors.
-        () => {
-          refused = true
+        (status) => {
+          if (status === 409) refused = true
         },
       )
     } catch {
       /* the request never started; the card stays as it is */
     }
     if (observedTerminal || refused || ctl.signal.aborted) return
-    // The stream ended without ever observing the run. That is what the server
-    // reports when the decision was answered before this attach was ready: the
+    // Nothing here ever observed the run: the stream ended without the server's
+    // terminal, or was refused outright -- the 404 of a card answered before the
+    // request arrived, or a failure that left no stream at all. Either way the
     // resumed run's output has already gone past, and it exists only in the
     // transcript now. So catch up from it -- but ask first, because a run that
     // is still going is the no-stream turn status's job, and that status is
