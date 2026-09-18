@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
@@ -21,6 +22,9 @@ import (
 //   - agent stream="item" / "command_output"           (tool+command lifecycle
 //     and streamed output; kept as a richer/back-compat source, deduped per
 //     call id)
+//   - agent stream="assistant" phase="commentary"      (the agent's between-tool
+//     narration, projected as EventNarration; the gateway's own chat lane drops
+//     it on purpose, so this is the only surface that carries it)
 //   - chat  state status/delta/final/aborted/error     (startup status and
 //     visible assistant text; aborted/error mark the run terminal)
 
@@ -54,12 +58,18 @@ type liveProjector struct {
 	calls map[string]*liveCall
 	order []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
 	texts map[string]bool // runId -> assistant text already emitted (final de-dup)
+	// block is the narration block currently being written (see narrationEvent).
+	// It advances on every tool call that starts, because a tool call is what
+	// ends the agent's step: the narration after it is a new block, not a
+	// continuation of the one before.
+	block int
 }
 
 func newLiveProjector() *liveProjector {
 	return &liveProjector{
 		calls: map[string]*liveCall{},
 		texts: map[string]bool{},
+		block: 1,
 	}
 }
 
@@ -98,6 +108,16 @@ type agentOutput struct {
 	Summary    string `json:"summary"`
 }
 
+// agentAssistant is the assistant-text stream: the agent's between-tool
+// narration while phase is "commentary", and the run's answer while it is
+// "final_answer". Phase is the gateway's own marker (its live chat projection
+// uses the same one to keep commentary out of the answer), so it is read rather
+// than guessed at from position or timing.
+type agentAssistant struct {
+	Phase string `json:"phase"`
+	Text  string `json:"text"`
+}
+
 // chatDelta is the visible-text event the gateway broadcasts to session
 // subscribers (server-chat.ts broadcastChatDelta): state "delta" carries the
 // incremental deltaText; state "final"/"aborted"/"error" ends the run.
@@ -127,22 +147,18 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 		switch fr.Stream {
 		case "tool":
 			return p.toolEvent(sessionKey, fr.Data), false
+		case "assistant":
+			return p.narrationEvent(sessionKey, fr.Data), false
 		case "item":
 			var it agentItem
 			if err := json.Unmarshal(fr.Data, &it); err != nil || it.ToolCallID == "" {
 				return nil, false
 			}
-			call := p.call(it.ToolCallID)
 			if it.Kind == "tool" && it.Phase == "start" {
 				// The canonical stream="tool" start for the same call is emitted
 				// first; never emit a duplicate card from the item stream.
-				if call.started {
-					return nil, false
-				}
-				call.started = true
-				call.name = it.Name
-				if isQuestionTool(it.Name) {
-					call.suppressed = true
+				call, fresh := p.startCall(it.ToolCallID, it.Name)
+				if !fresh || call.suppressed {
 					return nil, false
 				}
 				args := it.Meta
@@ -281,6 +297,58 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 	return out
 }
 
+// narrationEvent projects the agent's between-tool commentary (issue #216).
+//
+// It is read from this stream and nowhere else: the `chat` stream carries the
+// run's visible text, and the gateway's own projection drops commentary from it
+// on purpose (a chat message is the answer, not the agent's musings). Without
+// this the browser shows tool cards appearing one after another with nothing
+// between them, while a reader of the transcript sees every step.
+//
+// Text is the block's whole snapshot -- the gateway publishes this lane as
+// snapshot+replace, so nothing is accumulated here and a frame carrying only a
+// delta is skipped rather than guessed at. A step that narrated nothing (the
+// gateway sends "\n\n") is dropped: it is not a paragraph, and drawing it would
+// put an empty block between two cards.
+func (p *liveProjector) narrationEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
+	var a agentAssistant
+	if err := json.Unmarshal(data, &a); err != nil || a.Phase != "commentary" {
+		return nil
+	}
+	text := strings.TrimSpace(a.Text)
+	if text == "" {
+		return nil
+	}
+	return []agentruntime.Event{{
+		Type:      agentruntime.EventNarration,
+		SessionID: sessionKey,
+		BlockID:   strconv.Itoa(p.block),
+		Text:      text,
+	}}
+}
+
+// startCall marks a tool call started, exactly once, and closes the narration
+// block that preceded it.
+//
+// The block advances for every call, including the ones whose card is
+// suppressed (ask_user): the human answered a question between the two
+// narrations, and they are not one paragraph. Advancing on *emitted* events
+// instead would merge them, because a suppressed call emits nothing.
+func (p *liveProjector) startCall(id, name string) (*liveCall, bool) {
+	call := p.call(id)
+	if call.started {
+		return call, false
+	}
+	call.started = true
+	call.sawOutput = false
+	call.name = name
+	p.block++
+	if isQuestionTool(name) {
+		call.suppressed = true
+	}
+	return call, true
+}
+
 // toolEvent maps one agent stream="tool" frame. start begins the card,
 // update streams nothing (progress), result emits the tool_result once.
 func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
@@ -292,14 +360,8 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 	switch t.Phase {
 	case "start":
 		// The item stream echoes a start for the same call later; emit once.
-		if call.started {
-			return nil
-		}
-		call.started = true
-		call.sawOutput = false
-		call.name = t.Name
-		if isQuestionTool(t.Name) {
-			call.suppressed = true
+		call, fresh := p.startCall(t.ToolCallID, t.Name)
+		if !fresh || call.suppressed {
 			return nil
 		}
 		args := ""
