@@ -29,6 +29,15 @@ var apiDocExemptRoutes = map[string]bool{
 // though they never appear as mux patterns.
 const sessionSubresourceBase = "/api/v1/sessions/{key}"
 
+// sessionBareKeyRoute is the dispatcher's other endpoint, and the reason the
+// suffix scan above cannot be the whole story: /api/v1/sessions/{key} with no
+// known suffix is the session itself, which DELETE clears. It is not a
+// subresource, so it has no HasSuffix literal to be collected from -- it is
+// what the dispatcher's default branch serves -- and it is registered here so
+// both directions of the drift check see it: it must be documented, and a
+// documented bare-key path must still be served.
+const sessionBareKeyRoute = sessionSubresourceBase
+
 // TestClientRoutesAreVersioned fails when a client-facing route is registered
 // outside apiPrefix. The version is the contract's freeze point: a route that
 // quietly lands at /api/... would be outside it, and every client that believes
@@ -143,12 +152,25 @@ func isPathByte(b byte) bool {
 // that the path sits under ("/api/v1/tasks/{id}/run").
 //
 // Session paths are the exception. "/api/v1/sessions/" is a mux catch-all whose
-// dispatcher answers 404 for anything that is not one of its known suffixes, so
-// the generic subtree rule would accept a typo such as
-// "/api/v1/sessions/{key}/question/pendng" as documented. Those paths are matched
+// dispatcher knows a fixed set of suffixes and treats everything else as the
+// bare session key, so the generic subtree rule would accept a typo such as
+// "/api/v1/sessions/{key}/question/pendng" as documented -- the dispatcher
+// would read it as a session named "question/pendng". Those paths are matched
 // against the concrete subresources instead.
 func isServed(known []string, candidate string) bool {
 	if strings.HasPrefix(candidate, "/api/v1/sessions/") {
+		// The bare-key route is the one session path that is not a suffix
+		// subresource: it is the session itself, so it has to match exactly. It
+		// deliberately does NOT fall back to "anything without a known suffix",
+		// which would accept every typo'd subresource by routing it here.
+		if candidate == sessionBareKeyRoute {
+			for _, route := range known {
+				if route == sessionBareKeyRoute {
+					return true
+				}
+			}
+			return false
+		}
 		return hasSessionSuffix(known, candidate)
 	}
 	for _, route := range known {
@@ -217,6 +239,9 @@ func registeredRoutes(t *testing.T) []string {
 	for _, suffix := range suffixes {
 		routes = append(routes, sessionSubresourceBase+suffix)
 	}
+	// The dispatcher's default branch, which is an endpoint of its own rather
+	// than a suffix of anything.
+	routes = append(routes, sessionBareKeyRoute)
 	return routes
 }
 

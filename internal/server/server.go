@@ -181,7 +181,7 @@ func (s *Server) Handler() http.Handler {
 	// published skill is tar content on the API-owned repository, not a Skill
 	// CR.
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
-	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource) // {key}/messages|approval[/pending]|question[/pending]|abort|turn
+	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource) // {key}/messages|approval[/pending]|question[/pending]|abort|turn, or the bare {key} itself
 	mux.HandleFunc("/api/v1/messages", s.handleMessages)
 	mux.HandleFunc("/api/v1/audit", s.handleAudit)
 	mux.HandleFunc("/api/v1/skills/{name}/publish", s.handlePublishSkill)
@@ -239,6 +239,18 @@ func (s *Server) Handler() http.Handler {
 // served from the live runtime session -- the runtime is the only source of
 // truth for conversation content (design §3.6), so reading it requires the
 // instance to be warm.
+//
+// The known suffixes come first, because they are what makes those paths
+// subresources at all. Everything else under the prefix is the session itself:
+// the bare-key route, which only DELETE acts on (see handleSessionDelete).
+//
+// That fallthrough is deliberately not a refusal. The key is the whole
+// remainder, so a session key containing a slash is reachable exactly as it is
+// on the subresource routes ("/api/v1/sessions/a/b" is the session "a/b"), and
+// a suffix this router does not know is indistinguishable from such a key. The
+// cost of an unknown suffix being answered by the endpoint that names it is
+// therefore paid on purpose; nothing here can tell a client's typo from a
+// session somebody actually named that way.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/messages"):
@@ -258,7 +270,7 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	case strings.HasSuffix(r.URL.Path, "/turn"):
 		s.handleTurnStatus(w, r)
 	default:
-		writeNotFound(w, "unknown session subresource")
+		s.handleSessionDelete(w, r)
 	}
 }
 

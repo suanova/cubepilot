@@ -71,6 +71,7 @@ type gatewayClient interface {
 	AbortChat(ctx context.Context, sessionKey, runID string) (bool, error)
 	SessionBusy(ctx context.Context, sessionKey string) (bool, error)
 	SessionInFlightRun(ctx context.Context, sessionKey string) (string, bool, error)
+	DeleteSession(ctx context.Context, sessionKey string) (ws.SessionDeleteResult, error)
 	Close()
 }
 
@@ -425,4 +426,22 @@ func (m *gatewayConns) liveConn(user string) (gatewayClient, bool) {
 		return nil, false
 	}
 	return c.gw, true
+}
+
+// DeleteSession removes the session and its transcript on the user's gateway
+// connection, so the next turn under the same key starts a fresh conversation.
+//
+// It uses the user's existing connection rather than dialing one, like the
+// question endpoints and the abort, and for the same reason: a delete is issued
+// on behalf of a client that has been talking to this session, so a missing
+// connection is genuinely "no channel" rather than a reason to open one -- and
+// opening one can trigger a device pairing, which a button press must not do as
+// a side effect. The missing channel is reported as errNoGatewayChannel so the
+// handler answers 503 rather than blaming the gateway round trip.
+func (m *gatewayConns) DeleteSession(ctx context.Context, user, sessionKey string) (ws.SessionDeleteResult, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return ws.SessionDeleteResult{}, fmt.Errorf("session delete %q: %w", sessionKey, errNoGatewayChannel)
+	}
+	return gw.DeleteSession(ctx, sessionKey)
 }
