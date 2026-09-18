@@ -10,11 +10,18 @@ export interface RecordedRequest {
   path: string
   method: string
   body: unknown
+  // The request's headers, when it was made with any. The SSE streams fetch
+  // directly rather than through the API client, so who they identify as is
+  // something only the request itself can answer.
+  headers?: Record<string, string>
 }
 
 export interface FakeGatewayInit {
   sessions?: SessionInfo[]
   history?: HistoryMessage[]
+  // Per-session history, for a test that needs two conversations to differ. A
+  // session with no entry here falls back to `history`.
+  historyFor?: Record<string, HistoryMessage[]>
   turnActive?: boolean
   // A session parked on a human answer: what `/question/pending` serves, so the
   // restore-on-open path can be exercised without a stream.
@@ -26,6 +33,11 @@ export interface FakeGatewayInit {
   // settled). The card stays pending and has to say why, so the explanation is
   // part of the card the user is still looking at.
   decisionFails?: boolean
+  // What the attach stream answers instead of a stream: 409 when another tab
+  // holds the session's, 500 for "streaming unsupported", and so on. Unset means
+  // the request is served like the real one -- a stream while something is
+  // parked, and the gate's 404 when nothing is.
+  attachStatus?: number
 }
 
 /** A turn whose stream stays open until the test closes it. */
@@ -42,6 +54,11 @@ export interface FakeGateway {
   setTurn(frames: SSEEvent[]): void
   setTurnRaw(chunks: string[]): void
   /**
+   * Flips what /turn answers, so a test can end a turn the view holds no stream
+   * for and assert that the view notices without being reloaded.
+   */
+  setTurnActive(active: boolean): void
+  /**
    * Leaves the next turn's stream open instead of ending it, so a test can act
    * on a turn that is genuinely still running. Call it before the app sends.
    */
@@ -52,6 +69,26 @@ export interface FakeGateway {
    * it -- so a test that reloads has to be able to serve something new.
    */
   setHistory(items: HistoryMessage[]): void
+  /**
+   * Pushes frames onto the attach stream (`GET /sessions/{key}/stream`), the one
+   * a card restored from the pending endpoint opens. The stream is held open
+   * like the real one -- a parked run produces nothing until it is answered.
+   */
+  pushAttach(frames: SSEEvent[]): void
+  /**
+   * Ends the attach stream without a terminal, which is what the server does
+   * when the decision was answered before its subscription was ready: the run's
+   * output has already gone past, so there is none for the stream to report.
+   */
+  endAttach(): void
+  /**
+   * Holds every response whose path contains `fragment` until the returned
+   * function is called. A test uses it to stand in the middle of a request whose
+   * timing it cannot otherwise reach -- the read that is still in flight when
+   * the user switches sessions, say. The request is recorded when it is made, so
+   * the test can also see that it went out.
+   */
+  holdPath(fragment: string): () => void
 }
 
 /** The wire form of one frame: an `event:` line, a `data:` line, a blank line. */
@@ -96,6 +133,10 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   const decisions: RecordedRequest[] = []
   const sessions = init.sessions ?? []
   const history = init.history ?? []
+  // What `/question/pending` serves. Mutable, because a question that is
+  // answered is no longer pending on the gateway either -- and a fake that kept
+  // serving it would answer a check the real one would not.
+  const pendingQuestions = [...(init.pendingQuestions ?? [])]
   // A turn given by `setTurn` is consumed by the next POST, so a test that
   // sends twice gets the frames it queued rather than the previous turn's.
   let turnChunks: string[] | null = null
@@ -106,6 +147,16 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   let openMode = false
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null
   let held: string[] = []
+  // The attach stream, held open the same way and for the same reason: the
+  // server keeps it open for as long as the run is parked, so a test that does
+  // not drive it sees an attach that is simply waiting.
+  let attachController: ReadableStreamDefaultController<Uint8Array> | null = null
+  let attachHeld: string[] = []
+  // Responses a test has asked to hold, matched by the path they answer.
+  const holds: { fragment: string; promise: Promise<void>; release: () => void }[] = []
+  // What /turn answers. Mutable, so a test can end a turn the view is not
+  // streaming and watch it notice.
+  let turnActive = init.turnActive ?? false
 
   const handler = async (input: RequestInfo | URL, opts: RequestInit = {}): Promise<Response> => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -122,7 +173,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     const method = (opts.method ?? 'GET').toUpperCase()
     const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined
     const record: RecordedRequest = { path, method, body }
+    if (opts.headers) record.headers = { ...(opts.headers as Record<string, string>) }
     requests.push(record)
+
+    // Held requests are recorded first, so a test can see that one went out
+    // while it is still waiting for its answer.
+    const hold = holds.find((h) => path.includes(h.fragment))
+    if (hold) await hold.promise
 
     if (path === '/api/v1/sessions' && method === 'GET') {
       return json({ sessions })
@@ -155,13 +212,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         // client unwraps it, so serving the array directly would test a
         // client that does not exist.
         case 'messages':
-          return known ? json({ items: history }) : json(NOT_FOUND, 404)
+          return known ? json({ items: init.historyFor?.[key] ?? history }) : json(NOT_FOUND, 404)
         case 'turn':
           // 502, not `{active:false}`: "could not determine" is the API's own
           // answer when the gateway channel cannot be reached, and a fake that
           // answered "not running" would let the client collapse the two.
           if (init.turnCheckFails) return json({ error: 'cannot determine turn state' }, 502)
-          return json({ active: init.turnActive ?? false })
+          return json({ active: turnActive })
         // In production `/abort` does not answer until the session has settled;
         // here it answers at once, so a test using it proves the request was
         // made rather than that the view copes with a slow stop.
@@ -173,6 +230,7 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
           // The request was made either way, so it is recorded either way; only
           // the answer differs.
           if (init.decisionFails) return json({ error: 'decision not recorded' }, 500)
+          if (sub[2] === 'question') pendingQuestions.length = 0
           return json({})
         // Nothing parked answers 404, not an empty object: the client unwraps
         // `d.approval` / `d.questions`, so a bare `{}` would hand the caller
@@ -182,7 +240,36 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         case 'approval/pending':
           return json({ error: 'no pending approval' }, 404)
         case 'question/pending':
-          return json({ questions: init.pendingQuestions ?? [] })
+          return json({ questions: pendingQuestions })
+        // The re-attach stream. Held open: a parked run produces nothing while
+        // it waits for the human, and the stream the browser opened for it stays
+        // up for as long as that lasts.
+        case 'stream': {
+          if (init.attachStatus) {
+            return json({ error: 'attach refused' }, init.attachStatus)
+          }
+          // The route's gate, as the server applies it: a session with nothing
+          // parked is a 404, which is what a card answered before the request
+          // arrived gets. (The fake's approval lookup always answers 404, so a
+          // pending question is the whole of what it can be parked on.)
+          if (!pendingQuestions.length) {
+            return json({ error: 'no parked turn for this session' }, 404)
+          }
+          const body = new ReadableStream<Uint8Array>({
+            start(c) {
+              attachController = c
+              for (const chunk of attachHeld) c.enqueue(encoder.encode(chunk))
+              attachHeld = []
+            },
+            cancel() {
+              attachController = null
+            },
+          })
+          return new Response(body, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          })
+        }
         default:
           break
       }
@@ -203,6 +290,11 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
       controller = null
       held = []
       openMode = false
+      attachController?.close()
+      attachController = null
+      attachHeld = []
+      // A request still held would keep its promise pending into the next test.
+      for (const h of holds.splice(0)) h.release()
     },
     requests,
     decisions,
@@ -211,6 +303,13 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     },
     setTurnRaw(chunks: string[]) {
       turnChunks = chunks
+    },
+    /**
+     * Flips what /turn answers, so a test can end a turn the view holds no
+     * stream for and assert that the view notices without being reloaded.
+     */
+    setTurnActive(active: boolean) {
+      turnActive = active
     },
     // In place, not reassigned: the handler closes over the array.
     setHistory(items: HistoryMessage[]) {
@@ -231,6 +330,30 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
           controller?.close()
           controller = null
         },
+      }
+    },
+    pushAttach(frames: SSEEvent[]) {
+      const chunks = frames.map(frame)
+      if (attachController) {
+        for (const chunk of chunks) attachController.enqueue(encoder.encode(chunk))
+      } else {
+        attachHeld.push(...chunks)
+      }
+    },
+    endAttach() {
+      attachController?.close()
+      attachController = null
+    },
+    holdPath(fragment: string) {
+      let release!: () => void
+      const promise = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      holds.push({ fragment, promise, release })
+      return () => {
+        const i = holds.findIndex((h) => h.promise === promise)
+        if (i >= 0) holds.splice(i, 1)
+        release()
       }
     },
   }

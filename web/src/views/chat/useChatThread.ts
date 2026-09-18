@@ -7,10 +7,9 @@
 // the parked-card races are the parts it would be worst to have two of.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/api'
-import { ApiError } from '@/api/client'
+import { ApiError, getCurrentUser } from '@/api/client'
 import { streamSSE } from '@/api/sse'
-import { getCurrentUser } from '@/api/client'
-import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem } from '@/api/types'
+import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem, SSEEvent } from '@/api/types'
 import { showToast } from '@/stores/toast'
 import {
   answerFor,
@@ -55,7 +54,14 @@ export interface ChatThreadApi {
   dismissQuestion(q: BubbleQuestion): Promise<void>
 }
 
-const user = getCurrentUser()
+// How often a view holding no stream for the session's turn asks whether that
+// turn is still running. Asking is the only way it can learn the turn ended, and
+// the turning point is exactly when the reply it is missing becomes available in
+// the history -- so the interval is the delay on the tail of an answer the user
+// is already reading. Two seconds: quick enough that the rest of the reply lands
+// while they are still looking at it, slow enough that a turn running for
+// minutes does not become a request storm.
+const noStreamTurnPollInterval = 2000
 
 export function useChatThread({
   initialSessionKey,
@@ -112,6 +118,9 @@ export function useChatThread({
   // event arrived, and nothing would ever render.
   const streamGenRef = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  // The re-attach stream this view holds, if any (issue #167): one at a time,
+  // and retired by dropStream like the turn stream it observes.
+  const attachRef = useRef<AbortController | null>(null)
   // One submission at a time. The guard matters for a redirect: the textarea
   // keeps the typed text for the whole abort round trip, so without it a second
   // Enter in that window passes `if (!text) return` and `if (streaming)` both
@@ -167,6 +176,49 @@ export function useChatThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // A turn this view holds no stream for is only ever observed by asking, and
+  // its output arrives on the next history refresh -- this is what performs that
+  // refresh. Without it nothing here learns the turn ended: the reply stays as
+  // truncated as the history snapshot the view loaded, and the header keeps
+  // claiming a turn that is already over, until the user switches sessions or
+  // reloads. A stream that died mid-turn lands in exactly this state, which is
+  // what makes that half-answer permanent.
+  //
+  // The poll ends with the state it is keyed on: the refresh below calls
+  // clearTurnElsewhere, and a session switch or a new chat bumps the generation
+  // the in-flight answer is checked against.
+  useEffect(() => {
+    if (!runningElsewhere) return
+    const id = currentSessionId
+    if (!id) return
+    const gen = streamGenRef.current
+    let cancelled = false
+    const timer = setInterval(() => {
+      void (async () => {
+        let active: boolean
+        try {
+          ;({ active } = await api.sessionTurn(id))
+        } catch {
+          // "Cannot tell" is not "finished", so keep asking -- the same reading
+          // the header's own check refuses to collapse into "idle".
+          return
+        }
+        if (cancelled || streamGenRef.current !== gen) return
+        if (active) return
+        clearTurnElsewhere()
+        // keepVisible: the conversation on screen is being completed, not
+        // replaced, and blanking it to refill with the same thread plus a tail
+        // is a flash the user did not ask for.
+        void loadHistory(id, true)
+      })()
+    }, noStreamTurnPollInterval)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningElsewhere, currentSessionId])
+
   // A turn this view holds no stream for -- confirmed, or uncheckable -- is the
   // session's live state: the composer's Stop is the direct way to end it, and a
   // send while it is up is a redirect, which `sendMessage` runs through its own
@@ -198,14 +250,23 @@ export function useChatThread({
   // header would be a lie), but a refresh of the session already on screen must
   // -- blanking and refilling is a visible flash on every reopen, and the
   // content is about to be the same conversation.
-  async function loadHistory(id: string, keepVisible = false) {
+  async function loadHistory(id: string, keepVisible = false, recover: { attach?: boolean } = {}) {
+    // The generation this read belongs to, checked again once it answers. The
+    // check cannot be left to the caller: the response is applied here, and a
+    // session switch during the request has to win -- otherwise a slower answer
+    // for the session the user left paints its thread under the header of the
+    // one they moved to. The attach's catch-up made that reachable with no user
+    // action at all, but the race is the same one a switch already had.
+    const gen = streamGenRef.current
     setLoadingHistory(true)
     if (!keepVisible) setBubbles([])
     try {
       const items = await api.sessionHistory(id)
+      if (streamGenRef.current !== gen) return
       renderHistory(items, id)
-      void recoverPending(id)
+      void recoverPending(id, recover.attach ?? true)
     } catch (e) {
+      if (streamGenRef.current !== gen) return
       // A 404 is "this conversation has not started", which is not a failure:
       // every conversation is in that state until its first message reaches the
       // server. Painting it as one would make a brand-new conversation look
@@ -217,8 +278,12 @@ export function useChatThread({
         setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
       }
     } finally {
-      setLoadingHistory(false)
-      requestAnimationFrame(scrollThread)
+      // Only while this read is still the view's: a superseding load owns the
+      // flag, and its own finally is the one that clears it.
+      if (streamGenRef.current === gen) {
+        setLoadingHistory(false)
+        requestAnimationFrame(scrollThread)
+      }
     }
   }
 
@@ -236,12 +301,18 @@ export function useChatThread({
   // capture-then-re-check the redirect continuation uses. A session switch or a
   // new chat in the window runs dropStream(), and an answer for the session the
   // user left must not paint a status onto the view they moved to.
-  async function checkTurnElsewhere(id: string, gen: number) {
+  //
+  // `onIdle` is the caller's follow-up for a turn the server reports as over --
+  // the attach's catch-up is the one caller that needs it. It runs only for an
+  // answer this view still holds the generation for, so it can never be the
+  // session the user left.
+  async function checkTurnElsewhere(id: string, gen: number, onIdle?: () => void) {
     try {
       const { active } = await api.sessionTurn(id)
       if (streamGenRef.current !== gen) return
       setRunningElsewhere(!!active)
       setTurnCheckFailed(false)
+      if (!active) onIdle?.()
     } catch {
       // Never folded into "not running": the API answers 502 exactly when it
       // could not determine whether the turn is still going.
@@ -285,24 +356,35 @@ export function useChatThread({
   // After a reload mid-approval the platform still holds the pending write; this
   // restores its confirmation card from the pending endpoint (issue #20). The
   // result is discarded if the user switched sessions while it was in flight.
-  async function recoverPending(id: string) {
+  //
+  // `attach` is what it does with a restored card: draw it and open the stream its
+  // answer's output comes back on (the default), or draw it and open nothing. A
+  // reload that follows an attach which already failed passes false -- the card is
+  // still the user's only control, but re-attaching from there is the one thing
+  // that can make a catch-up feed itself: the reload redraws the card, the attach
+  // is refused again for the same reason, and the follow-up asks for another
+  // reload. Nothing here can observe that run any better on the second try.
+  async function recoverPending(id: string, attach = true) {
+    // The card a restored question or approval is drawn on: it is also what the
+    // re-attach stream renders the parked turn's continuation into (issue #167),
+    // so answering in this tab shows the output here.
+    let attachBubble: BubbleMsg | null = null
     // Questions first: a parked ask_user turn is the more recent state, and a
     // session can hold several open questions (one card per record).
     try {
       const pending = await api.pendingQuestions(id)
       if (activeSessionRef.current !== id) return // stale: a different session is now active
       if (pending.length > 0) {
-        setBubbles((prev) => [
-          ...prev,
-          {
-            kind: 'assistant' as const,
-            tools: [],
-            thinking: false,
-            phase: 'done' as const,
-            questions: pending.map((p) => newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds)),
-          },
-        ])
+        const bubble: BubbleMsg = {
+          kind: 'assistant' as const,
+          tools: [],
+          thinking: false,
+          phase: 'done' as const,
+          questions: pending.map((p) => newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds)),
+        }
+        setBubbles((prev) => [...prev, bubble])
         requestAnimationFrame(scrollThread)
+        attachBubble = bubble
       }
     } catch (e) {
       // 404 is the ordinary "nothing pending for this session" answer. Anything
@@ -326,27 +408,37 @@ export function useChatThread({
     try {
       p = await api.pendingApproval(id)
     } catch {
-      return // no pending approval for this session
+      // No pending approval for this session; a restored question still needs the
+      // stream its answer's output comes back on. The card was appended before
+      // this lookup went out, so this path can land after a switch, with
+      // dropStream already run -- attaching then would open an invisible stream
+      // for the session the user left, holding its one stream against every
+      // legitimate client until the next switch or the server's cap. Same guard
+      // as the success path below.
+      if (attach && attachBubble && activeSessionRef.current === id) void attachTurn(id, attachBubble)
+      return
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
-    setBubbles((prev) => [
-      ...prev,
-      {
-        kind: 'assistant' as const,
-        tools: [],
-        thinking: false,
-        phase: 'done' as const,
-        confirm: {
-          sessionId: p.sessionId,
-          approvalId: p.approvalId,
-          command: p.command,
-          level: p.level,
-          message: p.message,
-        },
+    const confirmBubble: BubbleMsg = {
+      kind: 'assistant' as const,
+      tools: [],
+      thinking: false,
+      phase: 'done' as const,
+      confirm: {
+        sessionId: p.sessionId,
+        approvalId: p.approvalId,
+        command: p.command,
+        level: p.level,
+        message: p.message,
       },
-    ])
+    }
+    setBubbles((prev) => [...prev, confirmBubble])
     syncAllowAlways()
     requestAnimationFrame(scrollThread)
+    // An approval parks the run just like a question, so the same stream carries
+    // its continuation. The question card wins when both exist: it sits above the
+    // approval, so the resumed output reads as its answer.
+    if (attach) void attachTurn(id, attachBubble || confirmBubble)
   }
 
   // The gateway serves a history message's content either as a plain string
@@ -506,6 +598,9 @@ export function useChatThread({
   function dropStream() {
     streamGenRef.current++
     abortRef.current?.abort()
+    // The re-attach stream belongs to the same turn this view is leaving behind:
+    // a visit to the session restores its card and attaches again (issue #167).
+    attachRef.current?.abort()
     setStreaming(false)
     clearTurnElsewhere()
   }
@@ -661,6 +756,225 @@ export function useChatThread({
     await loadHistory(session)
   }
 
+  // attachTurn observes a turn this view did not start (issue #167). After a
+  // reload the question or approval card comes back from the pending endpoint,
+  // but the run parked on it is only observable over a stream: the request that
+  // carried the turn died with the page, so without this the answer settles the
+  // card and then shows nothing until the next reload.
+  //
+  // The stream the server gives back is the session's one stream, so this is
+  // also the reason a tab that merely attached is the tab that renders what the
+  // answer produced.
+  async function attachTurn(id: string, bubble: BubbleMsg) {
+    attachRef.current?.abort()
+    const ctl = new AbortController()
+    attachRef.current = ctl
+    const gen = streamGenRef.current
+    // Whether the server's own terminal reached this stream, which is the one
+    // thing that separates a stream that observed the run from one that ended
+    // without observing it. The helper's *synthesized* terminal says nothing of
+    // the sort -- it is a statement about the transport -- and the attach never
+    // lets it reach the bubble (see below).
+    let observedTerminal = false
+    try {
+      await streamSSE(
+        `/api/v1/sessions/${encodeURIComponent(id)}/stream`,
+        // streamSSE fetches directly, so the identity every other request gets
+        // from apiFetch has to be passed here explicitly, as the turn stream
+        // does. Without it the server resolves the default user -- and a card
+        // restored under a selected one is then attached on a gateway that
+        // holds nothing for that session, which answers 404.
+        { headers: { 'X-CubePilot-User': getCurrentUser() } },
+        (_evName, ev) => {
+          // An aborted stream is this view walking away, not a failed turn.
+          if (ctl.signal.aborted) return
+          // A synthesized terminal is the stream helper's own, emitted when the
+          // request failed before any response arrived, or when the stream ended
+          // without the server's terminal (see streamSSE). It has nothing to say
+          // about this bubble: the attach never carried a turn, so there is no
+          // turn of this card's to end -- passing it on would mark a card
+          // restored from the pending endpoint as `transportLost` over a
+          // connection that never opened.
+          if (ev.type === 'message_done' && ev.synthetic) return
+          if (ev.type === 'message_done') observedTerminal = true
+          applyTurnEvent(bubble, ev)
+          // An observed turn that really ended answers the header's question:
+          // nothing is running any more, so its Stop must not sit there offering
+          // to abort a turn that is already over.
+          if (ev.type === 'message_done') clearTurnElsewhere()
+        },
+        ctl.signal,
+        // A refusal is not a stream that ended, and none of it may reach the
+        // card: the helper's synthesized terminal would stamp a card restored
+        // from the pending endpoint as a lost transport. What a refusal means
+        // for the turn is the follow-up below, which asks.
+        () => {},
+      )
+    } catch {
+      /* the request never started; the card stays as it is */
+    }
+    if (observedTerminal || ctl.signal.aborted) return
+    // Nothing here ever observed the run. That covers a stream that ended without
+    // the server's terminal, and every refusal -- the 404 of a card answered
+    // before the request arrived, the 409 of another tab holding the session's
+    // stream, a failure that left no stream at all. None of them says the run is
+    // over, so ask: a run still going is the no-stream turn status's job, and
+    // that status polls for the moment its output lands (see the effect above),
+    // while a run already done has output in the transcript that only a reload
+    // brings back. The reload draws a still-pending card but attaches nothing --
+    // an attach just failed here, and re-attaching from a reload is what would
+    // let this catch-up feed itself (see recoverPending).
+    void checkTurnElsewhere(id, gen, () => void loadHistory(id, true, { attach: false }))
+  }
+
+  // applyTurnEvent folds one SSE event into the bubble it belongs to. It is the
+  // one render path for a turn's output, shared by the stream this tab started
+  // (/api/v1/messages) and one it re-attached to (/api/v1/sessions/{key}/stream,
+  // issue #167), so a turn this tab merely observes renders like one it drove.
+  //
+  // Two things are deliberately not here, because they belong to the stream
+  // rather than to the bubble: `message_start` (which session the stream turned
+  // out to be for) and the follow-up a *synthetic* terminal needs (asking the
+  // server whether a run was left behind). Both callers intercept those first.
+  function applyTurnEvent(bubble: BubbleMsg, ev: SSEEvent) {
+    if (ev.type === 'agent_thinking') {
+      setPhase(bubble, 'thinking')
+      return
+    }
+    if (ev.type === 'tool_call') {
+      setPhase(bubble, 'tools')
+      bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.callId || '', done: false })
+      return
+    }
+    if (ev.type === 'tool_result') {
+      setPhase(bubble, 'tools')
+      // Attach unconditionally (an empty output is still a result): the
+      // call must be marked done even when the tool returned nothing.
+      attachToolResult(bubble.tools, ev.callId || '', ev.output || '')
+      return
+    }
+    if (ev.type === 'approval_pending') {
+      // A write is parked awaiting the human (issue #20). Show the card
+      // immediately rather than waiting for the next 1s ticker render.
+      setPhase(bubble, 'tools')
+      bubble.confirm = {
+        sessionId: ev.sessionId || currentSessionId || '',
+        approvalId: ev.callId || '',
+        command: ev.command || '',
+        level: ev.level || 'write',
+        message: ev.message,
+      }
+      syncAllowAlways()
+      setBubbles([...bubblesRef.current])
+      requestAnimationFrame(scrollThread)
+      return
+    }
+    if (ev.type === 'approval_resolved') {
+      if (bubble.confirm && (!ev.callId || bubble.confirm.approvalId === ev.callId)) {
+        bubble.confirm.resolved = true
+        // `approved` is a *bool on the wire: absent means nobody decided
+        // this -- the turn was stopped while the write was parked -- and
+        // that is not the same as the explicit false of a rejection.
+        // Copying it only when present leaves the card reading "Stopped"
+        // instead of painting the user a red "Rejected" they never chose.
+        if (ev.approved !== undefined) bubble.confirm.approved = ev.approved
+        bubble.confirm.busy = false
+        setBubbles([...bubblesRef.current])
+      }
+      return
+    }
+    if (ev.type === 'question_pending') {
+      // The agent's ask_user tool is parked on a human answer (issue
+      // #161). Show the question card immediately; its tool card is
+      // suppressed server-side so this is the only surface for it.
+      if (ev.question && ev.question.questions?.length) {
+        setPhase(bubble, 'tools')
+        bubble.questions = [
+          ...(bubble.questions || []),
+          newBubbleQuestion(
+            ev.sessionId || currentSessionId || '',
+            ev.callId || '',
+            ev.question.questions,
+            ev.question.timeoutSeconds,
+          ),
+        ]
+        setBubbles([...bubblesRef.current])
+        requestAnimationFrame(scrollThread)
+      }
+      return
+    }
+    if (ev.type === 'question_resolved') {
+      // Settle only the matching card: another question of this turn may
+      // still be open.
+      const q = (bubble.questions || []).find((x) => !ev.callId || x.questionId === ev.callId)
+      if (q) {
+        q.resolved = true
+        q.outcome = ev.message || 'answered'
+        q.busy = false
+        setBubbles([...bubblesRef.current])
+      }
+      return
+    }
+    if (ev.type === 'message_delta') {
+      setPhase(bubble, 'streaming')
+      bubble.text = (bubble.text || '') + (ev.delta || '')
+      return
+    }
+    if (ev.type === 'text_replace') {
+      // Snapshot superseding earlier text (e.g. commentary rewritten after
+      // a tool ran): replace, never append (issue #130). The text it
+      // supersedes is kept rather than dropped -- it is what the user was
+      // reading when the rewrite landed, and a rewrite is not a reason to
+      // take it away from them (issue #204). Only a rewrite that would
+      // change nothing is discarded, so a repeated snapshot cannot pile up
+      // copies of the same text.
+      setPhase(bubble, 'streaming')
+      const next = ev.delta || ''
+      if (bubble.text && bubble.text !== next) {
+        bubble.superseded = [...(bubble.superseded || []), bubble.text]
+      }
+      bubble.text = next
+      return
+    }
+    if (ev.type === 'message_done') {
+      // A synthesized terminal is a transport failure, not a turn
+      // outcome: the stream died (or never opened) before the server's
+      // own terminal arrived. The gateway run may still be executing, and
+      // its approval or question may still be live -- so nothing here may
+      // treat the turn as over. No phase freeze (`done` would render
+      // in-flight tools as "Stopped" and the bubble as finished), no
+      // `stopped`, no `error`, and above all no settleBubbleCards:
+      // settling the cards is what removes the only controls that can
+      // unblock that run. The partial text stays on the bubble and the
+      // cards stay live and answerable.
+      if (ev.synthetic) {
+        bubble.transportLost = ev.error || 'the stream ended before the turn finished'
+        setBubbles([...bubblesRef.current])
+        // Nothing else may follow: no phase freeze (`done` would render
+        // in-flight tools as "Stopped" and the bubble as finished), no
+        // `stopped`, no `error`, and above all no settleBubbleCards --
+        // settling the cards is what removes the only controls that can
+        // unblock a run that may still be executing. The caller then asks
+        // the server whether a run was left behind rather than asserting
+        // one (see the streams' own callbacks).
+        return
+      }
+      // Past this point the terminal is the server's own, so the turn
+      // really is over.
+      setPhase(bubble, 'done')
+      // A stopped turn is neither a failure nor a normal completion, so
+      // it sets `stopped` and leaves `error` empty.
+      if (ev.stopped) bubble.stopped = true
+      else if (ev.error) bubble.error = ev.error
+      // The turn is over, so any card it left parked is dead -- the server
+      // settled those records. Its own *_resolved events are not reliable
+      // here (they race the stream's close), so the terminal settles them
+      // too; see settleBubbleCards.
+      settleBubbleCards(bubble)
+      return
+    }
+  }
+
   async function sendMessage() {
     const el = inputEl.current
     if (!el) return
@@ -812,7 +1126,7 @@ export function useChatThread({
         '/api/v1/messages',
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': user },
+          headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': getCurrentUser() },
           body: JSON.stringify({ sessionId: currentSessionId, content: text }),
         },
         (_evName, ev) => {
@@ -852,143 +1166,13 @@ export function useChatThread({
             }
             return
           }
-          if (ev.type === 'agent_thinking') {
-            setPhase(bubble, 'thinking')
-            return
-          }
-          if (ev.type === 'tool_call') {
-            setPhase(bubble, 'tools')
-            bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.callId || '', done: false })
-            return
-          }
-          if (ev.type === 'tool_result') {
-            setPhase(bubble, 'tools')
-            // Attach unconditionally (an empty output is still a result): the
-            // call must be marked done even when the tool returned nothing.
-            attachToolResult(bubble.tools, ev.callId || '', ev.output || '')
-            return
-          }
-          if (ev.type === 'approval_pending') {
-            // A write is parked awaiting the human (issue #20). Show the card
-            // immediately rather than waiting for the next 1s ticker render.
-            setPhase(bubble, 'tools')
-            bubble.confirm = {
-              sessionId: ev.sessionId || currentSessionId || '',
-              approvalId: ev.callId || '',
-              command: ev.command || '',
-              level: ev.level || 'write',
-              message: ev.message,
-            }
-            syncAllowAlways()
-            setBubbles([...bubblesRef.current])
-            requestAnimationFrame(scrollThread)
-            return
-          }
-          if (ev.type === 'approval_resolved') {
-            if (bubble.confirm && (!ev.callId || bubble.confirm.approvalId === ev.callId)) {
-              bubble.confirm.resolved = true
-              // `approved` is a *bool on the wire: absent means nobody decided
-              // this -- the turn was stopped while the write was parked -- and
-              // that is not the same as the explicit false of a rejection.
-              // Copying it only when present leaves the card reading "Stopped"
-              // instead of painting the user a red "Rejected" they never chose.
-              if (ev.approved !== undefined) bubble.confirm.approved = ev.approved
-              bubble.confirm.busy = false
-              setBubbles([...bubblesRef.current])
-            }
-            return
-          }
-          if (ev.type === 'question_pending') {
-            // The agent's ask_user tool is parked on a human answer (issue
-            // #161). Show the question card immediately; its tool card is
-            // suppressed server-side so this is the only surface for it.
-            if (ev.question && ev.question.questions?.length) {
-              setPhase(bubble, 'tools')
-              bubble.questions = [
-                ...(bubble.questions || []),
-                newBubbleQuestion(
-                  ev.sessionId || currentSessionId || '',
-                  ev.callId || '',
-                  ev.question.questions,
-                  ev.question.timeoutSeconds,
-                ),
-              ]
-              setBubbles([...bubblesRef.current])
-              requestAnimationFrame(scrollThread)
-            }
-            return
-          }
-          if (ev.type === 'question_resolved') {
-            // Settle only the matching card: another question of this turn may
-            // still be open.
-            const q = (bubble.questions || []).find((x) => !ev.callId || x.questionId === ev.callId)
-            if (q) {
-              q.resolved = true
-              q.outcome = ev.message || 'answered'
-              q.busy = false
-              setBubbles([...bubblesRef.current])
-            }
-            return
-          }
-          if (ev.type === 'message_delta') {
-            setPhase(bubble, 'streaming')
-            bubble.text = (bubble.text || '') + (ev.delta || '')
-            return
-          }
-          if (ev.type === 'text_replace') {
-            // Snapshot superseding earlier text (e.g. commentary rewritten after
-            // a tool ran): replace, never append (issue #130). The text it
-            // supersedes is kept rather than dropped -- it is what the user was
-            // reading when the rewrite landed, and a rewrite is not a reason to
-            // take it away from them (issue #204). Only a rewrite that would
-            // change nothing is discarded, so a repeated snapshot cannot pile up
-            // copies of the same text.
-            setPhase(bubble, 'streaming')
-            const next = ev.delta || ''
-            if (bubble.text && bubble.text !== next) {
-              bubble.superseded = [...(bubble.superseded || []), bubble.text]
-            }
-            bubble.text = next
-            return
-          }
-          if (ev.type === 'message_done') {
-            // A synthesized terminal is a transport failure, not a turn
-            // outcome: the stream died (or never opened) before the server's
-            // own terminal arrived. The gateway run may still be executing, and
-            // its approval or question may still be live -- so nothing here may
-            // treat the turn as over. No phase freeze (`done` would render
-            // in-flight tools as "Stopped" and the bubble as finished), no
-            // `stopped`, no `error`, and above all no settleBubbleCards:
-            // settling the cards is what removes the only controls that can
-            // unblock that run. The partial text stays on the bubble and the
-            // cards stay live and answerable.
-            if (ev.synthetic) {
-              bubble.transportLost = ev.error || 'the stream ended before the turn finished'
-              setBubbles([...bubblesRef.current])
-              // The turn may still be running with no stream of this view's
-              // own, which is exactly the state the header describes -- and the
-              // composer's Stop is then the only control that can end it. Ask the
-              // server rather than assert it: a run that really did settle
-              // answers `active: false` and raises no status. The check is
-              // issued only for the current stream (a superseded one has left
-              // its session behind, and dropStream already retired that
-              // status).
-              if (!stale() && turnSession) void checkTurnElsewhere(turnSession, streamGenRef.current)
-              return
-            }
-            // Past this point the terminal is the server's own, so the turn
-            // really is over.
-            setPhase(bubble, 'done')
-            // A stopped turn is neither a failure nor a normal completion, so
-            // it sets `stopped` and leaves `error` empty.
-            if (ev.stopped) bubble.stopped = true
-            else if (ev.error) bubble.error = ev.error
-            // The turn is over, so any card it left parked is dead -- the server
-            // settled those records. Its own *_resolved events are not reliable
-            // here (they race the stream's close), so the terminal settles them
-            // too; see settleBubbleCards.
-            settleBubbleCards(bubble)
-            return
+          applyTurnEvent(bubble, ev)
+          // A synthesized terminal says the transport died, not that the turn
+          // did: the run may still be executing server-side with no stream of
+          // this view's own, which is what the header describes. Ask the server
+          // rather than assert it.
+          if (ev.type === 'message_done' && ev.synthetic && !stale() && turnSession) {
+            void checkTurnElsewhere(turnSession, streamGenRef.current)
           }
         },
         controller.signal,

@@ -110,7 +110,10 @@ func (s *ApprovalService) Begin(user string, p pendingApproval) {
 	s.bySession[p.SessionKey] = p.ApprovalID
 	s.mu.Unlock()
 
-	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+	// No open stream means no browser is watching this session: the card reaches
+	// the Portal only through reload recovery (issue #167 logs the same drop for
+	// questions).
+	if !s.hub.PublishTo(p.SessionKey, agentruntime.Event{
 		Type:      agentruntime.EventApprovalPending,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
@@ -118,7 +121,9 @@ func (s *ApprovalService) Begin(user string, p pendingApproval) {
 		Command:   p.Command,
 		Level:     p.Level,
 		Message:   p.Message,
-	})
+	}) {
+		s.logf("approval %s: no open stream for session %s; push dropped", p.ApprovalID, p.SessionKey)
+	}
 }
 
 // Pending returns the active pending approval for a session, if the caller is
@@ -215,12 +220,14 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decisio
 		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
 	}
 	release()
-	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+	if !s.hub.PublishTo(p.SessionKey, agentruntime.Event{
 		Type:      agentruntime.EventApprovalResolved,
 		SessionID: p.SessionKey,
 		CallID:    p.ApprovalID,
 		Approved:  &approved,
-	})
+	}) {
+		s.logf("approval %s: no open stream for session %s; decision not delivered", p.ApprovalID, p.SessionKey)
+	}
 	s.recordDecision(user, p, approved)
 	return p, nil
 }

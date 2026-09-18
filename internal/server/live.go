@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -238,6 +239,79 @@ func (m *gatewayConns) RunLiveTurn(ctx context.Context, user, sessionKey, messag
 			return agentruntime.TurnOutcome{}, ctx.Err()
 		}
 		return t.outcome()
+	case <-ctx.Done():
+		return agentruntime.TurnOutcome{}, ctx.Err()
+	}
+}
+
+// attachCap bounds how long a re-attached stream may live. A parked run always
+// ends by itself (the gateway expires the question and the run continues to a
+// terminal frame), so this only catches a run that never terminates -- a gateway
+// restarting under it, say. Without a cap the observer would outlive every reason
+// to keep observing.
+const attachCap = time.Hour
+
+// errAttachSetup reports that the attach never reached the point of observing the
+// run: the subscription did not open, the caller's revalidation failed, or the
+// run outlived the cap. None of those is evidence about how the run ended -- it
+// may still be parked on the very decision the browser has a card for. The
+// caller must not turn one into the turn's terminal: the browser settles the
+// card on a terminal it believes, and settling it closes the only control that
+// can unblock that run.
+var errAttachSetup = errors.New("the attach did not observe the run")
+
+// AttachLiveTurn subscribes the session's live message stream and registers a
+// live turn for it WITHOUT sending a message (issue #167): the caller observes a
+// run that is already in flight and parked on a human decision, so the browser
+// answering a question or approval restored after a reload sees the
+// continuation, even though the request that started the turn is long gone.
+//
+// runID is the run the parked decision belongs to (a gateway question carries
+// it); it seeds the run filter so an unrelated run of the same session cannot
+// leak into this stream. An empty runID -- a write approval carries no run
+// id -- accepts any run of the session.
+//
+// Unlike RunLiveTurn there is no agent.wait backstop: the run was not started
+// here, and its terminal chat frame is the authoritative end, which the gateway
+// broadcasts to every session subscriber including one that joined late.
+//
+// revalidate, when non-nil, runs once the subscription is in place and before
+// anything is observed: it is the caller's chance to re-check the state it
+// gated the attach on, because that state can change while the subscription is
+// being established. A non-nil result ends the attach there -- the caller is
+// reporting that the events this stream was opened for have already been
+// broadcast, which no late subscription can undo.
+//
+// Every failure before the run's own terminal is returned wrapped in
+// errAttachSetup, so the caller can tell an outcome it observed from one it
+// merely failed to reach.
+//
+// It reports the same TurnOutcome RunLiveTurn does, so an observing caller
+// terminal-writes through liveTurnDone and cannot report a run another tab
+// stopped as a plain completion.
+func (m *gatewayConns) AttachLiveTurn(ctx context.Context, user, sessionKey, runID string, sink func(agentruntime.Event) error, revalidate func() error) (agentruntime.TurnOutcome, error) {
+	gw, err := m.conn(ctx, user)
+	if err != nil {
+		return agentruntime.TurnOutcome{}, fmt.Errorf("%w: connect: %w", errAttachSetup, err)
+	}
+	t := m.registerLive(user, sessionKey, sink)
+	defer m.releaseLive(user, sessionKey, gw)
+	t.setRunID(runID)
+	if err := gw.SubscribeSessionMessages(ctx, sessionKey); err != nil {
+		m.sayf("attach %s: %s: subscribe: %v", user, sessionKey, err)
+		return agentruntime.TurnOutcome{}, fmt.Errorf("%w: subscribe: %w", errAttachSetup, err)
+	}
+	if revalidate != nil {
+		if err := revalidate(); err != nil {
+			return agentruntime.TurnOutcome{}, fmt.Errorf("%w: %w", errAttachSetup, err)
+		}
+	}
+	select {
+	case <-t.done:
+		return t.outcome()
+	case <-time.After(attachCap):
+		m.sayf("attach %s: %s: no terminal event within %s", user, sessionKey, attachCap)
+		return agentruntime.TurnOutcome{}, fmt.Errorf("%w: the parked run did not finish within %s", errAttachSetup, attachCap)
 	case <-ctx.Done():
 		return agentruntime.TurnOutcome{}, ctx.Err()
 	}
