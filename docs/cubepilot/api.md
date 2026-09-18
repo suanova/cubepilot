@@ -145,6 +145,7 @@ X-CubePilot-User: <用户名>
 | `POST /api/v1/sessions/{key}/approval` | `{approved, decision, approvalId, allowlisted?}` |
 | `POST /api/v1/sessions/{key}/question` | `{questionId, cancelled}` |
 | `POST /api/v1/sessions/{key}/abort` · `GET .../turn` | `{ok}` · `{active}` |
+| `DELETE /api/v1/sessions/{key}` | `{deleted, archived, worktreePreserved?}`，是这次删除的字段，不是一个叫 deleted 的对象 |
 | `DELETE /api/v1/tasks/{id}` | `{deleted}` |
 
 **字节透传**（不包——包一层就等于篡改别人的格式）：
@@ -400,6 +401,38 @@ GET /api/v1/sessions/{key}/stream   → SSE 流
   再去 history 把这段补齐。
 - 不加热实例。
 
+## 4.7 清空会话
+
+```ts
+DELETE /api/v1/sessions/{key}   → {"deleted":true,"archived":[]}
+```
+
+删除这个会话**连同它的对话记录**，于是下一次用同一个 key 发消息就是一个全新的会话。
+给「每个用户一个固定 key」的客户端用的：它没有别的 key 可换。
+
+- **不需要先 `/abort`**：网关在删除流程里自己把活跃的工作停下来并等它落定。
+- **幂等**：key 不存在不是错误，返回 `200` + `deleted:false`。固定 key 的客户端每次按「清空」
+  都会撞上这种情况，这就是它要的答案。
+- 不加热实例。请求没有 body。
+- 网关调用有 5 秒上限；超时返回 `504`。删除可能已经生效，重试一次即可（幂等）。客户端断开
+  不会取消这次删除（调用与请求解绑），所以按下「清空」后再离开页面，会话照样会被清空。
+- **409**：会话仍在活跃，或者在你读取之后发生了变化。这不是调用方的错，也不用先 abort，
+  等这一轮结束再重试一次即可。
+- **502**：网关往返失败。其中 `FORBIDDEN` 一类是**平台自己的问题**（配对的设备没有被授予
+  `operator.admin`），重试无用。
+
+**「清空」不保证「这个实例看起来像从没聊过天」**：运行时可能保留会话的周边产物，响应把
+保留了什么如实说出来：
+
+| 字段 | 含义 |
+| --- | --- |
+| `deleted` | 这次调用是否真的删掉了东西（`false` 表示本来就没有，仍然是成功）|
+| `archived` | 被归档的项；为空时是 `[]`，不是 `null` |
+| `worktreePreserved` | 仅在**真的**留下了一个工作树时出现：`{id,branch,path,reason}` |
+
+客户端不要把「记录没了」当成「实例干净了」：清空只重置本地的对话视图，不要假设运行时上的
+残留也一并消失了。
+
 ---
 
 # 5. 人机协同（HITL）
@@ -542,6 +575,7 @@ GET /api/v1/sessions/{key}/question/pending
 | POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
 | GET | `/api/v1/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
 | GET | `/api/v1/sessions/{key}/stream` | — | **SSE 流**（观察别人发起的、停在人工决定上的回合） | 否 |
+| DELETE | `/api/v1/sessions/{key}` | — | `{"deleted":bool,"archived":[...],"worktreePreserved"?}` | 否 |
 
 ## 6.2 Agent 配置与实例
 

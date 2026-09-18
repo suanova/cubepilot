@@ -45,7 +45,7 @@ const sessionDeleteRPCTimeout = 5 * time.Second
 // wrapped): deleted, archived, and worktreePreserved when a worktree survived.
 // That last field is the honest caveat of this endpoint -- "cleared" does not
 // promise the instance is indistinguishable from never having talked (see
-// docs/cubepilot/api.md §4.6).
+// docs/cubepilot/api.md §4.7).
 //
 // The gateway call is detached from the request and bounded: pressing Clear and
 // then navigating away still clears the session, and because the request's own
