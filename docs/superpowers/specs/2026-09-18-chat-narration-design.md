@@ -51,6 +51,12 @@ answer. The source-level reading -- "commentary is an assistant event with
 `phase == "commentary"` that the chat lane drops" -- describes the gateway's
 internals correctly, but what a client receives for a step is the preamble item.
 
+**A step only exists when the model writes one.** Measured: asked to "explain
+what it is doing at each step", a turn can still go straight from the prompt to
+three tool calls, with no text before any of them -- the transcript's row is
+`"\n\n"` and no preamble is published. So narration is not guaranteed to appear
+above every card, and an empty slot is not a bug: nothing was said.
+
 **Two properties of this lane shape the contract:**
 
 - `progressText` is the step **folded onto one line** by the gateway
