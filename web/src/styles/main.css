@@ -220,6 +220,12 @@ button.tool-head:hover{background:var(--hover)}
 /* markdown-rendered agent text */
 .bubble .md{font-size:13.5px;line-height:1.7}
 .answer-panel .md{font-size:14.5px;line-height:1.75}
+/* The agent's between-tool narration (issue #216): what it found and what it is
+   about to do. Deliberately quieter than the tool cards around it -- it is the
+   process, and the reply at the end is the result -- so it reads as commentary
+   rather than as a message of its own. */
+.narration{margin:8px 0;color:var(--muted);font-size:13px;line-height:1.7;word-break:break-word}
+.narration .md{font-size:13px;line-height:1.7}
 .md>:first-child{margin-top:0}
 .md>:last-child{margin-bottom:0}
 .md p{margin:6px 0}

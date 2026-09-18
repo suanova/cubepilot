@@ -316,7 +316,9 @@ interface AgentRuntime {
 }
 ```
 
-统一事件：`message_start`、`agent_thinking`、`message_delta`、`text_replace`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`。
+统一事件：`message_start`、`agent_thinking`、`message_delta`、`text_replace`、`narration`、`tool_call`、`tool_result`、`confirm_pending`、`confirm_resolved`、`message_done`。
+
+其中 `narration` 承载 agent 在工具之间说的话（"发现了什么、接下来做什么"）：网关的 `chat` 通道按设计**只发最终答复**（解说被它自己的展示投影丢掉），解说在 `agent` 通道以 `stream=assistant, phase=commentary` 单独发布，投影器把它接成 `narration`。`text` 是整段快照、按 `blockId` 替换，且与答复字段严格分开——答复的三处既有语义（stopped 轮次判定、answer panel、"Final result" 标签）都只认 `text`。
 
 `ResolvedAgentConfig` 包含模型 ref（`<provider>/<modelId>`，来自内联 provider 清单）、系统指令、启用的 skill 列表、用户身份、凭据挂载位置、PVC 路径；不包含明文密钥。
 

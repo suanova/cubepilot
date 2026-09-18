@@ -822,3 +822,163 @@ describe('ChatView requests that outlive their session', () => {
     expect(gateway.requests.filter((r) => r.path.includes('conv-a/stream'))).toEqual([])
   })
 })
+
+// The agent narrates between tool calls: what it found, what it is about to do
+// (issue #216). The narration belongs between the cards it introduces -- that
+// ordering is the whole reason it is not just more reply text -- and it must
+// stay out of the reply, which is what the answer panel is for.
+describe('ChatView narration', () => {
+  // Reads a position out of the rendered thread: the assertions here are about
+  // what comes before what, and a text offset says that without depending on
+  // which element a piece of text happens to live in.
+  function atOf(thread: HTMLElement): (needle: string) => number {
+    const text = thread.textContent || ''
+    return (needle: string) => text.indexOf(needle)
+  }
+
+  it('draws each narration between the tool cards it introduces', async () => {
+    gateway!.setTurn([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '1', text: '先看看 default 有哪些 Pod。' },
+      {
+        type: 'tool_call',
+        sessionId: 'agent:main:conv-1',
+        name: 'exec',
+        callId: 'c1',
+        arguments: '{"command":"kubectl get pods -n default"}',
+      },
+      { type: 'tool_result', sessionId: 'agent:main:conv-1', callId: 'c1', name: 'exec', output: 'qwen38-vllm-0 Running' },
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '2', text: '有一个没就绪，再看事件。' },
+      {
+        type: 'tool_call',
+        sessionId: 'agent:main:conv-1',
+        name: 'exec',
+        callId: 'c2',
+        arguments: '{"command":"kubectl get events -n default"}',
+      },
+      { type: 'tool_result', sessionId: 'agent:main:conv-1', callId: 'c2', name: 'exec', output: 'Normal Scheduled' },
+      { type: 'message_delta', sessionId: 'agent:main:conv-1', delta: '结论：一切正常。' },
+      { type: 'message_done', sessionId: 'agent:main:conv-1' },
+    ])
+
+    render(<ChatView />)
+    await send('看看 default')
+
+    const thread = document.querySelector('.thread-inner') as HTMLElement
+    const at = atOf(thread)
+    expect(await within(thread).findByText(/先看看 default 有哪些 Pod。/)).toBeInTheDocument()
+    expect(at('先看看 default 有哪些 Pod。')).toBeLessThan(at('kubectl get pods -n default'))
+    expect(at('kubectl get pods -n default')).toBeLessThan(at('有一个没就绪，再看事件。'))
+    expect(at('有一个没就绪，再看事件。')).toBeLessThan(at('kubectl get events -n default'))
+
+    // The reply is drawn last, and the narration is not part of it: text that
+    // lands in the answer panel would also land in the stopped-turn evidence the
+    // view keeps about a reply, which is why it is a segment of its own.
+    const panel = thread.querySelector('.answer-panel') as HTMLElement
+    expect(panel).not.toBeNull()
+    expect(panel.textContent).toContain('结论：一切正常。')
+    expect(panel.textContent).not.toContain('先看看 default')
+  })
+
+  it('replaces a narration block that the gateway resends', async () => {
+    const turn = gateway!.openTurn()
+    render(<ChatView />)
+    await send('看看 default')
+
+    turn.push([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '1', text: '先看看' },
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '1', text: '先看看 default 有哪些 Pod。' },
+    ])
+
+    // The lane is snapshot-per-block, so the second frame is the same block
+    // written out again -- not a second paragraph.
+    expect(await screen.findByText(/先看看 default 有哪些 Pod。/)).toBeInTheDocument()
+    expect(screen.queryByText(/^先看看$/)).not.toBeInTheDocument()
+    turn.close()
+  }, 15000)
+
+  it('keeps a decided confirmation where it happened, not after every card', async () => {
+    gateway!.setTurn([
+      { type: 'message_start', sessionId: 'agent:main:conv-1' },
+      { type: 'narration', sessionId: 'agent:main:conv-1', blockId: '1', text: '这个要删 Pod，需要你确认。' },
+      {
+        type: 'tool_call',
+        sessionId: 'agent:main:conv-1',
+        name: 'exec',
+        callId: 'c1',
+        arguments: '{"command":"kubectl delete pod dzprobe -n default"}',
+      },
+      {
+        type: 'approval_pending',
+        sessionId: 'agent:main:conv-1',
+        callId: 'a1',
+        name: 'exec',
+        command: 'kubectl delete pod dzprobe -n default',
+        level: 'write',
+      },
+      { type: 'approval_resolved', sessionId: 'agent:main:conv-1', callId: 'a1', approved: true },
+      { type: 'tool_result', sessionId: 'agent:main:conv-1', callId: 'c1', name: 'exec', output: 'pod deleted' },
+      {
+        type: 'tool_call',
+        sessionId: 'agent:main:conv-1',
+        name: 'exec',
+        callId: 'c2',
+        arguments: '{"command":"kubectl get pods -n default"}',
+      },
+      { type: 'tool_result', sessionId: 'agent:main:conv-1', callId: 'c2', name: 'exec', output: 'dzprobe Terminating' },
+      { type: 'message_done', sessionId: 'agent:main:conv-1' },
+    ])
+
+    render(<ChatView />)
+    await send('把这个 Pod 删了')
+
+    const thread = document.querySelector('.thread-inner') as HTMLElement
+    const at = atOf(thread)
+    expect(await within(thread).findByText('Approved')).toBeInTheDocument()
+    // The record sits with the call it gated -- after that call's card and
+    // before the next one -- rather than under every card of the turn.
+    expect(at('kubectl delete pod dzprobe')).toBeLessThan(at('Approved'))
+    expect(at('Approved')).toBeLessThan(at('kubectl get pods -n default'))
+  })
+})
+
+describe('ChatView narration from history', () => {
+  it('rebuilds the steps a reloaded turn narrated', async () => {
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],
+      history: [
+        { role: 'user', content: '看看 default' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '先看看 default 有哪些 Pod。' },
+            { type: 'toolCall', id: 'c1', name: 'exec', arguments: { command: 'kubectl get pods -n default' } },
+          ],
+        },
+        { role: 'toolResult', content: [{ type: 'text', text: 'qwen38-vllm-0 Running' }] },
+        { role: 'assistant', content: [{ type: 'text', text: '结论：一切正常。' }] },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const thread = document.querySelector('.thread-inner') as HTMLElement
+    expect(await within(thread).findByText(/先看看 default 有哪些 Pod。/)).toBeInTheDocument()
+    const text = thread.textContent || ''
+    expect(text.indexOf('先看看 default 有哪些 Pod。')).toBeLessThan(text.indexOf('kubectl get pods -n default'))
+    // One narration block, and the answer stands alone: the transcript's
+    // commentary must not be fused into the reply, which is what a reload did
+    // when a step's text was appended to the bubble's text.
+    const panel = thread.querySelector('.answer-panel') as HTMLElement
+    if (panel) {
+      expect(panel.textContent).toContain('结论：一切正常。')
+      expect(panel.textContent).not.toContain('先看看 default')
+    } else {
+      expect(within(thread).getByText(/结论：一切正常。/)).toBeInTheDocument()
+    }
+  })
+})

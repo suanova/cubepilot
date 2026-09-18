@@ -164,6 +164,17 @@ export interface SSETextReplace {
   sessionId: string
   delta: string
 }
+// The agent's between-tool narration (issue #216): what it found and what it is
+// about to do. `text` is the block's FULL text, not an increment -- the gateway
+// publishes this lane as one snapshot per block -- so a reader replaces the
+// block's text rather than appending. The same blockId means the same block; a
+// new one means the agent has moved on to a new step.
+export interface SSENarration {
+  type: 'narration'
+  sessionId: string
+  blockId: string
+  text: string
+}
 export interface SSEMessageDone {
   type: 'message_done'
   sessionId: string
@@ -247,6 +258,7 @@ export type SSEEvent =
   | SSEToolResult
   | SSEMessageDelta
   | SSETextReplace
+  | SSENarration
   | SSEMessageDone
   | SSEApprovalPending
   | SSEApprovalResolved
