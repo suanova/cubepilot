@@ -1001,6 +1001,32 @@ describe('ChatView history step boundaries', () => {
     expect(thread.querySelectorAll('.narration')).toHaveLength(0)
   })
 
+  it('draws nothing for a step the gateway recorded as empty', async () => {
+    // `replacementText` is authoritative: an empty one means the gateway
+    // published this step with nothing in it, and falling back to the row's own
+    // content would resurrect a line the gateway said was empty.
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],
+      history: [
+        { role: 'user', content: '看看 default' },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '先看看' }],
+          openclawStreamFallback: { itemId: 'commentary-0', source: 'segment', replacementText: '' },
+        },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const thread = document.querySelector('.thread-inner') as HTMLElement
+    expect(await within(thread).findByText('看看 default')).toBeInTheDocument()
+    expect(thread.querySelectorAll('.narration')).toHaveLength(0)
+  })
+
   it('keeps a replayed step exactly as the gateway recorded it', async () => {
     gateway = installFakeGateway({
       sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],

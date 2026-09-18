@@ -590,7 +590,10 @@ export function useChatThread({
         const fallback = it.openclawStreamFallback
         const marked = typeof fallback?.itemId === 'string' && fallback.itemId !== ''
         if (marked) {
-          const stepText = fallback?.replacementText || content
+          // `replacementText` is the gateway's own record of the step, so an
+          // empty one is an answer -- this step said nothing -- and not a
+          // missing field to fall back from.
+          const stepText = fallback?.replacementText ?? content
             .map((c) => (c.type === 'text' && c.text ? c.text : ''))
             .join('')
           if (stepText.trim()) {

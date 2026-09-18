@@ -339,24 +339,26 @@ func (p *liveProjector) preambleEvent(sessionKey string, it agentItem) []agentru
 
 // preambleDirectiveRe matches the inline delivery directives the gateway strips
 // from a progress line before a reader sees it: [[reply_to_current]],
-// [[reply_to: <id>]] and [[audio_as_voice]], with the padding they may carry.
-// The gateway's own stripper is also code-region aware and catches malformed
-// open forms; a progress line has already been folded onto one line by the time
-// it arrives, so this covers the shapes that survive that.
+// [[reply_to: <id>]] and [[audio_as_voice]], with the padding they carry. A tag
+// is matched wherever it sits, not only at the front -- a step can address a
+// channel mid-line ("Checking [[reply_to_current]]" reads as "Checking") -- and
+// the padding goes with it, which leaves the words on either side one space
+// apart. The gateway's own stripper is also code-region aware and catches
+// malformed open forms; a progress line has already been folded onto one line
+// by the time it arrives, so this covers the shapes that survive that.
 var preambleDirectiveRe = regexp.MustCompile(
-	`^[\t ]*\[\[\s*(?:audio_as_voice|reply_to_current|reply_to[\t ]*:[^\]\r\n]*)\s*\]\][\t ]*`)
+	`\s*\[\[\s*(?:audio_as_voice|reply_to_current|reply_to[\t ]*:[^\]\r\n]*)\s*\]\]\s*`)
 
 // normalizePreamble drops what a narration line must never show: the inline
 // directives the agent uses to address a channel rather than a reader, a line
 // that is only whitespace, and the silent-reply token the gateway uses to mean
 // "say nothing here".
 func normalizePreamble(text string) string {
-	for {
-		stripped := preambleDirectiveRe.ReplaceAllString(text, "")
-		if stripped == text {
-			break
-		}
-		text = stripped
+	// The gateway trims only when something was removed, and so does this: a
+	// directive in the middle of a line would otherwise take the surrounding
+	// whitespace with it and run two words together.
+	if stripped := preambleDirectiveRe.ReplaceAllString(text, " "); stripped != text {
+		text = strings.TrimSpace(stripped)
 	}
 	if strings.TrimSpace(text) == "" {
 		return ""

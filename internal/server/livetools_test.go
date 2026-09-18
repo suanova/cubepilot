@@ -313,6 +313,19 @@ func TestLiveProjector_NarrationHidesChannelDirectives(t *testing.T) {
 	}
 }
 
+func TestLiveProjector_NarrationStripsDirectivesAfterText(t *testing.T) {
+	p := newLiveProjector()
+	// A step can address a channel mid-line, not only at the front: the gateway's
+	// own case is "Checking [[reply_to_current]]" normalizing to "Checking".
+	got, _ := p.feed(conv, "agent", []byte(preamble("Checking [[reply_to_current]]")))
+	if len(got) != 1 {
+		t.Fatalf("events = %+v, want one narration", got)
+	}
+	if got[0].Text != "Checking" {
+		t.Fatalf("text = %q, want the trailing directive stripped", got[0].Text)
+	}
+}
+
 func TestLiveProjector_NarrationDropsBlankText(t *testing.T) {
 	p := newLiveProjector()
 	// A step that narrated nothing must not draw an empty line between two cards.
