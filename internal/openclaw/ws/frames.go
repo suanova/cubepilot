@@ -49,16 +49,23 @@ func (e *frameError) reason() string {
 	return d.Reason
 }
 
-// rpcError is a failed method call surfaced to callers. Reason carries the
-// gateway's structured detail.reason when it sends one (e.g. QUESTION_NOT_FOUND
-// / QUESTION_ALREADY_TERMINAL), which callers map onto HTTP statuses.
-type rpcError struct {
+// RPCError is a failed method call surfaced to callers. Code carries the
+// gateway's protocol error code (UNAVAILABLE, INVALID_REQUEST, FORBIDDEN, ...)
+// and Reason the structured detail.reason when the frame sends one (e.g.
+// QUESTION_NOT_FOUND, session-changed). Callers map both onto their own
+// statuses without parsing message text.
+//
+// It is exported because a caller above this package has to tell those failures
+// apart: the code and the reason are different fields, and some failures carry
+// only one of them -- the retryable "still active" answer to sessions.delete is
+// an UNAVAILABLE with no reason at all.
+type RPCError struct {
 	Code    string
 	Message string
 	Reason  string
 }
 
-func (e *rpcError) Error() string {
+func (e *RPCError) Error() string {
 	if e.Message != "" {
 		return e.Code + ": " + e.Message
 	}
@@ -336,4 +343,36 @@ type OptionalString struct {
 type SessionSettingsPatch struct {
 	Model          OptionalString
 	PermissionMode OptionalString
+}
+
+// --- sessions.delete params / result ---
+
+// sessionDeleteParams is the sessions.delete request body. deleteTranscript is
+// always sent, never left to the gateway's default: this is a destructive call,
+// and a remote default that changed would silently change what it destroys.
+type sessionDeleteParams struct {
+	Key              string `json:"key"`
+	DeleteTranscript bool   `json:"deleteTranscript"`
+}
+
+// PreservedSessionWorktree is a worktree sessions.delete kept behind, with the
+// reason it did. It is the honest part of the answer: deleting a session does
+// not promise the instance is indistinguishable from never having talked.
+type PreservedSessionWorktree struct {
+	ID     string `json:"id"`
+	Branch string `json:"branch"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// SessionDeleteResult is the sessions.delete response payload. A key that does
+// not exist is answered ok with deleted=false -- the protocol has no not-found
+// error for it -- which is what makes the endpoint idempotent.
+type SessionDeleteResult struct {
+	OK       bool     `json:"ok"`
+	Key      string   `json:"key"`
+	Deleted  bool     `json:"deleted"`
+	Archived []string `json:"archived"`
+	// WorktreePreserved is absent unless a worktree survived the delete.
+	WorktreePreserved *PreservedSessionWorktree `json:"worktreePreserved,omitempty"`
 }
