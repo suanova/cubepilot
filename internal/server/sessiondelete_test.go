@@ -336,6 +336,26 @@ func TestSessionDeleteRouteIsWired(t *testing.T) {
 	}
 }
 
+// A key that looks like a subresource is still a key. DELETE is matched before
+// the reserved-suffix switch (see handleSessionSubresource), because no
+// subresource under this prefix accepts it -- they are read with GET and acted
+// on with POST. Driven through the real Handler chain, since the routing is the
+// whole point: with the suffixes winning, this path reached history and was
+// answered 405, and the session the path names was never deleted.
+func TestSessionDeleteTreatsAKeyEndingInASubresourceSuffixAsAKey(t *testing.T) {
+	const key = "agent:main:a/messages"
+	gw := &fakeGatewayClient{connected: true, deleteResult: ws.SessionDeleteResult{OK: true, Key: key}}
+	s := newAbortTestServer(NewHub(), deleteConns(gw))
+
+	rec := doReq(t, s.Handler(), http.MethodDelete, "/api/v1/sessions/"+key, "admin", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: the whole remainder is the key, reserved suffixes included (body = %s)", rec.Code, rec.Body.String())
+	}
+	if len(gw.deletes) != 1 || gw.deletes[0] != key {
+		t.Fatalf("deleted keys = %v, want one on %q", gw.deletes, key)
+	}
+}
+
 // The gateway call is bounded, exactly as /abort's and /turn's are. The HTTP
 // server sets no timeouts of its own, so a half-open gateway connection would
 // park this handler -- and the Portal's Clear button -- for as long as the

@@ -240,9 +240,17 @@ func (s *Server) Handler() http.Handler {
 // truth for conversation content (design §3.6), so reading it requires the
 // instance to be warm.
 //
-// The known suffixes come first, because they are what makes those paths
-// subresources at all. Everything else under the prefix is the session itself:
-// the bare-key route, which only DELETE acts on (see handleSessionDelete).
+// DELETE is matched before the suffixes, because no subresource under this
+// prefix accepts it: they are read with GET and acted on with POST. So a DELETE
+// can always mean "the session this path names", and the key is the whole
+// remainder -- reserved suffix included. A key that itself ends in one of the
+// suffixes below ("agent:main:a/messages") is deleted, not answered by the
+// subresource of that name.
+//
+// For every other method the known suffixes come first, because they are what
+// makes those paths subresources at all. Everything else under the prefix is the
+// session itself: the bare-key route, which only DELETE acts on, so a non-DELETE
+// method there gets handleSessionDelete's 405.
 //
 // That fallthrough is deliberately not a refusal. The key is the whole
 // remainder, so a session key containing a slash is reachable exactly as it is
@@ -253,6 +261,8 @@ func (s *Server) Handler() http.Handler {
 // session somebody actually named that way.
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.Method == http.MethodDelete:
+		s.handleSessionDelete(w, r)
 	case strings.HasSuffix(r.URL.Path, "/messages"):
 		s.handleHistory(w, r)
 	case strings.HasSuffix(r.URL.Path, "/stream"):
