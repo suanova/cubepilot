@@ -12,6 +12,9 @@
 >
 > **要改这个 API？** 先读 [api-conventions.md](./api-conventions.md)——命名来源、
 > 形状规则、状态码与方法语义，以及每条规则由哪个测试守住。
+>
+> **要看它背后调了什么？** [call-flows.md](./call-flows.md) 给出 Web -> API ->
+> OpenClaw 的完整时序图与网关接口清单；本文只写客户端能看到的那一层。
 
 ---
 

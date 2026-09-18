@@ -18,21 +18,32 @@ points E1/E2, FR-M2/M3):
 
 ```
 browser (host) -- kubectl port-forward --- inside the kind cluster:
-  cubepilot Deployment (assistant service + instance-manager controllers)
-     ├--- per-user OpenClaw Pod  svc/agent-<user> (ClusterIP:18789)
-     │         exec --- kubectl (in-cluster SA token) --- same kind cluster
-     └--- K8s API (controller-runtime / client-go): Pod/PVC/Service lifecycle
+  cubepilot-api (Portal REST/SSE)   cubepilot-operator (controllers, leader-elected)
+        │  WebSocket /gateway  +  /internal/*  │  CRD reconcile / task schedule
+        ▼                                ▼
+  per-user OpenClaw Pod  svc/agent-<user> (ClusterIP:18789)
+        │  exec --- kubectl (per-user kubeconfig) --- same kind cluster
+        └  cubepilot-supervisor (in-Pod): pulls resolved config from
+           /internal/*, renders openclaw.json, pairs the platform device
+  K8s API (client-go / controller-runtime): AgentInstance -> Pod/PVC/Service
 ```
 
 - Per-user isolation = **Pod + dedicated PVC** (NFR-002); sessions persist on
   each PVC (FR-M2-004).
-- Skill catalog = OpenClaw **Skills** (`internal/controller/skills/*/SKILL.md`,
-  embedded and rendered by the supervisor) plus `workspace/SOUL.md` / `AGENTS.md`,
-  baked into the agent image.
-- Chat flows through OpenClaw's `/v1/chat/completions` (OpenAI-compatible,
-  `stream:true`, `model: openclaw/default`); the gateway runs the full agent
-  loop. Session lists/history go through `/tools/invoke` (`sessions_list`) and
-  `GET /sessions/{key}/history`.
+- Skill catalog = OpenClaw **Skills** (`internal/skill/skills/*/SKILL.md`,
+  embedded in the API, which seeds them as Skill CRs; the in-Pod supervisor
+  renders the instance's enabled subset into its workspace) plus
+  `workspace/SOUL.md` / `AGENTS.md`, baked into the agent image.
+- Interactive chat runs over OpenClaw's **gateway WebSocket protocol**
+  (`ws://agent-<user>:18789/gateway`): one session message stream carries
+  assistant text, tool activity, write approvals and ask-user questions, and
+  `cubepilot-api` re-projects it as the Portal's SSE. Session lists/history use
+  the open-loop HTTP surface (`POST /tools/invoke` with `sessions_list`,
+  `GET /sessions/{key}/history`). The OpenAI-compatible
+  `POST /v1/chat/completions` (`stream:true`, `model: openclaw/default`) is now
+  used only by the operator's scheduled tasks.
+- Call chains, sequence diagrams and the full OpenClaw interface list:
+  [docs/cubepilot/call-flows.md](docs/cubepilot/call-flows.md).
 - Platform objects are Kubernetes CRDs (cluster-scoped, group
   `ai.cubestack.io`): `AgentTemplate`, `AgentInstance`, `Skill`,
   `TaskTemplate`, `Task`, `TaskRun` (`config/crd/bases`), reconciled by
@@ -43,18 +54,22 @@ browser (host) -- kubectl port-forward --- inside the kind cluster:
 ```
 cmd/cubepilot-operator   platform controllers entry point
 cmd/cubepilot-api         Portal + REST/SSE API entry point
-internal/apiv1alpha1    CRD types (kubebuilder annotations)
-internal/controller     AgentInstance + builtin-bootstrap controllers
+internal/api/v1alpha1   CRD types (kubebuilder annotations)
+internal/controller     AgentInstance + builtin-bootstrap + openclaw-config controllers
 internal/scheduler      CRD-driven task scheduler (Task -> TaskRun)
 internal/instances      Instance Manager facade (CR-warm waits)
 internal/config         env configuration
 internal/k8s            client-go + Pod/PVC/Service builders
-internal/openclaw       OpenClaw HTTP client + event mapping (with tests)
+internal/openclaw       OpenClaw gateway clients: WS JSON-RPC (chat, approvals,
+                        questions) + HTTP session reads and one-shot turns
 internal/server         REST/SSE handlers (no static serving)
+internal/skill          embedded skill catalog (skills/*/SKILL.md) + catalog
 internal/store          platform metadata store (JSON on PVC)
+internal/supervisor     in-Pod sidecar: pulls resolved config, renders
+                        openclaw.json / AGENTS.md / skills, pairs the platform device
+internal/runner         scheduled-task turn runner (operator -> gateway HTTP)
 web/                    Portal SPA -- React 19 + TypeScript + Vite (independent
                         component; nginx serves it and proxies /api)
-internal/controller/skills/   embedded skill catalog SKILL.md × 4
 workspace/              SOUL.md / AGENTS.md
 config/crd/bases        generated CRD manifests
 deploy/                 images Dockerfiles + charts/cubepilot-chart Helm chart + kubeconfig template
