@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -103,6 +104,10 @@ type agentItem struct {
 	// ProgressText is the preamble item's text: the agent's between-tool
 	// narration, folded onto one line by the gateway.
 	ProgressText string `json:"progressText"`
+	// ItemID identifies the preamble item on the lanes that carry one (the
+	// Responses API). The completions lane of this gateway version publishes the
+	// field empty, which is the bug OpenClaw fixed in fb598bdc7d3.
+	ItemID string `json:"itemId"`
 }
 
 type agentOutput struct {
@@ -304,25 +309,62 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 // live chat projection drops on purpose (a chat message is the answer, not the
 // agent's musings) and re-emits here as a preamble instead. This is the same
 // event the Control UI renders (ui/src/pages/chat/tool-stream-preamble.ts), so
-// the projection is reading the surface the gateway intends a client to read --
+// the projection reads the surface the gateway intends a client to read --
 // verified against the deployed gateway, where the assistant stream carries the
 // answer alone and every step arrives as one of these.
 //
 // progressText is the block's whole text, already folded onto one line by the
-// gateway, so nothing is accumulated here. A block that folds to nothing is
-// dropped: it is not a paragraph, and drawing it would put an empty line
-// between two cards.
+// gateway, so nothing is accumulated here. What a progress line must not show
+// is dropped by normalizePreamble.
 func (p *liveProjector) preambleEvent(sessionKey string, it agentItem) []agentruntime.Event {
-	text := it.ProgressText
-	if strings.TrimSpace(text) == "" {
+	text := normalizePreamble(it.ProgressText)
+	if text == "" {
 		return nil
+	}
+	// The gateway's own id for this step, when the lane carries one (the
+	// Responses API does; the completions lane of this version publishes an empty
+	// id, fixed later in OpenClaw fb598bdc7d3). Without it, one step per tool call
+	// is assumed -- see startCall.
+	blockID := it.ItemID
+	if blockID == "" {
+		blockID = strconv.Itoa(p.block)
 	}
 	return []agentruntime.Event{{
 		Type:      agentruntime.EventNarration,
 		SessionID: sessionKey,
-		BlockID:   strconv.Itoa(p.block),
+		BlockID:   blockID,
 		Text:      text,
 	}}
+}
+
+// preambleDirectiveRe matches the inline delivery directives the gateway strips
+// from a progress line before a reader sees it: [[reply_to_current]],
+// [[reply_to: <id>]] and [[audio_as_voice]], with the padding they may carry.
+// The gateway's own stripper is also code-region aware and catches malformed
+// open forms; a progress line has already been folded onto one line by the time
+// it arrives, so this covers the shapes that survive that.
+var preambleDirectiveRe = regexp.MustCompile(
+	`^[\t ]*\[\[\s*(?:audio_as_voice|reply_to_current|reply_to[\t ]*:[^\]\r\n]*)\s*\]\][\t ]*`)
+
+// normalizePreamble drops what a narration line must never show: the inline
+// directives the agent uses to address a channel rather than a reader, a line
+// that is only whitespace, and the silent-reply token the gateway uses to mean
+// "say nothing here".
+func normalizePreamble(text string) string {
+	for {
+		stripped := preambleDirectiveRe.ReplaceAllString(text, "")
+		if stripped == text {
+			break
+		}
+		text = stripped
+	}
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.Trim(text, " \t\n*_`~"), "NO_REPLY") {
+		return ""
+	}
+	return text
 }
 
 // startCall marks a tool call started, exactly once, and closes the narration

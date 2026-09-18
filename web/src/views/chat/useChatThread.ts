@@ -580,20 +580,22 @@ export function useChatThread({
         const hasText = content.some((c) => c.type === 'text' && c.text)
         if (!hasTool && !hasText) continue
         openAssistant()
-        // A step, not the answer. Two things say so, and both come from the
-        // gateway's own rule for the live stream: it marks the rows it published
-        // as commentary (`openclawStreamFallback`, the same marker the Control UI
-        // reconciles by), and it classifies text that is followed by a tool call
-        // in the same message as commentary too. The answer is the row that is
-        // neither -- so a turn can no longer fuse its steps and its answer into
-        // one blob, which is what appending every row's text did.
+        // A step, not the answer -- and the gateway says which is which: it
+        // splits a mixed row before serving history, giving the commentary its
+        // own row marked `openclawStreamFallback`, and leaving the rest as the
+        // tool calls plus whatever the answer was. So an unmarked row's text is
+        // the answer, never a step: a row like `[toolCall, {text: "Done."}]` is
+        // a tool call and a finished answer, and reading it as narration both
+        // invents a step and eats the answer.
         const fallback = it.openclawStreamFallback
         const marked = typeof fallback?.itemId === 'string' && fallback.itemId !== ''
-        const stepText = (fallback?.replacementText || content
-          .map((c) => (c.type === 'text' && c.text ? c.text : ''))
-          .join('')).trim()
-        if (stepText && (marked || hasTool)) {
-          last!.items.push({ kind: 'narration', blockId: `h${++narrationBlocks}`, text: stepText })
+        if (marked) {
+          const stepText = fallback?.replacementText || content
+            .map((c) => (c.type === 'text' && c.text ? c.text : ''))
+            .join('')
+          if (stepText.trim()) {
+            last!.items.push({ kind: 'narration', blockId: `h${++narrationBlocks}`, text: stepText })
+          }
         }
         for (const c of content) {
           if (c.type === 'toolCall') {
@@ -601,7 +603,7 @@ export function useChatThread({
               kind: 'tool',
               tool: { name: c.name || 'exec', cmd: toolArgsDisplay(c.arguments), callID: c.id || '', done: true },
             })
-          } else if (c.type === 'text' && c.text && !marked && !hasTool) {
+          } else if (c.type === 'text' && c.text && !marked) {
             // The reply, and only ever one per turn: the newest one wins.
             last!.text = c.text
           }

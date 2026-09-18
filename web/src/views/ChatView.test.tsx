@@ -963,6 +963,77 @@ describe('ChatView narration', () => {
   })
 })
 
+describe('ChatView history step boundaries', () => {
+  it('reads an unmarked tool row as a tool call plus the answer, not as a step', async () => {
+    // The gateway can serve a row holding a tool call and the finished answer
+    // (`[toolCall, {text: "Done."}]`), unmarked. Its text is the answer; reading
+    // it as narration would invent a step and swallow the reply.
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],
+      history: [
+        { role: 'user', content: '看看 default' },
+        {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'c1', name: 'exec', arguments: { command: 'kubectl get pods -n default' } }],
+        },
+        { role: 'toolResult', content: [{ type: 'text', text: 'qwen38-vllm-0 Running' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'toolCall', id: 'c2', name: 'exec', arguments: { command: 'kubectl get events' } },
+            { type: 'text', text: 'Done.' },
+          ],
+        },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    const thread = document.querySelector('.thread-inner') as HTMLElement
+    expect(await within(thread).findByText(/Done\./)).toBeInTheDocument()
+    // It is the reply, not a step: the answer panel is where a tool-running turn
+    // puts its closing text.
+    const panel = thread.querySelector('.answer-panel') as HTMLElement
+    expect(panel.textContent).toContain('Done.')
+    expect(thread.querySelectorAll('.narration')).toHaveLength(0)
+  })
+
+  it('keeps a replayed step exactly as the gateway recorded it', async () => {
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: 'agent:main:conv-1', title: 'Dev environment for nginx' }],
+      history: [
+        { role: 'user', content: '看看 default' },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '    kubectl get pods -n default\n' }],
+          openclawStreamFallback: {
+            itemId: 'commentary-0',
+            source: 'segment',
+            replacementText: '    kubectl get pods -n default\n',
+          },
+        },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+
+    // An indented block is a code block because of its indentation: a view that
+    // trims the recorded text sends it back as prose.
+    const narration = (await waitFor(() => {
+      const el = document.querySelector('.narration')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })) as HTMLElement
+    expect(narration.querySelector('pre')?.textContent).toContain('kubectl get pods -n default')
+  })
+})
+
 describe('ChatView narration from history', () => {
   it('rebuilds the steps a reloaded turn narrated', async () => {
     gateway = installFakeGateway({

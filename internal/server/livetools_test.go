@@ -282,6 +282,37 @@ func TestLiveProjector_NarrationAdvancesOnSuppressedToolStart(t *testing.T) {
 	}
 }
 
+func TestLiveProjector_NarrationPrefersTheGatewayItemID(t *testing.T) {
+	p := newLiveProjector()
+	// A lane that names its items (the Responses API) gives a block identity the
+	// gateway already reconciled against, and two commentary items before one
+	// tool call must not collapse into a single block.
+	first, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"item","data":{"kind":"preamble","phase":"update","itemId":"commentary-0","progressText":"先看 a"}}`))
+	second, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"item","data":{"kind":"preamble","phase":"update","itemId":"commentary-1","progressText":"再看 b"}}`))
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected one event per item, got %d then %d", len(first), len(second))
+	}
+	if first[0].BlockID != "commentary-0" || second[0].BlockID != "commentary-1" {
+		t.Fatalf("block ids = %q, %q; want the gateway's own ids", first[0].BlockID, second[0].BlockID)
+	}
+}
+
+func TestLiveProjector_NarrationHidesChannelDirectives(t *testing.T) {
+	p := newLiveProjector()
+	// A line that addresses a channel rather than a reader, and the token that
+	// means "say nothing here", are not narration a Portal should show.
+	got, _ := p.feed(conv, "agent", []byte(preamble("[[reply_to_current]] 先看 default 的 Pod")))
+	if len(got) != 1 {
+		t.Fatalf("events = %+v, want one narration", got)
+	}
+	if got[0].Text != "先看 default 的 Pod" {
+		t.Fatalf("text = %q, want the directive stripped", got[0].Text)
+	}
+	if got, _ := p.feed(conv, "agent", []byte(preamble("NO_REPLY"))); len(got) != 0 {
+		t.Fatalf("silent-reply token = %+v, want nothing drawn", got)
+	}
+}
+
 func TestLiveProjector_NarrationDropsBlankText(t *testing.T) {
 	p := newLiveProjector()
 	// A step that narrated nothing must not draw an empty line between two cards.
