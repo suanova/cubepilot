@@ -33,6 +33,11 @@ export interface FakeGatewayInit {
   // settled). The card stays pending and has to say why, so the explanation is
   // part of the card the user is still looking at.
   decisionFails?: boolean
+  // What the attach stream answers instead of a stream: 409 when another tab
+  // holds the session's, 500 for "streaming unsupported", and so on. Unset means
+  // the request is served like the real one -- a stream while something is
+  // parked, and the gate's 404 when nothing is.
+  attachStatus?: number
 }
 
 /** A turn whose stream stays open until the test closes it. */
@@ -240,6 +245,9 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         // it waits for the human, and the stream the browser opened for it stays
         // up for as long as that lasts.
         case 'stream': {
+          if (init.attachStatus) {
+            return json({ error: 'attach refused' }, init.attachStatus)
+          }
           // The route's gate, as the server applies it: a session with nothing
           // parked is a 404, which is what a card answered before the request
           // arrived gets. (The fake's approval lookup always answers 404, so a

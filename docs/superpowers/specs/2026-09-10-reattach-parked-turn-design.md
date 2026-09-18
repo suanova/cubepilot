@@ -99,10 +99,16 @@ so the design does not pretend otherwise. What it guarantees instead:
   observed nothing" (its SSE helper synthesizes a terminal for it, which the attach path
   refuses to apply to the card) and catches up instead: `GET /turn`, then the durable
   history once the run is over -- that output exists only in the transcript by then --
-  or the no-stream turn status and its poll while it is still going. The same reading
-  covers a refusal that never became a stream: an attach answered `404` (the card was
-  answered before the request reached the gate) caught up like any other, while `409`
-  is the one refusal that means another tab is carrying the run.
+  or the no-stream turn status and its poll while it is still going. A refusal is read
+  the same way, since none of them says the run is over: the `404` of a card answered
+  before the request reached the gate, the `409` of another tab holding the session's
+  stream, a gateway failure that left no stream at all.
+- The reload that catch-up performs draws any still-pending card but opens no stream
+  for it. Re-attaching from there is the one thing that could make the catch-up feed
+  itself: a reload redraws the card, the attach is refused for the same reason, and the
+  follow-up asks for another reload. A dropped attach therefore does not retry either --
+  the state is asked for and the poll carries it from there, which is the same recovery
+  this hook already gives a turn it holds no stream for.
 
 So the gap costs the *live* delivery of the tail in that one tab, never the output: it
 is in the transcript either way. That is the same recovery a turn this view holds no
@@ -188,11 +194,13 @@ Two gaps made this bug hard to see, both closed here:
   fetches directly, so the header `apiFetch` adds to every other request does not reach
   it, and a card restored under a selected user would attach on the default user's
   gateway -- which holds nothing for that session, and answers `404`.
-- An attach that ends without the server's own terminal (the decision resolved during
-  setup, or a connection that dropped) catches up rather than leaving the tab on a
-  truncated reply: `GET /turn`, then the history reload once the run is over, or the
-  no-stream turn status and its poll while it is still going -- section 1's ordering
-  note.
+- An attach that observed no run -- one that ended without the server's own terminal
+  (the decision resolved during setup, a dropped connection) or one the server refused
+  outright (the gate's `404`, another tab's `409`) -- catches up rather than leaving the
+  tab on a truncated reply: `GET /turn`, then the history reload once the run is over,
+  or the no-stream turn status and its poll while it is still going -- section 1's
+  ordering note. That reload draws a still-pending card without attaching to it, so a
+  refusal cannot beget another attempt in a loop.
 - The two races the attach shares with the rest of the hook are guarded like the hook's
   other stale responses: a restored card starts no attach for a session the user has
   left, and a history response is rendered only while the view still holds the
@@ -217,9 +225,10 @@ Two gaps made this bug hard to see, both closed here:
 - `server`: the projector emits nothing for a call whose start predates it (the tail
   an attach sees), while a call it saw start still reports normally.
 - `web`: the recovered-card attach carries the selected user's header; an attach that
-  ends without a terminal, and one the gate refuses with `404`, each catch up from the
-  history; and a response that lands after a session switch neither renders its thread
-  nor starts an attach for the session left.
+  ends without a terminal, one the gate refuses with `404`, and one another tab refuses
+  with `409` (exactly one attach is made for that one), each catch up from the history;
+  and a response that lands after a session switch neither renders its thread nor starts
+  an attach for the session left.
 
 ## Out of scope
 

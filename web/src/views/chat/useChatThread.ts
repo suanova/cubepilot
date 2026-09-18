@@ -248,7 +248,7 @@ export function useChatThread({
   // header would be a lie), but a refresh of the session already on screen must
   // -- blanking and refilling is a visible flash on every reopen, and the
   // content is about to be the same conversation.
-  async function loadHistory(id: string, keepVisible = false) {
+  async function loadHistory(id: string, keepVisible = false, recover: { attach?: boolean } = {}) {
     // The generation this read belongs to, checked again once it answers. The
     // check cannot be left to the caller: the response is applied here, and a
     // session switch during the request has to win -- otherwise a slower answer
@@ -262,7 +262,7 @@ export function useChatThread({
       const items = await api.sessionHistory(id)
       if (streamGenRef.current !== gen) return
       renderHistory(items, id)
-      void recoverPending(id)
+      void recoverPending(id, recover.attach ?? true)
     } catch (e) {
       if (streamGenRef.current !== gen) return
       // A 404 is "this conversation has not started", which is not a failure:
@@ -354,7 +354,15 @@ export function useChatThread({
   // After a reload mid-approval the platform still holds the pending write; this
   // restores its confirmation card from the pending endpoint (issue #20). The
   // result is discarded if the user switched sessions while it was in flight.
-  async function recoverPending(id: string) {
+  //
+  // `attach` is what it does with a restored card: draw it and open the stream its
+  // answer's output comes back on (the default), or draw it and open nothing. A
+  // reload that follows an attach which already failed passes false -- the card is
+  // still the user's only control, but re-attaching from there is the one thing
+  // that can make a catch-up feed itself: the reload redraws the card, the attach
+  // is refused again for the same reason, and the follow-up asks for another
+  // reload. Nothing here can observe that run any better on the second try.
+  async function recoverPending(id: string, attach = true) {
     // The card a restored question or approval is drawn on: it is also what the
     // re-attach stream renders the parked turn's continuation into (issue #167),
     // so answering in this tab shows the output here.
@@ -405,7 +413,7 @@ export function useChatThread({
       // for the session the user left, holding its one stream against every
       // legitimate client until the next switch or the server's cap. Same guard
       // as the success path below.
-      if (attachBubble && activeSessionRef.current === id) void attachTurn(id, attachBubble)
+      if (attach && attachBubble && activeSessionRef.current === id) void attachTurn(id, attachBubble)
       return
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
@@ -428,7 +436,7 @@ export function useChatThread({
     // An approval parks the run just like a question, so the same stream carries
     // its continuation. The question card wins when both exist: it sits above the
     // approval, so the resumed output reads as its answer.
-    void attachTurn(id, attachBubble || confirmBubble)
+    if (attach) void attachTurn(id, attachBubble || confirmBubble)
   }
 
   // The gateway serves a history message's content either as a plain string
@@ -766,15 +774,6 @@ export function useChatThread({
     // the sort -- it is a statement about the transport -- and the attach never
     // lets it reach the bubble (see below).
     let observedTerminal = false
-    // A refused attach is not a stream that ended -- nothing was established --
-    // and 409 is the one refusal that means another tab has this run: it holds
-    // the session's stream and receives every event, so there is nothing for
-    // this one to show and nothing to catch up on either. Every other refusal is
-    // about *this* request and says nothing about the run; a 404 in particular
-    // is the gate answering that nothing is parked any more, which is the
-    // decision answered before the request even arrived -- and the output it
-    // produced is in the transcript, so that one has to catch up like any other.
-    let refused = false
     try {
       await streamSSE(
         `/api/v1/sessions/${encodeURIComponent(id)}/stream`,
@@ -803,25 +802,27 @@ export function useChatThread({
           if (ev.type === 'message_done') clearTurnElsewhere()
         },
         ctl.signal,
-        (status) => {
-          if (status === 409) refused = true
-        },
+        // A refusal is not a stream that ended, and none of it may reach the
+        // card: the helper's synthesized terminal would stamp a card restored
+        // from the pending endpoint as a lost transport. What a refusal means
+        // for the turn is the follow-up below, which asks.
+        () => {},
       )
     } catch {
       /* the request never started; the card stays as it is */
     }
-    if (observedTerminal || refused || ctl.signal.aborted) return
-    // Nothing here ever observed the run: the stream ended without the server's
-    // terminal, or was refused outright -- the 404 of a card answered before the
-    // request arrived, or a failure that left no stream at all. Either way the
-    // resumed run's output has already gone past, and it exists only in the
-    // transcript now. So catch up from it -- but ask first, because a run that
-    // is still going is the no-stream turn status's job, and that status is
-    // already polling for the moment its output lands (see the effect above).
-    // A connection that merely dropped lands here too, which is the same
-    // situation: an attach that observed nothing is one to re-establish or to
-    // catch up on, never one to leave the tab silent about.
-    void checkTurnElsewhere(id, gen, () => void loadHistory(id, true))
+    if (observedTerminal || ctl.signal.aborted) return
+    // Nothing here ever observed the run. That covers a stream that ended without
+    // the server's terminal, and every refusal -- the 404 of a card answered
+    // before the request arrived, the 409 of another tab holding the session's
+    // stream, a failure that left no stream at all. None of them says the run is
+    // over, so ask: a run still going is the no-stream turn status's job, and
+    // that status polls for the moment its output lands (see the effect above),
+    // while a run already done has output in the transcript that only a reload
+    // brings back. The reload draws a still-pending card but attaches nothing --
+    // an attach just failed here, and re-attaching from a reload is what would
+    // let this catch-up feed itself (see recoverPending).
+    void checkTurnElsewhere(id, gen, () => void loadHistory(id, true, { attach: false }))
   }
 
   // applyTurnEvent folds one SSE event into the bubble it belongs to. It is the

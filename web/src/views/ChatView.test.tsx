@@ -633,6 +633,43 @@ describe('ChatView re-attach', () => {
     ).toBe('bob')
   })
 
+  it('catches up on a run another tab holds the stream for', async () => {
+    // 409 means the other tab receives every event, so this one shows nothing
+    // live -- but it still has to end up with the answer. Nothing here observes
+    // the run, so the state has to be asked for, and the reload that follows must
+    // not re-attach: the other tab still holds the stream, and a reload that
+    // re-opens the card's stream would be refused again for the same reason,
+    // which is a catch-up that feeds itself.
+    gateway = installFakeGateway({
+      sessions: SESSIONS,
+      attachStatus: 409,
+      history: [{ role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] }],
+      pendingQuestions: parkedCard,
+    })
+    gateway.install()
+
+    const release = gateway.holdPath('conv-1/stream')
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('Dev environment for nginx'))
+    expect(await screen.findByText('What compute spec?')).toBeInTheDocument()
+    await attachRequest()
+
+    // The other tab answers and the run finishes while this one's attach is
+    // still in flight.
+    gateway.setHistory([
+      { role: 'assistant', content: [{ type: 'text', text: 'Checking the nodes.' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'All nodes are ready.' }] },
+    ])
+    release()
+
+    expect(await screen.findByText(/All nodes are ready\./, undefined, { timeout: 5000 })).toBeInTheDocument()
+    // Exactly one attach: the catch-up reload drew the card again and attached
+    // nothing, so the refusal did not repeat.
+    expect(gateway.requests.filter((r) => r.path.endsWith('conv-1/stream'))).toHaveLength(1)
+  }, 15000)
+
   it('catches up when the card is answered before the attach arrives', async () => {
     // The answer can beat the attach request to the gate, which then answers 404
     // -- "nothing is parked". Only a 409 means another tab owns the stream, so
