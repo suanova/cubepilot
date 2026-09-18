@@ -281,9 +281,22 @@ func (c *Client) ListQuestions(ctx context.Context) ([]QuestionRecord, error) {
 // to map a protocol-level reason such as QUESTION_ALREADY_TERMINAL onto their
 // own status without parsing message text.
 func ReasonOf(err error) string {
-	var re *rpcError
+	var re *RPCError
 	if errors.As(err, &re) {
 		return re.Reason
+	}
+	return ""
+}
+
+// CodeOf returns the gateway's error code (UNAVAILABLE, INVALID_REQUEST,
+// FORBIDDEN, ...) when err wraps a failed RPC, or "" otherwise. It is separate
+// from ReasonOf because the two are separate fields on the wire: a failure can
+// carry a code with no structured reason, and the retryable answer to a
+// destructive call is exactly that.
+func CodeOf(err error) string {
+	var re *RPCError
+	if errors.As(err, &re) {
+		return re.Code
 	}
 	return ""
 }
@@ -377,6 +390,32 @@ func (c *Client) CreateSession(ctx context.Context, sessionKey string) (SessionS
 	return SessionState{Model: model, PermissionMode: out.Entry.PermissionMode}, nil
 }
 
+// DeleteSession removes a session and its transcript (sessions.delete), so the
+// next turn under the same key starts a fresh conversation.
+//
+// deleteTranscript is sent explicitly rather than omitted: the gateway defaults
+// it to true, and a destructive call must not become a different one because a
+// remote default changed under it.
+//
+// A key that does not exist is a success with Deleted=false -- the protocol has
+// no not-found answer for this method -- so idempotence comes from the protocol
+// rather than from the caller. A key that is still active is refused with a
+// retryable UNAVAILABLE, and one that changed alongside the call with
+// INVALID_REQUEST and details.reason "session-changed"; both reach the caller as
+// an RPCError, classified through CodeOf / ReasonOf. The handler drains and
+// stops active work itself, so a caller does not have to abort first.
+func (c *Client) DeleteSession(ctx context.Context, key string) (SessionDeleteResult, error) {
+	raw, err := c.Call(ctx, "sessions.delete", sessionDeleteParams{Key: key, DeleteTranscript: true})
+	if err != nil {
+		return SessionDeleteResult{}, fmt.Errorf("sessions.delete %q: %w", key, err)
+	}
+	var out SessionDeleteResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return SessionDeleteResult{}, fmt.Errorf("decode sessions.delete %q: %w", key, err)
+	}
+	return out, nil
+}
+
 // EnsureSessionGuarded makes the session guarded, creating it if absent. A
 // patch failure is only retried as a create when it looks like the session is
 // missing; other errors propagate.
@@ -385,7 +424,7 @@ func (c *Client) EnsureSessionGuarded(ctx context.Context, key string) error {
 	if err == nil {
 		return nil
 	}
-	if re, ok := err.(*rpcError); ok && re.Code == "FORBIDDEN" {
+	if re, ok := err.(*RPCError); ok && re.Code == "FORBIDDEN" {
 		return err // permission problem -- do not paper over it with a create
 	}
 	// INVALID_REQUEST (or an unavailable/missing session) -- try create once.

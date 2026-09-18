@@ -366,7 +366,7 @@ func frameErrorOf(res responseFrame) error {
 	if res.Error == nil {
 		return fmt.Errorf("ws rpc failed")
 	}
-	return &rpcError{Code: res.Error.Code, Message: res.Error.Message, Reason: res.Error.reason()}
+	return &RPCError{Code: res.Error.Code, Message: res.Error.Message, Reason: res.Error.reason()}
 }
 
 // writeReq sends one request frame over the given connection.

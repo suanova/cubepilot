@@ -104,6 +104,14 @@ type fakeGatewayClient struct {
 	inFlightActive bool
 	inFlightRunErr error
 	inFlightReads  []string // sessionKeys passed to the in-flight-run read
+	// sessions.delete (issue #214)
+	deletes      []string // sessionKeys passed to the delete
+	deleteResult ws.SessionDeleteResult
+	deleteErr    error
+	// deleteCtxDeadline records the bound the delete ran under, which is how the
+	// handler's timeout is observed.
+	deleteCtxDeadline    time.Time
+	deleteCtxHasDeadline bool
 	// connectCtxDeadline records the bound the last connect ran under, which is
 	// how /turn's bounded probe is observed.
 	connectCtxDeadline    time.Time
@@ -357,6 +365,27 @@ func (f *fakeGatewayClient) SessionInFlightRun(ctx context.Context, key string) 
 		return "", false, f.inFlightRunErr
 	}
 	return f.inFlightRun, f.inFlightActive, nil
+}
+func (f *fakeGatewayClient) DeleteSession(ctx context.Context, key string) (ws.SessionDeleteResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletes = append(f.deletes, key)
+	// The bound the handler puts on this call is otherwise unobservable: an
+	// unbounded call simply never returns when the gateway is wedged, so no fast
+	// test can wait for the difference.
+	f.deleteCtxDeadline, f.deleteCtxHasDeadline = ctx.Deadline()
+	// A call whose context is already done never reaches the gateway, and the real
+	// client's round trip fails on it. Without this the fake would answer a
+	// cancelled call successfully, so a handler that ran the delete on the request
+	// context instead of a detached one (see handleSessionDelete) would look
+	// correct here while turning every Clear-then-disconnect into a no-op.
+	if err := ctx.Err(); err != nil {
+		return ws.SessionDeleteResult{}, err
+	}
+	if f.deleteErr != nil {
+		return ws.SessionDeleteResult{}, f.deleteErr
+	}
+	return f.deleteResult, nil
 }
 func (f *fakeGatewayClient) Close() {}
 
