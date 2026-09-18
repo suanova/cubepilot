@@ -19,12 +19,18 @@ import (
 var ErrSessionNotFound = errors.New("session not found")
 
 const (
-	EventMessageStart     = "message_start"
-	EventAgentThinking    = "agent_thinking"
-	EventToolCall         = "tool_call"
-	EventToolResult       = "tool_result"
-	EventMessageDelta     = "message_delta"
-	EventTextReplace      = "text_replace"
+	EventMessageStart  = "message_start"
+	EventAgentThinking = "agent_thinking"
+	EventToolCall      = "tool_call"
+	EventToolResult    = "tool_result"
+	EventMessageDelta  = "message_delta"
+	EventTextReplace   = "text_replace"
+	// EventNarration carries the text the agent writes between tool calls: what
+	// it found and what it is about to do. Text is the block's FULL text, not an
+	// increment -- the gateway publishes this lane as a snapshot per block, and
+	// mirrors are cheaper than diffs -- and BlockID names the block it belongs
+	// to, so a consumer replaces rather than appends.
+	EventNarration        = "narration"
 	EventMessageDone      = "message_done"
 	EventApprovalPending  = "approval_pending"
 	EventApprovalResolved = "approval_resolved"
@@ -77,7 +83,16 @@ type Event struct {
 	Message   string `json:"message,omitempty"`
 	Approved  *bool  `json:"approved,omitempty"`
 	Delta     string `json:"delta,omitempty"`
-	Error     string `json:"error,omitempty"`
+	// Text is the full text of a narration block (see EventNarration). It is a
+	// field of its own rather than a second meaning for Delta: within this
+	// contract delta means an increment, and a field that sometimes carries a
+	// snapshot is a field every reader has to re-derive.
+	Text string `json:"text,omitempty"`
+	// BlockID names the narration block Text belongs to. Same id means the same
+	// block, so the new Text replaces what the consumer holds; a new id means a
+	// new block.
+	BlockID string `json:"blockId,omitempty"`
+	Error   string `json:"error,omitempty"`
 	// Stopped reports that the turn ended because the user stopped it, as
 	// opposed to failing or completing. Only ever set on message_done, and
 	// never together with Error.

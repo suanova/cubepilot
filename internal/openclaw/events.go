@@ -12,6 +12,7 @@ const (
 	EventToolResult       = agentruntime.EventToolResult
 	EventMessageDelta     = agentruntime.EventMessageDelta
 	EventTextReplace      = agentruntime.EventTextReplace
+	EventNarration        = agentruntime.EventNarration
 	EventMessageDone      = agentruntime.EventMessageDone
 	EventApprovalPending  = agentruntime.EventApprovalPending
 	EventApprovalResolved = agentruntime.EventApprovalResolved

@@ -20,6 +20,16 @@ export interface HistoryContentBlock {
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'toolResult'
   content: string | HistoryContentBlock[]
+  // What the gateway records on a durable assistant row it published as
+  // commentary. `itemId` (e.g. commentary-0) is what marks the row as a step
+  // rather than the answer, and `replacementText` is that step's text in full --
+  // the live lane carries the same step folded onto one line, so this is what a
+  // reload reads to put the step back whole (issue #216).
+  openclawStreamFallback?: {
+    itemId?: string
+    replacementText?: string
+    source?: string
+  }
 }
 
 export interface Task {
@@ -164,6 +174,17 @@ export interface SSETextReplace {
   sessionId: string
   delta: string
 }
+// The agent's between-tool narration (issue #216): what it found and what it is
+// about to do. `text` is the block's FULL text, not an increment -- the gateway
+// publishes this lane as one snapshot per block -- so a reader replaces the
+// block's text rather than appending. The same blockId means the same block; a
+// new one means the agent has moved on to a new step.
+export interface SSENarration {
+  type: 'narration'
+  sessionId: string
+  blockId: string
+  text: string
+}
 export interface SSEMessageDone {
   type: 'message_done'
   sessionId: string
@@ -247,6 +268,7 @@ export type SSEEvent =
   | SSEToolResult
   | SSEMessageDelta
   | SSETextReplace
+  | SSENarration
   | SSEMessageDone
   | SSEApprovalPending
   | SSEApprovalResolved

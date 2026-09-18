@@ -16,6 +16,36 @@ export interface ToolCallVM {
   result?: string
 }
 
+// BubbleItem is one piece of a turn, in the order the turn produced it: the
+// narration that says what the agent found and what it will do next, the tool
+// card for the command it announced, the write confirmation it had to pass, the
+// question it asked the human -- and then the next one, until it answers.
+//
+// The order is the point. Drawing a turn as "every tool card, then the text"
+// puts each card above the narration that introduced it, and a decided
+// confirmation below every card of the turn rather than beside the call it
+// gated -- so a reader cannot tell which execution was approved.
+export type BubbleItem =
+  | { kind: 'narration'; blockId: string; text: string }
+  | { kind: 'tool'; tool: ToolCallVM }
+  | { kind: 'approval'; confirm: BubbleConfirm }
+  | { kind: 'question'; question: BubbleQuestion }
+
+// toolsOf is the turn's tool calls, in order, for the readers that ask about
+// tools rather than about the turn: how many are still running, whether it ran
+// any at all.
+export function toolsOf(items: BubbleItem[]): ToolCallVM[] {
+  const out: ToolCallVM[] = []
+  for (const i of items) if (i.kind === 'tool') out.push(i.tool)
+  return out
+}
+
+// hasTools reports whether the turn ran anything, which is what decides whether
+// its reply is the takeaway of a tool log or simply the answer.
+export function hasTools(b: BubbleMsg): boolean {
+  return b.items.some((i) => i.kind === 'tool')
+}
+
 // Turn lifecycle phases; drives the per-bubble status line so the user can
 // always tell "still working" (think/tools/stream) from "finished" (done).
 export type BubblePhase = 'thinking' | 'tools' | 'streaming' | 'done'
@@ -78,12 +108,15 @@ export type StopEvidence =
 export interface BubbleMsg {
   kind: 'user' | 'assistant'
   text?: string
-  tools: ToolCallVM[]
+  // Everything the turn produced, in order (see BubbleItem). The reply is not in
+  // here: `text` is the run's answer, which is terminal, so it always renders
+  // last -- and keeping it out of the list is what keeps the stopped-turn
+  // evidence, the headline and `superseded` reading the answer alone.
+  items: BubbleItem[]
   error?: string
   thinking: boolean // true while phase !== 'done'
   phase?: BubblePhase
   phaseAt?: number // Date.now() when the current phase started
-  confirm?: BubbleConfirm // a pending/resolved write confirmation on this bubble
   // The user stopped this turn. Its partial text is not a finished answer, so
   // the bubble reads "Stopped" rather than the green Done check (issue #166).
   stopped?: boolean
@@ -100,12 +133,6 @@ export interface BubbleMsg {
   // the tool it introduces asked for their approval. Rendered as a disclosure
   // under the reply -- the reply is what they need, not the archaeology.
   superseded?: string[]
-  // Every question this turn has asked, in order. The agent can ask several in
-  // one turn (a blocked ask_user resumes, then another follows), so they are
-  // kept as a collection rather than one slot that a later question replaces --
-  // that would drop an answered card's record and, on the recovery path, the
-  // other open questions.
-  questions?: BubbleQuestion[]
 }
 
 // newBubbleQuestion builds the card state for one question event or recovery
@@ -141,7 +168,8 @@ export function questionAnswered(q: BubbleQuestion): boolean {
 // attachToolResult pairs a tool's output with the tool call that produced it:
 // exact callId when the stream carries one, otherwise the oldest call without
 // a result yet (the gateway emits tool calls and results in the same order).
-export function attachToolResult(tools: ToolCallVM[], callID: string, output: string) {
+export function attachToolResult(items: BubbleItem[], callID: string, output: string) {
+  const tools = toolsOf(items)
   const t =
     (callID && tools.find((x) => x.callID === callID)) ||
     tools.find((x) => !x.done) ||
@@ -170,20 +198,21 @@ export function attachToolResult(tools: ToolCallVM[], callID: string, output: st
 // them would take away the only controls that can unblock it. The caller
 // decides; this function must not be reached on that path.
 export function settleBubbleCards(b: BubbleMsg) {
-  if (b.confirm && !b.confirm.resolved) {
-    b.confirm.resolved = true
-    // `approved` stays undefined on purpose: nobody decided this, which renders
-    // the neutral stopped pill rather than the red "Rejected" the user never
-    // chose. A decision that did happen has already set the field.
-    b.confirm.busy = false
-  }
-  for (const q of b.questions || []) {
-    if (q.resolved) continue
-    q.resolved = true
-    // The same outcome the server's own settle publishes, so the card looks the
-    // same whether its resolved event arrived or was lost.
-    q.outcome = 'cancelled'
-    q.busy = false
+  for (const item of b.items) {
+    if (item.kind === 'approval' && !item.confirm.resolved) {
+      item.confirm.resolved = true
+      // `approved` stays undefined on purpose: nobody decided this, which renders
+      // the neutral stopped pill rather than the red "Rejected" the user never
+      // chose. A decision that did happen has already set the field.
+      item.confirm.busy = false
+    }
+    if (item.kind === 'question' && !item.question.resolved) {
+      item.question.resolved = true
+      // The same outcome the server's own settle publishes, so the card looks
+      // the same whether its resolved event arrived or was lost.
+      item.question.outcome = 'cancelled'
+      item.question.busy = false
+    }
   }
 }
 
@@ -266,14 +295,14 @@ export function statusLine(b: BubbleMsg): string {
   // cannot be waiting on a human, even when one of its cards has not been
   // settled by the stream yet (a transient the settled event closes).
   if (b.stopped) return 'Stopped'
-  if (b.kind === 'assistant' && b.confirm && !b.confirm.resolved) return 'Awaiting your approval...'
-  if (b.kind === 'assistant' && (b.questions || []).some((q) => !q.resolved)) return 'Awaiting your answer...'
+  if (b.kind === 'assistant' && openApproval(b)) return 'Awaiting your approval...'
+  if (b.kind === 'assistant' && openQuestions(b).length > 0) return 'Awaiting your answer...'
   const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
   switch (b.phase) {
     case 'thinking':
       return `Thinking... ${secs}s`
     case 'tools': {
-      const n = b.tools.filter((t) => !t.done).length
+      const n = toolsOf(b.items).filter((t) => !t.done).length
       return n > 0 ? `Running ${n} tool(s)... ${secs}s` : `Collating tool results / thinking... ${secs}s`
     }
     case 'streaming':
@@ -334,9 +363,33 @@ export function pendingCards(bubbles: BubbleMsg[]): PendingCards {
   let confirm: BubbleConfirm | undefined
   const questions: BubbleQuestion[] = []
   for (const b of bubbles) {
-    if (b.confirm && !b.confirm.resolved) confirm = b.confirm
-    for (const q of b.questions || []) if (!q.resolved) questions.push(q)
+    for (const item of b.items) {
+      if (item.kind === 'approval' && !item.confirm.resolved) confirm = item.confirm
+      if (item.kind === 'question' && !item.question.resolved) questions.push(item.question)
+    }
   }
   return { confirm, questions }
+}
+
+// openApproval is the write this turn is parked on, if any. The platform holds
+// one pending approval per session, so the last one seen is the only one there
+// is.
+export function openApproval(b: BubbleMsg): BubbleConfirm | undefined {
+  let found: BubbleConfirm | undefined
+  for (const item of b.items) {
+    if (item.kind === 'approval' && !item.confirm.resolved) found = item.confirm
+  }
+  return found
+}
+
+// openQuestions is what this turn is still waiting to hear from the human. A
+// turn can ask several (a blocked ask_user resumes, then another follows), so
+// they are a set rather than one slot that a later question replaces.
+export function openQuestions(b: BubbleMsg): BubbleQuestion[] {
+  const out: BubbleQuestion[] = []
+  for (const item of b.items) {
+    if (item.kind === 'question' && !item.question.resolved) out.push(item.question)
+  }
+  return out
 }
 

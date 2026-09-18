@@ -211,3 +211,146 @@ func TestLiveProjector_TextReplace(t *testing.T) {
 		t.Fatalf("replace = %+v, want a text_replace event", got)
 	}
 }
+
+// preamble builds the item frame the gateway publishes the agent's between-tool
+// narration as: an item of kind "preamble" whose progressText is the whole step,
+// folded onto one line by the gateway. This is the surface the Control UI reads,
+// and the one the deployed gateway was observed to send (the assistant stream
+// carries the answer alone).
+func preamble(text string) string {
+	return `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"preamble","title":"Preamble","phase":"update","progressText":"` + text + `"}}`
+}
+
+func TestLiveProjector_Narration(t *testing.T) {
+	p := newLiveProjector()
+	got, _ := p.feed(conv, "agent", []byte(preamble("先看看 default 有哪些 Pod。")))
+	if len(got) != 1 || got[0].Type != openclaw.EventNarration {
+		t.Fatalf("preamble = %+v, want one narration event", got)
+	}
+	if got[0].Text != "先看看 default 有哪些 Pod。" {
+		t.Fatalf("text = %q, want the preamble text", got[0].Text)
+	}
+	if got[0].BlockID == "" {
+		t.Fatal("block id is empty; a block that cannot be identified cannot be replaced")
+	}
+}
+
+func TestLiveProjector_NarrationReplacesWithinOneBlock(t *testing.T) {
+	p := newLiveProjector()
+	first, _ := p.feed(conv, "agent", []byte(preamble("先看看")))
+	// The gateway re-emits a step as it grows, so the same block arrives again.
+	second, _ := p.feed(conv, "agent", []byte(preamble("先看看 default 有哪些 Pod。")))
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected one event per update, got %d then %d", len(first), len(second))
+	}
+	if first[0].BlockID != second[0].BlockID {
+		t.Fatalf("block id changed within one block: %q -> %q", first[0].BlockID, second[0].BlockID)
+	}
+	if second[0].Text != "先看看 default 有哪些 Pod。" {
+		t.Fatalf("text = %q, want the newer text", second[0].Text)
+	}
+}
+
+func TestLiveProjector_NarrationAdvancesOnToolStart(t *testing.T) {
+	p := newLiveProjector()
+	before, _ := p.feed(conv, "agent", []byte(preamble("先查 Pod")))
+	p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"tool","data":{"phase":"start","name":"exec","toolCallId":"call_1"}}`))
+	after, _ := p.feed(conv, "agent", []byte(preamble("再查事件")))
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("expected one narration each side of the tool, got %d then %d", len(before), len(after))
+	}
+	if before[0].BlockID == after[0].BlockID {
+		t.Fatalf("both narrations share block id %q; the tool call between them is a block boundary", before[0].BlockID)
+	}
+}
+
+func TestLiveProjector_NarrationAdvancesOnSuppressedToolStart(t *testing.T) {
+	p := newLiveProjector()
+	before, _ := p.feed(conv, "agent", []byte(preamble("我需要确认一下")))
+	// ask_user's card is suppressed, so nothing is emitted for it -- and a block
+	// id that advanced only on emitted events would merge the two narrations into
+	// one paragraph across the question.
+	if got, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"tool","data":{"phase":"start","name":"ask_user","toolCallId":"call_q"}}`)); len(got) != 0 {
+		t.Fatalf("ask_user start = %+v, want no card", got)
+	}
+	after, _ := p.feed(conv, "agent", []byte(preamble("好，那我继续")))
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("expected one narration each side of the question, got %d then %d", len(before), len(after))
+	}
+	if before[0].BlockID == after[0].BlockID {
+		t.Fatalf("both narrations share block id %q; the question between them is a block boundary", before[0].BlockID)
+	}
+}
+
+func TestLiveProjector_NarrationPrefersTheGatewayItemID(t *testing.T) {
+	p := newLiveProjector()
+	// A lane that names its items (the Responses API) gives a block identity the
+	// gateway already reconciled against, and two commentary items before one
+	// tool call must not collapse into a single block.
+	first, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"item","data":{"kind":"preamble","phase":"update","itemId":"commentary-0","progressText":"先看 a"}}`))
+	second, _ := p.feed(conv, "agent", []byte(`{"sessionKey":"`+conv+`","stream":"item","data":{"kind":"preamble","phase":"update","itemId":"commentary-1","progressText":"再看 b"}}`))
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected one event per item, got %d then %d", len(first), len(second))
+	}
+	if first[0].BlockID != "commentary-0" || second[0].BlockID != "commentary-1" {
+		t.Fatalf("block ids = %q, %q; want the gateway's own ids", first[0].BlockID, second[0].BlockID)
+	}
+}
+
+func TestLiveProjector_NarrationHidesChannelDirectives(t *testing.T) {
+	p := newLiveProjector()
+	// A line that addresses a channel rather than a reader, and the token that
+	// means "say nothing here", are not narration a Portal should show.
+	got, _ := p.feed(conv, "agent", []byte(preamble("[[reply_to_current]] 先看 default 的 Pod")))
+	if len(got) != 1 {
+		t.Fatalf("events = %+v, want one narration", got)
+	}
+	if got[0].Text != "先看 default 的 Pod" {
+		t.Fatalf("text = %q, want the directive stripped", got[0].Text)
+	}
+	if got, _ := p.feed(conv, "agent", []byte(preamble("NO_REPLY"))); len(got) != 0 {
+		t.Fatalf("silent-reply token = %+v, want nothing drawn", got)
+	}
+}
+
+func TestLiveProjector_NarrationStripsDirectivesAfterText(t *testing.T) {
+	p := newLiveProjector()
+	// A step can address a channel mid-line, not only at the front: the gateway's
+	// own case is "Checking [[reply_to_current]]" normalizing to "Checking".
+	got, _ := p.feed(conv, "agent", []byte(preamble("Checking [[reply_to_current]]")))
+	if len(got) != 1 {
+		t.Fatalf("events = %+v, want one narration", got)
+	}
+	if got[0].Text != "Checking" {
+		t.Fatalf("text = %q, want the trailing directive stripped", got[0].Text)
+	}
+}
+
+func TestLiveProjector_NarrationDropsBlankText(t *testing.T) {
+	p := newLiveProjector()
+	// A step that narrated nothing must not draw an empty line between two cards.
+	got, _ := p.feed(conv, "agent", []byte(preamble("   ")))
+	if len(got) != 0 {
+		t.Fatalf("blank preamble = %+v, want no narration", got)
+	}
+}
+
+func TestLiveProjector_NarrationIgnoresOtherFrames(t *testing.T) {
+	p := newLiveProjector()
+	cases := map[string]string{
+		// The answer rides the assistant stream, and the chat stream carries it
+		// too; projecting it here as well would print it twice.
+		"assistant answer": `{"sessionKey":"` + conv + `","stream":"assistant","data":{"text":"结论是这样的","delta":"结论是这样的"}}`,
+		// Tool and command items are cards, not narration.
+		"tool item":    `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"tool","phase":"start","name":"exec","toolCallId":"c9"}}`,
+		"command item": `{"sessionKey":"` + conv + `","stream":"item","data":{"kind":"command","phase":"update","toolCallId":"c9"}}`,
+	}
+	for name, payload := range cases {
+		got, _ := p.feed(conv, "agent", []byte(payload))
+		for _, ev := range got {
+			if ev.Type == openclaw.EventNarration {
+				t.Fatalf("%s produced a narration: %+v", name, ev)
+			}
+		}
+	}
+}

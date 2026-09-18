@@ -11,7 +11,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { MdText } from './MdText'
 import { QuestionCard } from './QuestionCard'
 import { ChevronIcon, DoneCheckIcon, EmptyChatIcon, SendIcon, StopIcon, ToolIcon } from './icons'
-import { headline, pendingCards, statusLine } from './model'
+import { hasTools, headline, pendingCards, statusLine } from './model'
 import type { ChatThreadApi } from './useChatThread'
 
 const user = getCurrentUser()
@@ -185,11 +185,44 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                         {statusLine(b)}
                       </div>
                     )}
-                    {/* One line per tool call, opened on demand (issue #204).
-                        Fully expanded, a turn that ran a dozen tools was a
-                        screenful of raw output with the reply it produced
-                        somewhere under it. */}
-                    {b.tools.map((t, ti) => {
+                    {/* One item per thing the turn produced, in the order it
+                        produced them: the agent's narration, the card for the
+                        command it announced, the write it had to have approved,
+                        the question it asked -- and the next one, until it
+                        answers. Drawing every card first and the text last put
+                        each card above the narration that introduced it (issue
+                        #216) and a decided confirmation below every card of the
+                        turn rather than beside the call it gated. */}
+                    {b.items.map((item, ti) => {
+                      if (item.kind === 'narration') {
+                        return (
+                          <div key={'n' + ti} className="narration">
+                            <MdText text={item.text} />
+                          </div>
+                        )
+                      }
+                      if (item.kind === 'approval') {
+                        // While it is pending the card is drawn in the composer
+                        // dock, where it cannot scroll away; this item is the
+                        // place the record settles into. Drawing it here too
+                        // would be the same card twice.
+                        return item.confirm.resolved ? (
+                          <ApprovalCard key={'a' + ti} confirm={item.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />
+                        ) : null
+                      }
+                      if (item.kind === 'question') {
+                        return item.question.resolved ? (
+                          <QuestionCard
+                            key={item.question.questionId}
+                            question={item.question}
+                            onPick={pick}
+                            onType={typeAnswer}
+                            onSubmit={submitQuestion}
+                            onDismiss={dismissQuestion}
+                          />
+                        ) : null
+                      }
+                      const t = item.tool
                       // Keyed by the tool call itself, because that is what the
                       // reader opened: its id survives a re-read of the
                       // conversation, where a position does not. A reload that
@@ -260,22 +293,6 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                         </div>
                       )
                     })}
-                    {/* A write awaiting a human decision is drawn under the
-                        composer, where its buttons cannot scroll away; what is
-                        left here is the record of what was decided (issue
-                        #204). */}
-                    {b.confirm && b.confirm.resolved && (
-                      <ApprovalCard confirm={b.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />
-                    )}
-                    {/* Questions the agent is blocked on are drawn under the
-                        composer for the same reason; a settled one stays here
-                        as the record of what was asked and answered (issue
-                        #161). */}
-                    {(b.questions || [])
-                      .filter((q) => q.resolved)
-                      .map((q) => (
-                        <QuestionCard key={q.questionId} question={q} onPick={pick} onType={typeAnswer} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
-                      ))}
                     {/* Text the gateway rewrote while the turn was running.
                         Superseded is not lost: it is what the user was reading
                         when the rewrite landed, so it stays one click away
@@ -291,14 +308,16 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
                         ))}
                       </details>
                     ) : null}
-                    {/* When an assistant reply ran tools, its closing text is the
-                        takeaway: render it as a highlighted panel so it stands out
-                        from the tool log. Assistant text renders as Markdown; user
-                        messages stay plain text. Until the turn is over the panel
-                        is neutral and says so -- a mid-turn snapshot is a reply
-                        being written, and labelling it the final result is what
-                        made the next rewrite read as the answer disappearing. */}
-                    {b.kind === 'assistant' && b.tools.length > 0 && b.text ? (
+                    {/* The reply, always last: it is terminal, so nothing the
+                        turn produces can follow it. When the turn ran tools, it
+                        is the takeaway and gets a highlighted panel so it stands
+                        out from the log above. Assistant text renders as
+                        Markdown; user messages stay plain text. Until the turn
+                        is over the panel is neutral and says so -- a mid-turn
+                        snapshot is a reply being written, and labelling it the
+                        final result is what made the next rewrite read as the
+                        answer disappearing. */}
+                    {b.kind === 'assistant' && hasTools(b) && b.text ? (
                       <div className={`answer-panel ${settled ? '' : 'in-progress'}`}>
                         <span className="answer-label">{settled ? 'Final result' : 'Reply'}</span>
                         <MdText text={b.text} />

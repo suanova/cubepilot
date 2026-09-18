@@ -275,7 +275,7 @@ export function useChatThread({
       if (e instanceof ApiError && e.status === 404) {
         setBubbles([])
       } else {
-        setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), tools: [], thinking: false }])
+        setBubbles([{ kind: 'assistant', text: 'History load failed: ' + String(e), items: [], thinking: false }])
       }
     } finally {
       // Only while this read is still the view's: a superseding load owns the
@@ -375,14 +375,11 @@ export function useChatThread({
       const pending = await api.pendingQuestions(id)
       if (activeSessionRef.current !== id) return // stale: a different session is now active
       if (pending.length > 0) {
-        const bubble: BubbleMsg = {
-          kind: 'assistant' as const,
-          tools: [],
-          thinking: false,
-          phase: 'done' as const,
-          questions: pending.map((p) => newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds)),
+        const { bubble, existed } = parkedBubble()
+        for (const p of pending) {
+          bubble.items.push({ kind: 'question', question: newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds) })
         }
-        setBubbles((prev) => [...prev, bubble])
+        setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, bubble])
         requestAnimationFrame(scrollThread)
         attachBubble = bubble
       }
@@ -396,7 +393,7 @@ export function useChatThread({
           ...prev,
           {
             kind: 'assistant' as const,
-            tools: [],
+            items: [],
             thinking: false,
             phase: 'done' as const,
             error: `Could not check for a pending question: ${String(e)}`,
@@ -419,11 +416,9 @@ export function useChatThread({
       return
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
-    const confirmBubble: BubbleMsg = {
-      kind: 'assistant' as const,
-      tools: [],
-      thinking: false,
-      phase: 'done' as const,
+    const { bubble: confirmBubble, existed } = parkedBubble()
+    confirmBubble.items.push({
+      kind: 'approval',
       confirm: {
         sessionId: p.sessionId,
         approvalId: p.approvalId,
@@ -431,14 +426,29 @@ export function useChatThread({
         level: p.level,
         message: p.message,
       },
-    }
-    setBubbles((prev) => [...prev, confirmBubble])
+    })
+    setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, confirmBubble])
     syncAllowAlways()
     requestAnimationFrame(scrollThread)
     // An approval parks the run just like a question, so the same stream carries
     // its continuation. The question card wins when both exist: it sits above the
     // approval, so the resumed output reads as its answer.
     if (attach) void attachTurn(id, attachBubble || confirmBubble)
+  }
+
+  // parkedBubble is the bubble a restored card belongs to: the turn the parked
+  // run is on. A parked run is the newest thing in its session -- the session is
+  // blocked on it, so nothing was produced after it -- which makes the last
+  // assistant bubble the parked turn, and the card lands where the question or
+  // the write actually happened instead of in a bubble of its own at the end.
+  // A transcript with no assistant turn yet (nothing of the parked run has
+  // settled, which is what a run parked on its first tool call looks like) gets
+  // a bubble of its own to carry the card.
+  function parkedBubble(): { bubble: BubbleMsg; existed: boolean } {
+    const list = bubblesRef.current
+    const last = list[list.length - 1]
+    if (last && last.kind === 'assistant') return { bubble: last, existed: true }
+    return { bubble: { kind: 'assistant', items: [], thinking: false, phase: 'done' }, existed: false }
   }
 
   // The gateway serves a history message's content either as a plain string
@@ -544,9 +554,14 @@ export function useChatThread({
   function renderHistory(items: HistoryMessage[], session: string) {
     const out: BubbleMsg[] = []
     let last: BubbleMsg | null = null
+    // The narration block ids this rebuild hands out. They are only ever
+    // compared with each other, within this render -- the live path numbers its
+    // own -- so a counter is enough to keep "same block" meaning the same thing
+    // here.
+    let narrationBlocks = 0
     const openAssistant = () => {
       if (last && last.kind === 'assistant') return
-      last = { kind: 'assistant', tools: [], thinking: false, phase: 'done' }
+      last = { kind: 'assistant', items: [], thinking: false, phase: 'done' }
       out.push(last)
     }
     for (const it of items) {
@@ -554,7 +569,7 @@ export function useChatThread({
       if (it.role === 'user') {
         for (const c of content) {
           if (c.type === 'text' && c.text) {
-            out.push({ kind: 'user', text: c.text, tools: [], thinking: false })
+            out.push({ kind: 'user', text: c.text, items: [], thinking: false })
           }
         }
         last = null
@@ -565,11 +580,35 @@ export function useChatThread({
         const hasText = content.some((c) => c.type === 'text' && c.text)
         if (!hasTool && !hasText) continue
         openAssistant()
+        // A step, not the answer -- and the gateway says which is which: it
+        // splits a mixed row before serving history, giving the commentary its
+        // own row marked `openclawStreamFallback`, and leaving the rest as the
+        // tool calls plus whatever the answer was. So an unmarked row's text is
+        // the answer, never a step: a row like `[toolCall, {text: "Done."}]` is
+        // a tool call and a finished answer, and reading it as narration both
+        // invents a step and eats the answer.
+        const fallback = it.openclawStreamFallback
+        const marked = typeof fallback?.itemId === 'string' && fallback.itemId !== ''
+        if (marked) {
+          // `replacementText` is the gateway's own record of the step, so an
+          // empty one is an answer -- this step said nothing -- and not a
+          // missing field to fall back from.
+          const stepText = fallback?.replacementText ?? content
+            .map((c) => (c.type === 'text' && c.text ? c.text : ''))
+            .join('')
+          if (stepText.trim()) {
+            last!.items.push({ kind: 'narration', blockId: `h${++narrationBlocks}`, text: stepText })
+          }
+        }
         for (const c of content) {
           if (c.type === 'toolCall') {
-            last!.tools.push({ name: c.name || 'exec', cmd: toolArgsDisplay(c.arguments), callID: c.id || '', done: true })
-          } else if (c.type === 'text' && c.text) {
-            last!.text = (last!.text ? last!.text + '\n' : '') + c.text
+            last!.items.push({
+              kind: 'tool',
+              tool: { name: c.name || 'exec', cmd: toolArgsDisplay(c.arguments), callID: c.id || '', done: true },
+            })
+          } else if (c.type === 'text' && c.text && !marked) {
+            // The reply, and only ever one per turn: the newest one wins.
+            last!.text = c.text
           }
         }
         continue
@@ -579,11 +618,17 @@ export function useChatThread({
       if (it.role === 'toolResult') {
         openAssistant()
         for (const c of content) {
-          if (c.type === 'text' && c.text) attachToolResult(last!.tools, '', c.text)
+          if (c.type === 'text' && c.text) attachToolResult(last!.items, '', c.text)
         }
       }
     }
-    setBubbles(applyStoppedTurn(out, session))
+    const next = applyStoppedTurn(out, session)
+    // Mirrored into the ref before the state update lands, because the recovery
+    // that runs straight after a reload reads this view's bubbles to find the
+    // turn a restored card belongs to -- and it is not a render, so it would
+    // otherwise read the list this reload just replaced.
+    bubblesRef.current = next
+    setBubbles(next)
   }
 
   // dropStream retires the live stream: every event still in flight for it is
@@ -841,44 +886,74 @@ export function useChatThread({
       setPhase(bubble, 'thinking')
       return
     }
+    if (ev.type === 'narration') {
+      // The agent's between-tool narration (issue #216). The text is the block's
+      // whole snapshot, not an increment, so the same blockId replaces what this
+      // view holds and a new one starts a new block. The block belongs where it
+      // arrived: between the cards it introduces. A blank snapshot is not a
+      // paragraph, but nothing else about the text is this view's to change --
+      // trimming it would rewrite what the gateway chose to say.
+      const text = ev.text || ''
+      if (!text.trim()) return
+      setPhase(bubble, 'thinking')
+      const previous = bubble.items[bubble.items.length - 1]
+      if (previous && previous.kind === 'narration' && previous.blockId === ev.blockId) {
+        previous.text = text
+      } else {
+        bubble.items.push({ kind: 'narration', blockId: ev.blockId || '', text })
+      }
+      return
+    }
     if (ev.type === 'tool_call') {
       setPhase(bubble, 'tools')
-      bubble.tools.push({ name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.callId || '', done: false })
+      bubble.items.push({
+        kind: 'tool',
+        tool: { name: ev.name, cmd: toolArgsDisplay(ev.arguments), callID: ev.callId || '', done: false },
+      })
       return
     }
     if (ev.type === 'tool_result') {
       setPhase(bubble, 'tools')
       // Attach unconditionally (an empty output is still a result): the
       // call must be marked done even when the tool returned nothing.
-      attachToolResult(bubble.tools, ev.callId || '', ev.output || '')
+      attachToolResult(bubble.items, ev.callId || '', ev.output || '')
       return
     }
     if (ev.type === 'approval_pending') {
       // A write is parked awaiting the human (issue #20). Show the card
-      // immediately rather than waiting for the next 1s ticker render.
+      // immediately rather than waiting for the next 1s ticker render. The card
+      // itself is drawn in the composer dock while it is pending; the item holds
+      // its place in the turn, so the record of the decision lands beside the
+      // call it gated.
       setPhase(bubble, 'tools')
-      bubble.confirm = {
-        sessionId: ev.sessionId || currentSessionId || '',
-        approvalId: ev.callId || '',
-        command: ev.command || '',
-        level: ev.level || 'write',
-        message: ev.message,
-      }
+      bubble.items.push({
+        kind: 'approval',
+        confirm: {
+          sessionId: ev.sessionId || currentSessionId || '',
+          approvalId: ev.callId || '',
+          command: ev.command || '',
+          level: ev.level || 'write',
+          message: ev.message,
+        },
+      })
       syncAllowAlways()
       setBubbles([...bubblesRef.current])
       requestAnimationFrame(scrollThread)
       return
     }
     if (ev.type === 'approval_resolved') {
-      if (bubble.confirm && (!ev.callId || bubble.confirm.approvalId === ev.callId)) {
-        bubble.confirm.resolved = true
+      const item = bubble.items.find(
+        (i) => i.kind === 'approval' && (!ev.callId || i.confirm.approvalId === ev.callId),
+      )
+      if (item && item.kind === 'approval') {
+        item.confirm.resolved = true
         // `approved` is a *bool on the wire: absent means nobody decided
         // this -- the turn was stopped while the write was parked -- and
         // that is not the same as the explicit false of a rejection.
         // Copying it only when present leaves the card reading "Stopped"
         // instead of painting the user a red "Rejected" they never chose.
-        if (ev.approved !== undefined) bubble.confirm.approved = ev.approved
-        bubble.confirm.busy = false
+        if (ev.approved !== undefined) item.confirm.approved = ev.approved
+        item.confirm.busy = false
         setBubbles([...bubblesRef.current])
       }
       return
@@ -889,15 +964,15 @@ export function useChatThread({
       // suppressed server-side so this is the only surface for it.
       if (ev.question && ev.question.questions?.length) {
         setPhase(bubble, 'tools')
-        bubble.questions = [
-          ...(bubble.questions || []),
-          newBubbleQuestion(
+        bubble.items.push({
+          kind: 'question',
+          question: newBubbleQuestion(
             ev.sessionId || currentSessionId || '',
             ev.callId || '',
             ev.question.questions,
             ev.question.timeoutSeconds,
           ),
-        ]
+        })
         setBubbles([...bubblesRef.current])
         requestAnimationFrame(scrollThread)
       }
@@ -906,11 +981,13 @@ export function useChatThread({
     if (ev.type === 'question_resolved') {
       // Settle only the matching card: another question of this turn may
       // still be open.
-      const q = (bubble.questions || []).find((x) => !ev.callId || x.questionId === ev.callId)
-      if (q) {
-        q.resolved = true
-        q.outcome = ev.message || 'answered'
-        q.busy = false
+      const item = bubble.items.find(
+        (i) => i.kind === 'question' && (!ev.callId || i.question.questionId === ev.callId),
+      )
+      if (item && item.kind === 'question') {
+        item.question.resolved = true
+        item.question.outcome = ev.message || 'answered'
+        item.question.busy = false
         setBubbles([...bubblesRef.current])
       }
       return
@@ -1104,8 +1181,8 @@ export function useChatThread({
     // reload above may have set new bubbles that React has not re-rendered yet,
     // and the ref would still hold the pre-reload list -- dropping exactly the
     // stopped turn that reload exists for.
-    const bubble: BubbleMsg = { kind: 'assistant', tools: [], thinking: true }
-    setBubbles((prev) => [...prev, { kind: 'user' as const, text, tools: [], thinking: false }, bubble])
+    const bubble: BubbleMsg = { kind: 'assistant', items: [], thinking: true }
+    setBubbles((prev) => [...prev, { kind: 'user' as const, text, items: [], thinking: false }, bubble])
     el.value = ''
     el.style.height = 'auto'
     requestAnimationFrame(scrollThread)

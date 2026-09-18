@@ -768,6 +768,7 @@ GET /api/v1/sessions/{key}/question/pending
 | `agent_thinking` | `sessionId` | agent 正在思考 |
 | `message_delta` | `sessionId`,`delta` | 追加正文（增量） |
 | `text_replace` | `sessionId`,`delta` | **替换**正文（不是追加） |
+| `narration` | `sessionId`,`blockId`,`text` | agent 的工具间解说，`text` 是**整段快照** |
 | `tool_call` | `sessionId`,`name`,`callId`,`arguments` | 一次工具调用开始 |
 | `tool_result` | `sessionId`,`name`,`callId`,`output` | 该工具的输出 |
 | `approval_pending` | `sessionId`,`callId`,`name`,`command`,`level`,`message` | 写操作待审批 |
@@ -782,6 +783,10 @@ GET /api/v1/sessions/{key}/question/pending
   客户端要自行合成一个 `message_done` 复位 UI。`error` 与 `stopped:true` 互斥。
 - **`text_replace` 必须替换而非追加**。网关会在工具执行后重写先前的解说文本，
   当成 `message_delta` 追加会出现重复内容。
+- **`narration` 是整段快照，且按 `blockId` 归并**。它承载 agent 在工具之间说的话
+  （"发现了什么、接下来做什么"），`text` 是该段的**完整文本**而非增量：同一个
+  `blockId` 再来一版就**替换**这一段，`blockId` 变了才是新的一段。它**不是答复**——
+  答复仍然只走 `message_delta` / `text_replace`，两者不要混进同一个字段。
 - `tool_result` 与 `tool_call` 通过 `callId` 配对；没有 `callId` 时按**到达顺序**
   与最旧的未完成调用配对（`web/src/views/ChatView.tsx` 的 `attachToolResult`）。
 - 事件可能来自**其他连接**（审批/问答由网关侧广播注入），

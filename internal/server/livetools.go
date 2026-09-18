@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
@@ -21,6 +23,10 @@ import (
 //   - agent stream="item" / "command_output"           (tool+command lifecycle
 //     and streamed output; kept as a richer/back-compat source, deduped per
 //     call id)
+//   - agent stream="item" kind="preamble"              (the agent's between-tool
+//     narration, projected as EventNarration; the gateway classifies that text
+//     as commentary and publishes it here rather than on the assistant stream,
+//     which carries the answer alone -- this is also what the Control UI reads)
 //   - chat  state status/delta/final/aborted/error     (startup status and
 //     visible assistant text; aborted/error mark the run terminal)
 
@@ -54,12 +60,18 @@ type liveProjector struct {
 	calls map[string]*liveCall
 	order []string        // toolCallId insertion order, so terminal tool_results replay in gateway order
 	texts map[string]bool // runId -> assistant text already emitted (final de-dup)
+	// block is the narration block currently being written (see narrationEvent).
+	// It advances on every tool call that starts, because a tool call is what
+	// ends the agent's step: the narration after it is a new block, not a
+	// continuation of the one before.
+	block int
 }
 
 func newLiveProjector() *liveProjector {
 	return &liveProjector{
 		calls: map[string]*liveCall{},
 		texts: map[string]bool{},
+		block: 1,
 	}
 }
 
@@ -89,6 +101,13 @@ type agentItem struct {
 	Meta       string `json:"meta"`
 	Title      string `json:"title"`
 	ToolCallID string `json:"toolCallId"`
+	// ProgressText is the preamble item's text: the agent's between-tool
+	// narration, folded onto one line by the gateway.
+	ProgressText string `json:"progressText"`
+	// ItemID identifies the preamble item on the lanes that carry one (the
+	// Responses API). The completions lane of this gateway version publishes the
+	// field empty, which is the bug OpenClaw fixed in fb598bdc7d3.
+	ItemID string `json:"itemId"`
 }
 
 type agentOutput struct {
@@ -129,20 +148,22 @@ func (p *liveProjector) feed(sessionKey, evName string, payload []byte) ([]agent
 			return p.toolEvent(sessionKey, fr.Data), false
 		case "item":
 			var it agentItem
-			if err := json.Unmarshal(fr.Data, &it); err != nil || it.ToolCallID == "" {
+			if err := json.Unmarshal(fr.Data, &it); err != nil {
 				return nil, false
 			}
-			call := p.call(it.ToolCallID)
+			// The narration arrives on this stream, as an item of its own kind
+			// and with no tool call id, so it is read before the tool items are.
+			if it.Kind == "preamble" {
+				return p.preambleEvent(sessionKey, it), false
+			}
+			if it.ToolCallID == "" {
+				return nil, false
+			}
 			if it.Kind == "tool" && it.Phase == "start" {
 				// The canonical stream="tool" start for the same call is emitted
 				// first; never emit a duplicate card from the item stream.
-				if call.started {
-					return nil, false
-				}
-				call.started = true
-				call.name = it.Name
-				if isQuestionTool(it.Name) {
-					call.suppressed = true
+				call, fresh := p.startCall(it.ToolCallID, it.Name)
+				if !fresh || call.suppressed {
 					return nil, false
 				}
 				args := it.Meta
@@ -281,6 +302,95 @@ func (p *liveProjector) finalizeAll(sessionKey string) []agentruntime.Event {
 	return out
 }
 
+// preambleEvent projects the agent's between-tool narration (issue #216).
+//
+// The gateway publishes it as an `item` of kind "preamble", and nowhere else:
+// the assistant text it comes from is classified as commentary, which its own
+// live chat projection drops on purpose (a chat message is the answer, not the
+// agent's musings) and re-emits here as a preamble instead. This is the same
+// event the Control UI renders (ui/src/pages/chat/tool-stream-preamble.ts), so
+// the projection reads the surface the gateway intends a client to read --
+// verified against the deployed gateway, where the assistant stream carries the
+// answer alone and every step arrives as one of these.
+//
+// progressText is the block's whole text, already folded onto one line by the
+// gateway, so nothing is accumulated here. What a progress line must not show
+// is dropped by normalizePreamble.
+func (p *liveProjector) preambleEvent(sessionKey string, it agentItem) []agentruntime.Event {
+	text := normalizePreamble(it.ProgressText)
+	if text == "" {
+		return nil
+	}
+	// The gateway's own id for this step, when the lane carries one (the
+	// Responses API does; the completions lane of this version publishes an empty
+	// id, fixed later in OpenClaw fb598bdc7d3). Without it, one step per tool call
+	// is assumed -- see startCall.
+	blockID := it.ItemID
+	if blockID == "" {
+		blockID = strconv.Itoa(p.block)
+	}
+	return []agentruntime.Event{{
+		Type:      agentruntime.EventNarration,
+		SessionID: sessionKey,
+		BlockID:   blockID,
+		Text:      text,
+	}}
+}
+
+// preambleDirectiveRe matches the inline delivery directives the gateway strips
+// from a progress line before a reader sees it: [[reply_to_current]],
+// [[reply_to: <id>]] and [[audio_as_voice]], with the padding they carry. A tag
+// is matched wherever it sits, not only at the front -- a step can address a
+// channel mid-line ("Checking [[reply_to_current]]" reads as "Checking") -- and
+// the padding goes with it, which leaves the words on either side one space
+// apart. The gateway's own stripper is also code-region aware and catches
+// malformed open forms; a progress line has already been folded onto one line
+// by the time it arrives, so this covers the shapes that survive that.
+var preambleDirectiveRe = regexp.MustCompile(
+	`\s*\[\[\s*(?:audio_as_voice|reply_to_current|reply_to[\t ]*:[^\]\r\n]*)\s*\]\]\s*`)
+
+// normalizePreamble drops what a narration line must never show: the inline
+// directives the agent uses to address a channel rather than a reader, a line
+// that is only whitespace, and the silent-reply token the gateway uses to mean
+// "say nothing here".
+func normalizePreamble(text string) string {
+	// The gateway trims only when something was removed, and so does this: a
+	// directive in the middle of a line would otherwise take the surrounding
+	// whitespace with it and run two words together.
+	if stripped := preambleDirectiveRe.ReplaceAllString(text, " "); stripped != text {
+		text = strings.TrimSpace(stripped)
+	}
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.Trim(text, " \t\n*_`~"), "NO_REPLY") {
+		return ""
+	}
+	return text
+}
+
+// startCall marks a tool call started, exactly once, and closes the narration
+// block that preceded it.
+//
+// The block advances for every call, including the ones whose card is
+// suppressed (ask_user): the human answered a question between the two
+// narrations, and they are not one paragraph. Advancing on *emitted* events
+// instead would merge them, because a suppressed call emits nothing.
+func (p *liveProjector) startCall(id, name string) (*liveCall, bool) {
+	call := p.call(id)
+	if call.started {
+		return call, false
+	}
+	call.started = true
+	call.sawOutput = false
+	call.name = name
+	p.block++
+	if isQuestionTool(name) {
+		call.suppressed = true
+	}
+	return call, true
+}
+
 // toolEvent maps one agent stream="tool" frame. start begins the card,
 // update streams nothing (progress), result emits the tool_result once.
 func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []agentruntime.Event {
@@ -292,14 +402,8 @@ func (p *liveProjector) toolEvent(sessionKey string, data json.RawMessage) []age
 	switch t.Phase {
 	case "start":
 		// The item stream echoes a start for the same call later; emit once.
-		if call.started {
-			return nil
-		}
-		call.started = true
-		call.sawOutput = false
-		call.name = t.Name
-		if isQuestionTool(t.Name) {
-			call.suppressed = true
+		call, fresh := p.startCall(t.ToolCallID, t.Name)
+		if !fresh || call.suppressed {
 			return nil
 		}
 		args := ""
