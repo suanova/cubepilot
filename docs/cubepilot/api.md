@@ -182,7 +182,7 @@ X-CubePilot-User: <用户名>
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
 | **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
-| **504** | `the run did not settle in time; try again`（仅 `/abort`） | 重试 |
+| **504** | `the run did not settle in time; try again`（`/abort`）· `the session delete did not finish in time; retrying it is safe and idempotent`（`DELETE /api/v1/sessions/{key}`） | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
 | **201** | 创建成功：`POST /api/v1/instances`、`POST /api/v1/tasks`、`POST /api/v1/llms`、`POST .../publish` | 正常成功。注意它**不是** 200 |
 | **200** | `POST /api/v1/instances` 在实例已存在时返回 200 + `alreadyExists: true` | 正常成功（幂等重复）|
@@ -413,6 +413,9 @@ DELETE /api/v1/sessions/{key}   → {"deleted":true,"archived":[]}
 - **不需要先 `/abort`**：网关在删除流程里自己把活跃的工作停下来并等它落定。
 - **幂等**：key 不存在不是错误，返回 `200` + `deleted:false`。固定 key 的客户端每次按「清空」
   都会撞上这种情况，这就是它要的答案。
+- **`{key}` 是 `/api/v1/sessions/` 之后的全部内容**，即使它以某个子资源后缀（`/messages`、`/turn`…）
+  结尾——没有任何子资源接受 DELETE，所以 DELETE 永远指的是路径所命名的那个会话。给会话起名时
+  不必绕开这些后缀。
 - 不加热实例。请求没有 body。
 - 网关调用有 5 秒上限；超时返回 `504`。删除可能已经生效，重试一次即可（幂等）。客户端断开
   不会取消这次删除（调用与请求解绑），所以按下「清空」后再离开页面，会话照样会被清空。
