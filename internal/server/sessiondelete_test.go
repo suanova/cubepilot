@@ -198,22 +198,31 @@ func TestHandleSessionDeleteConflictWhenTheSessionChanged(t *testing.T) {
 	}
 }
 
-// The same code with a different reason is not the retryable case, and must not
-// be answered as one: a malformed request reported as "conflict" would tell the
-// client to retry something that can never succeed.
-func TestHandleSessionDeleteOtherInvalidRequestIsNotAConflict(t *testing.T) {
+// The same code with any other reason is the gateway refusing this request
+// itself, not the retryable "it changed under you" case: a protected session
+// (DELETEs of the bare-key route's `main` canonicalise to `agent:main:main`,
+// which OpenClaw protects), or one whose model selection is locked. That is a
+// request problem -- 400, per api-conventions.md §5 -- and must not be a 409
+// that tells the client to retry, nor a 502 that blames the backend link and
+// invites a retry that can never succeed.
+func TestHandleSessionDeleteOtherInvalidRequestIsARequestProblem(t *testing.T) {
 	gw := &fakeGatewayClient{connected: true, deleteErr: &ws.RPCError{
 		Code:    "INVALID_REQUEST",
-		Message: "expectedSessionId does not match",
-		Reason:  "SESSION_MISMATCH",
+		Message: "Session " + deleteTestKey + " is protected and cannot be deleted",
+		Reason:  "PROTECTED_SESSION",
 	}}
 	s := newAbortTestServer(NewHub(), deleteConns(gw))
 
 	rec := httptest.NewRecorder()
 	s.handleSessionDelete(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/conv-1", nil))
 
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("code = %d, want 502 (body = %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 (body = %s)", rec.Code, rec.Body.String())
+	}
+	// The gateway's message is the body: it is the text that says which refusal
+	// this was, so the client can tell the user rather than retry blindly.
+	if !strings.Contains(rec.Body.String(), "protected") {
+		t.Fatalf("body = %s, want the gateway's message", rec.Body.String())
 	}
 }
 
@@ -382,6 +391,27 @@ func TestHandleSessionDeleteBoundsTheGatewayCall(t *testing.T) {
 	}
 }
 
+// The delete's bound is derived from what the gateway does inside the call, not
+// picked: it drains the session's active work first, a drain capped at 15s
+// (SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS in the gateway's
+// session-lifecycle-admission.ts), and the deletion and worktree cleanup follow
+// it inside the same call. A bound at or below that drain reports a timeout for
+// a delete that is still running and going to succeed -- and the gateway
+// finishes it anyway, because ws.Client.Call sends no cancellation.
+//
+// The gateway's source is not in this repo, so the number cannot be checked
+// against it; it is checked against the ceiling that source documents. This is
+// the guard for the derivation, and the reason a later "5s is plenty" edit has
+// to argue with a test rather than with a comment.
+func TestSessionDeleteRPCTimeoutClearsTheGatewayDrain(t *testing.T) {
+	// A variable rather than a const on purpose: the gateway's cap is a value to
+	// compare against at run time, not a constant to fold.
+	drainCap := 15 * time.Second
+	if sessionDeleteRPCTimeout <= drainCap {
+		t.Fatalf("sessionDeleteRPCTimeout = %v, want more than the gateway's %v work-admission drain: a delete that is still draining would be answered as a timeout", sessionDeleteRPCTimeout, drainCap)
+	}
+}
+
 // A Clear is a command, not a read: a client that presses it and then
 // disconnects must not turn the delete into a silent no-op. The call is detached
 // from the request, the way /abort's commands are, so a cancelled request
@@ -405,6 +435,132 @@ func TestHandleSessionDeleteSurvivesAClientDisconnect(t *testing.T) {
 	if len(gw.deletes) != 1 || gw.deletes[0] != deleteTestKey {
 		t.Fatalf("deleted keys = %v, want one on %q: the delete must still reach the gateway", gw.deletes, deleteTestKey)
 	}
+}
+
+// deleteIssuedGateway reports when the delete has been issued, so the settle
+// test below can assert on what the handler does afterwards without racing the
+// goroutine that runs it. Polling the fake's recorded keys for the same purpose
+// would be a data race, and a bare sleep would let a handler that answers
+// immediately pass as one that waited.
+type deleteIssuedGateway struct {
+	*fakeGatewayClient
+	issued chan struct{}
+}
+
+func (g *deleteIssuedGateway) DeleteSession(ctx context.Context, key string) (ws.SessionDeleteResult, error) {
+	select {
+	case <-g.issued:
+	default:
+		close(g.issued)
+	}
+	return g.fakeGatewayClient.DeleteSession(ctx, key)
+}
+
+// A successful delete stops the gateway's run, but the terminal frame that
+// releases this process's parked turn arrives asynchronously: the session's SSE
+// stream can still be registered when the delete returns, and a client that
+// starts the fresh conversation at that instant races Hub.Open into `409 another
+// turn is already streaming`. The handler waits for the stream to release before
+// it answers, which is what this pins: without the wait the 200 lands while the
+// stream is still open, and the assertion below is that it has not.
+func TestHandleSessionDeleteWaitsForTheSessionStreamToRelease(t *testing.T) {
+	hub := NewHub()
+	stream, err := hub.Open(deleteTestKey, httptest.NewRecorder(), httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	gw := &deleteIssuedGateway{
+		fakeGatewayClient: &fakeGatewayClient{connected: true, deleteResult: ws.SessionDeleteResult{
+			OK: true, Key: deleteTestKey, Deleted: true, Archived: []string{},
+		}},
+		issued: make(chan struct{}),
+	}
+	s := newAbortTestServer(hub, deleteConns(gw))
+
+	rec := httptest.NewRecorder()
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		s.handleSessionDelete(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/conv-1", nil))
+	}()
+
+	// Once the delete has been issued, the handler is at or past it and the only
+	// thing left ahead of its answer is the wait under test. The pause then gives
+	// a handler without the wait -- which answers as soon as it is scheduled --
+	// time to do exactly that, while one that waits parks until the stream closes
+	// below.
+	select {
+	case <-gw.issued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never issued the delete")
+	}
+	select {
+	case <-answered:
+		t.Fatal("the handler answered with the session's stream still open: the client's very next send would race Hub.Open into a 409")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	stream.Close()
+
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not answer after the stream released")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (body = %s)", rec.Code, rec.Body.String())
+	}
+	// The property the wait exists for: with the 200 read, the follow-up send can
+	// no longer 409.
+	if _, err := hub.Open(deleteTestKey, httptest.NewRecorder(), httptest.NewRecorder()); err != nil {
+		t.Fatalf("Open after the handler answered: %v", err)
+	}
+}
+
+// The settle wait is bounded, and its expiry is not a failure of the delete: the
+// delete succeeded, and the client is told that along with the fact that the
+// session's turn has not released yet -- the one case in which a client must not
+// act on the delete as if the session were free. Shortened the way
+// abortSettleTimeout is in its own test: the production bound is seconds long
+// while the stream below never closes.
+func TestHandleSessionDeleteSettleTimeoutAnswers504(t *testing.T) {
+	shortenSessionDeleteSettleTimeout(t, 100*time.Millisecond)
+
+	hub := NewHub()
+	streamRec := httptest.NewRecorder()
+	stream, err := hub.Open(deleteTestKey, streamRec, streamRec)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer stream.Close()
+
+	gw := &fakeGatewayClient{connected: true, deleteResult: ws.SessionDeleteResult{
+		OK: true, Key: deleteTestKey, Deleted: true, Archived: []string{},
+	}}
+	s := newAbortTestServer(hub, deleteConns(gw))
+
+	rec := httptest.NewRecorder()
+	s.handleSessionDelete(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/conv-1", nil))
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("code = %d, want 504 (body = %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorBody(t, rec.Body.Bytes(), "the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)")
+	// The delete is not the thing that failed: it reached the gateway, and the
+	// same bound expiry on the RPC itself would have answered the other 504.
+	if len(gw.deletes) != 1 || gw.deletes[0] != deleteTestKey {
+		t.Fatalf("deleted keys = %v, want one on %q: the session was deleted", gw.deletes, deleteTestKey)
+	}
+}
+
+// shortenSessionDeleteSettleTimeout replaces the settle bound for one test. The
+// 504 branch is otherwise reachable only by holding a stream open for the whole
+// production budget.
+func shortenSessionDeleteSettleTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := sessionDeleteSettleTimeout
+	sessionDeleteSettleTimeout = d
+	t.Cleanup(func() { sessionDeleteSettleTimeout = prev })
 }
 
 // assertErrorBody pins the one body shape every error uses: {"error": "..."}
