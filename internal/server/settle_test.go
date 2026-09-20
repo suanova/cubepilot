@@ -3,223 +3,63 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/suanova/cubepilot/internal/config"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
-// A stopped turn must not leave a card behind: after settling, the session has
-// no pending confirmation, the record is gone from the recovery lookup, and a
-// approval_resolved event was published to any attached stream.
-//
-// Pending() on its own cannot pin this: it reports false for an approval whose
-// byID entry is gone even when bySession still points at it, and bySession is
-// the map reload recovery reads. The maps are asserted directly, for the
-// settled session and for a second one that must keep its approval.
-func TestSettlePendingForSessionClearsConfirm(t *testing.T) {
-	h := NewHub()
-	svc := NewApprovalService(h, nil, func(string, ...any) {})
-	svc.Begin("admin", pendingApproval{
-		ApprovalID: "ap-1",
-		SessionKey: "conv-1",
-		User:       "admin",
-		Tool:       "exec",
-		Command:    "kubectl delete pod x",
-		Level:      "write",
-	})
-	svc.Begin("admin", pendingApproval{
-		ApprovalID: "ap-2",
-		SessionKey: "conv-2",
-		User:       "admin",
-		Tool:       "exec",
-		Command:    "kubectl delete pod y",
-		Level:      "write",
-	})
-
-	s := &Server{hub: h, approvals: svc}
-	s.settlePendingForSession(context.Background(), "admin", "conv-1")
-
-	if _, ok := svc.Pending("admin", "conv-1"); ok {
-		t.Fatal("pending confirmation survived the settle")
-	}
-	if id, ok := svc.bySession["conv-1"]; ok {
-		t.Fatalf("bySession still maps conv-1 to %q: a reload resurrects the card", id)
-	}
-	if _, ok := svc.byID["ap-1"]; ok {
-		t.Error("byID still holds the settled approval")
-	}
-	// The settle is scoped to one session: the other session's approval, in both
-	// maps, is not this settle's to clear.
-	if id, ok := svc.bySession["conv-2"]; !ok || id != "ap-2" {
-		t.Fatalf("bySession[conv-2] = %q (present %v), want ap-2", id, ok)
-	}
-	if p, ok := svc.byID["ap-2"]; !ok || p.SessionKey != "conv-2" {
-		t.Fatalf("byID[ap-2] = %+v (present %v), want the untouched approval", p, ok)
-	}
-	if _, ok := svc.Pending("admin", "conv-2"); !ok {
-		t.Error("the other session lost its pending confirmation")
-	}
-}
-
-// Settling races Resolve's reservation, and losing that race resurrects the
-// card.
-//
-// Resolve takes the approval out of byID/bySession before its gateway round
-// trip, so a settle that runs while the decision is in flight finds nothing in
-// the pending maps. If the gateway call then fails, Resolve.restore puts the
-// record back -- and /approval/pending hands a card back to a session whose turn
-// was stopped, which is exactly what the settle exists to prevent. The claim
-// and the removal therefore share one lock acquisition, and a claim that lands
-// on a reservation marks it so the restore drops it.
-//
-// The gateway resolve is held open so the interleaving is forced, not raced for.
-func TestSettlePendingForSessionBeatsReservedResolve(t *testing.T) {
-	srv := New(config.Config{DefaultUser: "admin"}, nil, nil, nil, nil)
-	res := &blockingResolver{
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
-		err:     errors.New("gateway gone"),
-	}
-	srv.approvals.SetResolver(res)
-	srv.approvals.Begin("admin", pendingApproval{
-		ApprovalID: "ap-1",
-		SessionKey: "conv-1",
-		User:       "admin",
-		Tool:       "exec",
-		Command:    "kubectl delete pod x",
-	})
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := srv.approvals.Resolve(context.Background(), "admin", "conv-1", "approve")
-		done <- err
-	}()
-	<-res.entered
-	// The reservation is the state the settle has to cope with: the approval is
-	// no longer pending, but it is not decided either.
-	if _, ok := srv.approvals.Pending("admin", "conv-1"); ok {
-		t.Fatal("fixture: the reservation must have taken the approval out of the pending maps")
-	}
-
-	// The user's Stop lands while the decision is in flight.
-	srv.settlePendingForSession(context.Background(), "admin", "conv-1")
-
-	close(res.release)
-	// The gateway call fails, so the restore path runs -- the path that used to
-	// bring the approval back.
-	if err := <-done; err == nil {
-		t.Fatal("fixture: the resolve must fail for the restore path to be exercised")
-	}
-
-	// Recovery is the surface that matters: /approval/pending is what a reload
-	// asks, and it must not hand back a card for the stopped turn.
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "admin", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("recovery after the settle returned %d, want 404: the failed resolve restored the card", rec.Code)
-	}
-	if id, ok := srv.approvals.bySession["conv-1"]; ok {
-		t.Fatalf("bySession still maps conv-1 to %q: the next reload resurrects the card", id)
-	}
-	if _, ok := srv.approvals.byID["ap-1"]; ok {
-		t.Error("byID still holds the restored approval")
-	}
-	// The settled marker is consumed with the reservation it covers, so nothing
-	// accumulates: no decision is in flight any more, and the map is empty.
-	if n := len(srv.approvals.inflight); n != 0 {
-		t.Fatalf("inflight entries = %d, want 0 once the decision finished", n)
-	}
-}
-
-// A settle must mark the in-flight reservation even when it also claims a record
-// from the pending maps, because both states can hold for one session at once:
-// Resolve reserves approval A, the gateway raises approval B, and Begin puts B
-// into the maps. The previous shape returned as soon as it claimed B, so A's
-// reservation went unmarked; A's failed gateway call then restored A -- and with
-// bySession just deleted it also re-pointed the session at A -- so a reload
-// showed a card for a turn the user had stopped.
-//
-// The gateway resolve for A is held open so the coexistence is forced rather
-// than raced for.
-func TestSettleSessionAlsoMarksReservedRecord(t *testing.T) {
+// A stopped turn must not leave its cards behind. The approvals are captured
+// before the abort (the abort cancels them gateway-side, so there is nothing left
+// to read afterwards) and the settle publishes a neutral resolution for each, on
+// the stream the browser is still holding -- so its cards drop at once instead of
+// waiting for a reload that would find nothing to restore.
+func TestSettlePendingForSessionPublishesCapturedApprovals(t *testing.T) {
 	h := NewHub()
 	svc := NewApprovalService(h, nil, tLogf)
-	res := &blockingResolver{
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
-		err:     errors.New("gateway gone"),
-	}
-	svc.SetResolver(res)
-	svc.Begin("admin", pendingApproval{ApprovalID: "ap-a", SessionKey: "conv-1", User: "admin", Tool: "exec"})
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := svc.Resolve(context.Background(), "admin", "conv-1", "approve")
-		done <- err
-	}()
-	<-res.entered // A is reserved: out of the maps, its decision in flight
-
-	// The gateway raises a second approval for the same session in that window.
-	svc.Begin("admin", pendingApproval{ApprovalID: "ap-b", SessionKey: "conv-1", User: "admin", Tool: "exec"})
-
-	// The Stop claims B from the maps. It must also mark A's reservation settled.
-	p, ok := svc.settleSession("admin", "conv-1")
-	if !ok || p.ApprovalID != "ap-b" {
-		t.Fatalf("settleSession = %+v (claimed %v), want the record the maps held (ap-b)", p, ok)
-	}
-
-	close(res.release)
-	if err := <-done; err == nil {
-		t.Fatal("fixture: the resolve must fail for A's restore path to be exercised")
-	}
-
-	// A's restore must honour the marker: its turn is gone, so no card may come
-	// back -- neither as a record nor as the session's current one.
-	if _, ok := svc.byID["ap-a"]; ok {
-		t.Error("the failed resolve restored A: a reload resurrects a card for the turn the user stopped")
-	}
-	if id, ok := svc.bySession["conv-1"]; ok {
-		t.Fatalf("bySession still maps conv-1 to %q: a reload resurrects a card for the turn the user stopped", id)
-	}
-	if n := len(svc.inflight); n != 0 {
-		t.Fatalf("inflight entries = %d, want 0 once the decision finished", n)
-	}
-}
-
-// A settle must not clear another user's pending approval for the same session
-// key, even though the session key is client-supplied and can collide.
-func TestSettleSessionIsOwnerScoped(t *testing.T) {
-	h := NewHub()
-	svc := NewApprovalService(h, nil, tLogf)
-	svc.Begin("alice", pendingApproval{ApprovalID: "ap-1", SessionKey: "conv-1", User: "alice"})
-
+	rec := openStream(t, h, "agent:main:conv-1")
 	s := &Server{hub: h, approvals: svc}
-	s.settlePendingForSession(context.Background(), "bob", "conv-1")
 
-	if _, ok := svc.Pending("alice", "conv-1"); !ok {
-		t.Fatal("a non-owner's settle cleared the approval")
+	s.settlePendingForSession(context.Background(), "admin", "agent:main:conv-1", []pendingApproval{
+		{ApprovalID: "ap-1", SessionKey: "agent:main:conv-1", Tool: "exec", Command: "kubectl delete pod x"},
+		{ApprovalID: "ap-2", SessionKey: "agent:main:conv-1", Tool: "exec", Command: "kubectl delete pod y"},
+	})
+
+	evs := sseEvents(t, rec.Body.String())
+	if len(evs) != 2 {
+		t.Fatalf("events = %v, want one approval_resolved per captured approval", evs)
 	}
-	if _, ok := svc.settleSession("bob", "conv-1"); ok {
-		t.Fatal("settleSession claimed a record for a non-owner")
+	ids := map[string]bool{}
+	for _, ev := range evs {
+		if ev["type"] != agentruntime.EventApprovalResolved || ev["sessionId"] != "agent:main:conv-1" {
+			t.Fatalf("event = %v, want approval_resolved on the session", ev)
+		}
+		// A settle is not a decision: no allow/deny is implied, and the client
+		// renders the absent Approved as the neutral "stopped".
+		if _, ok := ev["approved"]; ok {
+			t.Errorf("settled approval carried approved=%v", ev["approved"])
+		}
+		ids[ev["callId"].(string)] = true
+	}
+	if !ids["ap-1"] || !ids["ap-2"] {
+		t.Errorf("resolved ids = %v, want both captured approvals", ids)
 	}
 }
 
-// blockingResolver parks ResolveApproval until the test releases it, holding
-// open the window between the reservation and the gateway reply.
-type blockingResolver struct {
-	entered chan struct{}
-	release chan struct{}
-	err     error
-}
+// A settle with nothing captured publishes nothing: an idle Stop (or one whose
+// capture could not be read) must not drop a card for an approval nobody asked
+// about.
+func TestSettlePendingForSessionWithoutCapturedApprovals(t *testing.T) {
+	h := NewHub()
+	rec := openStream(t, h, "agent:main:conv-1")
+	s := &Server{hub: h, approvals: NewApprovalService(h, nil, tLogf)}
 
-func (r *blockingResolver) ResolveApproval(_ context.Context, _, _, _ string) error {
-	close(r.entered)
-	<-r.release
-	return r.err
+	s.settlePendingForSession(context.Background(), "admin", "agent:main:conv-1", nil)
+
+	if evs := sseEvents(t, rec.Body.String()); len(evs) != 0 {
+		t.Fatalf("events = %v, want none", evs)
+	}
 }
 
 // A server built without an approval service must not panic. That is the shape
@@ -233,47 +73,10 @@ func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
 	// The bare fixture: the live gateway manager, no approval service and no
 	// question routes.
 	s := &Server{hub: base.hub, gatewayConns: base.gatewayConns}
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, nil)
 
 	if len(gw.questionCancels) != 0 {
 		t.Fatalf("question cancels = %v, want none (nothing was asked)", gw.questionCancels)
-	}
-}
-
-// Settling publishes approval_resolved while the turn's stream is still open, so
-// an attached view drops the card at once instead of waiting for a reload that
-// would resurrect it.
-func TestSettlePendingForSessionPublishesApprovalResolved(t *testing.T) {
-	h := NewHub()
-	svc := NewApprovalService(h, nil, tLogf)
-	rec := httptest.NewRecorder()
-	if _, err := h.Open("conv-1", rec, rec); err != nil {
-		t.Fatalf("open stream: %v", err)
-	}
-	svc.Begin("admin", pendingApproval{
-		ApprovalID: "ap-1",
-		SessionKey: "conv-1",
-		Tool:       "exec",
-		Command:    "kubectl delete pod x",
-	})
-
-	s := &Server{hub: h, approvals: svc}
-	s.settlePendingForSession(context.Background(), "admin", "conv-1")
-
-	evs := sseEvents(t, rec.Body.String())
-	if len(evs) == 0 {
-		t.Fatal("no SSE events published")
-	}
-	last := evs[len(evs)-1]
-	if last["type"] != agentruntime.EventApprovalResolved {
-		t.Fatalf("last event = %v, want %s", last["type"], agentruntime.EventApprovalResolved)
-	}
-	if last["callId"] != "ap-1" || last["sessionId"] != "conv-1" {
-		t.Fatalf("resolved event = %v, want call_id ap-1 on conv-1", last)
-	}
-	// A settle is not a decision: no allow/deny is implied.
-	if _, ok := last["approved"]; ok {
-		t.Errorf("settled confirmation carried approved=%v", last["approved"])
 	}
 }
 
@@ -287,7 +90,7 @@ func TestSettlePendingForSessionClearsQuestions(t *testing.T) {
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.qroutes.put("ask_1", questionTestSession)
 
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, nil)
 
 	if len(gw.questionCancels) != 1 || gw.questionCancels[0] != "ask_1|alice" {
 		t.Fatalf("question cancels = %v, want [ask_1|alice]", gw.questionCancels)
@@ -315,7 +118,7 @@ func TestSettlePendingForSessionMatchesRawRecordKey(t *testing.T) {
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.qroutes.put("ask_raw", raw.SessionKey)
 
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, nil)
 
 	if len(gw.questionCancels) != 1 || gw.questionCancels[0] != "ask_raw|alice" {
 		t.Fatalf("question cancels = %v, want the raw-keyed record cancelled", gw.questionCancels)
@@ -340,7 +143,7 @@ func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{expired, secret}}
 	s, rec := questionTestServer(t, gw, questionTestSession)
 
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, nil)
 
 	got := map[string]bool{}
 	for _, c := range gw.questionCancels {
@@ -358,29 +161,29 @@ func TestSettlePendingForSessionCancelsUnrenderableQuestions(t *testing.T) {
 }
 
 // A question.list failure leaves the gateway's own records alone, but the
-// approval half has already run by then: a question-side failure must not
-// resurrect a confirmation card.
+// approval half has already run by then: a question-side failure must not leave
+// a confirmation card behind for the stopped turn.
 func TestSettlePendingForSessionListQuestionsError(t *testing.T) {
 	gw := &fakeGatewayClient{listQuestionsErr: errors.New("question.list: boom")}
 	s, rec := questionTestServer(t, gw, questionTestSession)
-	s.approvals.Begin("alice", pendingApproval{
+	s.qroutes.put("ask_1", questionTestSession)
+
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, []pendingApproval{{
 		ApprovalID: "ap-1",
 		SessionKey: questionTestSession,
 		Tool:       "exec",
-	})
-	s.qroutes.put("ask_1", questionTestSession)
+	}})
 
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
-
-	if _, ok := s.approvals.Pending("alice", questionTestSession); ok {
-		t.Error("approval half did not settle before the question.list failure")
-	}
 	if len(gw.questionCancels) != 0 {
 		t.Errorf("question cancels = %v, want none on a list failure", gw.questionCancels)
 	}
 	evs := sseEvents(t, rec.Body.String())
-	if eventOfType(evs, agentruntime.EventApprovalResolved) == nil {
+	resolved := eventOfType(evs, agentruntime.EventApprovalResolved)
+	if resolved == nil {
 		t.Fatalf("events = %v, want the approval_resolved", evs)
+	}
+	if resolved["callId"] != "ap-1" {
+		t.Errorf("approval_resolved = %v, want ap-1", resolved)
 	}
 	if ev := eventOfType(evs, agentruntime.EventQuestionResolved); ev != nil {
 		t.Fatalf("question_resolved published despite the list failure: %v", ev)
@@ -403,7 +206,7 @@ func TestSettlePendingForSessionCancelQuestionError(t *testing.T) {
 	s, rec := questionTestServer(t, gw, questionTestSession)
 	s.qroutes.put("ask_1", questionTestSession)
 
-	s.settlePendingForSession(context.Background(), "alice", questionTestSession)
+	s.settlePendingForSession(context.Background(), "alice", questionTestSession, nil)
 
 	if len(gw.questionCancels) != 1 || gw.questionCancels[0] != "ask_1|alice" {
 		t.Fatalf("question cancels = %v, want the attempted cancel recorded", gw.questionCancels)

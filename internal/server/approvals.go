@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,353 +16,307 @@ import (
 	"github.com/suanova/cubepilot/internal/store"
 )
 
-// ApprovalService bridges gateway exec approvals to the Portal (issue #20):
-// it records each pending approval surfaced by the gateway WebSocket client,
-// injects a approval_pending event into the session's open SSE stream, and
-// resolves the Portal's approve/reject decision back over the WS client. The
-// gateway-facing half is an ApprovalResolver (nil until the WS client is
-// wired) so the service stays testable in isolation.
+// ApprovalService bridges gateway exec approvals to the Portal (issue #20 /
+// #226): it relays each pending approval the gateway broadcasts onto the
+// session's open SSE stream, reads a session's pending set from the gateway when
+// a client asks for it, and writes the Portal's decision back addressed by
+// approval id. The gateway-facing half is an ApprovalGateway (nil until the WS
+// client is wired) so the service stays testable in isolation.
+//
+// The gateway is the single source of truth for what is pending, and nothing
+// here keeps a copy of it. One session can hold several pending approvals at
+// once, so a session-keyed slot holds only the newest of them -- and a decision
+// looked up in such a copy settles whatever the copy pointed at rather than the
+// approval the human clicked. A copy is also process-local, so a restart would
+// lose approvals the gateway still holds, leaving cards on screen that no
+// answer can settle.
 type ApprovalService struct {
-	hub      *Hub
-	store    *store.Store
-	logf     func(format string, args ...any)
-	resolver ApprovalResolver
+	hub   *Hub
+	store *store.Store
+	logf  func(format string, args ...any)
 
-	mu        sync.Mutex
-	byID      map[string]pendingApproval // approval id -> pending
-	bySession map[string]string          // session key -> approval id (one pending per session)
-	// inflight holds the approvals a Resolve has taken out of the maps above
-	// for the duration of its gateway round trip. It exists so a settle that
-	// lands in that window can still find the record: the reservation is what
-	// makes the card absent from Pending, and without this the settle would find
-	// nothing, the failed resolve would restore the record, and a reload would
-	// resurrect a card for a session whose turn was stopped.
-	//
-	// It is bounded by the number of concurrent Resolve calls (at most one entry
-	// each, removed on every exit path), so it is empty whenever no decision is
-	// in flight.
-	inflight map[string]*approvalReservation
+	mu      sync.Mutex
+	gateway ApprovalGateway
+	// inflight holds the approval ids a Resolve is writing a decision for right
+	// now. It is what makes two decisions on one id serialize rather than both
+	// reaching the gateway (two tabs, or a double click), and what keeps a Stop
+	// from publishing a neutral resolution over a decision already in flight. It
+	// is bounded by the number of concurrent Resolve calls, so it is empty
+	// whenever no decision is being written.
+	inflight map[string]struct{}
 }
 
-// approvalReservation is one approval a Resolve has reserved while it talks to
-// the gateway. settled records that the session was settled in that window: the
-// gateway reply may still be honoured, but the card must not come back, so the
-// restore path drops it instead of re-adding it.
-type approvalReservation struct {
-	pending pendingApproval
-	settled bool
-}
-
-// ApprovalResolver resolves a pending approval on the gateway. decision is the
-// canonical Portal value: "approve" or "reject".
-type ApprovalResolver interface {
+// ApprovalGateway is the gateway-facing half of the approval channel: the
+// pending approvals the user's connection can see, and the decision written back
+// over it. Both run on the user's own device connection, which is what scopes
+// them to that user -- the gateway filters the list to records that connection
+// may see, so no platform-side owner check exists or is needed.
+type ApprovalGateway interface {
+	ListApprovals(ctx context.Context, user string) ([]ws.ApprovalRequested, error)
 	ResolveApproval(ctx context.Context, user, approvalID, decision string) error
 }
 
-// pendingApproval is one write awaiting a human decision.
+// pendingApproval is one write awaiting a human decision, projected from the
+// gateway's own record. CreatedAtMs orders a session's cards; ExpiresAtMs is the
+// gateway's deadline, which it enforces when it lists.
 type pendingApproval struct {
-	ApprovalID string
-	SessionKey string
-	User       string
-	Tool       string
-	Command    string
-	Level      string
-	Message    string
-	CreatedAt  time.Time
+	ApprovalID  string
+	SessionKey  string
+	Tool        string
+	Command     string
+	Level       string
+	Message     string
+	CreatedAtMs int64
+	ExpiresAtMs int64
+}
+
+// projectApproval maps one gateway record onto the platform's projection. Tool
+// and Level are fixed: only exec approvals are relayed here, and an exec
+// approval is by definition a write.
+func projectApproval(ev ws.ApprovalRequested) pendingApproval {
+	return pendingApproval{
+		ApprovalID:  ev.ID,
+		SessionKey:  canonicalSessionKey(ev.Request.SessionKey),
+		Tool:        "exec",
+		Command:     ev.Request.Command,
+		Level:       "write",
+		Message:     ev.Request.WarningText,
+		CreatedAtMs: ev.CreatedAtMs,
+		ExpiresAtMs: ev.ExpiresAtMs,
+	}
 }
 
 // NewApprovalService returns an ApprovalService backed by the given hub/store.
 func NewApprovalService(hub *Hub, st *store.Store, logf func(format string, args ...any)) *ApprovalService {
 	return &ApprovalService{
-		hub:       hub,
-		store:     st,
-		logf:      logf,
-		byID:      map[string]pendingApproval{},
-		bySession: map[string]string{},
-		inflight:  map[string]*approvalReservation{},
+		hub:      hub,
+		store:    st,
+		logf:     logf,
+		inflight: map[string]struct{}{},
 	}
 }
 
-// SetResolver wires the gateway-facing approval channel (WS client).
-func (s *ApprovalService) SetResolver(r ApprovalResolver) {
+// SetGateway wires the gateway-facing approval channel (WS client).
+func (s *ApprovalService) SetGateway(g ApprovalGateway) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.resolver = r
+	s.gateway = g
 }
 
-// Begin records a gateway approval and surfaces approval_pending on the session
-// stream. Called by the gateway WS glue when exec.approval.requested arrives.
-func (s *ApprovalService) Begin(user string, p pendingApproval) {
-	if p.ApprovalID == "" || p.SessionKey == "" {
-		s.logf("approvals: Begin skipped: missing approval/session id")
-		return
-	}
+// list reads the pending approvals the user's gateway connection can see. There
+// is deliberately no fallback to anything this process held: a fallback would
+// answer from a copy the gateway may have moved on from, which is the state this
+// service exists to remove.
+func (s *ApprovalService) list(ctx context.Context, user string) ([]ws.ApprovalRequested, error) {
 	s.mu.Lock()
-	if _, dup := s.byID[p.ApprovalID]; dup {
-		s.mu.Unlock()
+	g := s.gateway
+	s.mu.Unlock()
+	if g == nil {
+		return nil, errNoApprovalChannel
+	}
+	return g.ListApprovals(ctx, user)
+}
+
+// RelayRequested surfaces a pending approval on its session's stream. Called by
+// the gateway WS glue when exec.approval.requested arrives.
+//
+// Nothing is recorded. This event is how an attached view learns of the card,
+// and the gateway's own pending list is how a view that was not attached (or
+// that reloaded, or that never saw the event) recovers it -- the same division
+// the question relay uses.
+func (s *ApprovalService) RelayRequested(user string, ev ws.ApprovalRequested) {
+	if ev.ID == "" || ev.Request.SessionKey == "" {
+		s.logf("approvals: %s dropped: record carries no approval or session id", user)
 		return
 	}
-	p.User = user
-	p.Level = "write"
-	if p.Tool == "" {
-		p.Tool = "exec"
-	}
-	s.byID[p.ApprovalID] = p
-	s.bySession[p.SessionKey] = p.ApprovalID
-	s.mu.Unlock()
-
+	p := projectApproval(ev)
 	// No open stream means no browser is watching this session: the card reaches
 	// the Portal only through reload recovery (issue #167 logs the same drop for
 	// questions).
 	if !s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-		Type:      agentruntime.EventApprovalPending,
-		SessionID: p.SessionKey,
-		CallID:    p.ApprovalID,
-		Name:      p.Tool,
-		Command:   p.Command,
-		Level:     p.Level,
-		Message:   p.Message,
+		Type:        agentruntime.EventApprovalPending,
+		SessionID:   p.SessionKey,
+		CallID:      p.ApprovalID,
+		Name:        p.Tool,
+		Command:     p.Command,
+		Level:       p.Level,
+		Message:     p.Message,
+		CreatedAtMs: p.CreatedAtMs,
+		ExpiresAtMs: p.ExpiresAtMs,
 	}) {
 		s.logf("approval %s: no open stream for session %s; push dropped", p.ApprovalID, p.SessionKey)
 	}
 }
 
-// Pending returns the active pending approval for a session, if the caller is
-// its owner.
-func (s *ApprovalService) Pending(user, sessionKey string) (pendingApproval, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.bySession[sessionKey]
-	if !ok {
-		return pendingApproval{}, false
+// Pending returns the approvals the gateway holds for a session, oldest first.
+// It is the authoritative read: reload recovery and the attach gate both ask it
+// rather than consulting any state this process kept.
+//
+// The order is fixed here rather than inherited. The gateway lists its map in
+// insertion order, which happens to be oldest first; making that a contract of
+// this endpoint is what keeps the cards a client draws from depending on the
+// gateway's iteration order. Stable, so records stamped in the same millisecond
+// keep the gateway's own order.
+//
+// There is no expiry filter to apply: exec.approval.list expires due records
+// before it answers, so everything it returns is answerable. (The question path
+// needs that filter because question.list does not.)
+func (s *ApprovalService) Pending(ctx context.Context, user, sessionKey string) ([]pendingApproval, error) {
+	list, err := s.list(ctx, user)
+	if err != nil {
+		return nil, err
 	}
-	p, ok := s.byID[id]
-	if !ok || p.User != user {
-		return pendingApproval{}, false
+	out := []pendingApproval{}
+	for _, ev := range list {
+		if canonicalSessionKey(ev.Request.SessionKey) != sessionKey {
+			continue
+		}
+		out = append(out, projectApproval(ev))
 	}
-	return p, true
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAtMs < out[j].CreatedAtMs })
+	return out, nil
 }
 
-// Resolve applies the Portal decision. decision is "approve", "reject" or
-// "allow-always" (approve this once; issue #116 appends the durable grant
-// separately). The approval is reserved under the lock before the gateway call
-// so two concurrent decisions cannot both process the same pending approval; it
-// is restored when the gateway call fails so the caller may retry.
-func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, decision string) (pendingApproval, error) {
+// Resolve applies the Portal decision to the named approval. decision is
+// "approve", "reject" or "allow-always" (approve this once; issue #116 appends
+// the durable grant separately).
+//
+// The approval is named by id, and that is the point of the signature: a session
+// can hold several pending approvals at once, so a decision addressed by session
+// settles whichever record the platform looked up rather than the one the human
+// clicked. The id is verified against the gateway first -- still pending, and
+// this session's -- which is also how the record's own command is recovered for
+// the allow-always rule, and how a decision works after a restart, when this
+// process holds nothing at all.
+func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approvalID, decision string) (pendingApproval, error) {
 	if decision != "approve" && decision != "reject" && decision != "allow-always" {
 		return pendingApproval{}, fmt.Errorf("decision must be approve, reject or allow-always")
 	}
-
-	s.mu.Lock()
-	id, ok := s.bySession[sessionKey]
+	list, err := s.list(ctx, user)
+	if err != nil {
+		return pendingApproval{}, err
+	}
+	p, ok := findApproval(list, sessionKey, approvalID)
 	if !ok {
-		s.mu.Unlock()
 		return pendingApproval{}, errNoPending
 	}
-	p, ok := s.byID[id]
-	if !ok || p.User != user {
-		s.mu.Unlock()
-		return pendingApproval{}, errNoPending
+	// Reserve before the (slow) gateway round trip so two decisions on one id
+	// cannot both reach the gateway. Released on every exit path, so a decision
+	// that failed is immediately retryable.
+	if err := s.reserve(approvalID); err != nil {
+		return pendingApproval{}, err
 	}
-	// Reserve before the (slow) gateway round trip. The reservation stays
-	// visible to a settle through inflight: the record is gone from the two maps
-	// Pending reads, and a settle that lands in this window has to be able to
-	// find it anyway.
-	delete(s.byID, id)
-	delete(s.bySession, p.SessionKey)
-	res := &approvalReservation{pending: p}
-	s.inflight[id] = res
-	resolver := s.resolver
-	s.mu.Unlock()
+	defer s.release(approvalID)
 
-	// release ends the reservation. Every exit path calls exactly one of
-	// release / restore, so inflight is empty again once the decision is over --
-	// there is nothing to expire and nothing to sweep.
-	release := func() {
-		s.mu.Lock()
-		delete(s.inflight, p.ApprovalID)
-		s.mu.Unlock()
-	}
-	restore := func() {
-		s.mu.Lock()
-		delete(s.inflight, p.ApprovalID)
-		// A settle that ran while this decision was in flight owns the outcome:
-		// the session's turn is gone, so re-adding the record would put a card
-		// back on screen (and back into reload recovery) for a run that was
-		// stopped. The marker is consumed here -- it only ever covers an
-		// in-flight reservation, and this is the one moment it can be honoured.
-		if res.settled {
-			s.mu.Unlock()
-			return
-		}
-		// Re-add the reserved approval. Do not clobber the session mapping if a
-		// newer Begin landed for the same session while the gateway call was in
-		// flight -- that newer approval must stay the active one for the session.
-		s.byID[p.ApprovalID] = p
-		if cur, ok := s.bySession[p.SessionKey]; !ok || cur == p.ApprovalID {
-			s.bySession[p.SessionKey] = p.ApprovalID
-		}
-		s.mu.Unlock()
-	}
-	if resolver == nil {
-		restore()
-		return pendingApproval{}, errNoResolver
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, approvalResolveTimeout)
 	defer cancel()
 	approved := decision == "approve" || decision == "allow-always"
 	gatewayDecision := "reject"
 	if approved {
 		gatewayDecision = "approve"
 	}
-	if err := resolver.ResolveApproval(ctx, user, p.ApprovalID, gatewayDecision); err != nil {
-		restore()
-		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", p.ApprovalID, err)
+	if err := s.gateway.ResolveApproval(ctx, user, approvalID, gatewayDecision); err != nil {
+		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", approvalID, err)
 	}
-	release()
-	if !s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-		Type:      agentruntime.EventApprovalResolved,
-		SessionID: p.SessionKey,
-		CallID:    p.ApprovalID,
-		Approved:  &approved,
-	}) {
-		s.logf("approval %s: no open stream for session %s; decision not delivered", p.ApprovalID, p.SessionKey)
-	}
+	s.publishResolved(p, &approved)
 	s.recordDecision(user, p, approved)
 	return p, nil
 }
 
-// settleSession claims and forgets the session's pending approval without
-// deciding it. It is the abort path: the run is gone, so there is nothing to
-// allow or deny, and no decision is recorded -- a stopped turn is neither an
-// approval nor a rejection that a later audit could attribute to the human. The
-// session mapping is dropped only when it still points at this approval, so a
-// newer Begin for the same session (which Resolve protects the same way) keeps
-// its claim.
-//
-// Lookup and removal share one lock acquisition by design. As two (Pending, then
-// settle) a Resolve can reserve the approval in between -- it deletes from both
-// maps before its gateway round trip -- and the settle then finds nothing to
-// claim, leaving the failed resolve's restore to put the card back for a session
-// whose turn was stopped. Under one lock the reservation is found instead, and
-// the outcome it returns is what restore honours.
-//
-// The reservation scan runs on every call, including the one that also claims a
-// record from the maps: a claim from the maps says nothing about the reservations
-// in flight for the same session, and one that is left unmarked is restored by
-// its own failed resolve.
-//
-// A record is claimed only for its owner; another user's pending approval for
-// the same session key is not this caller's to clear.
-func (s *ApprovalService) settleSession(user, sessionKey string) (pendingApproval, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Mark every in-flight reservation for this session settled, on every call --
-	// not only when the maps held nothing. Both states can hold for one session at
-	// once: a Resolve reserves approval A, the gateway raises approval B, and
-	// Begin puts B into the maps. Claiming B and returning would leave A's
-	// reservation unmarked, so A's failed gateway call would restore it -- and,
-	// with bySession just deleted, re-point the session at A -- putting a card
-	// back on screen for a turn the user stopped. Marking all of them (rather
-	// than the first) is the conservative choice: each belongs to a session whose
-	// turn is gone, and the marker is only ever honoured by that reservation's
-	// own restore.
-	var reserved pendingApproval
-	haveReserved := false
-	for _, res := range s.inflight {
-		if res.pending.SessionKey == sessionKey && res.pending.User == user {
-			res.settled = true
-			if !haveReserved {
-				reserved, haveReserved = res.pending, true
-			}
+// findApproval returns the named approval from a gateway list, provided it is
+// still pending and belongs to the session the request named. The session check
+// is what keeps an id obtained anywhere -- another session's card, a log line --
+// from being settleable through an arbitrary session path. An id that belongs
+// elsewhere is reported as not found rather than as a refusal, so the answer says
+// nothing about approvals this caller was never shown.
+func findApproval(list []ws.ApprovalRequested, sessionKey, approvalID string) (pendingApproval, bool) {
+	for _, ev := range list {
+		if ev.ID != approvalID {
+			continue
 		}
-	}
-
-	// Whatever the maps still hold for this session is claimed and returned.
-	if id, ok := s.bySession[sessionKey]; ok {
-		if p, ok := s.byID[id]; ok && p.User == user {
-			if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
-				delete(s.bySession, p.SessionKey)
-			}
-			delete(s.byID, p.ApprovalID)
-			return p, true
+		if canonicalSessionKey(ev.Request.SessionKey) != sessionKey {
+			return pendingApproval{}, false
 		}
-	}
-	// Nothing in the maps, but a decision for this session may be mid-flight: the
-	// record is out of them because Resolve reserved it. Reporting it lets the
-	// caller publish the resolved event that drops the card.
-	if haveReserved {
-		return reserved, true
+		return projectApproval(ev), true
 	}
 	return pendingApproval{}, false
 }
 
-// settleApproval forgets one approval the gateway resolved on its own, keyed by
-// approval id rather than by session.
-//
-// settleSession covers the case where the *platform* ended the run (Stop), and
-// Resolve covers the case where the Portal decided. Neither covers the gateway
-// ending an approval by itself: an approval that expires unanswered, or whose
-// run is aborted gateway-side or dies with an agent runtime restart, is gone on
-// the gateway while this service's maps still hold it. Nothing else ever removes
-// such a record, so it stays in Pending -- and Pending is exactly what powers
-// reload recovery, so the record comes back as a confirmation card on the next
-// open of that conversation and fails when the user answers it, against an
-// approval the gateway no longer recognises. The gateway broadcasts
-// exec.approval.resolved for these, which is the only signal that they happened.
-//
-// It is not the same event as the Portal's own resolve: that path deletes the
-// record itself and then publishes, and its gateway call also produces a
-// broadcast, so this can arrive for a record that is already gone. Every branch
-// is therefore idempotent, and the reservation handling mirrors settleSession --
-// a Resolve in flight for this id must not restore the record afterwards, or the
-// broadcast that says the gateway resolved it would be undone by our own
-// bookkeeping. That window is also why the reservation is returned rather than
-// only marked: the record is out of the maps while its decision is in flight, so
-// a settle that reported "nothing" there would drop the very event the browser
-// needs to stop showing the card.
-//
-// Only a record the caller's user owns is returned, matching settleSession: the
-// gateway broadcast carries no user, so the caller passes the connection's user
-// and another user's record is left alone.
-func (s *ApprovalService) settleApproval(user, approvalID string) (pendingApproval, bool) {
-	if approvalID == "" {
-		return pendingApproval{}, false
-	}
+// reserve marks an approval as being decided right now, or reports that another
+// decision is already in flight for it.
+func (s *ApprovalService) reserve(approvalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// A decision of our own may already be in flight for this id, which takes the
-	// record out of both maps for the duration of its gateway call. Mark the
-	// reservation -- that is what stops the pending call's restore from putting
-	// back what the gateway has just resolved -- and keep hold of it, because the
-	// maps cannot report a record they no longer have. Without returning it the
-	// caller publishes nothing, and a browser whose own decision lost the race
-	// keeps a card for an approval that no longer exists anywhere.
-	res, inflight := s.inflight[approvalID]
-	if inflight && res.pending.User != user {
-		inflight = false // another user's decision in flight: not this caller's to mark or report
+	if _, busy := s.inflight[approvalID]; busy {
+		return errApprovalInFlight
 	}
-	if inflight {
-		res.settled = true
-	}
-
-	p, ok := s.byID[approvalID]
-	if !ok || p.User != user {
-		if inflight {
-			return res.pending, true
-		}
-		return pendingApproval{}, false
-	}
-	if cur, ok := s.bySession[p.SessionKey]; ok && cur == p.ApprovalID {
-		delete(s.bySession, p.SessionKey)
-	}
-	delete(s.byID, p.ApprovalID)
-	return p, true
+	s.inflight[approvalID] = struct{}{}
+	return nil
 }
 
+// release ends a reservation. Every exit path of a decision calls it exactly
+// once, so inflight is empty again once the decision is over -- there is nothing
+// to expire and nothing to sweep.
+func (s *ApprovalService) release(approvalID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inflight, approvalID)
+}
+
+// deciding reports whether a decision for this approval is being written now.
+func (s *ApprovalService) deciding(approvalID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, busy := s.inflight[approvalID]
+	return busy
+}
+
+// publishResolved drops the card on the session's stream. approved is nil for a
+// resolution nobody decided -- a stopped turn -- which the client renders
+// neutrally rather than as a rejection the human never made.
+func (s *ApprovalService) publishResolved(p pendingApproval, approved *bool) {
+	if !s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+		Type:      agentruntime.EventApprovalResolved,
+		SessionID: p.SessionKey,
+		CallID:    p.ApprovalID,
+		Approved:  approved,
+	}) {
+		s.logf("approval %s: no open stream for session %s; resolution not delivered", p.ApprovalID, p.SessionKey)
+	}
+}
+
+// SettleApprovals reports which of the approvals a Stop captured are the
+// caller's to publish as settled.
+//
+// The captured list comes from the caller because it has to: a Stop aborts the
+// run, the gateway cancels the approvals bound to it, and by the time the run is
+// provably gone there is nothing left to read. Capturing before the abort is the
+// only way this can still hand the browser, while its stream is open, the events
+// that drop its cards.
+//
+// An id a decision is being written for right now is left out. That decision
+// owns the outcome: a neutral "stopped" published under it would sit on the card
+// until the decision's own resolution landed a moment later, and the human would
+// watch a card they had just answered change its mind.
+//
+// Nothing is recorded for a settled approval: a stopped turn is neither an
+// approval nor a rejection, and the audit must not attribute one to the human.
+func (s *ApprovalService) SettleApprovals(captured []pendingApproval) []pendingApproval {
+	out := make([]pendingApproval, 0, len(captured))
+	for _, p := range captured {
+		if s.deciding(p.ApprovalID) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// recordDecision writes the human's decision to the audit ledger. The approval
+// id is part of the entry: without it a ledger with two approvals and one
+// decision cannot say which of them was answered, and the question "what did
+// this decision apply to" has no answer that does not come from the gateway's
+// logs.
 func (s *ApprovalService) recordDecision(user string, p pendingApproval, approved bool) {
 	if s.store == nil {
 		return
@@ -371,55 +326,82 @@ func (s *ApprovalService) recordDecision(user string, p pendingApproval, approve
 		status = "approved"
 	}
 	_ = s.store.AddAudit(store.AuditEntry{
-		User:      user,
-		SessionID: p.SessionKey,
-		Tool:      p.Tool,
-		Command:   p.Command,
-		Level:     "L1", // a gated command is a write
-		Status:    status,
-		TS:        time.Now(),
+		User:       user,
+		SessionID:  p.SessionKey,
+		ApprovalID: p.ApprovalID,
+		Tool:       p.Tool,
+		Command:    p.Command,
+		Level:      "L1", // a gated command is a write
+		Status:     status,
+		TS:         time.Now(),
 	})
 }
 
+// approvalResolveTimeout bounds one decision's gateway round trip.
+const approvalResolveTimeout = 15 * time.Second
+
 var (
-	errNoPending  = errors.New("no pending approval for this session")
-	errNoResolver = errors.New("approval channel unavailable")
+	errNoPending = errors.New("no pending approval for this session")
+	// errApprovalInFlight reports a second decision for an approval this process
+	// is already answering. It is a conflict, not a failure: the other decision
+	// is what settles the approval.
+	errApprovalInFlight = errors.New("a decision for this approval is already in flight")
+	// errNoApprovalChannel reports that the user has no live gateway connection,
+	// so the approval set cannot be read and no decision can be written. Reads
+	// and decisions deliberately use the user's existing connection rather than
+	// dialing one: opening a connection can trigger a device pairing, which a
+	// status read must never do as a side effect.
+	errNoApprovalChannel = errors.New("approval channel unavailable")
 )
 
 // --- HTTP handlers -----------------------------------------------------------
 
-// handleApproval serves POST /api/sessions/{key}/approval.
+// handleApproval serves POST /api/sessions/{key}/approval — the human's decision
+// for one pending write, named by its approval id.
 func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, apiPrefix+"/sessions/"), "/approval")
-	sessionKey = strings.Trim(sessionKey, "/")
-	if sessionKey == "" || s.approvals == nil {
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval"))
+	if sessionKey == "" || sessionKey == "agent:main:" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
+	if s.approvals == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": errNoApprovalChannel.Error()})
+		return
+	}
 	var body struct {
-		Decision string `json:"decision"`
+		ApprovalID string `json:"approvalId"`
+		Decision   string `json:"decision"`
 	}
 	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	// The id is required, not defaulted. A session can hold several pending
+	// approvals, so a decision that does not name one has no correct meaning --
+	// and inventing "the newest" is exactly how a click on one card settles
+	// another.
+	if body.ApprovalID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "approvalId required"})
 		return
 	}
 	if body.Decision != "approve" && body.Decision != "reject" && body.Decision != "allow-always" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve, reject or allow-always"})
 		return
 	}
-	p, err := s.approvals.Resolve(r.Context(), user, sessionKey, body.Decision)
+	p, err := s.approvals.Resolve(r.Context(), user, sessionKey, body.ApprovalID, body.Decision)
 	switch {
 	case errors.Is(err, errNoPending):
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending approval for this session"})
-	case errors.Is(err, errNoResolver):
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such pending approval for this session"})
+	case errors.Is(err, errApprovalInFlight):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	case errors.Is(err, errNoApprovalChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "approval channel unavailable"})
 	case err != nil:
-		s.logf("confirm %s/%s: %v", user, sessionKey, err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		s.writeApprovalGatewayError(w, user, "approval "+body.ApprovalID, err)
 	default:
 		approved := body.Decision != "reject"
 		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
@@ -427,7 +409,9 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 			// Durable grant (issue #116): approve-once happened above; now record
 			// the command in the user's grants ConfigMap (grants.Store, via
 			// allowlistAlways) so it auto-passes from the next turn on (only
-			// under Allowlist policy). The instance spec is not touched.
+			// under Allowlist policy). The instance spec is not touched. The
+			// command comes from the gateway's own record of this approval, which
+			// is also how it is known at all after a restart.
 			allowlisted := false
 			if rule, ok := deriveAllowAlwaysRule(p.Command); ok {
 				if ok, err := s.allowlistAlways(r.Context(), user, p.Command, rule); err != nil {
@@ -442,33 +426,109 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeApprovalGatewayError maps a gateway failure onto the Portal status. The
+// structured reason is what separates an approval that expired (or was resolved
+// elsewhere) between the card being painted and the click -- an outcome, 404/409
+// -- from a transport failure, which is a 502 the caller may retry.
+func (s *Server) writeApprovalGatewayError(w http.ResponseWriter, user, what string, err error) {
+	status := approvalErrorStatus(ws.ReasonOf(err))
+	if status == http.StatusBadGateway {
+		s.logf("%s %s: %v", what, user, err)
+	}
+	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+// approvalErrorStatus maps a gateway approval error reason onto the Portal
+// status. APPROVAL_NOT_FOUND is the answer for an approval that expired or was
+// cleared (the gateway expires due records and clears a dead run's), and
+// APPROVAL_ALREADY_RESOLVED for one another client settled first; both mean the
+// card is gone rather than that the request failed.
+func approvalErrorStatus(reason string) int {
+	switch reason {
+	case "APPROVAL_NOT_FOUND":
+		return http.StatusNotFound
+	case "APPROVAL_ALREADY_RESOLVED":
+		return http.StatusConflict
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// approvalEntry is one pending approval served to the Portal for reload
+// recovery. It mirrors the approval_pending SSE payload, so a restored card is
+// built by the same code path as a live one -- plus the stamps a client needs to
+// order several cards and to tell how long the gateway will hold them.
+type approvalEntry struct {
+	SessionID   string `json:"sessionId"`
+	ApprovalID  string `json:"approvalId"`
+	Tool        string `json:"tool"`
+	Command     string `json:"command"`
+	Level       string `json:"level"`
+	Message     string `json:"message,omitempty"`
+	CreatedAtMs int64  `json:"createdAtMs,omitempty"`
+	ExpiresAtMs int64  `json:"expiresAtMs,omitempty"`
+}
+
 // handlePendingApproval serves GET /api/sessions/{key}/approval/pending — used to
-// restore a confirmation card after a Portal reload mid-approval.
+// restore confirmation cards after a Portal reload mid-approval. It answers the
+// session's whole pending set, because a session can hold several approvals at
+// once and the page that reloads must come back with all of them.
+//
+// 404 means "nothing pending", the same convention the sibling question endpoint
+// uses, so that two subresources of one session do not give an empty read two
+// different meanings.
 func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, apiPrefix+"/sessions/"), "/approval/pending")
-	sessionKey = strings.Trim(sessionKey, "/")
-	if sessionKey == "" || s.approvals == nil {
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval/pending"))
+	if sessionKey == "" || sessionKey == "agent:main:" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	p, ok := s.approvals.Pending(user, sessionKey)
-	if !ok {
+	noPending := func() {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending approval"})
+	}
+	if s.approvals == nil {
+		noPending()
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"approval": map[string]any{
-		"sessionId":  p.SessionKey,
-		"approvalId": p.ApprovalID,
-		"tool":       p.Tool,
-		"command":    p.Command,
-		"level":      p.Level,
-		"message":    p.Message,
-	}})
+	list, err := s.approvals.Pending(r.Context(), user, sessionKey)
+	switch {
+	case errors.Is(err, errNoApprovalChannel):
+		// No channel means no open approval, the same answer the question
+		// endpoint gives: an approval only ever exists alongside the live turn
+		// that is parked on it, and that turn has the channel.
+		noPending()
+		return
+	case err != nil:
+		// A gateway that could not answer is not a session with nothing pending:
+		// saying so would leave the reloaded page holding no card for a write
+		// that is still parked.
+		s.logf("pending approval %s/%s: %v", user, sessionKey, err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	out := make([]approvalEntry, 0, len(list))
+	for _, p := range list {
+		out = append(out, approvalEntry{
+			SessionID:   p.SessionKey,
+			ApprovalID:  p.ApprovalID,
+			Tool:        p.Tool,
+			Command:     p.Command,
+			Level:       p.Level,
+			Message:     p.Message,
+			CreatedAtMs: p.CreatedAtMs,
+			ExpiresAtMs: p.ExpiresAtMs,
+		})
+	}
+	if len(out) == 0 {
+		noPending()
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
 }
 
 // PreTurn is called at the start of an interactive turn. For Allowlist and
@@ -646,16 +706,26 @@ func toWSEntries(rules []v1alpha1.AllowlistRule) []ws.AllowlistEntry {
 	return out
 }
 
-// ResolveApproval implements ApprovalResolver: the Portal decision is applied
-// to the user's gateway connection.
+// ResolveApproval implements ApprovalGateway: the Portal decision is applied to
+// the user's gateway connection, addressed by approval id.
 func (m *gatewayConns) ResolveApproval(ctx context.Context, user, approvalID, decision string) error {
 	gw, ok := m.liveConn(user)
 	if !ok {
-		return fmt.Errorf("no approval connection for %s", user)
+		return errNoApprovalChannel
 	}
 	gwDecision := "deny"
 	if decision == "approve" {
 		gwDecision = "allow-once"
 	}
 	return gw.ResolveApproval(ctx, approvalID, gwDecision)
+}
+
+// ListApprovals implements ApprovalGateway: the pending approvals the user's
+// gateway connection can see.
+func (m *gatewayConns) ListApprovals(ctx context.Context, user string) ([]ws.ApprovalRequested, error) {
+	gw, ok := m.liveConn(user)
+	if !ok {
+		return nil, errNoApprovalChannel
+	}
+	return gw.ListApprovals(ctx)
 }

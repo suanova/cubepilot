@@ -139,13 +139,30 @@ var errDecisionResolved = errors.New("the parked decision was resolved before th
 // between. A question carries the run it belongs to, which the attach uses to
 // scope what it observes; a write approval parks the run the same way but names
 // no run of its own, so the session is the whole of that gate.
+//
+// The approval half asks the gateway rather than the platform's own state, which
+// is what makes it survive a restart: a run parked on an approval this process
+// never saw is still parked, and the browser that reloaded onto it must still be
+// able to attach.
 func (s *Server) parkedTurn(ctx context.Context, user, sessionKey string) (string, bool, error) {
 	runID, parked, err := s.parkedQuestionRun(ctx, user, sessionKey)
 	if err != nil || parked {
 		return runID, parked, err
 	}
-	_, parked = s.approvals.Pending(user, sessionKey)
-	return "", parked, nil
+	if s.approvals == nil {
+		return "", false, nil
+	}
+	list, err := s.approvals.Pending(ctx, user, sessionKey)
+	if errors.Is(err, errNoApprovalChannel) {
+		// No channel means no approval can be pending: an approval only ever
+		// exists alongside the live turn that is parked on it, and that turn
+		// holds the channel. Same answer parkedQuestionRun gives.
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return "", len(list) > 0, nil
 }
 
 // parkedQuestionRun reports the run a session is parked on because of a question,

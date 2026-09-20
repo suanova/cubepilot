@@ -63,6 +63,7 @@ type gatewayClient interface {
 	PatchSessionSettings(ctx context.Context, sessionKey string, patch ws.SessionSettingsPatch) error
 	GetApprovalsPolicy(ctx context.Context) (*ws.ApprovalsSnapshot, error)
 	SetApprovalsPolicy(ctx context.Context, file ws.ApprovalsFile, baseHash string) (*ws.ApprovalsSnapshot, error)
+	ListApprovals(ctx context.Context) ([]ws.ApprovalRequested, error)
 	ResolveApproval(ctx context.Context, id, decision string) error
 	ResolveQuestion(ctx context.Context, id string, answers map[string][]string, resolvedBy string) error
 	CancelQuestion(ctx context.Context, id, resolvedBy string) error
