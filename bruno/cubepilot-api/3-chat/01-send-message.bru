@@ -55,6 +55,18 @@ script:post-response {
     setVar("sessionId", m[1]);
     console.log("sessionId ->", m[1]);
   }
+  // 最近一条 approval_pending 的 callId：06 用它指名要 settle 哪一条审批。
+  // 一个回合可能压着多条，取最后一条（先结掉手上的，再重新跑一次 01 拿新的）。
+  const lines = body.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].indexOf('"approval_pending"') < 0) continue;
+    const c = lines[i].match(/"callId"\s*:\s*"([^"]+)"/);
+    if (c && c[1]) {
+      setVar("approvalId", c[1]);
+      console.log("approvalId ->", c[1]);
+    }
+    break;
+  }
 }
 
 tests {

@@ -122,27 +122,17 @@ func (s *Server) StartGatewayChannel() error {
 		return fmt.Errorf("gateway: cannot build the channel manager (missing instance manager or gateway token)")
 	}
 	s.gatewayConns = m
-	s.approvals.SetResolver(m)
+	s.approvals.SetGateway(m)
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
-		s.approvals.Begin(user, pendingApproval{
-			ApprovalID: ev.ID,
-			SessionKey: ev.Request.SessionKey,
-			Tool:       "exec",
-			Command:    ev.Request.Command,
-			Message:    ev.Request.WarningText,
-			CreatedAt:  time.Now(),
-		})
+		s.approvals.RelayRequested(user, ev)
 	}
-	// An approval the gateway ended by itself drops the platform's record of it
-	// and, if a view is attached, the card. Without this the record lives on in
-	// the ledger that reload recovery reads, so reopening the conversation shows
-	// a confirmation for an approval the gateway no longer has, and answering it
-	// fails. The gateway broadcasts the resolved event for a decision made
-	// anywhere (including the Portal's own, whose record Resolve has already
-	// removed) and for an approval that simply expired, so this has to be
-	// idempotent -- settleApproval is.
+	// An approval the gateway ended by itself -- a decision taken anywhere, an
+	// expiry, or a run aborted or lost gateway-side -- is relayed to its session's
+	// stream from the broadcast. The broadcast carries the request, so it names
+	// the session on its own: nothing the platform remembered is consulted, and
+	// an approval this process never saw still reaches the right card.
 	m.approvalResolved = func(user string, ev ws.ApprovalResolved) {
-		s.settleApprovalResolved(user, ev)
+		s.relayApprovalResolved(user, ev)
 	}
 	// Ask-user questions ride the same device connection (issue #161): a
 	// question the agent is blocked on is relayed onto the parked turn's SSE

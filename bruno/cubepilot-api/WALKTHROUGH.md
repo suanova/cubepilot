@@ -76,7 +76,8 @@ Send 之后，流会**停在**：
 ```
 event: approval_pending
 data: {"type":"approval_pending","callId":"d71907a6-...","name":"exec",
-       "command":"mkdir -p /home/node/.openclaw/workspace/bruno-demo","level":"write"}
+       "command":"mkdir -p /home/node/.openclaw/workspace/bruno-demo","level":"write",
+       "createdAtMs":1758355200000,"expiresAtMs":1758357000000}
 ```
 
 **发送按钮仍是 Cancel 状态 —— 回合没结束，它在等你。**
@@ -93,8 +94,10 @@ data: {"type":"approval_pending","callId":"d71907a6-...","name":"exec",
 **开一个新标签**（⌘/Ctrl + T，或左侧请求列表点一下），发
 `3-chat/06-submit-approval` → Send。
 
-它用的 `{{sessionId}}` 是 `01-send-message` 的后置脚本自动写进环境变量的
-—— 所以**不用手动填**，只要 01 跑过。
+它用的 `{{sessionId}}` 和 `{{approvalId}}` 都是 `01-send-message` 的后置脚本
+自动写进环境变量的 —— 所以**不用手动填**，只要 01 跑过。`approvalId` 取自那条
+`approval_pending` 的 `callId`：一个会话可以同时压着多条审批，决定必须指名
+settle 哪一条，不带 id 会 400。
 
 `decision` 三个取值：
 
@@ -102,7 +105,7 @@ data: {"type":"approval_pending","callId":"d71907a6-...","name":"exec",
 |---|---|
 | `approve` | 本次放行，回合继续 |
 | `reject` | 拒绝，写操作**不执行** |
-| `allow-always` | 放行，**并把该命令记入实例 allowlist**，此后同类命令自动通过 |
+| `allow-always` | 放行，**并把该命令记为你的 learned 授权**（进 grants store，不写实例 spec），此后同类命令自动通过 |
 
 ### 看它恢复
 
@@ -114,9 +117,10 @@ approval_resolved → tool_result → … → message_done
 
 ### 两个容易困惑的点
 
-- **一个回合可能停多次。** 模型干了 3 件事就停 3 次。用 `allow-always`
-  一次过掉后续同类命令。`01-send-message` 的响应面板里数 `approval_pending`
-  出现的次数就知道还要批几次。
+- **一个回合可能停多次，也可能同时压着多条。** 模型干了 3 件事就停 3 次；一次
+  发出多条命令时，`approval_pending` 会连着来，每条各有自己的 `callId`（前端会画成
+  多张卡，按 `createdAtMs` 从旧到新）。用 `allow-always` 一次过掉后续同类命令。
+  `01-send-message` 的响应面板里数 `approval_pending` 出现的次数就知道还要批几次。
 - **`reject` 之后回合不会失败**，模型会换个做法继续，可能再次停。
 
 ### 补充：拒绝也能反证
@@ -196,11 +200,12 @@ question_resolved {"message":"answered"} → … → message_done
 
 ## 三条流程的共同注意点
 
-1. **必须用 canonical 形式的 sessionKey。**
+1. **sessionKey 用哪种形式都行，但保持一致更省事。**
    `{{sessionId}}` 被 `01-send-message` 的后置脚本设成服务端返回的
-   `agent:main:conv-...`，是对的。但如果你**手填**短形式（`conv-...`），
-   `/approval` 和 `/question` 会 **404**（`/turn`、`/abort` 却接受短形式 —— 契约不一致，
-   [issue #180](https://github.com/suanova/cubepilot/issues/180)）。
+   `agent:main:conv-...`，是对的；手填短形式（`conv-...`）现在也能用 ——
+   `/approval`、`/question`、`/turn`、`/abort` 都会先规范化再比对
+   （历史遗留的不一致见 [issue #180](https://github.com/suanova/cubepilot/issues/180)，
+   其中 `/approval` 这一半已经修掉）。
 
 2. **同一个会话同时只能有一个回合。** 主流还开着时再发一条 → **409**，
    不要重试；先 `/abort` 或等它结束。

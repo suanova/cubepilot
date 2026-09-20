@@ -288,6 +288,13 @@ func (f *fakeGatewayClient) ResolveApproval(ctx context.Context, id, decision st
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
 }
+
+// ListApprovals answers "nothing pending": this fake is the conn manager's stub
+// for tests of everything else, and a test that wants a pending approval seeds
+// the ApprovalGateway it wires into the service (see gatewayStub).
+func (f *fakeGatewayClient) ListApprovals(ctx context.Context) ([]ws.ApprovalRequested, error) {
+	return nil, nil
+}
 func (f *fakeGatewayClient) OnApprovalResolved(cb func(ws.ApprovalResolved)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -102,13 +102,37 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/abort"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
 	if s.gatewayConns == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "abort channel unavailable"})
 		return
+	}
+
+	// The approvals this Stop has to settle, read *before* the abort: the abort
+	// cancels the approvals bound to the run, so by the time the run is provably
+	// gone the gateway has none left to list, and a settle that read then would
+	// find nothing to drop the browser's cards with. Detached and short-bounded
+	// like the abort itself -- a client that disconnects after pressing Stop must
+	// not leave those cards behind.
+	//
+	// Captured per session rather than per run because that is what the cards
+	// are: the browser holds a card per approval of the conversation it is
+	// showing, and the turn it just stopped is the conversation's. A capture that
+	// includes an approval belonging to some other run of the same session is
+	// self-correcting -- the gateway still lists it, so the next reload restores
+	// its card and it is still answerable.
+	var captured []pendingApproval
+	if s.approvals != nil {
+		captureCtx, cancelCapture := context.WithTimeout(context.WithoutCancel(r.Context()), abortSettleRPCTimeout)
+		list, err := s.approvals.Pending(captureCtx, user, sessionKey)
+		cancelCapture()
+		if err != nil && !errors.Is(err, errNoApprovalChannel) {
+			s.logf("abort %s/%s: capture pending approvals: %v", user, sessionKey, err)
+		}
+		captured = list
 	}
 
 	// Step 1's decision. The three states are kept apart because the response to
@@ -229,7 +253,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	// disconnect must not skip it, and a wedged gateway must not hold the
 	// request past abortSettleTimeout's whole budget.
 	settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(r.Context()), abortSettleRPCTimeout)
-	s.settlePendingForSession(settleCtx, user, sessionKey)
+	s.settlePendingForSession(settleCtx, user, sessionKey, captured)
 	cancelSettle()
 
 	// The wait stays on the request context: its answer is only meaningful to
@@ -334,7 +358,7 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/turn"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}

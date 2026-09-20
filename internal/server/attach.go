@@ -30,7 +30,7 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/stream"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
@@ -137,15 +137,47 @@ var errDecisionResolved = errors.New("the parked decision was resolved before th
 // route, applied twice: once to decide whether there is anything to attach to,
 // and once more once the subscription is up, to catch a decision answered in
 // between. A question carries the run it belongs to, which the attach uses to
-// scope what it observes; a write approval parks the run the same way but names
-// no run of its own, so the session is the whole of that gate.
+// scope what it observes.
+//
+// An approval half reports no run, and that is a choice rather than something the
+// gateway withholds: the record does carry a runId (nullable, always present --
+// `runId: requestRunId ?? null` when the gateway stores the request), but it is
+// the agent runtime's own run identity, and nothing here establishes that it is
+// the id this platform knows the run by. Ours comes from the session-message
+// channel: the runId chat.send ACKs and chat.history reports as in flight, which
+// is also what /abort scopes its abort to. Attaching on an id that never matches
+// would observe nothing at all, which is worse than observing the session.
+//
+// It is also unnecessary today, and would be unsound if it were: hub.Open allows
+// one stream per session, so the turn parked on an approval is the session's only
+// run, while the pending set can hold several approvals that do not share a run --
+// and no single id can scope those. The one exposure left is a writer outside this
+// platform driving the same session key, which is not something this gate can see
+// or fix.
+//
+// The approval half asks the gateway rather than the platform's own state, which
+// is what makes it survive a restart: a run parked on an approval this process
+// never saw is still parked, and the browser that reloaded onto it must still be
+// able to attach.
 func (s *Server) parkedTurn(ctx context.Context, user, sessionKey string) (string, bool, error) {
 	runID, parked, err := s.parkedQuestionRun(ctx, user, sessionKey)
 	if err != nil || parked {
 		return runID, parked, err
 	}
-	_, parked = s.approvals.Pending(user, sessionKey)
-	return "", parked, nil
+	if s.approvals == nil {
+		return "", false, nil
+	}
+	list, err := s.approvals.Pending(ctx, user, sessionKey)
+	if errors.Is(err, errNoApprovalChannel) {
+		// No channel means no approval can be pending: an approval only ever
+		// exists alongside the live turn that is parked on it, and that turn
+		// holds the channel. Same answer parkedQuestionRun gives.
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return "", len(list) > 0, nil
 }
 
 // parkedQuestionRun reports the run a session is parked on because of a question,

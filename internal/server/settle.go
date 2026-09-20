@@ -7,39 +7,37 @@ import (
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
-// settleApprovalResolved handles the gateway's exec.approval.resolved broadcast:
-// an approval ended without the Portal deciding it -- it expired unanswered, or
-// its run was aborted or lost gateway-side. The record is dropped and, when a
-// view is attached, the card with it.
+// relayApprovalResolved forwards an approval the gateway ended on its own -- a
+// decision taken anywhere (the Portal's own included), an expiry, or a run
+// aborted or lost gateway-side -- onto its session's stream.
 //
-// It is the counterpart of settlePendingForSession for the case the platform
-// never learns about any other way. That one runs because *we* stopped the turn
-// and so know the run is gone; here the run ended somewhere this process cannot
-// see, and the broadcast is the only account of it. Without this the ledger that
-// reload recovery reads keeps the record indefinitely, so reopening the
-// conversation paints a confirmation card for an approval the gateway has
-// forgotten, and answering it fails against the gateway.
+// The broadcast carries the approval's request, so the session it belongs to
+// arrives with it. That is what makes this a relay rather than bookkeeping:
+// there is no record to look up, no owner to compare one against, and an
+// approval this process never saw through (a restart, or a connection that was
+// down when it was raised) still reaches the card that is waiting for it.
 //
-// Idempotent by construction, because the same broadcast also follows the
-// Portal's own decision and the abort path's settle: the claim simply finds
-// nothing, and no event is published for a record nobody held.
-func (s *Server) settleApprovalResolved(user string, ev ws.ApprovalResolved) {
-	if s.approvals == nil {
+// Approved is reported only for a decision that was actually taken, which is
+// what ResolvedBy records -- not what Decision says. Decision cannot carry that
+// on its own: the gateway's publication path fills an absent decision with
+// "deny" (`decision ?? "deny"`), so an approval that expired unanswered, or one
+// cancelled because its run's authority closed, arrives here looking exactly
+// like a denial. Reporting it as one would paint the user a red "Rejected" for a
+// decision they never made, which is the mislabelling the client's
+// absent-Approved branch exists to prevent: with no Approved it renders the
+// neutral "Stopped", which is what actually happened.
+func (s *Server) relayApprovalResolved(user string, ev ws.ApprovalResolved) {
+	if ev.ID == "" {
 		return
 	}
-	p, ok := s.approvals.settleApproval(user, ev.ID)
-	if !ok {
+	sessionKey := canonicalSessionKey(ev.Request.SessionKey)
+	if !hasSessionKey(sessionKey) {
+		// The event cannot be addressed. The card, if one is on screen, stays
+		// until the next pending read -- which asks the gateway, and so cannot
+		// disagree with it.
+		s.logf("approval %s: resolved (%s) for %s with no session key; not forwarded", ev.ID, ev.Decision, user)
 		return
 	}
-	// Approved is reported only for a decision that was actually taken, which is
-	// what ResolvedBy records -- not what Decision says. Decision cannot carry
-	// that on its own: the gateway's publication path fills an absent decision
-	// with "deny" (`decision ?? "deny"`), so an approval that expired unanswered,
-	// or one cancelled because its run's authority closed, arrives here looking
-	// exactly like a denial. Reporting it as one would paint the user a red
-	// "Rejected" for a decision they never made, which is the mislabelling the
-	// client's absent-Approved branch exists to prevent: with no Approved it
-	// renders the neutral "Stopped", which is what actually happened.
 	var approved *bool
 	if ev.ResolvedBy != "" {
 		switch ev.Decision {
@@ -51,45 +49,52 @@ func (s *Server) settleApprovalResolved(user string, ev ws.ApprovalResolved) {
 			approved = &v
 		}
 	}
-	s.hub.PublishTo(p.SessionKey, agentruntime.Event{
+	if !s.hub.PublishTo(sessionKey, agentruntime.Event{
 		Type:      agentruntime.EventApprovalResolved,
-		SessionID: p.SessionKey,
-		CallID:    p.ApprovalID,
+		SessionID: sessionKey,
+		CallID:    ev.ID,
 		Approved:  approved,
-	})
+	}) {
+		s.logf("approval %s: no open stream for session %s; resolution not delivered", ev.ID, sessionKey)
+	}
 }
 
 // settlePendingForSession closes out every human-in-the-loop record a stopped
-// turn left behind. Aborting the run settles these gateway-side, but the
-// platform keeps its own bookkeeping -- the pending confirmation and the
-// question routing entries -- and that bookkeeping is exactly what powers
-// reload recovery. Left alone, it resurfaces a card for a run that no longer
-// exists and errors when the user clicks it.
+// turn left behind. Aborting the run settles these gateway-side, but the browser
+// is holding cards for them, and those cards are the only surface that could
+// answer a record the gateway no longer has. Left alone, they stay on screen
+// offering controls that cannot work.
 //
 // It must run while the turn's SSE stream is still open: the *_resolved events
 // below are how an attached view drops the card immediately, and a later reload
-// stops resurrecting it. Deleting the records silently, or waiting for the
-// question timeout, are strictly worse.
-func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey string) {
+// stops resurrecting it. Waiting for the question timeout, or relying on the
+// gateway's own broadcast to arrive in time, are strictly worse.
+//
+// captured is the session's pending approvals as they were *before* the abort:
+// the abort cancels the approvals bound to the run, so by the time the run is
+// provably gone the gateway has none left to list. See handleAbort, which takes
+// that read before it issues the stop.
+func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey string, captured []pendingApproval) {
 	// A nil approval service is a real state, not an impossible one: handleApproval
 	// and handlePendingApproval both check for it, and a bare Server literal (the
 	// abort handler's own fixture) leaves it unset. The question half below is
 	// guarded the same way.
 	if s.approvals != nil {
-		// One atomic claim, not a Pending-then-settle pair: a Resolve that
-		// reserves the approval between the two would leave nothing for the
-		// settle to find, and the failed resolve would then restore a card for a
-		// session whose turn was stopped (see ApprovalService.settleSession).
-		if p, ok := s.approvals.settleSession(user, sessionKey); ok {
+		for _, p := range captured {
+			// An approval a decision is being written for right now is left to
+			// that decision. It owns the outcome: a neutral "stopped" published
+			// under it would sit on the card until the decision's own resolution
+			// landed a moment later, and the human would watch a card they had
+			// just answered change its mind.
+			if s.approvals.deciding(p.ApprovalID) {
+				continue
+			}
 			// The record's own key addresses the stream, exactly as
-			// ApprovalService.Resolve does -- the claim only ever returns a
-			// record this session owned, but a publish that follows the record
-			// rather than the caller cannot drift from it.
-			s.hub.PublishTo(p.SessionKey, agentruntime.Event{
-				Type:      agentruntime.EventApprovalResolved,
-				SessionID: p.SessionKey,
-				CallID:    p.ApprovalID,
-			})
+			// ApprovalService.Resolve does -- a publish that follows the record
+			// rather than the caller cannot drift from it. approved is nil: the
+			// turn was stopped, so nobody decided this, and the client renders
+			// that neutrally instead of as a rejection.
+			s.approvals.publishResolved(p, nil)
 		}
 	}
 

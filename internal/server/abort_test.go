@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,18 +119,15 @@ func TestHandleAbortFailedRPCThatLandedIsSuccess(t *testing.T) {
 	gw := &fakeAbortGateway{abortErr: errors.New("ws write chat.abort: context deadline exceeded"), inFlightRun: "run-a"}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
-
-	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200: the gateway no longer has the run, so the stop landed", rec.Code)
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream, code := abortOnAStream(t, s, h)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: the gateway no longer has the run, so the stop landed", code)
 	}
 	// The settle is the consequence of the decision: a landed stop must clear the
 	// records the run left behind, exactly as a successful RPC does.
-	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
-		t.Fatal("the run is gone but its pending confirmation survived: a reload resurrects a card for a dead run")
+	if !strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the run is gone but its confirmation card survived: a reload resurrects a card for a dead run")
 	}
 }
 
@@ -147,7 +145,8 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream := openStream(t, h, abortTestKey)
 
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
@@ -155,8 +154,8 @@ func TestHandleAbortUnansweredReconcileKeepsRecords(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rec.Code)
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
-		t.Fatal("the records were settled on an unknown result: the card for a run that may still be going is gone")
+	if strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the card was settled on an unknown result: it belongs to a run that may still be going")
 	}
 }
 
@@ -173,7 +172,8 @@ func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 	gw := &fakeAbortGateway{abortAborted: &no, busy: true, inFlightRun: "run-a"}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream := openStream(t, h, abortTestKey)
 
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
@@ -187,8 +187,8 @@ func TestHandleAbortAbortedNothingKeepsRecords(t *testing.T) {
 	if gw.listed {
 		t.Fatal("settle ran against a run that is still in flight: the live run's cards are gone")
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
-		t.Fatal("the records were settled for a run that is still going: a card the user still needs was deleted")
+	if strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the card was settled for a run that is still going: a card the user still needs was deleted")
 	}
 }
 
@@ -208,16 +208,13 @@ func TestHandleAbortAbortedNothingOnAnIdleSessionSettles(t *testing.T) {
 	gw := &fakeAbortGateway{abortAborted: &no, inFlightRun: "run-a"}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
-
-	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200: nothing was aborted because nothing was running", rec.Code)
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream, code := abortOnAStream(t, s, h)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: nothing was aborted because nothing was running", code)
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
-		t.Fatal("the session is idle but its pending confirmation survived: a reload resurrects a card for a dead run")
+	if !strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the session is idle but its confirmation card survived: a reload resurrects a card for a dead run")
 	}
 }
 
@@ -266,7 +263,8 @@ func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 	gw := &fakeAbortGateway{inFlightActive: true} // in flight, but its snapshot carries no runId
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream := openStream(t, h, abortTestKey)
 
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
@@ -277,8 +275,8 @@ func TestHandleAbortUnnamedRunSendsNoAbort(t *testing.T) {
 	if gw.abortCalls != 0 {
 		t.Fatalf("chat.abort was sent %d times with runID %q: an unnamed run must not be stopped by a session-scoped abort, which can kill a different one", gw.abortCalls, gw.lastAbortRunID)
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
-		t.Fatal("the records were settled for a run that is still in flight: a card the user still needs was deleted")
+	if strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the card was settled for a run that is still in flight: a card the user still needs was deleted")
 	}
 }
 
@@ -292,7 +290,8 @@ func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
 	gw := &fakeAbortGateway{inFlightErr: errors.New("chat.history: connection closed")}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream := openStream(t, h, abortTestKey)
 
 	rec := httptest.NewRecorder()
 	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
@@ -303,8 +302,8 @@ func TestHandleAbortReadErrorSendsNoAbort(t *testing.T) {
 	if gw.abortCalls != 0 {
 		t.Fatalf("chat.abort was sent %d times with runID %q: an unanswerable read must not fall back to a session-scoped abort, which can kill a different run", gw.abortCalls, gw.lastAbortRunID)
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); !ok {
-		t.Fatal("the records were settled with the run's fate unknown: the card of a run that may still be going is gone")
+	if strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the card was settled with the run's fate unknown: it belongs to a run that may still be going")
 	}
 }
 
@@ -318,13 +317,10 @@ func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
 	gw := &fakeAbortGateway{} // no live turn, no run in flight
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
-
-	rec := httptest.NewRecorder()
-	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d, want 200: nothing is running, so the Stop is an idempotent success", rec.Code)
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream, code := abortOnAStream(t, s, h)
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, want 200: nothing is running, so the Stop is an idempotent success", code)
 	}
 	// The answer has to come from the gateway read, not from skipping it: an
 	// implementation that never looked would answer 200 here too, and would
@@ -336,8 +332,8 @@ func TestHandleAbortIdleSessionSendsNoAbort(t *testing.T) {
 	if gw.abortCalls != 0 {
 		t.Fatalf("chat.abort was sent %d times with runID %q: an idle session has nothing to abort, and the only form available is session-scoped", gw.abortCalls, gw.lastAbortRunID)
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
-		t.Fatal("the session is idle but its pending confirmation survived: a reload resurrects a card for a dead run")
+	if !strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the session is idle but its confirmation card survived: a reload resurrects a card for a dead run")
 	}
 }
 
@@ -571,7 +567,8 @@ func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
 	}
 	m := &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: gw}}}
 	s := newAbortTestServer(h, m)
-	s.approvals.Begin("admin", pendingApproval{ApprovalID: "ap-1", SessionKey: abortTestKey, User: "admin"})
+	seedAbortApproval(t, s, approvalRecord("ap-1", abortTestKey, "cmd", 1000))
+	stream := openStream(t, h, abortTestKey)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -581,8 +578,8 @@ func TestHandleAbortReconcilesAfterClientDisconnect(t *testing.T) {
 	if !gw.listed {
 		t.Fatal("the settle never ran: a disconnected client's landed stop left the session's records pending for a reload to resurrect")
 	}
-	if _, ok := s.approvals.Pending("admin", abortTestKey); ok {
-		t.Fatal("the run is gone but its pending confirmation survived the disconnect: a reload resurrects a card for a dead run")
+	if !strings.Contains(stream.Body.String(), "approval_resolved") {
+		t.Fatal("the run is gone but its confirmation card survived the disconnect: a reload resurrects a card for a dead run")
 	}
 }
 
@@ -1110,6 +1107,44 @@ func shortenAbortSettleTimeout(t *testing.T, d time.Duration) {
 // userOf resolves the same identity the fixtures register their gateway
 // connection under -- the ownership check on LiveRunID and the connection
 // lookup are both keyed by it.
+// abortOnAStream runs a Stop with the session's stream open, waits for the settle
+// to publish on it, then closes the stream so the handler can finish. The order
+// is the guarantee under test: a settle must reach the browser while its stream
+// is still attached, and the handler only then waits for that stream to close
+// before answering.
+func abortOnAStream(t *testing.T, s *Server, h *Hub) (*httptest.ResponseRecorder, int) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	stream, err := h.Open(abortTestKey, rec, rec)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		answer := httptest.NewRecorder()
+		s.handleAbort(answer, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/conv-1/abort", nil))
+		done <- answer.Code
+	}()
+	waitFor(t, "the settle to publish on the stream", func() bool {
+		return strings.Contains(rec.Body.String(), "approval_resolved")
+	})
+	stream.Close()
+	return rec, <-done
+}
+
+// seedAbortApproval puts the session's pending approval where the platform now
+// reads it -- the gateway -- and returns the stub, so a test can assert on what
+// a Stop asked for. It is the fixture replacement for the registry the platform
+// used to keep: a pending approval is now a fact about the gateway, and only the
+// gateway can be seeded with one.
+func seedAbortApproval(t *testing.T, s *Server, approvals ...ws.ApprovalRequested) *gatewayStub {
+	t.Helper()
+	gw := &gatewayStub{}
+	gw.set("admin", approvals...)
+	s.approvals.SetGateway(gw)
+	return gw
+}
+
 func newAbortTestServer(h *Hub, m *gatewayConns) *Server {
 	return &Server{
 		cfg:          config.Config{DefaultUser: "admin"},

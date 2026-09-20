@@ -133,7 +133,7 @@ X-CubePilot-User: <用户名>
 | `/api/v1/tasktemplates` | `taskTemplates` |
 | `/api/v1/taskruns` · `/api/v1/taskruns/{name}` | `taskruns` · `taskrun` |
 | `/api/v1/kinds` | `kinds` |
-| `/api/v1/sessions/{key}/question/pending` · `.../approval/pending` | `questions` · `approval` |
+| `/api/v1/sessions/{key}/question/pending` · `.../approval/pending` | `questions` · `approvals` |
 
 **扁平**（是某个东西的字段，不是一个独立的东西）：
 
@@ -142,7 +142,7 @@ X-CubePilot-User: <用户名>
 | `GET`·`PUT /api/v1/agent/config` | `{exists, selectedModel, userInstructions}` —— 是实例的两个字段，不是名为 config 的对象 |
 | `GET /api/v1/agent/status` | 实例的状态字段 |
 | `GET`·`PUT /api/v1/agent/approval` | 策略视图的字段 |
-| `POST /api/v1/sessions/{key}/approval` | `{approved, decision, approvalId, allowlisted?}` |
+| `POST /api/v1/sessions/{key}/approval` | `{approved, decision, approvalId, allowlisted?}` —— 请求要带 `approvalId` |
 | `POST /api/v1/sessions/{key}/question` | `{questionId, cancelled}` |
 | `POST /api/v1/sessions/{key}/abort` · `GET .../turn` | `{ok}` · `{active}` |
 | `DELETE /api/v1/sessions/{key}` | `{deleted, archived, worktreePreserved?}`，是这次删除的字段，不是一个叫 deleted 的对象 |
@@ -181,6 +181,7 @@ X-CubePilot-User: <用户名>
 | **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
 | **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
+| **409** | 审批已被别处结掉（`APPROVAL_ALREADY_RESOLVED`）| 这张卡已经不用你决定了。关掉卡片，**不要重试**；换一张卡再决定。同一张卡的两条并发决定不会得到 409 —— 后到的那条会等到前一条有了结果，再按结果回答（已结算 → `404`，前一条失败 → 由它自己结算） |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
@@ -457,15 +458,22 @@ DELETE /api/v1/sessions/{key}   → {"deleted":true,"archived":[]}
 ```text
 event: approval_pending
 data: {"type":"approval_pending","sessionId":"...","callId":"<approval id>",
-       "name":"exec","command":"kubectl delete pod x","level":"write","message":"..."}
+       "name":"exec","command":"kubectl delete pod x","level":"write","message":"...",
+       "createdAtMs":1758355200000,"expiresAtMs":1758357000000}
 ```
+
+**一个会话可以同时压着多条审批**（一轮里并发多条被拦的命令）。每条各有自己的
+`callId`，按 `createdAtMs` 从旧到新排列；决定必须**指名**要结算哪一条。
 
 用户决定后提交：
 
 ```ts
 POST /api/v1/sessions/{key}/approval
-body: {"decision": "approve" | "reject" | "allow-always"}
+body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-always"}
 ```
+
+`approvalId` 必填：一个会话可能同时有多条未决审批，不指名就没法知道要结算哪一条，
+所以缺 id 一律 `400`，不会替你挑「最新那条」。
 
 | decision | 效果 |
 | --- | --- |
@@ -473,7 +481,12 @@ body: {"decision": "approve" | "reject" | "allow-always"}
 | `reject` | 拒绝，写操作不执行 |
 | `allow-always` | 本次放行，**并把该命令记为当前用户的 learned 授权**（进 grants store，**不写实例 spec**），此后自动通过 |
 
-响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}`
+响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}` ——
+回带的 `approvalId` 就是被结算的那条，客户端据此核对「点的那张卡确实被结算了」。
+
+`404` 表示该审批已不在网关（过期、被别处结算、或不属于这个会话）；
+`409` 表示已被别处结算（两条决定的竞态）—— 两者都意味着卡片可以关掉，不是请求失败。
+同一张卡上并发的两条决定不会互相顶掉：后到的会等到前一条有结果，再把它看到的事实回给你。
 
 随后同一流上收到：
 
@@ -487,7 +500,9 @@ data: {"type":"approval_resolved","sessionId":"...","callId":"...","approved":tr
 ```ts
 GET /api/v1/sessions/{key}/approval/pending
 // 404 {"error":"no pending approval"} → 静默忽略
-// 200：{"approval":{"sessionId","approvalId","tool","command","level","message"}}
+// 200：{"approvals":[{"sessionId","approvalId","tool","command","level","message",
+//                     "createdAtMs","expiresAtMs"}]}
+// 其它错误码（如 502）-> 读不到网关，**不能**当成「没有未决项」
 ```
 
 **失败关闭语义**：`approvalPolicy` 要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。
@@ -578,8 +593,8 @@ GET /api/v1/sessions/{key}/question/pending
 | GET | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
 | GET | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
 | POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
-| POST | `/api/v1/sessions/{key}/approval` | `{"decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
-| GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approval":{"sessionId","approvalId","tool","command","level","message"}}` | 否 |
+| POST | `/api/v1/sessions/{key}/approval` | `{"approvalId","decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
+| GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approvals":[{"sessionId","approvalId","tool","command","level","message","createdAtMs","expiresAtMs"}]}` | 否 |
 | POST | `/api/v1/sessions/{key}/question` | `{"id","answers":{qid:[label\|text]}\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
 | GET | `/api/v1/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
 | POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |

@@ -130,6 +130,32 @@ const APPROVAL = [
     name: 'kubectl_apply',
     command: 'kubectl apply -f dev.yaml',
     level: 'write',
+    createdAtMs: 1000,
+  },
+] satisfies SSEEvent[]
+
+// Two writes gated in one turn, which is the state one session can be in and the
+// one the platform used to keep only the newest of. The stamps are what order
+// their cards.
+const TWO_APPROVALS = [
+  { type: 'message_start', sessionId: 'agent:main:conv-1' },
+  {
+    type: 'approval_pending',
+    sessionId: 'agent:main:conv-1',
+    callId: 'a1',
+    name: 'kubectl_apply',
+    command: 'kubectl apply -f one.yaml',
+    level: 'write',
+    createdAtMs: 1000,
+  },
+  {
+    type: 'approval_pending',
+    sessionId: 'agent:main:conv-1',
+    callId: 'a2',
+    name: 'kubectl_apply',
+    command: 'kubectl apply -f two.yaml',
+    level: 'write',
+    createdAtMs: 2000,
   },
 ] satisfies SSEEvent[]
 
@@ -160,7 +186,10 @@ describe('ChatView write confirmation', () => {
     expect(gateway!.decisions).toHaveLength(1)
     expect(gateway!.decisions[0]).toMatchObject({
       path: '/api/v1/sessions/agent:main:conv-1/approval',
-      body: { decision: 'approve' },
+      // The decision names its approval. A session can hold several pending
+      // approvals, so an answer that does not name one settles whichever the
+      // platform looks up rather than the card that was clicked.
+      body: { approvalId: 'a1', decision: 'approve' },
     })
   })
 
@@ -174,8 +203,119 @@ describe('ChatView write confirmation', () => {
 
     expect(gateway!.decisions[0]).toMatchObject({
       path: '/api/v1/sessions/agent:main:conv-1/approval',
-      body: { decision: 'reject' },
+      body: { approvalId: 'a1', decision: 'reject' },
     })
+  })
+
+  it('draws one card per pending approval and decides only the one clicked', async () => {
+    const turn = gateway!.openTurn()
+
+    render(<ChatView />)
+    await send('create a dev environment')
+    turn.push(TWO_APPROVALS)
+
+    // Both are the user's to answer, oldest first, and each shows its own
+    // command: a view that held only the newest would silently drop a write the
+    // turn is parked on.
+    const approves = await screen.findAllByRole('button', { name: 'Approve' })
+    expect(approves).toHaveLength(2)
+    const cards = approves.map((b) => b.closest('.tool-card')!.querySelector('.approval-body')!.textContent)
+    expect(cards[0]).toContain('one.yaml')
+    expect(cards[1]).toContain('two.yaml')
+
+    await userEvent.setup().click(approves[0]!)
+
+    expect(gateway!.decisions).toHaveLength(1)
+    expect(gateway!.decisions[0]).toMatchObject({
+      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      body: { approvalId: 'a1', decision: 'approve' },
+    })
+    // The other card is untouched: it is still the user's to answer, and the
+    // turn is still parked on it.
+    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1)
+
+    turn.close()
+  })
+
+  it('settles only the card its resolution names', async () => {
+    const turn = gateway!.openTurn()
+
+    render(<ChatView />)
+    await send('create a dev environment')
+    turn.push(TWO_APPROVALS)
+    await screen.findAllByRole('button', { name: 'Approve' })
+
+    // The platform's account of the decision names one of the two. Settling any
+    // other card with it -- the newest, say -- closes a card the user never
+    // answered and leaves the one they did on screen.
+    turn.push([{ type: 'approval_resolved', sessionId: 'agent:main:conv-1', callId: 'a2', approved: true }])
+
+    expect(await screen.findByText('Approved')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1)
+
+    turn.close()
+  })
+
+  it('closes the card when another client settled the approval first', async () => {
+    // 409 is the platform saying the decision lost a race -- another browser
+    // answered it, or the gateway expired it. The click did not decide anything,
+    // so the card closes neutrally rather than reporting a failure the user did
+    // not cause, and it must not paint an approval nobody made.
+    gateway = installFakeGateway({ decisionFails: true, decisionStatus: 409 })
+    gateway.install()
+    gateway.setTurn(APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Approve' }))
+
+    expect(await screen.findByText('Stopped')).toBeInTheDocument()
+    expect(screen.queryByText('Approved')).not.toBeInTheDocument()
+    expect(screen.queryByText(/decision not recorded/)).not.toBeInTheDocument()
+  })
+
+  it('draws one card when a restored approval and a live event describe the same one', async () => {
+    // Two independent accounts of one approval: the restore read the page did
+    // when it loaded, and the event the stream carried for it. The id is what
+    // says they are the same approval rather than two.
+    gateway = installFakeGateway({
+      sessions: [{ sessionKey: 'agent:main:conv-a', title: 'nginx dev environment' }],
+      pendingApprovals: [
+        {
+          sessionId: 'agent:main:conv-a',
+          approvalId: 'a1',
+          tool: 'exec',
+          command: 'kubectl apply -f one.yaml',
+          level: 'write',
+          createdAtMs: 1000,
+        },
+      ],
+    })
+    gateway.install()
+
+    const user = userEvent.setup()
+    render(<ChatView />)
+    await user.click(await screen.findByText('nginx dev environment'))
+    expect(await screen.findAllByRole('button', { name: 'Approve' })).toHaveLength(1)
+
+    const turn = gateway.openTurn()
+    await send('create a dev environment')
+    turn.push([
+      { type: 'message_start', sessionId: 'agent:main:conv-a' },
+      {
+        type: 'approval_pending',
+        sessionId: 'agent:main:conv-a',
+        callId: 'a1',
+        name: 'kubectl_apply',
+        command: 'kubectl apply -f one.yaml',
+        level: 'write',
+        createdAtMs: 1000,
+      },
+    ])
+
+    expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1)
+
+    turn.close()
   })
 
   it('renders the resolved decision rather than leaving live buttons', async () => {

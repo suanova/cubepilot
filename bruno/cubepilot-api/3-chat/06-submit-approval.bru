@@ -10,16 +10,24 @@ docs {
   收到 `approval_pending` 事件后调它。**在另一条连接上**调用 ——
   对话 SSE 流仍开着并停在 pending 上。
 
+  `approvalId` **必填**,取自那条 `approval_pending` 事件的 `callId`。
+  一个会话可以同时压着多条审批,所以决定必须**指名**settle 哪一条 ——
+  不带 id 会 **400**,平台不会替你猜"最新那条"。
+  `01-send-message` 的后置脚本已经把最近一条 `callId` 写进 `{{approvalId}}`。
+
   | decision | 效果 |
   |---|---|
   | `approve` | 本次放行,回合继续 |
   | `reject` | 拒绝,写操作**不执行** |
-  | `allow-always` | 放行 + 记入实例 allowlist,此后自动通过 |
+  | `allow-always` | 放行 + 记为该用户的 learned 授权(grants store,不写实例 spec),此后自动通过 |
 
-  ⚠️ 已知问题(issue #180):这里必须用 **canonical 形式的 key**
-  (即 `message_start` 返回的那个 `agent:main:conv-...`)。
-  用你自己传给 `/messages` 的短 key 会 **404** —— 而 `/turn`、`/abort` 两个端点
-  却接受短 key,契约不一致。
+  返回体回带 `approvalId`,客户端据此核对"settle 的确实是点的那张"。
+
+  | 状态 | 含义 |
+  |---|---|
+  | `404` | 该审批已不在网关(过期/被别处结掉/不属于这个会话)—— 卡片可以关掉 |
+  | `409` | 已被别处结掉(并发决定的竞态);同一张卡的两条决定不会互相顶掉 |
+  | `503` | 审批通道不可用(见下) |
 
   **失败关闭**:审批通道不可用时回合**直接失败**而不是静默放行;
   `503 approval channel unavailable` 表示该回合被拒,**不要重试成"跳过确认"**。
@@ -37,6 +45,7 @@ headers {
 
 body:json {
   {
+    "approvalId": "{{approvalId}}",
     "decision": "reject"
   }
 }
@@ -44,5 +53,10 @@ body:json {
 tests {
   test("200 approved, or 404 no pending", function() {
     expect([200, 404]).to.include(res.status)
+  })
+  test("the answer names the approval it settled", function() {
+    if (res.status !== 200) return
+    const body = typeof res.body === "string" ? JSON.parse(res.body) : res.body
+    expect(body.approvalId).to.be.a("string").and.not.empty
   })
 }

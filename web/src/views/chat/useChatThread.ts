@@ -14,6 +14,7 @@ import { showToast } from '@/stores/toast'
 import {
   answerFor,
   attachToolResult,
+  newBubbleConfirm,
   newBubbleQuestion,
   setPhase,
   settleBubbleCards,
@@ -353,9 +354,10 @@ export function useChatThread({
       .catch(() => setAllowAlwaysOk(false))
   }
 
-  // After a reload mid-approval the platform still holds the pending write; this
-  // restores its confirmation card from the pending endpoint (issue #20). The
-  // result is discarded if the user switched sessions while it was in flight.
+  // After a reload mid-approval the gateway still holds the pending write; this
+  // restores its confirmation cards from the pending endpoint (issue #20), all of
+  // them (issue #226). The result is discarded if the user switched sessions
+  // while it was in flight.
   //
   // `attach` is what it does with a restored card: draw it and open the stream its
   // answer's output comes back on (the default), or draw it and open nothing. A
@@ -401,10 +403,10 @@ export function useChatThread({
         ])
       }
     }
-    let p: PendingApproval
+    let approvals: PendingApproval[]
     try {
-      p = await api.pendingApproval(id)
-    } catch {
+      approvals = await api.pendingApprovals(id)
+    } catch (e) {
       // No pending approval for this session; a restored question still needs the
       // stream its answer's output comes back on. The card was appended before
       // this lookup went out, so this path can land after a switch, with
@@ -412,21 +414,37 @@ export function useChatThread({
       // for the session the user left, holding its one stream against every
       // legitimate client until the next switch or the server's cap. Same guard
       // as the success path below.
+      //
+      // A 404 is the ordinary "nothing pending" answer. Anything else means the
+      // platform could not read the gateway, so a parked write may be invisible
+      // here: say so rather than showing an idle conversation the user cannot
+      // unblock -- the same reasoning the question lookup above applies.
+      if (!(e instanceof ApiError && e.status === 404) && activeSessionRef.current === id) {
+        setBubbles((prev) => [
+          ...prev,
+          {
+            kind: 'assistant' as const,
+            items: [],
+            thinking: false,
+            phase: 'done' as const,
+            error: `Could not check for a pending approval: ${String(e)}`,
+          },
+        ])
+      }
       if (attach && attachBubble && activeSessionRef.current === id) void attachTurn(id, attachBubble)
       return
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
     const { bubble: confirmBubble, existed } = parkedBubble()
-    confirmBubble.items.push({
-      kind: 'approval',
-      confirm: {
-        sessionId: p.sessionId,
-        approvalId: p.approvalId,
-        command: p.command,
-        level: p.level,
-        message: p.message,
-      },
-    })
+    for (const p of approvals) {
+      // One card per approval, and none for one this view already holds: a
+      // restore read and a live event are two accounts of the same approval,
+      // and the id is what says so.
+      if (confirmBubble.items.some((i) => i.kind === 'approval' && i.confirm.approvalId === p.approvalId)) {
+        continue
+      }
+      confirmBubble.items.push({ kind: 'approval', confirm: newBubbleConfirm(p.sessionId, p) })
+    }
     setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, confirmBubble])
     syncAllowAlways()
     requestAnimationFrame(scrollThread)
@@ -925,16 +943,25 @@ export function useChatThread({
       // itself is drawn in the composer dock while it is pending; the item holds
       // its place in the turn, so the record of the decision lands beside the
       // call it gated.
+      //
+      // An approval this view already holds is not a second card: a restore read
+      // and a live event are two independent accounts of the same approval
+      // (issue #226), and the id is what says so.
+      const approvalId = ev.callId || ''
+      if (approvalId && bubble.items.some((i) => i.kind === 'approval' && i.confirm.approvalId === approvalId)) {
+        return
+      }
       setPhase(bubble, 'tools')
       bubble.items.push({
         kind: 'approval',
-        confirm: {
-          sessionId: ev.sessionId || currentSessionId || '',
-          approvalId: ev.callId || '',
+        confirm: newBubbleConfirm(ev.sessionId || currentSessionId || '', {
+          approvalId,
           command: ev.command || '',
           level: ev.level || 'write',
           message: ev.message,
-        },
+          createdAtMs: ev.createdAtMs,
+          expiresAtMs: ev.expiresAtMs,
+        }),
       })
       syncAllowAlways()
       setBubbles([...bubblesRef.current])
@@ -942,8 +969,11 @@ export function useChatThread({
       return
     }
     if (ev.type === 'approval_resolved') {
+      // Settle the card the platform says it settled, by id. Taking any card
+      // instead -- the newest, say -- is how a decision on one approval used to
+      // close another's card while leaving the one the user answered on screen.
       const item = bubble.items.find(
-        (i) => i.kind === 'approval' && (!ev.callId || i.confirm.approvalId === ev.callId),
+        (i) => i.kind === 'approval' && !i.confirm.resolved && i.confirm.approvalId === ev.callId,
       )
       if (item && item.kind === 'approval') {
         item.confirm.resolved = true
@@ -1276,22 +1306,41 @@ export function useChatThread({
     }
   }
 
-  // decide sends the human's answer for a pending write confirmation
-  // (issue #20 / #116). "allow-always" approves this once and records the
+  // decide sends the human's answer for one pending write confirmation
+  // (issue #20 / #116 / #226). "allow-always" approves this once and records the
   // command as a learned grant for the user, so it auto-passes from then on;
   // the instance allowlist is not touched. POSTing resolves the gateway
   // approval; the SSE stream then carries the resumed turn.
+  //
+  // The request names the card it came from. A session can hold several pending
+  // approvals, so an answer addressed by session alone settles whichever one the
+  // platform looks up rather than the one the human clicked.
   async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always') {
     const session = confirm.sessionId || currentSessionId
     if (!session) {
       confirm.error = 'no session'
       return
     }
+    if (!confirm.approvalId) {
+      // A card with no id cannot be answered without guessing which approval was
+      // meant, which is the guess this endpoint no longer makes.
+      confirm.error = 'this card carries no approval id'
+      return
+    }
     confirm.busy = true
     confirm.error = ''
     setBubbles([...bubblesRef.current])
     try {
-      const res = await api.postApproval(session, decision)
+      const res = await api.postApproval(session, confirm.approvalId, decision)
+      // The response names the approval the platform settled. A card that was not
+      // the one settled is left alone rather than painted approved: the click
+      // did not decide it, and saying otherwise is the lie this whole change
+      // exists to remove. The card goes back to being answerable -- which it is,
+      // since the approval it names is still pending on the platform's side.
+      if (res.approvalId && res.approvalId !== confirm.approvalId) {
+        confirm.error = `the platform settled a different approval (${res.approvalId})`
+        return
+      }
       confirm.resolved = true
       confirm.approved = decision !== 'reject'
       // The approval itself went through, but recording the durable grant did
@@ -1301,12 +1350,12 @@ export function useChatThread({
         showToast('Approved, but the command was not added to your allowlist -- it will ask again.')
       }
     } catch (e) {
-      // 404 is the card having been settled underneath the click: the turn was
-      // stopped and the settle deleted the record, or it expired. The click lost
-      // that race, so the card is closed -- neutrally, with no decision recorded
-      // -- rather than left offering buttons that cannot work or reporting a
-      // failure the user did not cause.
-      if (e instanceof ApiError && e.status === 404) {
+      // 404 and 409 are the card having been settled underneath the click: the
+      // turn was stopped and the approval is gone, it expired, or another client
+      // answered it first. The click lost that race, so the card is closed --
+      // neutrally, with no decision recorded -- rather than left offering
+      // buttons that cannot work or reporting a failure the user did not cause.
+      if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
         confirm.resolved = true
         confirm.approved = undefined
       } else {

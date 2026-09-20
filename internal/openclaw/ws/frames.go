@@ -171,30 +171,46 @@ type ApprovalsSnapshot struct {
 	File   ApprovalsFile `json:"file"`
 }
 
-// --- exec.approval.requested / resolved event payloads ---
+// --- exec.approval.requested / list / resolved payloads ---
 
-// ApprovalRequested is the exec.approval.requested broadcast payload.
-type ApprovalRequested struct {
-	Kind    string `json:"approvalKind"`
-	ID      string `json:"id"`
-	Request struct {
-		Command     string `json:"command"`
-		SessionKey  string `json:"sessionKey"`
-		AgentID     string `json:"agentId"`
-		Security    string `json:"security"`
-		Ask         string `json:"ask"`
-		WarningText string `json:"warningText"`
-	} `json:"request"`
-	CreatedAtMs int64 `json:"createdAtMs"`
-	ExpiresAtMs int64 `json:"expiresAtMs"`
+// ExecApprovalRequest is the approval's own record of what it is about. It is
+// the same object in all three shapes that carry it: the requested broadcast,
+// each element of exec.approval.list, and the resolved broadcast (which echoes
+// it back).
+//
+// SessionKey is what binds an approval to a conversation, and it is the reason
+// the list -- not exec.approval.get, whose answer carries display text and no
+// session key -- is what this client reads the pending set with.
+type ExecApprovalRequest struct {
+	Command     string `json:"command"`
+	SessionKey  string `json:"sessionKey"`
+	AgentID     string `json:"agentId"`
+	Security    string `json:"security"`
+	Ask         string `json:"ask"`
+	WarningText string `json:"warningText"`
 }
 
-// ApprovalResolved is the exec.approval.resolved broadcast payload.
+// ApprovalRequested is one pending approval: the exec.approval.requested
+// broadcast payload, and the shape of each exec.approval.list element. The list
+// response is a bare array of these -- not an object wrapping one.
+type ApprovalRequested struct {
+	Kind        string              `json:"approvalKind"`
+	ID          string              `json:"id"`
+	Request     ExecApprovalRequest `json:"request"`
+	CreatedAtMs int64               `json:"createdAtMs"`
+	ExpiresAtMs int64               `json:"expiresAtMs"`
+}
+
+// ApprovalResolved is the exec.approval.resolved broadcast payload. Request is
+// the approval's original record, echoed back by the gateway, so a resolution
+// arrives with the session it belongs to -- there is no id -> session table on
+// this side for it to be looked up in.
 type ApprovalResolved struct {
-	ID         string `json:"id"`
-	Decision   string `json:"decision"` // allow-once | allow-always | deny
-	ResolvedBy string `json:"resolvedBy"`
-	TS         int64  `json:"ts"`
+	ID         string              `json:"id"`
+	Decision   string              `json:"decision"` // allow-once | allow-always | deny
+	ResolvedBy string              `json:"resolvedBy"`
+	TS         int64               `json:"ts"`
+	Request    ExecApprovalRequest `json:"request"`
 }
 
 // --- exec.approval.resolve params ---

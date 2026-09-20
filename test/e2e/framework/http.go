@@ -215,7 +215,9 @@ func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, co
 }
 
 // resolveApproval posts the human decision for an approval_pending event so the
-// paused gateway run resumes and the SSE stream reaches message_done.
+// paused gateway run resumes and the SSE stream reaches message_done. It sends
+// the event's own call id: a session can hold several pending approvals at once,
+// and the decision settles the one it names.
 func (f *Framework) resolveApproval(ctx context.Context, user string, data json.RawMessage, decision string) error {
 	var pending struct {
 		SessionID string `json:"sessionId"`
@@ -227,7 +229,10 @@ func (f *Framework) resolveApproval(ctx context.Context, user string, data json.
 	if pending.SessionID == "" {
 		return fmt.Errorf("approval_pending carried no sessionId")
 	}
-	reqBody, err := json.Marshal(map[string]string{"decision": decision})
+	if pending.CallID == "" {
+		return fmt.Errorf("approval_pending carried no callId: a decision that names no approval cannot settle one")
+	}
+	reqBody, err := json.Marshal(map[string]string{"approvalId": pending.CallID, "decision": decision})
 	if err != nil {
 		return err
 	}

@@ -32,6 +32,11 @@ type AuditEntry struct {
 	Level     string    `json:"level"`  // L0 readonly | L1 write
 	Status    string    `json:"status"` // executed | approved | rejected | failed
 	Detail    string    `json:"detail,omitempty"`
+	// ApprovalID names the exec approval a decision settled, on the entries that
+	// record one. A session can hold several approvals at once, so an entry
+	// without it cannot be reconciled against them after the fact: two approvals
+	// and one decision would not add up.
+	ApprovalID string `json:"approvalId,omitempty"`
 }
 
 // Store keeps one audit JSON file per user under dir.

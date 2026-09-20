@@ -100,6 +100,16 @@ type Event struct {
 	// Question carries the pending question prompt on question_pending, with
 	// CallID holding the gateway question id used to answer it.
 	Question *QuestionPrompt `json:"question,omitempty"`
+	// CreatedAtMs and ExpiresAtMs are the gateway's stamps for the record an
+	// approval event is about, in epoch milliseconds as the gateway writes them.
+	// A session can hold several pending approvals at once, so CreatedAtMs is
+	// what orders their cards deterministically -- arrival order is not stable
+	// across a reload, and several cards without a sort key is a different order
+	// on every render. They are absolute rather than remainders because nothing
+	// renders a countdown from them; a reader that wanted one would send the
+	// remainder, as QuestionPrompt does.
+	CreatedAtMs int64 `json:"createdAtMs,omitempty"`
+	ExpiresAtMs int64 `json:"expiresAtMs,omitempty"`
 }
 
 // Marshal returns the SSE data payload for an event.

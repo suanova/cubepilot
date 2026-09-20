@@ -44,10 +44,35 @@ func (c *Client) SetApprovalsPolicy(ctx context.Context, file ApprovalsFile, bas
 }
 
 // ResolveApproval resolves a pending exec approval (exec.approval.resolve).
-// decision is allow-once or deny.
+// decision is allow-once or deny. The id names the approval, never the session:
+// one session can hold several pending approvals and each is answered on its own.
 func (c *Client) ResolveApproval(ctx context.Context, id, decision string) error {
 	_, err := c.Call(ctx, "exec.approval.resolve", approvalResolveParams{ID: id, Decision: decision})
 	return err
+}
+
+// ListApprovals returns the pending exec approvals this connection may see
+// (exec.approval.list). It takes no arguments and answers with a bare array.
+//
+// This is the authoritative "what is pending" read. It is deliberately not
+// backed by any copy the platform keeps: the platform's maps are process-local,
+// so a restart would lose approvals the gateway still holds -- and a decision
+// looked up in such a copy is a decision that settles whatever the copy pointed
+// at rather than the approval the human clicked.
+//
+// The gateway filters by what this client is allowed to see, so the caller does
+// not filter by owner; it does filter by session, since one user's gateway holds
+// approvals for every conversation of theirs.
+func (c *Client) ListApprovals(ctx context.Context) ([]ApprovalRequested, error) {
+	raw, err := c.Call(ctx, "exec.approval.list", struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	var out []ApprovalRequested
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode exec.approval.list: %w", err)
+	}
+	return out, nil
 }
 
 // ResolveQuestion answers a pending question (question.resolve). answers maps
