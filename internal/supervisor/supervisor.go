@@ -157,7 +157,7 @@ type Supervisor struct {
 	ns           string
 	lastKeysHash string
 
-	// devicePaired records that the platform's HITL device has been approved for
+	// devicePaired records that the platform's device has been approved for
 	// this gateway (issue #20). Set by ensureDevicePaired; read/written only by
 	// the Run goroutine.
 	devicePaired bool
@@ -245,9 +245,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if gcerr != nil {
 				log.Printf("supervisor: refresh gateway config: %v", gcerr)
 			}
-			// HITL (issue #20): once, approve the platform's operator device for
-			// this gateway over the loopback admin path so its network WS can
-			// connect. No-op when HITL is disabled or already paired.
+			// Gateway device (issue #20): once, approve the platform's operator
+			// device for this gateway over the loopback admin path so its
+			// network WS can connect. No-op when the platform serves no device
+			// key or it is already paired.
 			s.ensureDevicePaired(ctx)
 			// The gateway reloads itself: its config reloader watches
 			// openclaw.json, so writing the updated files is sufficient.

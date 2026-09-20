@@ -293,21 +293,21 @@ func TestHandleSessionDeleteWithoutALiveConnection(t *testing.T) {
 // every route (api-conventions.md §6).
 func TestHandleSessionDeleteRejectsBadRequests(t *testing.T) {
 	cases := []struct {
-		name   string
-		method string
-		path   string
-		hitl   bool
-		want   int
+		name    string
+		method  string
+		path    string
+		channel bool
+		want    int
 	}{
-		{name: "method", method: http.MethodGet, path: "/api/v1/sessions/conv-1", hitl: true, want: http.StatusMethodNotAllowed},
-		{name: "empty key", method: http.MethodDelete, path: "/api/v1/sessions/", hitl: true, want: http.StatusBadRequest},
-		{name: "main key", method: http.MethodDelete, path: "/api/v1/sessions/agent:main:", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodDelete, path: "/api/v1/sessions/conv-1", hitl: false, want: http.StatusServiceUnavailable},
+		{name: "method", method: http.MethodGet, path: "/api/v1/sessions/conv-1", channel: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodDelete, path: "/api/v1/sessions/", channel: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodDelete, path: "/api/v1/sessions/agent:main:", channel: true, want: http.StatusBadRequest},
+		{name: "no channel", method: http.MethodDelete, path: "/api/v1/sessions/conv-1", channel: false, want: http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var m *gatewayConns
-			if tc.hitl {
+			if tc.channel {
 				m = deleteConns(&fakeGatewayClient{connected: true})
 			}
 			s := newAbortTestServer(NewHub(), m)
@@ -324,10 +324,10 @@ func TestHandleSessionDeleteRejectsBadRequests(t *testing.T) {
 
 // A correct handler the dispatcher never reaches is no feature at all: DELETE on
 // a bare key would fall through to the mux's 404, and a fixed-key client would
-// have no way to start over. This drives the real Handler chain. With no HITL
-// channel the delete answers 503 -- the truthful answer for "there is nothing to
-// send this over" -- which keeps the assertion on routing rather than on the
-// gateway.
+// have no way to start over. This drives the real Handler chain. With no
+// gateway channel the delete answers 503 -- the truthful answer for "there is
+// nothing to send this over" -- which keeps the assertion on routing rather
+// than on the gateway.
 func TestSessionDeleteRouteIsWired(t *testing.T) {
 	srv := New(config.Config{DefaultUser: "alice"}, nil, nil, nil, nil)
 

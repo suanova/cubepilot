@@ -487,7 +487,7 @@ func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 func (m *gatewayConns) PreTurn(ctx context.Context, user string) (bool, error) {
 	pol, allow, rev, err := m.resolved(ctx, user)
 	if err != nil {
-		return false, fmt.Errorf("hitl %s: cannot resolve confirm policy: %w", user, err)
+		return false, fmt.Errorf("gateway %s: cannot resolve confirm policy: %w", user, err)
 	}
 	switch pol {
 	case v1alpha1.ApprovalPolicyAllowlist, v1alpha1.ApprovalPolicyAlwaysAsk:
@@ -500,11 +500,11 @@ func (m *gatewayConns) PreTurn(ctx context.Context, user string) (bool, error) {
 		// constrains the enum, so this is reachable only for a value stored
 		// before the schema was applied -- which is exactly when a wrong guess
 		// is most dangerous.
-		return false, fmt.Errorf("hitl %s: unknown approval policy %q", user, pol)
+		return false, fmt.Errorf("gateway %s: unknown approval policy %q", user, pol)
 	}
 	gw, err := m.conn(ctx, user)
 	if err != nil {
-		return false, fmt.Errorf("hitl %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
+		return false, fmt.Errorf("gateway %s: cannot gate %s turn (approval channel unavailable): %w", user, pol, err)
 	}
 	// Apply the effective exec policy when the resolved-config revision changed;
 	// only a successful apply advances revPol so a transient failure is retried
@@ -514,7 +514,7 @@ func (m *gatewayConns) PreTurn(ctx context.Context, user string) (bool, error) {
 	m.mu.Unlock()
 	if rev != "" && rev != appliedRev {
 		if err := m.applyPolicy(ctx, user, gw, pol, allow); err != nil {
-			return false, fmt.Errorf("hitl %s: cannot apply %s exec policy: %w", user, pol, err)
+			return false, fmt.Errorf("gateway %s: cannot apply %s exec policy: %w", user, pol, err)
 		}
 		m.mu.Lock()
 		m.revPol[user] = rev
@@ -549,7 +549,7 @@ func (m *gatewayConns) channelState(ctx context.Context, user string) string {
 		if strings.Contains(err.Error(), "NOT_PAIRED") {
 			return approvalChannelPairing
 		}
-		m.sayf("hitl %s: channel probe: %v", user, err)
+		m.sayf("gateway %s: channel probe: %v", user, err)
 		return approvalChannelDown
 	}
 	return approvalChannelUp
@@ -605,7 +605,7 @@ func (m *gatewayConns) applyPolicy(ctx context.Context, user string, gw gatewayC
 func (m *gatewayConns) applyPolicyOnce(ctx context.Context, user string, gw gatewayClient, pol v1alpha1.ApprovalPolicy, allow []v1alpha1.AllowlistRule) error {
 	snap, err := gw.GetApprovalsPolicy(ctx)
 	if err != nil {
-		m.sayf("hitl %s: exec.approvals.get: %v", user, err)
+		m.sayf("gateway %s: exec.approvals.get: %v", user, err)
 		return err
 	}
 	file := snap.File
@@ -627,7 +627,7 @@ func (m *gatewayConns) applyPolicyOnce(ctx context.Context, user string, gw gate
 		base = snap.Hash
 	}
 	if _, err := gw.SetApprovalsPolicy(ctx, file, base); err != nil {
-		m.sayf("hitl %s: exec.approvals.set: %v", user, err)
+		m.sayf("gateway %s: exec.approvals.set: %v", user, err)
 		return err
 	}
 	return nil

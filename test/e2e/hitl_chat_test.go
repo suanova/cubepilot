@@ -41,7 +41,7 @@ func e2eEventSummary(events []framework.SSEEvent) string {
 	return b.String()
 }
 
-// HITL (issue #20): with the device master key configured, a Allowlist
+// HITL (issue #20): with the device root key configured, a Allowlist
 // chat turn that reaches a write operation must pause with a approval_pending
 // and a rejected write must not execute.
 var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func() {
@@ -50,7 +50,7 @@ var _ = Describe("HITL gates a chat write until rejected", Label("chat"), func()
 			Skip("CUBEPILOT_E2E_CHAT != 1 (needs a real LLM key); skipping HITL chat e2e")
 		}
 		// HITL is always on (no platform deployment switch, issue #127): the
-		// API auto-generates the device master key and supervisors auto-pair,
+		// API auto-generates the device root key and supervisors auto-pair,
 		// so this spec exercises the real write gate under Allowlist policy.
 		By("waiting until the agent instance is Ready and its pod is stable")
 		Eventually(func() error { return agentStabilityErr(context.Background(), fw.Users[0]) },

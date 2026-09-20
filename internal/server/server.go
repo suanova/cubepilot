@@ -43,78 +43,83 @@ type Server struct {
 	cr           client.Client
 	hub          *Hub
 	approvals    *ApprovalService
-	gatewayConns *gatewayConns   // nil when the gateway channel is not configured (approvalPolicy stays declarative)
+	gatewayConns *gatewayConns   // nil when the channel is not up: gated policies fail closed and the confirm view reports "unconfigured"
 	qroutes      *questionRoutes // gateway question id -> session, for ask_user events (issue #161)
 }
 
-// hitlMasterSecretName is the Secret holding the auto-generated device master
-// key (created by the API on first enable; per-user devices are derived from
-// it, so it must be stable across API restarts).
-const hitlMasterSecretName = "cubepilot-hitl-master"
+// deviceRootSecretName is the Secret holding the auto-generated device root key
+// (created by the API on first start; every per-user device identity is derived
+// from it, so it must be stable across API restarts).
+const deviceRootSecretName = "cubepilot-device-root"
 
-// EnableHITL activates the human-in-the-loop approval channel (issue #20). The
-// device master key is auto-generated and persisted in a Secret (load-or-create)
-// so enabling needs no operator-supplied key; the API's ServiceAccount only
-// needs access to that one Secret. It returns an error when the channel cannot
-// be brought up: since live chat itself runs over the gateway device channel
-// (issue #130), a missing master key leaves the API unable to serve turns at
-// all, so the caller must treat a failure as fatal rather than start
-// half-configured (issue #127).
-func (s *Server) EnableHITL() error {
+// StartGatewayChannel brings up the API's gateway device channel (issue #20):
+// approvals, ask-user questions and the live chat stream all ride the one
+// connection per user.
+//
+// The device root key is auto-generated and persisted in a Secret
+// (load-or-create), so bringing the channel up needs no operator-supplied key;
+// the API's ServiceAccount only needs access to that one Secret -- the per-user
+// devices derived from it are auto-paired by the in-pod supervisor.
+//
+// It returns an error when the channel cannot be brought up: since live chat
+// itself runs over the gateway device channel (issue #130), a missing root key
+// leaves the API unable to serve turns at all, so the caller must treat a
+// failure as fatal rather than start half-configured (issue #127).
+func (s *Server) StartGatewayChannel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	var mk []byte
+	var rk []byte
 	var sec corev1.Secret
-	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &sec)
+	err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: deviceRootSecretName}, &sec)
 	switch {
 	case err == nil:
 		// The key is stored Base64-encoded; decode so a restarted API derives
 		// the same device identities as the process that created the Secret.
 		encoded := sec.Data["key"]
-		// Assign to the function-level mk (not `mk, derr :=`, which would shadow
-		// it inside this case and leave the outer mk empty) so a restarted API
-		// actually re-uses the persisted key and keeps HITL on (issue #128).
+		// Assign to the function-level rk (not `rk, derr :=`, which would shadow
+		// it inside this case and leave the outer rk empty) so a restarted API
+		// actually re-uses the persisted key and keeps the channel up (issue #128).
 		var derr error
-		mk, derr = base64.StdEncoding.DecodeString(string(encoded))
-		if derr != nil || len(mk) == 0 {
-			return fmt.Errorf("hitl: master Secret %s has an invalid 'key'", hitlMasterSecretName)
+		rk, derr = base64.StdEncoding.DecodeString(string(encoded))
+		if derr != nil || len(rk) == 0 {
+			return fmt.Errorf("gateway: device root Secret %s has an invalid 'key'", deviceRootSecretName)
 		}
 	case apierrors.IsNotFound(err):
-		mk = make([]byte, 32)
-		if _, rerr := rand.Read(mk); rerr != nil {
-			return fmt.Errorf("hitl: generate master key: %w", rerr)
+		rk = make([]byte, 32)
+		if _, rerr := rand.Read(rk); rerr != nil {
+			return fmt.Errorf("gateway: generate device root key: %w", rerr)
 		}
 		sec = corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: hitlMasterSecretName, Namespace: s.cfg.Namespace},
-			Data:       map[string][]byte{"key": []byte(base64.StdEncoding.EncodeToString(mk))},
+			ObjectMeta: metav1.ObjectMeta{Name: deviceRootSecretName, Namespace: s.cfg.Namespace},
+			Data:       map[string][]byte{"key": []byte(base64.StdEncoding.EncodeToString(rk))},
 		}
 		if cerr := s.cr.Create(ctx, &sec); cerr != nil {
 			if !apierrors.IsAlreadyExists(cerr) {
-				return fmt.Errorf("hitl: ensure master Secret: %w", cerr)
+				return fmt.Errorf("gateway: ensure device root Secret: %w", cerr)
 			}
 			// Lost the create race to a peer replica: adopt the winner's persisted
 			// key so every replica derives the same device identities. Only a
-			// successful read + decode replaces mk -- never fall through to
+			// successful read + decode replaces rk -- never fall through to
 			// ConfigureGateway with the random bytes we just generated, which would
 			// leave the API with unstable (unpersisted) device identities.
 			var got corev1.Secret
-			if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: hitlMasterSecretName}, &got); rerr != nil {
-				return fmt.Errorf("hitl: read master Secret after create race: %w", rerr)
+			if rerr := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: deviceRootSecretName}, &got); rerr != nil {
+				return fmt.Errorf("gateway: read device root Secret after create race: %w", rerr)
 			}
 			var derr error
-			mk, derr = base64.StdEncoding.DecodeString(string(got.Data["key"]))
-			if derr != nil || len(mk) == 0 {
-				return fmt.Errorf("hitl: winner master Secret has an invalid 'key'")
+			rk, derr = base64.StdEncoding.DecodeString(string(got.Data["key"]))
+			if derr != nil || len(rk) == 0 {
+				return fmt.Errorf("gateway: winner device root Secret has an invalid 'key'")
 			}
 		}
 	default:
-		return fmt.Errorf("hitl: read master Secret: %w", err)
+		return fmt.Errorf("gateway: read device root Secret: %w", err)
 	}
 
-	m := ConfigureGateway(s.mgr, s.cfg.GatewayToken, mk, s.logf)
+	m := ConfigureGateway(s.mgr, s.cfg.GatewayToken, rk, s.logf)
 	if m == nil {
-		return fmt.Errorf("hitl: cannot configure the approval channel (missing manager or gateway token)")
+		return fmt.Errorf("gateway: cannot build the channel manager (missing instance manager or gateway token)")
 	}
 	s.gatewayConns = m
 	s.approvals.SetResolver(m)
@@ -148,7 +153,7 @@ func (s *Server) EnableHITL() error {
 	m.questionResolved = func(_ string, res ws.QuestionResolved) {
 		s.relayQuestionResolved(res)
 	}
-	s.logf("hitl: master key %s ensured; write confirmations enabled", hitlMasterSecretName)
+	s.logf("gateway: device root key %s ensured; chat and write confirmations enabled", deviceRootSecretName)
 	return nil
 }
 
@@ -193,7 +198,7 @@ func (s *Server) Handler() http.Handler {
 	// issue #148.
 	// Three of these read or write more than one CR holds: agent/config and
 	// agent/approval recompute the template values the instance inherits
-	// (nothing merged is stored in status), approvalView adds the live HITL
+	// (nothing merged is stored in status), approvalView adds the live gateway
 	// channel state, and llms writes AgentTemplate.spec.providers together with
 	// the credential Secret it references.
 	mux.HandleFunc("/api/v1/agenttemplates", s.handleAgentTemplates)

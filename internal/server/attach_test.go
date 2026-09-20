@@ -20,7 +20,7 @@ import (
 // attachSession is the canonical key the /stream route resolves "conv-1" to.
 const attachSession = "agent:main:conv-1"
 
-// attachTestServer builds a Server whose HITL connection for alice is already
+// attachTestServer builds a Server whose gateway connection for alice is already
 // established, with no SSE stream open -- the state a browser is in after a
 // reload that dropped the turn's stream (issue #167).
 func attachTestServer(t *testing.T, gw *fakeGatewayClient) *Server {
@@ -152,7 +152,7 @@ func TestSessionStreamGates(t *testing.T) {
 			t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
 		}
 	})
-	t.Run("HITL not configured", func(t *testing.T) {
+	t.Run("gateway channel not configured", func(t *testing.T) {
 		s := platformTestServer(t)
 		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
 		if rec.Code != http.StatusServiceUnavailable {

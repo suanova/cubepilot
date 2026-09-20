@@ -101,17 +101,18 @@ func main() {
 
 	srv := server.New(cfg, mgrInstances, st, catalog, cr)
 
-	// Human-in-the-loop write confirmations (issue #20 / #127). Always enabled:
-	// there is no platform-wide deployment switch any more -- whether an agent's
-	// interactive writes are gated is decided solely by its approvalPolicy
-	// (None | Allowlist | AlwaysAsk, template default + instance override).
-	// The device master key is auto-generated and persisted in a Secret, so no
-	// operator key is needed; the in-pod supervisor auto-pairs the derived
-	// per-user devices. Because live chat runs over the same gateway device
-	// channel, failing to bring the channel up leaves the API unable to serve
-	// turns at all -- treat it as a fatal configuration error.
-	if err := srv.EnableHITL(); err != nil {
-		log.Fatalf("enable hitl: %v", err)
+	// Human-in-the-loop write confirmations (issue #20 / #127) ride the same
+	// gateway device channel as live chat. Always on: there is no platform-wide
+	// deployment switch any more -- whether an agent's interactive writes are
+	// gated is decided solely by its approvalPolicy (None | Allowlist |
+	// AlwaysAsk, template default + instance override). The device root key is
+	// auto-generated and persisted in a Secret, so no operator key is needed;
+	// the in-pod supervisor auto-pairs the derived per-user devices. Because
+	// live chat runs over that same channel, failing to bring it up leaves the
+	// API unable to serve turns at all -- treat it as a fatal configuration
+	// error.
+	if err := srv.StartGatewayChannel(); err != nil {
+		log.Fatalf("start gateway channel: %v", err)
 	}
 
 	// Seed the builtin skills into the repository + Skill CRDs (the API owns

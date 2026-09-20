@@ -68,7 +68,7 @@ type ResolvedAgentConfig struct {
 	// means "adds nothing". Only enforced under Allowlist policy.
 	Allowlist []v1alpha1.AllowlistRule `json:"allowlist,omitempty"`
 	// DevicePublicKey is the platform's operator device public key for this
-	// agent's gateway (HITL approvals, issue #20). Transport-only: filled by
+	// agent's gateway (gateway channel, issue #20). Transport-only: filled by
 	// the API when serving the internal config (the supervisor uses it to
 	// approve the device pairing), never part of resolver output.
 	DevicePublicKey string `json:"devicePublicKey,omitempty"`

@@ -99,7 +99,7 @@ if ! helm get values "$HELM_RELEASE" -n "$NAMESPACE" -o yaml > "$stored_values" 
     values_file=()
   else
     # Any other read failure must not silently reset custom values (e.g. the
-    # HITL master key in api.extraEnv) to chart defaults -- fail closed.
+    # env vars in api.extraEnv) to chart defaults -- fail closed.
     echo "error: failed to read stored values for release $HELM_RELEASE:" >&2
     cat "$stored_err" >&2
     exit 1

@@ -93,15 +93,15 @@ api:
   # on kind's local-path StorageClass; the API is single-replica). Production
   # API replicas > 1 set [ReadWriteMany] with a shared CephFS/NFS StorageClass
   # -- note RWX alone does not make the API multi-replica: its JSON metadata
-  # store is single-writer and per-session state (SSE / HITL) is in-memory, so
-  # app-level state handling is the real gate.
+  # store is single-writer and per-session state (SSE / the gateway channel) is
+  # in-memory, so app-level state handling is the real gate.
   storageClassName: ""
   accessModes: [ReadWriteOnce]
   resources: {}
   nodeSelector: {}
   tolerations: []
   # Human-in-the-loop write confirmations (issue #20 / #127) are always on:
-  # the API auto-generates and persists a device master key in a Secret (no
+  # the API auto-generates and persists a device root key in a Secret (no
   # operator key to supply) and the in-pod supervisors auto-pair the derived
   # per-user devices. Whether an agent's writes are gated is decided solely by
   # its confirmPolicy (None | Allowlist | AlwaysAsk) -- there is no deployment
