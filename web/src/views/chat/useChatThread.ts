@@ -1347,11 +1347,10 @@ export function useChatThread({
       // The response names the approval the platform settled. A card that was not
       // the one settled is left alone rather than painted approved: the click
       // did not decide it, and saying otherwise is the lie this whole change
-      // exists to remove.
+      // exists to remove. The card goes back to being answerable -- which it is,
+      // since the approval it names is still pending on the platform's side.
       if (res.approvalId && res.approvalId !== confirm.approvalId) {
-        confirm.busy = false
-        confirm.error = `approved a different approval (${res.approvalId})`
-        setBubbles([...bubblesRef.current])
+        confirm.error = `the platform settled a different approval (${res.approvalId})`
         return
       }
       confirm.resolved = true
