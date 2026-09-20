@@ -64,7 +64,7 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
   // live there rather than inside the bubble that produced them.
   const turn = headline(bubbles)
   const pending = pendingCards(bubbles)
-  const waiting = !!pending.confirm || pending.questions.length > 0
+  const waiting = pending.confirms.length > 0 || pending.questions.length > 0
   // What the header says the conversation is doing, most actionable first.
   //
   // The stop in flight wins the line: a confirmed turn is still running while
@@ -349,7 +349,12 @@ export function ChatThread({ thread, title }: { thread: ChatThreadApi; title: st
             turn stays parked for exactly as long as they are looking. */}
         {waiting && (
           <div className="hitl-dock">
-            {pending.confirm && <ApprovalCard confirm={pending.confirm} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />}
+            {/* Every pending approval, not just the newest: one turn can raise
+                several, and each is answered on its own. The dock is where a
+                card cannot scroll away, which is the whole reason it is here. */}
+            {pending.confirms.map((c) => (
+              <ApprovalCard key={c.approvalId} confirm={c} allowAlwaysOk={allowAlwaysOk} onDecide={decide} />
+            ))}
             {pending.questions.map((q) => (
               <QuestionCard key={q.questionId} question={q} onPick={pick} onType={typeAnswer} onSubmit={submitQuestion} onDismiss={dismissQuestion} />
             ))}

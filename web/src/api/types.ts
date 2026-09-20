@@ -212,6 +212,12 @@ export interface SSEApprovalPending {
   command?: string
   level?: 'read' | 'write'
   message?: string
+  // The gateway's stamps for this approval, in epoch milliseconds. One session
+  // can hold several pending approvals at once, and a card restored from the
+  // pending endpoint has no arrival order to sit in, so createdAtMs is what
+  // orders their cards.
+  createdAtMs?: number
+  expiresAtMs?: number
 }
 export interface SSEApprovalResolved {
   type: 'approval_resolved'
@@ -285,8 +291,9 @@ export interface PendingQuestion {
 }
 
 // A write awaiting a decision, served by GET
-// /api/v1/sessions/{key}/approval/pending (used to restore an approval card
-// after a reload mid-approval).
+// /api/v1/sessions/{key}/approval/pending (used to restore approval cards after
+// a reload). Mirrors the approval_pending event payload, stamps included. The
+// endpoint answers the session's whole set: a session can hold several.
 export interface PendingApproval {
   sessionId: string
   approvalId: string
@@ -294,6 +301,8 @@ export interface PendingApproval {
   command: string
   level: 'read' | 'write'
   message?: string
+  createdAtMs?: number
+  expiresAtMs?: number
 }
 
 // Approvals (issue #116)

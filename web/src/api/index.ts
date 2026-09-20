@@ -48,20 +48,29 @@ export const api = {
       `/api/v1/sessions/${encodeURIComponent(sessionKey)}/turn`,
     ),
 
-  // HITL write approvals (issue #20 / #116)
-  postApproval: (sessionKey: string, decision: 'approve' | 'reject' | 'allow-always') =>
+  // HITL write approvals (issue #20 / #116 / #226). A decision names the
+  // approval it settles: a session can hold several pending approvals at once,
+  // so the id is what makes the answer land on the card the user clicked.
+  postApproval: (
+    sessionKey: string,
+    approvalId: string,
+    decision: 'approve' | 'reject' | 'allow-always',
+  ) =>
     apiFetch<{ approved: boolean; decision: string; approvalId?: string; allowlisted?: boolean }>(
       `/api/v1/sessions/${encodeURIComponent(sessionKey)}/approval`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({ approvalId, decision }),
       },
     ),
-  pendingApproval: (sessionKey: string) =>
-    apiFetch<{ approval: PendingApproval }>(
+  // The session's whole pending set, oldest first. 404 (an ApiError) means
+  // nothing is pending, which is the ordinary answer for a session that is not
+  // parked.
+  pendingApprovals: (sessionKey: string) =>
+    apiFetch<{ approvals: PendingApproval[] }>(
       `/api/v1/sessions/${encodeURIComponent(sessionKey)}/approval/pending`,
-    ).then((d) => d.approval),
+    ).then((d) => d.approvals ?? []),
 
   // Ask-user questions (issue #161): answer or dismiss a question the agent is
   // blocked on, and restore the card after a reload.

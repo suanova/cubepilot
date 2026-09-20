@@ -57,6 +57,11 @@ export interface BubbleConfirm {
   command: string
   level: string
   message?: string
+  // The gateway's stamps for this approval, in epoch milliseconds. A session can
+  // hold several pending approvals at once, and a card that came back from a
+  // reload has no arrival order to sit in, so createdAtMs is what orders them.
+  createdAtMs?: number
+  expiresAtMs?: number
   resolved?: boolean // decision sent
   approved?: boolean
   busy?: boolean
@@ -133,6 +138,15 @@ export interface BubbleMsg {
   // the tool it introduces asked for their approval. Rendered as a disclosure
   // under the reply -- the reply is what they need, not the archaeology.
   superseded?: string[]
+}
+
+// newBubbleConfirm builds the card state for one approval event or recovery
+// entry. The two carry the same fields by design -- a restored card renders
+// through the same code path as a live one -- so they are built the same way,
+// stamps included: without createdAtMs a restored card cannot be placed in the
+// order its siblings are in.
+export function newBubbleConfirm(c: BubbleConfirm): BubbleConfirm {
+  return { ...c }
 }
 
 // newBubbleQuestion builds the card state for one question event or recovery
@@ -295,7 +309,7 @@ export function statusLine(b: BubbleMsg): string {
   // cannot be waiting on a human, even when one of its cards has not been
   // settled by the stream yet (a transient the settled event closes).
   if (b.stopped) return 'Stopped'
-  if (b.kind === 'assistant' && openApproval(b)) return 'Awaiting your approval...'
+  if (b.kind === 'assistant' && openApprovals(b).length > 0) return 'Awaiting your approval...'
   if (b.kind === 'assistant' && openQuestions(b).length > 0) return 'Awaiting your answer...'
   const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
   switch (b.phase) {
@@ -347,7 +361,7 @@ export function headline(bubbles: BubbleMsg[]): TurnHeadline | null {
 // PendingCards is what the agent is blocked on, split by kind because the two
 // are answered by different controls.
 export interface PendingCards {
-  confirm?: BubbleConfirm
+  confirms: BubbleConfirm[]
   questions: BubbleQuestion[]
 }
 
@@ -356,30 +370,38 @@ export interface PendingCards {
 // They are collected across the whole thread rather than read off the newest
 // bubble, because a parked write can belong to a turn several bubbles back (a
 // redirect leaves the older turn's card live; a reload restores it as a bubble
-// of its own), and it is still waiting for the user either way. The platform
-// holds one pending approval per session, so the last one seen is the only one
-// there is; questions are a set, and the agent can be parked on several.
+// of its own), and it is still waiting for the user either way. Approvals are a
+// set like questions are: one turn can raise several, and each is answered on
+// its own, so the view keeps every one of them -- deduped by approval id, since
+// the same approval can reach this view twice (a live event and a restore read
+// are two independent accounts of it) -- and orders them the way the gateway
+// does, oldest first.
 export function pendingCards(bubbles: BubbleMsg[]): PendingCards {
-  let confirm: BubbleConfirm | undefined
+  const byID = new Map<string, BubbleConfirm>()
   const questions: BubbleQuestion[] = []
   for (const b of bubbles) {
     for (const item of b.items) {
-      if (item.kind === 'approval' && !item.confirm.resolved) confirm = item.confirm
+      if (item.kind === 'approval' && !item.confirm.resolved) {
+        byID.set(item.confirm.approvalId, item.confirm)
+      }
       if (item.kind === 'question' && !item.question.resolved) questions.push(item.question)
     }
   }
-  return { confirm, questions }
+  const confirms = [...byID.values()]
+  confirms.sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+  return { confirms, questions }
 }
 
-// openApproval is the write this turn is parked on, if any. The platform holds
-// one pending approval per session, so the last one seen is the only one there
-// is.
-export function openApproval(b: BubbleMsg): BubbleConfirm | undefined {
-  let found: BubbleConfirm | undefined
+// openApprovals are the writes this turn is parked on, oldest first. A turn can
+// raise several, and each is a card of its own: the platform no longer keeps one
+// per session, so neither does this view.
+export function openApprovals(b: BubbleMsg): BubbleConfirm[] {
+  const out: BubbleConfirm[] = []
   for (const item of b.items) {
-    if (item.kind === 'approval' && !item.confirm.resolved) found = item.confirm
+    if (item.kind === 'approval' && !item.confirm.resolved) out.push(item.confirm)
   }
-  return found
+  out.sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+  return out
 }
 
 // openQuestions is what this turn is still waiting to hear from the human. A

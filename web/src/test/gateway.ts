@@ -4,7 +4,7 @@
 // nothing here stands in for our own code. It answers the routes the Portal
 // calls, records what it was asked, and serves the turn route as a genuine SSE
 // body so the parser meets the same byte stream it meets in production.
-import type { HistoryMessage, PendingQuestion, SessionInfo, SSEEvent } from '@/api/types'
+import type { HistoryMessage, PendingApproval, PendingQuestion, SessionInfo, SSEEvent } from '@/api/types'
 
 export interface RecordedRequest {
   path: string
@@ -26,6 +26,10 @@ export interface FakeGatewayInit {
   // A session parked on a human answer: what `/question/pending` serves, so the
   // restore-on-open path can be exercised without a stream.
   pendingQuestions?: PendingQuestion[]
+  // A session parked on write approvals: what `/approval/pending` serves. A
+  // list, because one session can hold several pending approvals at once -- and
+  // restoring only the newest of them is the bug this shape exists to prevent.
+  pendingApprovals?: PendingApproval[]
   // A turn-status read that cannot answer (the API's 502), which is not the same
   // answer as "not running" and must not be rendered as one.
   turnCheckFails?: boolean
@@ -33,6 +37,10 @@ export interface FakeGatewayInit {
   // settled). The card stays pending and has to say why, so the explanation is
   // part of the card the user is still looking at.
   decisionFails?: boolean
+  // The status a refused decision answers with. 409 is the platform saying
+  // another client settled the approval first, which is an outcome rather than a
+  // failure: the card closes neutrally, with no decision attributed to the user.
+  decisionStatus?: number
   // What the attach stream answers instead of a stream: 409 when another tab
   // holds the session's, 500 for "streaming unsupported", and so on. Unset means
   // the request is served like the real one -- a stream while something is
@@ -137,6 +145,10 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   // answered is no longer pending on the gateway either -- and a fake that kept
   // serving it would answer a check the real one would not.
   const pendingQuestions = [...(init.pendingQuestions ?? [])]
+  // What `/approval/pending` serves, mutable for the same reason: an approval
+  // that was answered is no longer pending, and a fake still serving it would
+  // answer a check the real gateway would not.
+  const pendingApprovals = [...(init.pendingApprovals ?? [])]
   // A turn given by `setTurn` is consumed by the next POST, so a test that
   // sends twice gets the frames it queued rather than the previous turn's.
   let turnChunks: string[] | null = null
@@ -229,16 +241,26 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
           decisions.push(record)
           // The request was made either way, so it is recorded either way; only
           // the answer differs.
-          if (init.decisionFails) return json({ error: 'decision not recorded' }, 500)
+          if (init.decisionFails) return json({ error: 'decision not recorded' }, init.decisionStatus ?? 500)
           if (sub[2] === 'question') pendingQuestions.length = 0
-          return json({})
-        // Nothing parked answers 404, not an empty object: the client unwraps
-        // `d.approval` / `d.questions`, so a bare `{}` would hand the caller
-        // `undefined` and make it read a field off nothing. This is the shape
-        // the API documents (`no pending approval`), and the only one a caller
-        // can be written against.
+          if (sub[2] === 'approval') {
+            const settled = (record.body as { approvalId?: string })?.approvalId
+            const at = pendingApprovals.findIndex((a) => a.approvalId === settled)
+            if (at >= 0) pendingApprovals.splice(at, 1)
+          }
+          // A decision names its approval, and the answer says which one was
+          // settled -- the client checks the two agree, so a fake that did not
+          // echo the id would test a client that cannot.
+          return json({ approved: (record.body as { decision?: string })?.decision !== 'reject',
+                        decision: (record.body as { decision?: string })?.decision,
+                        approvalId: (record.body as { approvalId?: string })?.approvalId })
+        // Nothing parked answers 404, not an empty list: the client treats 404 as
+        // "no pending approval" and any other failure as an unreadable gateway,
+        // so a fake that answered `{approvals: []}` would collapse the two.
         case 'approval/pending':
-          return json({ error: 'no pending approval' }, 404)
+          return pendingApprovals.length
+            ? json({ approvals: pendingApprovals })
+            : json({ error: 'no pending approval' }, 404)
         case 'question/pending':
           return json({ questions: pendingQuestions })
         // The re-attach stream. Held open: a parked run produces nothing while
