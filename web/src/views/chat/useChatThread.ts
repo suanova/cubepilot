@@ -354,9 +354,10 @@ export function useChatThread({
       .catch(() => setAllowAlwaysOk(false))
   }
 
-  // After a reload mid-approval the platform still holds the pending write; this
-  // restores its confirmation card from the pending endpoint (issue #20). The
-  // result is discarded if the user switched sessions while it was in flight.
+  // After a reload mid-approval the gateway still holds the pending write; this
+  // restores its confirmation cards from the pending endpoint (issue #20), all of
+  // them (issue #226). The result is discarded if the user switched sessions
+  // while it was in flight.
   //
   // `attach` is what it does with a restored card: draw it and open the stream its
   // answer's output comes back on (the default), or draw it and open nothing. A
