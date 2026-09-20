@@ -30,7 +30,7 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/stream"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}

@@ -370,8 +370,9 @@ func TestApprovalResolveRecordsTheDecisionWithItsId(t *testing.T) {
 
 // TestApprovalSettleSkipsAnInFlightDecision pins the interaction between Stop
 // and a decision: an approval being decided right now is left to that decision,
-// which is about to publish its own outcome. The rest of the session's approvals
-// are settled.
+// which is about to publish its own outcome, and the rest of the session's
+// approvals are settled. The gateway resolve is held open so the interleaving is
+// forced rather than raced for.
 func TestApprovalSettleSkipsAnInFlightDecision(t *testing.T) {
 	gw := &gatewayStub{}
 	gw.set("alice",
@@ -382,6 +383,7 @@ func TestApprovalSettleSkipsAnInFlightDecision(t *testing.T) {
 	gw.blockResolve = release
 	hub, svc := serviceWithGateway(t, gw, nil)
 	rec := openStream(t, hub, "agent:main:conv-1")
+	srv := &Server{hub: hub, approvals: svc}
 
 	deciding := make(chan error, 1)
 	go func() {
@@ -394,19 +396,24 @@ func TestApprovalSettleSkipsAnInFlightDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settled := svc.SettleApprovals(captured)
-	if len(settled) != 1 || settled[0].ApprovalID != "appr-2" {
-		t.Fatalf("settled = %+v, want only the approval nobody is deciding", settled)
+	srv.settlePendingForSession(context.Background(), "alice", "agent:main:conv-1", captured)
+
+	// The stop settles the approval nobody is deciding, and only that one: a
+	// neutral "stopped" published under the in-flight decision would sit on its
+	// card until the decision's own resolution landed.
+	body := rec.Body.String()
+	if !strings.Contains(body, `"callId":"appr-2"`) {
+		t.Fatalf("the stopped turn did not settle the approval nobody is deciding: %q", body)
 	}
-	for _, p := range settled {
-		svc.publishResolved(p, nil)
+	if strings.Contains(body, `"callId":"appr-1"`) {
+		t.Fatalf("the stop published over a decision in flight: %q", body)
 	}
 
 	close(release)
 	if err := <-deciding; err != nil {
 		t.Fatalf("decision: %v", err)
 	}
-	body := rec.Body.String()
+	body = rec.Body.String()
 	if !strings.Contains(body, `"callId":"appr-1"`) || !strings.Contains(body, `"approved":true`) {
 		t.Errorf("the decision's own resolution is missing: %q", body)
 	}

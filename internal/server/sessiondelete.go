@@ -96,7 +96,7 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	// so extra segments are absorbed into it exactly as the subresource routes
 	// absorb them (see handleSessionSubresource).
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, ""))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}

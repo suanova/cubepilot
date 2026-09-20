@@ -102,7 +102,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/abort"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
@@ -358,7 +358,7 @@ func (s *Server) handleTurnStatus(w http.ResponseWriter, r *http.Request) {
 
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/turn"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}

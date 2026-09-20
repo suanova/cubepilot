@@ -45,16 +45,6 @@ type fakeGatewayClient struct {
 	guardErr     error
 	initialAllow []ws.AllowlistEntry
 
-	// exec approvals (issue #226): the pending set the fake's gateway holds,
-	// which is what exec.approval.list answers with.
-	pendingApprovals []ws.ApprovalRequested
-	listApprovalsErr error
-	resolveErr       error
-	// onResolve runs inside ResolveApproval, before the decision is recorded.
-	// It is where a test stages what the gateway does *while* a decision is in
-	// flight -- expiring the approval, or resolving it out from under the caller.
-	onResolve func(id string)
-
 	// live-tool channel (issue #130)
 	onEvent      func(evName string, payload []byte)
 	subscribes   []string
@@ -294,30 +284,16 @@ func (f *fakeGatewayClient) SetApprovalsPolicy(ctx context.Context, file ws.Appr
 }
 func (f *fakeGatewayClient) ResolveApproval(ctx context.Context, id, decision string) error {
 	f.mu.Lock()
-	if f.onResolve != nil {
-		hook := f.onResolve
-		f.mu.Unlock()
-		hook(id)
-		f.mu.Lock()
-	}
 	defer f.mu.Unlock()
-	if f.resolveErr != nil {
-		return f.resolveErr
-	}
 	f.resolves = append(f.resolves, id+"|"+decision)
 	return nil
 }
 
-// ListApprovals answers the pending set the fixture holds, in the order the
-// fixture set it: the gateway's own list order is what a session's cards are
-// restored in, so the fake must not reorder it.
+// ListApprovals answers "nothing pending": this fake is the conn manager's stub
+// for tests of everything else, and a test that wants a pending approval seeds
+// the ApprovalGateway it wires into the service (see gatewayStub).
 func (f *fakeGatewayClient) ListApprovals(ctx context.Context) ([]ws.ApprovalRequested, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.listApprovalsErr != nil {
-		return nil, f.listApprovalsErr
-	}
-	return f.pendingApprovals, nil
+	return nil, nil
 }
 func (f *fakeGatewayClient) OnApprovalResolved(cb func(ws.ApprovalResolved)) {
 	f.mu.Lock()

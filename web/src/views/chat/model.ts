@@ -140,13 +140,32 @@ export interface BubbleMsg {
   superseded?: string[]
 }
 
-// newBubbleConfirm builds the card state for one approval event or recovery
-// entry. The two carry the same fields by design -- a restored card renders
-// through the same code path as a live one -- so they are built the same way,
-// stamps included: without createdAtMs a restored card cannot be placed in the
-// order its siblings are in.
-export function newBubbleConfirm(c: BubbleConfirm): BubbleConfirm {
-  return { ...c }
+// newBubbleConfirm builds the card state for one approval, from whichever wire
+// shape described it -- the approval_pending event or a restored entry from the
+// pending endpoint. Both carry these fields and both render through the same
+// path, so the projection lives here rather than twice at the call sites, stamps
+// included: without createdAtMs a restored card cannot be placed in the order
+// its siblings are in.
+export function newBubbleConfirm(
+  sessionId: string,
+  wire: {
+    approvalId: string
+    command: string
+    level: string
+    message?: string
+    createdAtMs?: number
+    expiresAtMs?: number
+  },
+): BubbleConfirm {
+  return {
+    sessionId,
+    approvalId: wire.approvalId,
+    command: wire.command,
+    level: wire.level,
+    message: wire.message,
+    createdAtMs: wire.createdAtMs,
+    expiresAtMs: wire.expiresAtMs,
+  }
 }
 
 // newBubbleQuestion builds the card state for one question event or recovery
@@ -309,7 +328,7 @@ export function statusLine(b: BubbleMsg): string {
   // cannot be waiting on a human, even when one of its cards has not been
   // settled by the stream yet (a transient the settled event closes).
   if (b.stopped) return 'Stopped'
-  if (b.kind === 'assistant' && openApprovals(b).length > 0) return 'Awaiting your approval...'
+  if (b.kind === 'assistant' && hasOpenApproval(b)) return 'Awaiting your approval...'
   if (b.kind === 'assistant' && openQuestions(b).length > 0) return 'Awaiting your answer...'
   const secs = b.phaseAt ? Math.max(0, Math.round((Date.now() - b.phaseAt) / 1000)) : 0
   switch (b.phase) {
@@ -380,16 +399,23 @@ export function pendingCards(bubbles: BubbleMsg[]): PendingCards {
   const byID = new Map<string, BubbleConfirm>()
   const questions: BubbleQuestion[] = []
   for (const b of bubbles) {
+    for (const c of openApprovals(b)) byID.set(c.approvalId, c)
     for (const item of b.items) {
-      if (item.kind === 'approval' && !item.confirm.resolved) {
-        byID.set(item.confirm.approvalId, item.confirm)
-      }
       if (item.kind === 'question' && !item.question.resolved) questions.push(item.question)
     }
   }
   const confirms = [...byID.values()]
-  confirms.sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+  confirms.sort(byCreatedAt)
   return { confirms, questions }
+}
+
+// byCreatedAt orders a session's cards the way the gateway lists them: oldest
+// first. It is one comparator rather than one per caller because the dock and the
+// status line must not disagree about which card is which.
+export function byCreatedAt(a: BubbleConfirm, b: BubbleConfirm): number {
+  // An unstamped card (an event from a server that sends none) sorts first
+  // rather than nowhere: it is the older convention, not a newer arrival.
+  return (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0)
 }
 
 // openApprovals are the writes this turn is parked on, oldest first. A turn can
@@ -400,8 +426,16 @@ export function openApprovals(b: BubbleMsg): BubbleConfirm[] {
   for (const item of b.items) {
     if (item.kind === 'approval' && !item.confirm.resolved) out.push(item.confirm)
   }
-  out.sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+  out.sort(byCreatedAt)
   return out
+}
+
+// hasOpenApproval reports whether this turn is parked on a write at all. The
+// status line asks it of every bubble on every render -- including each streamed
+// token -- so it answers on the first match instead of building and sorting the
+// list a yes/no question does not need.
+export function hasOpenApproval(b: BubbleMsg): boolean {
+  return b.items.some((i) => i.kind === 'approval' && !i.confirm.resolved)
 }
 
 // openQuestions is what this turn is still waiting to hear from the human. A

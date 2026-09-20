@@ -203,7 +203,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/question"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
@@ -238,7 +238,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	case err != nil:
-		s.writeQuestionGatewayError(w, user, "question "+body.ID, err)
+		s.writeGatewayError(w, user, "question "+body.ID, err, questionErrorStatus)
 		return
 	}
 	if canonicalSessionKey(rec.SessionKey) != sessionKey {
@@ -257,7 +257,7 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		err = s.gatewayConns.ResolveQuestion(ctx, user, body.ID, body.Answers)
 	}
 	if err != nil {
-		s.writeQuestionGatewayError(w, user, "question "+body.ID, err)
+		s.writeGatewayError(w, user, "question "+body.ID, err, questionErrorStatus)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"questionId": body.ID, "cancelled": body.Cancel})
@@ -275,7 +275,7 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/question/pending"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
@@ -319,18 +319,6 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"questions": out})
-}
-
-// writeQuestionGatewayError maps a gateway failure onto the Portal status. The
-// structured reason is what distinguishes a question that expired between paint
-// and click (409) from an answer the gateway rejected (400) or a transport
-// failure (502).
-func (s *Server) writeQuestionGatewayError(w http.ResponseWriter, user, what string, err error) {
-	status := questionErrorStatus(ws.ReasonOf(err))
-	if status == http.StatusBadGateway {
-		s.logf("%s %s: %v", what, user, err)
-	}
-	writeJSON(w, status, map[string]any{"error": err.Error()})
 }
 
 // questionErrorStatus maps a gateway question error reason onto the Portal

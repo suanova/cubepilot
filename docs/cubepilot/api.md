@@ -181,6 +181,7 @@ X-CubePilot-User: <用户名>
 | **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
 | **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
+| **409** | `a decision for this approval is already in flight` / 审批已被别处结掉 | 这张卡已经不用你决定了（另一处已结算或过期）。关掉卡片，**不要重试**；换一张卡再决定 |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
@@ -501,7 +502,7 @@ GET /api/v1/sessions/{key}/approval/pending
 // 404 {"error":"no pending approval"} → 静默忽略
 // 200：{"approvals":[{"sessionId","approvalId","tool","command","level","message",
 //                     "createdAtMs","expiresAtMs"}]}
-// 其它错误码（如 502）→ 读不到网关，**不能**当成「没有未决项」
+// 其它错误码（如 502）-> 读不到网关，**不能**当成「没有未决项」
 ```
 
 **失败关闭语义**：`approvalPolicy` 要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。

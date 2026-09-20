@@ -31,7 +31,7 @@ func (s *Server) relayApprovalResolved(user string, ev ws.ApprovalResolved) {
 		return
 	}
 	sessionKey := canonicalSessionKey(ev.Request.SessionKey)
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		// The event cannot be addressed. The card, if one is on screen, stays
 		// until the next pending read -- which asks the gateway, and so cannot
 		// disagree with it.
@@ -80,7 +80,15 @@ func (s *Server) settlePendingForSession(ctx context.Context, user, sessionKey s
 	// abort handler's own fixture) leaves it unset. The question half below is
 	// guarded the same way.
 	if s.approvals != nil {
-		for _, p := range s.approvals.SettleApprovals(captured) {
+		for _, p := range captured {
+			// An approval a decision is being written for right now is left to
+			// that decision. It owns the outcome: a neutral "stopped" published
+			// under it would sit on the card until the decision's own resolution
+			// landed a moment later, and the human would watch a card they had
+			// just answered change its mind.
+			if s.approvals.deciding(p.ApprovalID) {
+				continue
+			}
 			// The record's own key addresses the stream, exactly as
 			// ApprovalService.Resolve does -- a publish that follows the record
 			// rather than the caller cannot drift from it. approved is nil: the

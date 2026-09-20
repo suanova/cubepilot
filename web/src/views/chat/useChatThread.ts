@@ -443,18 +443,7 @@ export function useChatThread({
       if (confirmBubble.items.some((i) => i.kind === 'approval' && i.confirm.approvalId === p.approvalId)) {
         continue
       }
-      confirmBubble.items.push({
-        kind: 'approval',
-        confirm: newBubbleConfirm({
-          sessionId: p.sessionId,
-          approvalId: p.approvalId,
-          command: p.command,
-          level: p.level,
-          message: p.message,
-          createdAtMs: p.createdAtMs,
-          expiresAtMs: p.expiresAtMs,
-        }),
-      })
+      confirmBubble.items.push({ kind: 'approval', confirm: newBubbleConfirm(p.sessionId, p) })
     }
     setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, confirmBubble])
     syncAllowAlways()
@@ -965,8 +954,7 @@ export function useChatThread({
       setPhase(bubble, 'tools')
       bubble.items.push({
         kind: 'approval',
-        confirm: newBubbleConfirm({
-          sessionId: ev.sessionId || currentSessionId || '',
+        confirm: newBubbleConfirm(ev.sessionId || currentSessionId || '', {
           approvalId,
           command: ev.command || '',
           level: ev.level || 'write',

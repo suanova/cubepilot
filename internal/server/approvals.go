@@ -161,7 +161,13 @@ func (s *ApprovalService) RelayRequested(user string, ev ws.ApprovalRequested) {
 // There is no expiry filter to apply: exec.approval.list expires due records
 // before it answers, so everything it returns is answerable. (The question path
 // needs that filter because question.list does not.)
+//
+// The read is bounded by approvalGatewayTimeout. Callers pass a request context,
+// and the API server sets no write timeout, so a gateway connection that is open
+// but wedged would otherwise hold the request open for as long as it likes.
 func (s *ApprovalService) Pending(ctx context.Context, user, sessionKey string) ([]pendingApproval, error) {
+	ctx, cancel := context.WithTimeout(ctx, approvalGatewayTimeout)
+	defer cancel()
 	list, err := s.list(ctx, user)
 	if err != nil {
 		return nil, err
@@ -184,32 +190,36 @@ func (s *ApprovalService) Pending(ctx context.Context, user, sessionKey string) 
 // The approval is named by id, and that is the point of the signature: a session
 // can hold several pending approvals at once, so a decision addressed by session
 // settles whichever record the platform looked up rather than the one the human
-// clicked. The id is verified against the gateway first -- still pending, and
-// this session's -- which is also how the record's own command is recovered for
-// the allow-always rule, and how a decision works after a restart, when this
-// process holds nothing at all.
+// clicked. The id is verified against the gateway before anything is written --
+// still pending, and this session's -- which is also how the record's own command
+// is recovered for the allow-always rule, and how a decision works after a
+// restart, when this process holds nothing at all.
+//
+// The whole decision -- the read that verifies it and the write that settles it --
+// runs under one bound. Both are gateway round trips on the caller's request
+// context, and the API server sets no write timeout, so a connection that is open
+// but wedged would otherwise park the request (and its goroutine) for good.
 func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approvalID, decision string) (pendingApproval, error) {
 	if decision != "approve" && decision != "reject" && decision != "allow-always" {
 		return pendingApproval{}, fmt.Errorf("decision must be approve, reject or allow-always")
 	}
-	list, err := s.list(ctx, user)
-	if err != nil {
-		return pendingApproval{}, err
-	}
-	p, ok := findApproval(list, sessionKey, approvalID)
-	if !ok {
-		return pendingApproval{}, errNoPending
-	}
-	// Reserve before the (slow) gateway round trip so two decisions on one id
-	// cannot both reach the gateway. Released on every exit path, so a decision
-	// that failed is immediately retryable.
+	// Reserve first: a second decision on one id -- a double click, two tabs --
+	// is refused here, before it spends a gateway read of its own.
 	if err := s.reserve(approvalID); err != nil {
 		return pendingApproval{}, err
 	}
 	defer s.release(approvalID)
 
-	ctx, cancel := context.WithTimeout(ctx, approvalResolveTimeout)
+	ctx, cancel := context.WithTimeout(ctx, approvalGatewayTimeout)
 	defer cancel()
+	list, err := s.Pending(ctx, user, sessionKey)
+	if err != nil {
+		return pendingApproval{}, err
+	}
+	p, ok := findApproval(list, approvalID)
+	if !ok {
+		return pendingApproval{}, errNoPending
+	}
 	approved := decision == "approve" || decision == "allow-always"
 	gatewayDecision := "reject"
 	if approved {
@@ -223,21 +233,16 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approva
 	return p, nil
 }
 
-// findApproval returns the named approval from a gateway list, provided it is
-// still pending and belongs to the session the request named. The session check
-// is what keeps an id obtained anywhere -- another session's card, a log line --
-// from being settleable through an arbitrary session path. An id that belongs
-// elsewhere is reported as not found rather than as a refusal, so the answer says
-// nothing about approvals this caller was never shown.
-func findApproval(list []ws.ApprovalRequested, sessionKey, approvalID string) (pendingApproval, bool) {
-	for _, ev := range list {
-		if ev.ID != approvalID {
-			continue
+// findApproval returns the named approval from the session's pending set. The id
+// is looked up inside that set rather than beside it, so the session binding is
+// the same rule everywhere: an id that belongs to another conversation is simply
+// not in this one's set, and is reported as not found -- the answer says nothing
+// about approvals this caller was never shown.
+func findApproval(list []pendingApproval, approvalID string) (pendingApproval, bool) {
+	for _, p := range list {
+		if p.ApprovalID == approvalID {
+			return p, true
 		}
-		if canonicalSessionKey(ev.Request.SessionKey) != sessionKey {
-			return pendingApproval{}, false
-		}
-		return projectApproval(ev), true
 	}
 	return pendingApproval{}, false
 }
@@ -285,33 +290,6 @@ func (s *ApprovalService) publishResolved(p pendingApproval, approved *bool) {
 	}
 }
 
-// SettleApprovals reports which of the approvals a Stop captured are the
-// caller's to publish as settled.
-//
-// The captured list comes from the caller because it has to: a Stop aborts the
-// run, the gateway cancels the approvals bound to it, and by the time the run is
-// provably gone there is nothing left to read. Capturing before the abort is the
-// only way this can still hand the browser, while its stream is open, the events
-// that drop its cards.
-//
-// An id a decision is being written for right now is left out. That decision
-// owns the outcome: a neutral "stopped" published under it would sit on the card
-// until the decision's own resolution landed a moment later, and the human would
-// watch a card they had just answered change its mind.
-//
-// Nothing is recorded for a settled approval: a stopped turn is neither an
-// approval nor a rejection, and the audit must not attribute one to the human.
-func (s *ApprovalService) SettleApprovals(captured []pendingApproval) []pendingApproval {
-	out := make([]pendingApproval, 0, len(captured))
-	for _, p := range captured {
-		if s.deciding(p.ApprovalID) {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
 // recordDecision writes the human's decision to the audit ledger. The approval
 // id is part of the entry: without it a ledger with two approvals and one
 // decision cannot say which of them was answered, and the question "what did
@@ -337,8 +315,11 @@ func (s *ApprovalService) recordDecision(user string, p pendingApproval, approve
 	})
 }
 
-// approvalResolveTimeout bounds one decision's gateway round trip.
-const approvalResolveTimeout = 15 * time.Second
+// approvalGatewayTimeout bounds one approval round trip -- a pending read, or a
+// decision. It covers the whole operation the caller asked for, not one hop of
+// it: a decision reads the gateway before it writes to it, and the read is what
+// verifies that the approval is still the one the human clicked.
+const approvalGatewayTimeout = 15 * time.Second
 
 var (
 	errNoPending = errors.New("no pending approval for this session")
@@ -356,7 +337,7 @@ var (
 
 // --- HTTP handlers -----------------------------------------------------------
 
-// handleApproval serves POST /api/sessions/{key}/approval — the human's decision
+// handleApproval serves POST /api/sessions/{key}/approval -- the human's decision
 // for one pending write, named by its approval id.
 func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -365,7 +346,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
@@ -401,7 +382,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNoApprovalChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "approval channel unavailable"})
 	case err != nil:
-		s.writeApprovalGatewayError(w, user, "approval "+body.ApprovalID, err)
+		s.writeGatewayError(w, user, "approval "+body.ApprovalID, err, approvalErrorStatus)
 	default:
 		approved := body.Decision != "reject"
 		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
@@ -424,18 +405,6 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
-}
-
-// writeApprovalGatewayError maps a gateway failure onto the Portal status. The
-// structured reason is what separates an approval that expired (or was resolved
-// elsewhere) between the card being painted and the click -- an outcome, 404/409
-// -- from a transport failure, which is a 502 the caller may retry.
-func (s *Server) writeApprovalGatewayError(w http.ResponseWriter, user, what string, err error) {
-	status := approvalErrorStatus(ws.ReasonOf(err))
-	if status == http.StatusBadGateway {
-		s.logf("%s %s: %v", what, user, err)
-	}
-	writeJSON(w, status, map[string]any{"error": err.Error()})
 }
 
 // approvalErrorStatus maps a gateway approval error reason onto the Portal
@@ -484,7 +453,7 @@ func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.userOf(r)
 	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval/pending"))
-	if sessionKey == "" || sessionKey == "agent:main:" {
+	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}

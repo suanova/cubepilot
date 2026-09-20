@@ -13,6 +13,7 @@ import (
 	"github.com/suanova/cubepilot/internal/audit"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/openclaw"
+	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
 
@@ -30,6 +31,16 @@ func canonicalSessionKey(key string) string {
 		return key
 	}
 	return "agent:" + agentMainKey + ":" + key
+}
+
+// hasSessionKey reports whether a canonicalised key names a conversation at all.
+//
+// It exists so the subresource handlers test one thing instead of spelling out
+// what canonicalSessionKey("") happens to produce: that sentinel is a consequence
+// of the canonical form, and a handler that hard-codes it keeps passing when the
+// form changes -- with an empty key, which addresses no conversation.
+func hasSessionKey(key string) bool {
+	return key != "" && key != "agent:"+agentMainKey+":"
 }
 
 // userOf resolves the operator identity for a request (phase one has no auth;
@@ -317,6 +328,23 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
 // forcing it to handle two error formats for one status code.
 func writeNotFound(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusNotFound, map[string]any{"error": msg})
+}
+
+// writeGatewayError maps a failed gateway call onto the Portal status, through
+// the caller's own reason table.
+//
+// The structured reason is what separates an outcome from a failure: an approval
+// or question that expired, was answered elsewhere, or was rejected as
+// unanswerable is something the client acts on (close the card, re-sync it),
+// while a transport failure is a 502 it may retry. Only the table differs between
+// the two HITL surfaces, so only the table is passed in -- the mapping, the
+// log-only-on-502 rule and the response shape are the same call and live here.
+func (s *Server) writeGatewayError(w http.ResponseWriter, user, what string, err error, statusFor func(reason string) int) {
+	status := statusFor(ws.ReasonOf(err))
+	if status == http.StatusBadGateway {
+		s.logf("%s %s: %v", what, user, err)
+	}
+	writeJSON(w, status, map[string]any{"error": err.Error()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
