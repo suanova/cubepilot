@@ -41,7 +41,7 @@
    在环境下拉里**新建一个环境**（名字建议 `local-<你的名字>`），值填在里面，然后选中
    它。个人环境文件已被 `.gitignore` 忽略，随便改都不影响仓库。
 
-   ⚠️ 新建时**别用带空格的名字** —— Bruno 识别不了（[usebruno/bruno#294](https://github.com/usebruno/bruno/issues/294)）。
+   ⚠️ 新建时**别用带空格的名字** —— Bruno 识别不了（[usebruno/bruno 上游的对应记录](https://github.com/usebruno/bruno/issues/294)）。
    另外它在 UI 里不一定立刻出现在下拉里，重开集合或重启应用即可。
 
    要覆盖的变量和 `local.bru` 一样：`baseUrl` / `user` / `llmName` / `llmModel` /
@@ -91,7 +91,7 @@ bru run 1-read --env-var baseUrl=https://cubepilot.example.com   # 临时改，�
 2. **SSE 必须关代理缓冲。** 远端 ingress / nginx 少了
    `proxy_buffering off`（参考 `web/nginx.conf`），`3-chat/01-send-message`
    会表现为「卡很久、然后一次性全出来」—— 流式效果没了。
-   ≥ `api.md` §1 对反向代理有明确要求。
+   ≥ `api.md` 第 1 节对反向代理有明确要求。
 
 3. **远端必须是含 `/api/v1` 的新代码。** 判别方法：打
    `/api/v1/agent/status`，返回 404 就是旧版（本仓库的 kind 部署就经历过这一步）。
@@ -167,7 +167,7 @@ bru run 4-tasks --env local --reporter-html out.html  # 出报告
 所以你看到的是协议本身。这是好事：能看见 `text_replace` 之类的细节，
 但帧一多就糊。
 
-**读法**：每帧看 `data` 里的 `type`，语义见 `api.md` §7。真正的要点只有两条：
+**读法**：每帧看 `data` 里的 `type`，语义见 `api.md` 第 7 节。真正的要点只有两条：
 
 - `message_delta` 是**追加**（`text += delta`）
 - `text_replace` 是**替换**（`text = delta`，整段快照）
@@ -201,11 +201,8 @@ and to answer with only a number. Let me run kubectl.The answer is 7.
 
 这些是**后端**的 bug,不是集合的问题 —— 集合刻意把它们暴露出来:
 
-- **`3-chat/06-submit-approval` 必须用 canonical 形式的 key**。
-  用你传给 `/messages` 的短 key 会 404,而 `/turn` / `/abort` 两个端点却接受短 key
-  —— 契约不一致。([issue #180](https://github.com/suanova/cubepilot/issues/180))
 - **`1-read/10-audit`**:被**拒绝**的写操作仍会留下一条 `status: "executed"`
-  —— 同一个命令可能出现两条互相矛盾的记录。(同上)
+  —— 同一个命令可能出现两条互相矛盾的记录。
 
 ## 清理
 

@@ -29,7 +29,8 @@ Keeping the entire codebase in English with ASCII punctuation keeps the project 
   - **Rendered Helm manifests.** Helm preserves `#` comments, so comments anywhere under `deploy/charts/cubepilot-chart/` are visible in `helm template` and `helm get manifest` output.
   - **Embedded skills.** `internal/skill/skills/*/SKILL.md` is baked into the agent image, read by the agent, and listed in the skill catalog.
   - **`README.md`**, the repository's public front page.
-- Everywhere else - Go comments that never reach a schema, tests, `docs/`, the `bruno` collection - internal references are fine, and belong there rather than in a shipped artifact.
+  - **Reader-facing docs.** `docs/cubepilot/api.md` and `docs/cubepilot/api-conventions.md` are the contract for anyone integrating against the API, and `bruno/` is the walkthrough they follow. They number their own sections, so `§N.N` cross-references are out here too - write "第 N 节" or name the heading instead.
+- Everywhere else - Go comments that never reach a schema, tests, and the working documents (`docs/cubepilot/cubepilot-design.md`, `implementation-status.md`, `docs/notes/`, `docs/superpowers/`) - internal references are fine, and belong there rather than in a shipped artifact.
 - `internal/api/v1alpha1/userfacing_text_test.go` enforces this over the artifacts above; add to its `shippedText` list when a new user-visible artifact appears.
 
 ## Working With This Repo

@@ -204,8 +204,7 @@ question_resolved {"message":"answered"} → … → message_done
    `{{sessionId}}` 被 `01-send-message` 的后置脚本设成服务端返回的
    `agent:main:conv-...`，是对的；手填短形式（`conv-...`）现在也能用 ——
    `/approval`、`/question`、`/turn`、`/abort` 都会先规范化再比对
-   （历史遗留的不一致见 [issue #180](https://github.com/suanova/cubepilot/issues/180)，
-   其中 `/approval` 这一半已经修掉）。
+   （历史遗留的不一致，其中 `/approval` 这一半已经修掉）。
 
 2. **同一个会话同时只能有一个回合。** 主流还开着时再发一条 → **409**，
    不要重试；先 `/abort` 或等它结束。

@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,7 +18,9 @@ import (
 //     `helm get manifest` output;
 //   - the embedded SKILL.md files are baked into the agent image and read by the
 //     agent (and listed in the skill catalog);
-//   - README.md is the repository's public front page.
+//   - README.md is the repository's public front page;
+//   - api.md and api-conventions.md are the contract for anyone integrating
+//     against the API, and the bruno collection is the walkthrough they follow.
 //
 // This package's own doc comments are covered through the generated CRD YAML
 // rather than directly: the YAML is what actually ships, and scanning it also
@@ -25,19 +28,28 @@ import (
 // struct-typed field or on a slice item type is published as the field's
 // description.
 //
-// The generated internal/skill/skills/cubestack-platform/crd-reference.md is
-// deliberately not scanned: it mirrors the vendored CubeStack CRDs, whose
-// descriptions this repo does not author.
+// Deliberately not scanned:
+//
+//   - the generated internal/skill/skills/cubestack-platform/crd-reference.md,
+//     which mirrors the vendored CubeStack CRDs whose descriptions this repo
+//     does not author;
+//   - docs/cubepilot/cubepilot-design.md, implementation-status.md, docs/notes/
+//     and docs/superpowers/, which are working documents (design, status, review
+//     notes, specs and plans) rather than pages a user of the product reads.
 var shippedText = []struct {
-	name string
-	glob string
+	name      string
+	glob      string
+	recursive bool
 }{
-	{"crd-schemas", "config/crd/bases/*.yaml"},
-	{"chart-crd-schemas", "deploy/charts/cubepilot-chart/crds/*.yaml"},
-	{"chart-manifests", "deploy/charts/cubepilot-chart/templates/*.yaml"},
-	{"chart-values", "deploy/charts/cubepilot-chart/values.yaml"},
-	{"embedded-skills", "internal/skill/skills/*/SKILL.md"},
-	{"readme", "README.md"},
+	{"crd-schemas", "config/crd/bases/*.yaml", false},
+	{"chart-crd-schemas", "deploy/charts/cubepilot-chart/crds/*.yaml", false},
+	{"chart-manifests", "deploy/charts/cubepilot-chart/templates/*.yaml", false},
+	{"chart-values", "deploy/charts/cubepilot-chart/values.yaml", false},
+	{"embedded-skills", "internal/skill/skills/*/SKILL.md", false},
+	{"readme", "README.md", false},
+	{"api-doc", "docs/cubepilot/api.md", false},
+	{"api-conventions", "docs/cubepilot/api-conventions.md", false},
+	{"bruno-collection", "bruno", true},
 }
 
 // internalRefs are the internal-bookkeeping shapes that must not reach a user:
@@ -65,9 +77,9 @@ func TestShippedTextHasNoInternalReferences(t *testing.T) {
 
 	for _, artifact := range shippedText {
 		t.Run(artifact.name, func(t *testing.T) {
-			paths, err := filepath.Glob(filepath.Join(root, artifact.glob))
+			paths, err := artifactFiles(root, artifact.glob, artifact.recursive)
 			if err != nil {
-				t.Fatalf("glob %s: %v", artifact.glob, err)
+				t.Fatalf("collect %s: %v", artifact.glob, err)
 			}
 			// A guard that scans nothing passes forever; fail loudly instead.
 			if len(paths) == 0 {
@@ -90,4 +102,24 @@ func TestShippedTextHasNoInternalReferences(t *testing.T) {
 			}
 		})
 	}
+}
+
+// artifactFiles resolves a shipped-text entry to files: a recursive walk of a
+// directory, or a glob (which may resolve to a single literal path).
+func artifactFiles(root, pattern string, recursive bool) ([]string, error) {
+	target := filepath.Join(root, pattern)
+	if !recursive {
+		return filepath.Glob(target)
+	}
+	var paths []string
+	err := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	return paths, err
 }
