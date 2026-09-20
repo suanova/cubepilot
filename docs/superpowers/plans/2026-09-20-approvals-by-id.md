@@ -201,8 +201,10 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approva
 func (s *ApprovalService) SettleApprovals(captured []pendingApproval) []pendingApproval
 ```
 
-Errors: `errNoPending` (404), `errApprovalInFlight` (409), `errNoApprovalChannel` (503),
-`errNoGateway` (approval channel absent -- folded into `errNoApprovalChannel`).
+Errors: `errNoPending` (404), `errNoApprovalChannel` (503). A competing decision on
+one id waits for the one in flight rather than being refused, so there is no
+conflict error: it re-reads the gateway afterwards and answers with what is
+actually left.
 
 - [ ] Test: `Pending` filters the gateway list to the session, canonicalises the
       record's key, orders oldest first and drops nothing else.
@@ -212,7 +214,8 @@ Errors: `errNoPending` (404), `errApprovalInFlight` (409), `errNoApprovalChannel
 - [ ] Test: `Resolve` refuses an id belonging to another session (404) and an id the
       gateway no longer lists (404).
 - [ ] Test: two concurrent `Resolve` calls on one id -- one reaches the gateway, the
-      other gets `errApprovalInFlight`.
+      other waits and then answers from the gateway's state (settled -> not found,
+      failed -> it settles the approval itself).
 - [ ] Test: a failed gateway resolve returns the error and publishes nothing, and
       the id is not left in flight (a retry works).
 - [ ] Test: `SettleApprovals` returns every captured id except one being decided.
@@ -307,5 +310,5 @@ Errors: `errNoPending` (404), `errApprovalInFlight` (409), `errNoApprovalChannel
 | Same, with one rejected | Task 3 |
 | Restart with an approval pending, then approve it | Task 3 + Task 5 (no platform state is consulted) |
 | Stop a turn holding two approvals -- both cards go, neither stays clickable | Task 5 |
-| Double-click, and two tabs on one id -- one decision, no double resolve | Task 3 (`inflight`) |
+| Double-click, and two tabs on one id -- one decision, no double resolve | Task 3 (`inflight`: wait, then re-read) |
 | The gateway expiring an approval while a resolve is in flight | Task 4 (`APPROVAL_ALREADY_RESOLVED` -> 409) |

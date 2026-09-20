@@ -85,6 +85,17 @@ func (g *gatewayStub) ResolveApproval(ctx context.Context, user, approvalID, dec
 		return g.resolveErr
 	}
 	g.calls = append(g.calls, user+"|"+approvalID+"|"+decision)
+	// A resolved approval is no longer pending: the real gateway drops it from
+	// exec.approval.list, and a competing decision has to see that.
+	if list := g.byUser[user]; list != nil {
+		kept := list[:0]
+		for _, ev := range list {
+			if ev.ID != approvalID {
+				kept = append(kept, ev)
+			}
+		}
+		g.byUser[user] = kept
+	}
 	return nil
 }
 
@@ -230,13 +241,13 @@ func TestApprovalResolveSettlesTheClickedId(t *testing.T) {
 				t.Errorf("the other approval's card was settled too: %q", body)
 			}
 			// The other approval is still the gateway's to answer, so it is still
-			// the session's to show.
+			// the session's to show -- and the settled one is gone.
 			list, err := svc.Pending(context.Background(), "alice", "agent:main:conv-1")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list) != 2 {
-				t.Errorf("pending after the decision = %+v: the fake gateway holds both, so both must be reported", list)
+			if len(list) != 1 || list[0].ApprovalID != "appr-new" {
+				t.Errorf("pending after the decision = %+v, want only appr-new", list)
 			}
 		})
 	}
@@ -276,10 +287,11 @@ func TestApprovalResolveRefusesAnUnknownId(t *testing.T) {
 }
 
 // TestApprovalResolveSerializesConcurrentDecisions pins the one piece of local
-// state left: while a decision for an id is being written, a second decision for
-// it is refused rather than sent. Two tabs, or a double click, must not produce
-// two resolves -- the second would fail against the gateway at best, and race
-// the first at worst.
+// state left, and what a competing decision is told. Two tabs, or a double click,
+// must not produce two resolves: the second waits for the first and then asks the
+// gateway what is left. Here the first settled the approval, so the second finds
+// nothing pending -- the truth -- rather than a conflict claiming an outcome
+// before there was one.
 func TestApprovalResolveSerializesConcurrentDecisions(t *testing.T) {
 	gw := &gatewayStub{}
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
@@ -294,13 +306,25 @@ func TestApprovalResolveSerializesConcurrentDecisions(t *testing.T) {
 	}()
 	waitFor(t, "the decision to reach the gateway", func() bool { return svc.deciding("appr-1") })
 
-	if _, err := svc.Resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "reject"); !errors.Is(err, errApprovalInFlight) {
-		t.Fatalf("second decision = %v, want errApprovalInFlight", err)
+	second := make(chan error, 1)
+	go func() {
+		_, err := svc.Resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "reject")
+		second <- err
+	}()
+	// The second decision is parked on the reservation, not answered with a
+	// conflict: nothing has been decided yet, so there is no outcome to report.
+	select {
+	case err := <-second:
+		t.Fatalf("the competing decision was answered before the first finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	close(release)
 	if err := <-first; err != nil {
 		t.Fatalf("first decision: %v", err)
+	}
+	if err := <-second; !errors.Is(err, errNoPending) {
+		t.Fatalf("second decision = %v, want errNoPending (the approval is settled)", err)
 	}
 	if got := gw.decisions(); len(got) != 1 || got[0] != "alice|appr-1|approve" {
 		t.Fatalf("gateway decisions = %v, want exactly the first one", got)
@@ -308,6 +332,56 @@ func TestApprovalResolveSerializesConcurrentDecisions(t *testing.T) {
 	// The reservation is released on the way out, so the id is decidable again --
 	// a failed or superseded decision must not wedge the approval.
 	waitFor(t, "the reservation to be released", func() bool { return !svc.deciding("appr-1") })
+}
+
+// TestApprovalResolveRetriesACompetingFailure pins the other half of the same
+// rule, and the reason a conflict is the wrong answer: when the decision ahead of
+// it FAILED, the waiter's approval is still pending, so the waiter settles it
+// instead of reporting someone else's failure. Refusing it would have left the
+// card unanswered -- and a client that closes the card on a 409 has no way back.
+func TestApprovalResolveRetriesACompetingFailure(t *testing.T) {
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
+	release := make(chan struct{})
+	gw.blockResolve = release
+	_, svc := serviceWithGateway(t, gw, nil)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := svc.Resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "approve")
+		first <- err
+	}()
+	waitFor(t, "the decision to reach the gateway", func() bool { return svc.deciding("appr-1") })
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := svc.Resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "approve")
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		t.Fatalf("the competing decision was answered before the first finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	// The first decision fails on the gateway; the waiter then settles the
+	// approval itself.
+	gw.mu.Lock()
+	gw.resolveErr = errors.New("ws write exec.approval.resolve: broken pipe")
+	gw.mu.Unlock()
+	close(release)
+	if err := <-first; err == nil {
+		t.Fatal("the first decision should have failed")
+	}
+	gw.mu.Lock()
+	gw.resolveErr = nil
+	gw.mu.Unlock()
+	if err := <-second; err != nil {
+		t.Fatalf("the waiter did not settle the still-pending approval: %v", err)
+	}
+	if got := gw.decisions(); len(got) != 1 || got[0] != "alice|appr-1|approve" {
+		t.Fatalf("gateway decisions = %v, want the waiter's one", got)
+	}
 }
 
 // TestApprovalResolveFailureIsRetryable pins that a decision the gateway refused
@@ -549,9 +623,11 @@ func TestHandleApprovalNoChannelIsUnavailable(t *testing.T) {
 	}
 }
 
-// TestHandleApprovalInFlightIsConflict pins the status a losing double click
-// gets. It is not a failure: the other click is settling the approval.
-func TestHandleApprovalInFlightIsConflict(t *testing.T) {
+// TestHandleApprovalDoubleClickSettlesOnce pins what the losing click of a double
+// click gets. It waits for the winner and then finds the approval settled -- a 404
+// the client reads as "someone settled this", which is true -- rather than a
+// conflict asserting an outcome before the gateway had produced one.
+func TestHandleApprovalDoubleClickSettlesOnce(t *testing.T) {
 	gw := &gatewayStub{}
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
 	release := make(chan struct{})
@@ -566,14 +642,22 @@ func TestHandleApprovalInFlightIsConflict(t *testing.T) {
 	}()
 	waitFor(t, "the decision to reach the gateway", func() bool { return srv.approvals.deciding("appr-1") })
 
-	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
-		map[string]any{"approvalId": "appr-1", "decision": "reject"})
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("second decision status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
+	second := make(chan int, 1)
+	go func() {
+		rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+			map[string]any{"approvalId": "appr-1", "decision": "reject"})
+		second <- rec.Code
+	}()
+
 	close(release)
 	if code := <-first; code != http.StatusOK {
 		t.Fatalf("first decision status = %d, want 200", code)
+	}
+	if code := <-second; code != http.StatusNotFound {
+		t.Fatalf("second decision status = %d, want 404 (the approval is settled): %s", code, "")
+	}
+	if got := gw.decisions(); len(got) != 1 {
+		t.Fatalf("gateway decisions = %v, want exactly one resolve", got)
 	}
 }
 

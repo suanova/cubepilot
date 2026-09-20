@@ -181,7 +181,7 @@ X-CubePilot-User: <用户名>
 | **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
 | **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
-| **409** | `a decision for this approval is already in flight` / 审批已被别处结掉 | 这张卡已经不用你决定了（另一处已结算或过期）。关掉卡片，**不要重试**；换一张卡再决定 |
+| **409** | 审批已被别处结掉（`APPROVAL_ALREADY_RESOLVED`）| 这张卡已经不用你决定了。关掉卡片，**不要重试**；换一张卡再决定。同一张卡的两条并发决定不会得到 409 —— 后到的那条会等到前一条有了结果，再按结果回答（已结算 → `404`，前一条失败 → 由它自己结算） |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
 | **413** | 仅技能发布，tar 超过 10 MiB | 换更小的包 |
@@ -485,8 +485,8 @@ body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-
 回带的 `approvalId` 就是被结算的那条，客户端据此核对「点的那张卡确实被结算了」。
 
 `404` 表示该审批已不在网关（过期、被别处结算、或不属于这个会话）；
-`409` 表示同一张卡的另一条决定正在飞行中，或已被别处结算 —— 两者都意味着卡片可以关掉，
-不是请求失败。
+`409` 表示已被别处结算（两条决定的竞态）—— 两者都意味着卡片可以关掉，不是请求失败。
+同一张卡上并发的两条决定不会互相顶掉：后到的会等到前一条有结果，再把它看到的事实回给你。
 
 随后同一流上收到：
 

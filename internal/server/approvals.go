@@ -37,14 +37,20 @@ type ApprovalService struct {
 
 	mu      sync.Mutex
 	gateway ApprovalGateway
-	// inflight holds the approval ids a Resolve is writing a decision for right
-	// now. It is what makes two decisions on one id serialize rather than both
+	// inflight holds the decisions being written right now, one entry per approval
+	// id. It is what makes two decisions on one id serialize rather than both
 	// reaching the gateway (two tabs, or a double click), and what keeps a Stop
-	// from publishing a neutral resolution over a decision already in flight. It
-	// is bounded by the number of concurrent Resolve calls, so it is empty
-	// whenever no decision is being written.
-	inflight map[string]struct{}
+	// from publishing a neutral resolution over a decision already in flight. Each
+	// entry is the decision's own reservation, closed when it ends so a waiter can
+	// take it; it is bounded by the number of concurrent Resolve calls, so the map
+	// is empty whenever no decision is being written.
+	inflight map[string]*approvalDecision
 }
+
+// approvalDecision is one decision's reservation of an approval id. done is closed
+// when the decision that holds it ends, whatever the outcome: a waiter takes the
+// reservation and asks the gateway what is actually left.
+type approvalDecision struct{ done chan struct{} }
 
 // ApprovalGateway is the gateway-facing half of the approval channel: the
 // pending approvals the user's connection can see, and the decision written back
@@ -92,7 +98,7 @@ func NewApprovalService(hub *Hub, st *store.Store, logf func(format string, args
 		hub:      hub,
 		store:    st,
 		logf:     logf,
-		inflight: map[string]struct{}{},
+		inflight: map[string]*approvalDecision{},
 	}
 }
 
@@ -203,15 +209,15 @@ func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approva
 	if decision != "approve" && decision != "reject" && decision != "allow-always" {
 		return pendingApproval{}, fmt.Errorf("decision must be approve, reject or allow-always")
 	}
+	ctx, cancel := context.WithTimeout(ctx, approvalGatewayTimeout)
+	defer cancel()
 	// Reserve first: a second decision on one id -- a double click, two tabs --
-	// is refused here, before it spends a gateway read of its own.
-	if err := s.reserve(approvalID); err != nil {
+	// waits here for the first to finish instead of racing it into the gateway.
+	if err := s.reserve(ctx, approvalID); err != nil {
 		return pendingApproval{}, err
 	}
 	defer s.release(approvalID)
 
-	ctx, cancel := context.WithTimeout(ctx, approvalGatewayTimeout)
-	defer cancel()
 	list, err := s.Pending(ctx, user, sessionKey)
 	if err != nil {
 		return pendingApproval{}, err
@@ -247,25 +253,54 @@ func findApproval(list []pendingApproval, approvalID string) (pendingApproval, b
 	return pendingApproval{}, false
 }
 
-// reserve marks an approval as being decided right now, or reports that another
-// decision is already in flight for it.
-func (s *ApprovalService) reserve(approvalID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, busy := s.inflight[approvalID]; busy {
-		return errApprovalInFlight
+// reserve claims an approval for one decision, waiting for a decision already in
+// flight for the same id to finish first.
+//
+// Waiting rather than refusing is what makes a second decision safe. Refusing it
+// with a conflict -- before the first has reached the gateway -- tells the second
+// caller the approval is settled when nothing has been decided yet, and a client
+// that closes the card on that answer (the web client does: 409 is "settled
+// underneath the click") has lost the only control it had if the first decision
+// then fails. Waiting answers with an outcome instead: the loop takes the
+// reservation once the other decision is done, and the read that follows finds
+// either a settled approval -- reported as not found, which is the truth -- or one
+// still pending, which this call then settles itself. A failed decision is
+// therefore retried by whichever caller is still holding the card.
+//
+// The wait is the caller's own bound, which Resolve has already applied, so a
+// gateway that wedges cannot hold a waiter past its deadline.
+func (s *ApprovalService) reserve(ctx context.Context, approvalID string) error {
+	for {
+		s.mu.Lock()
+		held, busy := s.inflight[approvalID]
+		if !busy {
+			s.inflight[approvalID] = &approvalDecision{done: make(chan struct{})}
+			s.mu.Unlock()
+			return nil
+		}
+		done := held.done
+		s.mu.Unlock()
+		select {
+		case <-done:
+			// The reservation is gone: loop and take it ourselves.
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	s.inflight[approvalID] = struct{}{}
-	return nil
 }
 
-// release ends a reservation. Every exit path of a decision calls it exactly
-// once, so inflight is empty again once the decision is over -- there is nothing
-// to expire and nothing to sweep.
+// release ends a reservation and wakes whatever was waiting on it. Every exit path
+// of a decision calls it exactly once, so the entry is the decision's own and no
+// other holder can remove it: inflight is empty again once the decision is over.
 func (s *ApprovalService) release(approvalID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	held, ok := s.inflight[approvalID]
+	if !ok {
+		return
+	}
 	delete(s.inflight, approvalID)
+	close(held.done)
 }
 
 // deciding reports whether a decision for this approval is being written now.
@@ -323,10 +358,6 @@ const approvalGatewayTimeout = 15 * time.Second
 
 var (
 	errNoPending = errors.New("no pending approval for this session")
-	// errApprovalInFlight reports a second decision for an approval this process
-	// is already answering. It is a conflict, not a failure: the other decision
-	// is what settles the approval.
-	errApprovalInFlight = errors.New("a decision for this approval is already in flight")
 	// errNoApprovalChannel reports that the user has no live gateway connection,
 	// so the approval set cannot be read and no decision can be written. Reads
 	// and decisions deliberately use the user's existing connection rather than
@@ -377,8 +408,6 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errNoPending):
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such pending approval for this session"})
-	case errors.Is(err, errApprovalInFlight):
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 	case errors.Is(err, errNoApprovalChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "approval channel unavailable"})
 	case err != nil:
