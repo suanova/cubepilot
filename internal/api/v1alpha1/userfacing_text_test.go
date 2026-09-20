@@ -90,18 +90,36 @@ func TestShippedTextHasNoInternalReferences(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read %s: %v", path, err)
 				}
-				for i, line := range strings.Split(string(raw), "\n") {
-					for _, re := range internalRefs {
-						if match := re.FindString(line); match != "" {
-							rel, _ := filepath.Rel(root, path)
-							t.Errorf("%s:%d: shipped text exposes %q\n  %s",
-								rel, i+1, match, strings.TrimSpace(line))
-						}
+				// Match against the whole file rather than line by line: the
+				// patterns use \s, which Go's regexp lets span a newline, so a
+				// reference wrapped across two lines would slip past a per-line
+				// scan. The line number is derived from the match offset.
+				text := string(raw)
+				rel, _ := filepath.Rel(root, path)
+				for _, re := range internalRefs {
+					for _, loc := range re.FindAllStringIndex(text, -1) {
+						lineNo, line := textLine(text, loc[0])
+						t.Errorf("%s:%d: shipped text exposes %q\n  %s",
+							rel, lineNo, text[loc[0]:loc[1]], line)
 					}
 				}
 			}
 		})
 	}
+}
+
+// textLine returns the 1-based line number holding the byte offset and the text
+// of that line, for reporting a match that may itself span lines.
+func textLine(text string, offset int) (int, string) {
+	lineNo := 1 + strings.Count(text[:offset], "\n")
+	start := strings.LastIndex(text[:offset], "\n") + 1
+	end := strings.Index(text[offset:], "\n")
+	if end < 0 {
+		end = len(text)
+	} else {
+		end += offset
+	}
+	return lineNo, strings.TrimSpace(text[start:end])
 }
 
 // artifactFiles resolves a shipped-text entry to files: a recursive walk of a
