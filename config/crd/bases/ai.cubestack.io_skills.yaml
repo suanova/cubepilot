@@ -31,7 +31,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Skill is the skill catalog entry (design §3.4). Generic tools are
+          Skill is the skill catalog entry. Generic tools are
           platform-provided and need no registration.
         properties:
           apiVersion:
@@ -53,7 +53,7 @@ spec:
             type: object
           spec:
             description: |-
-              SkillSpec is a marketplace skill (design §3.4). It registers "what skill
+              SkillSpec is a marketplace skill. It registers "what skill
               exists, where, which version, who can see it"; the content lives in the
               repository.
             properties:

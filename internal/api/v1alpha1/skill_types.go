@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SkillSourceType is the discriminant of the skill content address (design
-// §3.4). Phase 1 supports only Path; S3 is phase 2.
+// SkillSourceType is the discriminant of the skill content address. Only
+// Path is accepted today; S3 is reserved.
 // +kubebuilder:validation:Enum=Path;S3
 type SkillSourceType string
 
@@ -14,8 +14,8 @@ const (
 	SkillSourceS3   SkillSourceType = "S3"
 )
 
-// SkillVisibility controls who may see a skill (design §3.4). Phase 1 ships
-// only Platform.
+// SkillVisibility controls who may see a skill. Only Platform is accepted
+// today.
 // +kubebuilder:validation:Enum=Platform;Tenant;User
 type SkillVisibility string
 
@@ -34,14 +34,14 @@ const (
 	SkillPhaseUnreachable SkillPhase = "Unreachable"
 )
 
-// SkillS3Source is the object-store addressing (phase 2).
+// SkillS3Source is the object-store addressing.
 type SkillS3Source struct {
 	Bucket string `json:"bucket"`
 	Key    string `json:"key"`
 }
 
-// SkillSource addresses the skill content in the repository (design §3.4:
-// content lives in the repo; the CRD registers where + which version).
+// SkillSource addresses the skill content in the repository: content lives
+// in the repo; the CRD registers where + which version.
 type SkillSource struct {
 	// Type is the discriminant: Path | S3.
 	Type SkillSourceType `json:"type"`
@@ -56,7 +56,7 @@ type SkillSource struct {
 	Sha256 string `json:"sha256,omitempty"`
 }
 
-// SkillSpec is a marketplace skill (design §3.4). It registers "what skill
+// SkillSpec is a marketplace skill. It registers "what skill
 // exists, where, which version, who can see it"; the content lives in the
 // repository.
 type SkillSpec struct {
@@ -94,7 +94,7 @@ type SkillStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Skill is the skill catalog entry (design §3.4). Generic tools are
+// Skill is the skill catalog entry. Generic tools are
 // platform-provided and need no registration.
 type Skill struct {
 	metav1.TypeMeta   `json:",inline"`

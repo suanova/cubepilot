@@ -7,7 +7,7 @@ description: "Run kubectl via exec to query and operate cluster resources and ai
 
 Use the `exec` tool to run `kubectl` against the current cluster.
 
-Two identities are available (dual kubeconfig, issue #19):
+Two identities are available (dual kubeconfig):
 
 - **User (default)**: plain `kubectl ...` runs as the **current user** (`~/.kube/config`). Use this for ALL real operations — queries and writes alike. RBAC is the final gate: if the user lacks permission, the API server rejects it — report that honestly.
 - **Platform (discovery only)**: schema reads use the platform read-only identity via `kubectl --kubeconfig=$CUBEPILOT_PLATFORM_KUBECONFIG ...`. Do **not** use it for business operations; it exists so the agent can read CRD schemas without the user needing CRD-read rights.
@@ -25,7 +25,7 @@ kubectl get events -n <ns> --sort-by=.lastTimestamp   # events
 kubectl get namespaces                     # namespaces
 ```
 
-## Write Operations (phase-one direct pass-through; state the action and blast radius before running)
+## Write Operations (direct pass-through; state the action and blast radius before running)
 
 ```bash
 kubectl apply -f <file> -n <ns>

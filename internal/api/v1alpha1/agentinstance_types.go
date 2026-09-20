@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// InstancePhase is the lifecycle phase of an agent instance (design §3.2:
-// Creating while provisioning, Ready when running, Failed on error).
+// InstancePhase is the lifecycle phase of an agent instance: Creating while
+// provisioning, Ready when running, Failed on error.
 type InstancePhase string
 
 const (
@@ -17,8 +17,8 @@ const (
 	InstanceFailed InstancePhase = "Failed"
 )
 
-// DataVolumeSpec is the per-instance data directory (design §3.2: per-instance
-// PVC, default 1 GiB; source of truth = data directory). The PVC name is
+// DataVolumeSpec is the per-instance data directory: per-instance PVC,
+// default 1 GiB; source of truth = data directory. The PVC name is
 // platform-generated -- a writer cannot choose it, because the finalizer
 // deletes the name this resolves to.
 type DataVolumeSpec struct {
@@ -28,36 +28,36 @@ type DataVolumeSpec struct {
 }
 
 // AgentInstanceSpec is the runtime instance of an AgentTemplate definition for
-// one tenant (design §3.2). The instance key is `user + template` -- one
+// one tenant. The instance key is `user + template` -- one
 // instance per user per template, single-writer.
 type AgentInstanceSpec struct {
 	// TemplateRef points to the AgentTemplate definition (e.g.
 	// cubepilot). Not pinned to a revision -- template updates take
-	// effect on the next reconcile/restart (design §3.1/§3.2).
+	// effect on the next reconcile/restart.
 	TemplateRef string `json:"templateRef"`
 	// Owner is the user the instance belongs to.
 	Owner string `json:"owner"`
 	// SelectedModel optionally selects a model by its ref
 	// "<provider>/<modelId>", one of the model ids of the providers inlined in
-	// the template (overrides defaultModel). Design §3.2.
+	// the template (overrides defaultModel).
 	// +optional
 	SelectedModel string `json:"selectedModel,omitempty"`
 	// DataVolume is the per-instance data directory.
 	// +optional
 	DataVolume *DataVolumeSpec `json:"dataVolume,omitempty"`
 	// UserInstructions optionally appends user preferences to the definition
-	// default system prompt (design §3.2: appended after the template
-	// instructions; cannot remove or weaken security/identity bounds).
+	// default system prompt (appended after the template instructions; cannot
+	// remove or weaken security/identity bounds).
 	// +optional
 	UserInstructions string `json:"userInstructions,omitempty"`
-	// ApprovalPolicy optionally overrides the template's approvalPolicy (issue
-	// #116, design §3.2 inherit-or-own): empty = follow the template default
-	// (live); set = the instance's own posture.
+	// ApprovalPolicy optionally overrides the template's approvalPolicy
+	// (inherit-or-own): empty = follow the template default (live); set = the
+	// instance's own posture.
 	// +optional
 	ApprovalPolicy ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist is the instance's own safe-command allowlist: the rules the
 	// user added by hand. Learned allow-always grants live in the per-user
-	// grants ConfigMap, not here (issue #185) -- the chat approval path records
+	// grants ConfigMap, not here -- the chat approval path records
 	// them there, and a client must not copy them back into this field, where
 	// they would survive a revocation. The effective list is the union of the
 	// platform builtin, the template allowlist and these entries: the instance
@@ -66,13 +66,13 @@ type AgentInstanceSpec struct {
 	// +optional
 	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// EnabledSkills optionally restricts the skills the AgentTemplate declares
-	// (design §3.2: the instance may enable a subset; empty = all declared).
+	// (the instance may enable a subset; empty = all declared).
 	// +optional
 	EnabledSkills []string `json:"enabledSkills,omitempty"`
 }
 
-// AgentInstanceStatus is the observed state of an instance (design §3.2,
-// written by the Instance Manager controller -- users do not edit it).
+// AgentInstanceStatus is the observed state of an instance, written by the
+// Instance Manager controller -- users do not edit it.
 type AgentInstanceStatus struct {
 	// Phase is Creating / Ready / Failed.
 	// +optional
@@ -105,8 +105,8 @@ type AgentInstanceStatus struct {
 // +kubebuilder:printcolumn:name="Pod",type="string",JSONPath=".status.podName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// AgentInstance is the runtime instance of an AgentTemplate for one user
-// (design §3.2). It is reconciled by the Instance Manager controller:
+// AgentInstance is the runtime instance of an AgentTemplate for one user. It
+// is reconciled by the Instance Manager controller:
 // provision / self-heal / data-directory GC. The instance key is user +
 // template (one instance per user per template, single-writer).
 type AgentInstance struct {

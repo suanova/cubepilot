@@ -9,25 +9,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// AgentRuntime enumerates the supported agent runtime implementations
-// (design doc §3.1 `spec.runtime`, E1 Adapter).
+// AgentRuntime enumerates the supported agent runtime implementations for
+// `spec.runtime`.
 // +kubebuilder:validation:Enum=OpenClaw;Hermes
 type AgentRuntime string
 
 const (
-	// DefaultAgentName is the builtin platform agent template (design §3.1:
-	// cubepilot is the first platform-preset AgentTemplate,
-	// auto-instantiated per user, and non-deletable).
+	// DefaultAgentName is the builtin platform agent template: cubepilot is
+	// the first platform-preset AgentTemplate, auto-instantiated per user, and
+	// non-deletable.
 	DefaultAgentName = "cubepilot"
 
 	// RuntimeOpenClaw is the default runtime (OpenClaw gateway).
 	RuntimeOpenClaw AgentRuntime = "OpenClaw"
-	// RuntimeHermes is a future runtime (phase 2+).
+	// RuntimeHermes is a future runtime, not implemented yet.
 	RuntimeHermes AgentRuntime = "Hermes"
 )
 
 // TemplateProviderSpec is one OpenAI-compatible LLM provider of an
-// AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
+// AgentTemplate (models are inlined -- no standalone Model CRD).
 // A provider owns the endpoint and the credential once, and lists the backend
 // model ids reachable through it, so a gateway that serves many models behind
 // one base URL and one key is described once rather than once per model.
@@ -54,7 +54,7 @@ type TemplateProviderSpec struct {
 	Endpoint string `json:"endpoint"`
 	// CredentialRef optionally references a platform-managed Secret (name)
 	// holding the apiKey; a provider that needs no credentials omits it (nil).
-	// References only -- never the key itself (design §4.4).
+	// References only -- never the key itself.
 	// +optional
 	CredentialRef *corev1.LocalObjectReference `json:"credentialRef,omitempty"`
 	// Models are the backend model ids served through this endpoint. Each id is
@@ -135,12 +135,12 @@ func validateModelID(id string) error {
 	return nil
 }
 
-// ApprovalPolicy is the platform confirmation intent (design §3.1 / issue
-// #116). Uniform across runtimes: each value describes which operations
-// require a human on an interactive turn; each runtime adapter enforces the
-// intent with its own mechanism. It lives on the AgentTemplate (with an
-// optional AgentInstance override) -- not on the skill -- so different
-// templates reusing the same skill can have different confirmation rules.
+// ApprovalPolicy is the platform confirmation intent. Uniform across runtimes:
+// each value describes which operations require a human on an interactive
+// turn; each runtime adapter enforces the intent with its own mechanism. It
+// lives on the AgentTemplate (with an optional AgentInstance override) -- not
+// on the skill -- so different templates reusing the same skill can have
+// different confirmation rules.
 // +kubebuilder:validation:Enum=None;Allowlist;AlwaysAsk
 type ApprovalPolicy string
 
@@ -159,7 +159,7 @@ const (
 	ApprovalPolicyAlwaysAsk ApprovalPolicy = "AlwaysAsk"
 )
 
-// AllowlistRule is one entry of a safe-command allowlist (issue #116). The
+// AllowlistRule is one entry of a safe-command allowlist. The
 // grammar is runtime-shaped today ({pattern, argPattern?} -- the OpenClaw argv
 // allowlist shape the builtin default uses); a runtime-neutral grammar is
 // deferred until a second runtime lands. Pattern is the command/executable;
@@ -173,7 +173,7 @@ type AllowlistRule struct {
 }
 
 // AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
-// tools (skill refs) and policy (design §3.1). It is the "class": shared by
+// tools (skill refs) and policy. It is the "class": shared by
 // all instances, versioned, user-independent.
 //
 // Like gateway.ModelKey, the rule below leaves an id that already starts with
@@ -216,8 +216,8 @@ type AgentTemplateSpec struct {
 	// +kubebuilder:validation:MaxLength=320
 	// +optional
 	DefaultModel string `json:"defaultModel,omitempty"`
-	// Providers is the inline provider list (design §3.3: models are inlined in
-	// the template -- no standalone Model CRD). Each provider declares an
+	// Providers is the inline provider list (models are inlined in the template
+	// -- no standalone Model CRD). Each provider declares an
 	// endpoint, an optional credential and the model ids it serves; an instance
 	// selects a <provider>/<modelId> ref within this list.
 	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.credentialRef) || p.credentialRef.name != \"\")",message="credentialRef must reference a Secret name"
@@ -234,18 +234,18 @@ type AgentTemplateSpec struct {
 	// +optional
 	ApprovalPolicy ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	// Allowlist optionally extends the template's default safe-command
-	// allowlist (issue #116): the effective allowlist is the union of the
-	// platform builtin, these entries and the instance's own (issue #185). Only
-	// meaningful under Allowlist policy.
+	// allowlist: the effective allowlist is the union of the platform builtin,
+	// these entries and the instance's own. Only meaningful under Allowlist
+	// policy.
 	// +optional
 	Allowlist []AllowlistRule `json:"allowlist,omitempty"`
 	// Instructions is the default system prompt (definition-level default;
 	// instances may append within capability bounds).
 	// +optional
 	Instructions string `json:"instructions,omitempty"`
-	// Skills references Skills (domain knowledge + controlled scripts),
-	// design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec + schema
-	// discovery) are platform-provided and always available -- NOT listed here.
+	// Skills references Skills (domain knowledge + controlled scripts). Generic
+	// tools (kubectl exec + schema discovery) are platform-provided and always
+	// available -- NOT listed here.
 	// +optional
 	Skills []string `json:"skills,omitempty"`
 }
@@ -264,8 +264,8 @@ type AgentTemplateStatus struct {
 // +kubebuilder:printcolumn:name="Runtime",type="string",JSONPath=".spec.runtime"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// AgentTemplate is the declarative definition of an agent (design doc §3.1)
-// -- the platform's first-class object. The builtin cubepilot is the
+// AgentTemplate is the declarative definition of an agent -- the platform's
+// first-class object. The builtin cubepilot is the
 // preset first template; the API exposes templates read-only, so a user
 // cannot create one.
 type AgentTemplate struct {

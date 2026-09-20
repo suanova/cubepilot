@@ -4,7 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TaskState is the task enablement state (design §3.5: string enum, not bool).
+// TaskState is the task enablement state (string enum, not bool).
 // +kubebuilder:validation:Enum=Enabled;Paused
 type TaskState string
 
@@ -29,7 +29,7 @@ const (
 	TaskRunOutcomeFailed TaskRunOutcome = "failed"
 )
 
-// TaskSpec is a task instance (design §3.3.3) -- whose task, when it runs. It
+// TaskSpec is a task instance -- whose task, when it runs. It
 // links the
 // execution subject (agentRef -> Agent) with the task content (templateRef ->
 // TaskTemplate); creator decides the execution identity.
@@ -60,7 +60,7 @@ type TaskSpec struct {
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
 	// Owner is the task owner; execution identity = owner (RBAC matches the
-	// owner; the per-user instance is derived from it -- design §3.5: one
+	// owner; the per-user instance is derived from it -- one
 	// cubepilot instance per user, no agentInstanceRef).
 	Owner string `json:"owner"`
 	// Cron is the 5-field cron expression. Empty means the task never fires on
@@ -69,7 +69,7 @@ type TaskSpec struct {
 	// task with trigger=Cron and an empty cron simply never ran).
 	// +optional
 	Cron string `json:"cron,omitempty"`
-	// State is the task enablement state (design §3.5: string enum, not
+	// State is the task enablement state (string enum, not
 	// bool): Enabled fires on schedule, Paused never fires.
 	// +kubebuilder:default=Enabled
 	// +optional
@@ -99,7 +99,7 @@ type TaskStatus struct {
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".spec.state"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Task is a task instance (design §3.3.3) -- the "object" of the task domain:
+// Task is a task instance -- the "object" of the task domain:
 // who owns it, when it runs, which Agent executes it. The scheduler reads
 // Task CRDs and writes TaskRun (written with the platform identity, credential
 // minimization).

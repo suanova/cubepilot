@@ -1,8 +1,7 @@
 # CubePilot
 
 CubePilot is the intelligent assistant of the CubeStack platform. It implements
-the two core capabilities described in the module design document (extension
-points E1/E2, FR-M2/M3):
+the two core capabilities described in the module design document:
 
 1. **Per-user agent instance lifecycle (K8s Pod)** -- the Instance Manager
    controller provisions and self-heals per-user OpenClaw Pods through the
@@ -24,8 +23,7 @@ browser (host) -- kubectl port-forward --- inside the kind cluster:
      └--- K8s API (controller-runtime / client-go): Pod/PVC/Service lifecycle
 ```
 
-- Per-user isolation = **Pod + dedicated PVC** (NFR-002); sessions persist on
-  each PVC (FR-M2-004).
+- Per-user isolation = **Pod + dedicated PVC**; sessions persist on each PVC.
 - Skill catalog = OpenClaw **Skills** (`internal/controller/skills/*/SKILL.md`,
   embedded and rendered by the supervisor) plus `workspace/SOUL.md` / `AGENTS.md`,
   baked into the agent image.
@@ -287,16 +285,16 @@ Publishing the images/chart to the registry is handled separately by the
 | User isolation | Deploy a second user (`--set 'agents.users=admin\,li.ming'`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
 | Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (the TaskRun's report) |
 
-## Current simplifications (phase-one boundaries)
+## Current simplifications
 
 - The assistant service and the instance-manager controllers run in one
-  process; the production shape separates them (design doc §9).
+  process; the production shape separates them.
 - `agent-*` Pods share one ServiceAccount with a broad ClusterRole (production
-  target: per-user minimal RBAC, FR-M3-001).
+  target: per-user minimal RBAC).
 - The capability catalog is baked into the image (production target: ConfigMap
-  mounting for "takes effect immediately", FR-M2-005).
-- Not yet implemented: HITL confirmation (`confirm_*`), audit DB (M5), RAG,
-  and multi-tenant auth -- scheduled for phases two/three.
+  mounting for "takes effect immediately").
+- Not yet implemented: HITL confirmation (`confirm_*`), the audit DB, RAG,
+  and multi-tenant auth -- scheduled for later releases.
 - `tool_result` events do not appear separately in the stream (OpenClaw's agent
   loop executes tools server-side); tool outcomes are reflected in the final
   answer text, and the full tool blocks are available in session history.

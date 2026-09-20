@@ -1,5 +1,5 @@
 {{- if .Values.web.enabled }}
-# Web -- independent frontend component (design §9 / §11.1). Serves the built
+# Web -- independent frontend component. Serves the built
 # React SPA and reverse-proxies /api to the API service (web/nginx.conf).
 # Replicas > 1 is safe: the SPA is fully stateless. Gated by web.enabled so an
 # environment with its own UI (e.g. CubeStack unified UI) can skip the portal.

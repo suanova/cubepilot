@@ -3,7 +3,7 @@
 # skill repository in its skills/ subdirectory. ReadWriteOnce by default (the API
 # is single-replica and kind's default StorageClass is RWO-only); a future
 # multi-replica API sets api.accessModes [ReadWriteMany] on a shared
-# StorageClass (design §9 / §11.1). Note RWX alone is not enough for replicas
+# StorageClass. Note RWX alone is not enough for replicas
 # > 1 -- the JSON metadata store is single-writer and per-session state
 # (SSE hub / the gateway channel) is in-memory, so app-level state handling is
 # the real gate.
