@@ -137,8 +137,23 @@ var errDecisionResolved = errors.New("the parked decision was resolved before th
 // route, applied twice: once to decide whether there is anything to attach to,
 // and once more once the subscription is up, to catch a decision answered in
 // between. A question carries the run it belongs to, which the attach uses to
-// scope what it observes; a write approval parks the run the same way but names
-// no run of its own, so the session is the whole of that gate.
+// scope what it observes.
+//
+// An approval half reports no run, and that is a choice rather than something the
+// gateway withholds: the record does carry a runId (nullable, always present --
+// `runId: requestRunId ?? null` when the gateway stores the request), but it is
+// the agent runtime's own run identity, and nothing here establishes that it is
+// the id this platform knows the run by. Ours comes from the session-message
+// channel: the runId chat.send ACKs and chat.history reports as in flight, which
+// is also what /abort scopes its abort to. Attaching on an id that never matches
+// would observe nothing at all, which is worse than observing the session.
+//
+// It is also unnecessary today, and would be unsound if it were: hub.Open allows
+// one stream per session, so the turn parked on an approval is the session's only
+// run, while the pending set can hold several approvals that do not share a run --
+// and no single id can scope those. The one exposure left is a writer outside this
+// platform driving the same session key, which is not something this gate can see
+// or fix.
 //
 // The approval half asks the gateway rather than the platform's own state, which
 // is what makes it survive a restart: a run parked on an approval this process
