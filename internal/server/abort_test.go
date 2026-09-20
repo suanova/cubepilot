@@ -387,24 +387,24 @@ func TestHandleAbortTimeoutIsGatewayTimeout(t *testing.T) {
 }
 
 // The endpoint's input guards: the wrong method, a URL that carries no session
-// key, and a Server with no HITL channel at all.
+// key, and a Server with no gateway channel at all.
 func TestHandleAbortRejectsBadRequests(t *testing.T) {
 	cases := []struct {
-		name   string
-		method string
-		path   string
-		hitl   bool
-		want   int
+		name    string
+		method  string
+		path    string
+		channel bool
+		want    int
 	}{
-		{name: "method", method: http.MethodGet, path: "/api/v1/sessions/conv-1/abort", hitl: true, want: http.StatusMethodNotAllowed},
-		{name: "empty key", method: http.MethodPost, path: "/api/v1/sessions//abort", hitl: true, want: http.StatusBadRequest},
-		{name: "main key", method: http.MethodPost, path: "/api/v1/sessions/agent:main:/abort", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodPost, path: "/api/v1/sessions/conv-1/abort", hitl: false, want: http.StatusServiceUnavailable},
+		{name: "method", method: http.MethodGet, path: "/api/v1/sessions/conv-1/abort", channel: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodPost, path: "/api/v1/sessions//abort", channel: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodPost, path: "/api/v1/sessions/agent:main:/abort", channel: true, want: http.StatusBadRequest},
+		{name: "no channel", method: http.MethodPost, path: "/api/v1/sessions/conv-1/abort", channel: false, want: http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var m *gatewayConns
-			if tc.hitl {
+			if tc.channel {
 				m = &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
 			}
 			s := newAbortTestServer(NewHub(), m)
@@ -858,12 +858,12 @@ func TestHandleTurnStatusDeadlineIsErrorNotIdle(t *testing.T) {
 	assertNoActiveClaim(t, rec.Body.Bytes())
 }
 
-// The endpoint's input guards. A Server with no HITL channel is not an error
+// The endpoint's input guards. A Server with no gateway channel is not an error
 // here as it is for /abort: "no channel" is a state the handler can answer
 // truthfully -- nothing can be running that we would have a channel for -- and
 // the caller gets the same idle answer it would get from an idle gateway.
 func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
-	// The nil-HITL answer is a determination, not just a status code: with no
+	// The nil-channel answer is a determination, not just a status code: with no
 	// channel there is nothing that could be running, so the body must say idle.
 	// A status-only assertion would accept a handler answering active=true here.
 	activeFalse := false
@@ -871,19 +871,19 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 		name       string
 		method     string
 		path       string
-		hitl       bool
+		channel    bool
 		want       int
 		wantActive *bool
 	}{
-		{name: "method", method: http.MethodPost, path: "/api/v1/sessions/conv-1/turn", hitl: true, want: http.StatusMethodNotAllowed},
-		{name: "empty key", method: http.MethodGet, path: "/api/v1/sessions//turn", hitl: true, want: http.StatusBadRequest},
-		{name: "main key", method: http.MethodGet, path: "/api/v1/sessions/agent:main:/turn", hitl: true, want: http.StatusBadRequest},
-		{name: "no hitl", method: http.MethodGet, path: "/api/v1/sessions/conv-1/turn", hitl: false, want: http.StatusOK, wantActive: &activeFalse},
+		{name: "method", method: http.MethodPost, path: "/api/v1/sessions/conv-1/turn", channel: true, want: http.StatusMethodNotAllowed},
+		{name: "empty key", method: http.MethodGet, path: "/api/v1/sessions//turn", channel: true, want: http.StatusBadRequest},
+		{name: "main key", method: http.MethodGet, path: "/api/v1/sessions/agent:main:/turn", channel: true, want: http.StatusBadRequest},
+		{name: "no channel", method: http.MethodGet, path: "/api/v1/sessions/conv-1/turn", channel: false, want: http.StatusOK, wantActive: &activeFalse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var m *gatewayConns
-			if tc.hitl {
+			if tc.channel {
 				m = &gatewayConns{conns: map[string]*userGatewayConn{"admin": {user: "admin", gw: &fakeAbortGateway{}}}}
 			}
 			s := newAbortTestServer(NewHub(), m)
@@ -902,7 +902,7 @@ func TestHandleTurnStatusRejectsBadRequests(t *testing.T) {
 					t.Fatalf("decode: %v", err)
 				}
 				if body.Active != *tc.wantActive {
-					t.Fatalf("active = %v, want %v: no HITL channel is an idle answer, not a hidden running turn", body.Active, *tc.wantActive)
+					t.Fatalf("active = %v, want %v: no gateway channel is an idle answer, not a hidden running turn", body.Active, *tc.wantActive)
 				}
 			}
 		})
@@ -929,7 +929,7 @@ func TestHandleTurnStatusBusyErrorIsNotIdle(t *testing.T) {
 // A correct handler the switch never reaches is no feature at all: /turn would
 // fall through to the mux's 404 and a reloaded Portal would have no way to
 // learn the run is still going. This drives the real Handler chain. The server
-// has no HITL channel, which is the truthful answer for "no channel, nothing
+// has no gateway channel, which is the truthful answer for "no channel, nothing
 // running" -- and it keeps the assertion on routing, not on the gateway.
 func TestTurnRouteIsWired(t *testing.T) {
 	srv := New(config.Config{DefaultUser: "alice"}, nil, nil, nil, nil)
@@ -949,7 +949,7 @@ func TestTurnRouteIsWired(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Active {
-		t.Fatal("active = true, want false with no HITL channel")
+		t.Fatal("active = true, want false with no gateway channel")
 	}
 }
 

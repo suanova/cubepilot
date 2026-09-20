@@ -14,7 +14,7 @@ import (
 
 const questionTestSession = "agent:main:conv-1"
 
-// questionTestServer builds a server whose HITL manager owns gw for user alice,
+// questionTestServer builds a server whose gateway manager owns gw for user alice,
 // with a live SSE stream open for session (mimicking a chat turn parked on a
 // question). user is the identity every request is made as.
 func questionTestServer(t *testing.T, gw *fakeGatewayClient, session string) (*Server, *httptest.ResponseRecorder) {

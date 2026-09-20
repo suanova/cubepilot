@@ -230,7 +230,7 @@ func TestSettlePendingForSessionWithoutApprovalService(t *testing.T) {
 	gw := &fakeGatewayClient{}
 	base, _ := questionTestServer(t, gw, questionTestSession)
 
-	// The bare fixture: the live HITL manager, no approval service and no
+	// The bare fixture: the live gateway manager, no approval service and no
 	// question routes.
 	s := &Server{hub: base.hub, gatewayConns: base.gatewayConns}
 	s.settlePendingForSession(context.Background(), "alice", questionTestSession)

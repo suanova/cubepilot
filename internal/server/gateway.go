@@ -45,8 +45,8 @@ var pairRetryDelay = 1500 * time.Millisecond
 // paired, so it skips conn()'s 30s pairing retry budget.
 const channelProbeTimeout = 3 * time.Second
 
-// gatewayClient is the subset of the gateway-protocol WS client the HITL glue
-// depends on, so tests can substitute a fake.
+// gatewayClient is the subset of the gateway-protocol WS client the gateway
+// channel depends on, so tests can substitute a fake.
 type gatewayClient interface {
 	Connected() bool
 	Connect(ctx context.Context) error
@@ -75,10 +75,11 @@ type gatewayClient interface {
 	Close()
 }
 
-// openClawLiveRunner adapts the user-scoped WS/HITL manager to CubePilot's
-// runtime-neutral interactive-turn contract. PreTurn is deliberately inside
-// this adapter: confirmation setup is part of running an interactive turn, not
-// a responsibility every HTTP handler or future runtime must know about.
+// openClawLiveRunner adapts the user-scoped gateway connection manager to
+// CubePilot's runtime-neutral interactive-turn contract. PreTurn is deliberately
+// inside this adapter: confirmation setup is part of running an interactive
+// turn, not a responsibility every HTTP handler or future runtime must know
+// about.
 type openClawLiveRunner struct {
 	manager *gatewayConns
 	user    string
@@ -97,13 +98,15 @@ func (r *openClawLiveRunner) RunLiveTurn(ctx context.Context, sessionKey string,
 	return r.manager.RunLiveTurn(ctx, r.user, sessionKey, params.Message, params.Model, guarded, emit)
 }
 
-// gatewayConns owns the per-user approval connections (issue #20). It is inert
-// until the API is configured with a device master key (see ConfigureGateway);
-// with no device, approvalPolicy stays declarative and chat is unchanged.
+// gatewayConns owns the per-user gateway connections (issue #20). One
+// connection per user carries everything addressed to that user's instance:
+// live chat turns, write approvals, ask-user questions and aborts. It is built
+// by ConfigureGateway once the API has a device root key; without a manager the
+// API has no channel at all, which StartGatewayChannel treats as fatal.
 type gatewayConns struct {
 	mgr       *instances.Manager
 	token     string
-	masterKey []byte
+	rootKey   []byte
 	newClient func(url string, dev *ws.Device) gatewayClient
 	logf      func(format string, args ...any)
 
@@ -158,16 +161,17 @@ type userGatewayConn struct {
 	connected bool
 }
 
-// ConfigureGateway builds the manager, or returns nil (HITL disabled) when no
-// master key is provided.
-func ConfigureGateway(mgr *instances.Manager, token string, masterKey []byte, logf func(string, ...any)) *gatewayConns {
-	if mgr == nil || len(masterKey) == 0 || token == "" {
+// ConfigureGateway builds the manager, or returns nil when the API is missing
+// something it cannot serve turns without (no instance manager, no device root
+// key, no gateway token) -- StartGatewayChannel turns that into a fatal error.
+func ConfigureGateway(mgr *instances.Manager, token string, rootKey []byte, logf func(string, ...any)) *gatewayConns {
+	if mgr == nil || len(rootKey) == 0 || token == "" {
 		return nil
 	}
 	m := &gatewayConns{
 		mgr:        mgr,
 		token:      token,
-		masterKey:  masterKey,
+		rootKey:    rootKey,
 		logf:       logf,
 		conns:      map[string]*userGatewayConn{},
 		connecting: map[string]chan struct{}{},
@@ -204,10 +208,10 @@ func (m *gatewayConns) sayf(format string, args ...any) {
 	}
 }
 
-// deviceFor derives the deterministic per-user device identity from the master
-// key (sha512(masterKey | user) as the Ed25519 seed).
+// deviceFor derives the deterministic per-user device identity from the root
+// key (sha512(rootKey | user) as the Ed25519 seed).
 func (m *gatewayConns) deviceFor(user string) *ws.Device {
-	sum := sha512.Sum512(append(append([]byte{}, m.masterKey...), []byte("|"+user)...))
+	sum := sha512.Sum512(append(append([]byte{}, m.rootKey...), []byte("|"+user)...))
 	seed := sum[:ed25519.SeedSize]
 	return mustDevice(ed25519.NewKeyFromSeed(seed))
 }
@@ -221,7 +225,7 @@ func (m *gatewayConns) DevicePublicKeyFor(user string) string {
 func mustDevice(priv ed25519.PrivateKey) *ws.Device {
 	dev, err := ws.NewDevice(priv.Public().(ed25519.PublicKey), priv)
 	if err != nil {
-		panic(fmt.Sprintf("hitl device: %v", err)) // unreachable for a valid key
+		panic(fmt.Sprintf("gateway device: %v", err)) // unreachable for a valid key
 	}
 	return dev
 }
@@ -353,7 +357,7 @@ func (m *gatewayConns) conn(ctx context.Context, user string) (gatewayClient, er
 			return gw, ctx.Err()
 		}
 	}
-	return gw, fmt.Errorf("hitl connect %s: %w", user, connectErr)
+	return gw, fmt.Errorf("gateway connect %s: %w", user, connectErr)
 }
 
 // gatewayConnected reports whether this process has a gateway channel for the

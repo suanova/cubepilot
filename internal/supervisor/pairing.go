@@ -71,7 +71,8 @@ func gatewayPortFromCmd(argv []string) int {
 
 // ensureDevicePaired approves the platform's device for this gateway once.
 // It reads the desired device public key from the resolved config (served by
-// the platform); when HITL is off the field is empty and this is a no-op.
+// the platform whenever its gateway channel is up); with no key served the
+// field is empty and this is a no-op.
 // Called from the supervisor's poll loop (Run goroutine only).
 func (s *Supervisor) ensureDevicePaired(ctx context.Context) {
 	cfg := s.lastCfg

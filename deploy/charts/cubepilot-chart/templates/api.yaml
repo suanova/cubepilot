@@ -5,7 +5,8 @@
 # multi-replica API sets api.accessModes [ReadWriteMany] on a shared
 # StorageClass (design §9 / §11.1). Note RWX alone is not enough for replicas
 # > 1 -- the JSON metadata store is single-writer and per-session state
-# (SSE hub / HITL) is in-memory, so app-level state handling is the real gate.
+# (SSE hub / the gateway channel) is in-memory, so app-level state handling is
+# the real gate.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

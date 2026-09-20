@@ -21,8 +21,8 @@ import (
 // approvalPolicy only "does something" while the channel that pauses writes can
 // carry the turn. "up" = established/establishable now; "pairing" = first-time
 // device pairing in flight (auto-approves shortly); "down" = the channel cannot
-// be reached, so a gated turn fails closed; "unconfigured" = no HITL machinery
-// (the API could not bring the channel up).
+// be reached, so a gated turn fails closed; "unconfigured" = the API has no
+// channel manager at all (it could not bring the channel up).
 const (
 	approvalChannelUp           = "up"
 	approvalChannelPairing      = "pairing"
@@ -253,9 +253,9 @@ func (s *Server) gatedChannel(ctx context.Context, user string, pol v1alpha1.App
 	default:
 		return ""
 	}
-	// With no HITL manager the channel is unconfigured (after EnableHITL this
-	// only happens when the API could not bring the channel up -- a fatal
-	// misconfig).
+	// With no channel manager the channel is unconfigured (after
+	// StartGatewayChannel this only happens when the API could not bring the
+	// channel up -- a fatal misconfig).
 	if s.gatewayConns == nil {
 		return approvalChannelUnconfigured
 	}

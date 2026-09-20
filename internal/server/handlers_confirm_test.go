@@ -27,7 +27,7 @@ func TestAgentConfirmRoundTrip(t *testing.T) {
 	if !view.Exists || view.Override != "" || view.ApprovalPolicy != v1alpha1.ApprovalPolicyAllowlist {
 		t.Fatalf("initial view = %+v, want exists Allowlist with no override", view)
 	}
-	// No HITL manager in the test server -> the approval channel is unconfigured.
+	// No channel manager in the test server -> the approval channel is unconfigured.
 	if view.Channel != approvalChannelUnconfigured {
 		t.Errorf("channel = %q, want %q", view.Channel, approvalChannelUnconfigured)
 	}
