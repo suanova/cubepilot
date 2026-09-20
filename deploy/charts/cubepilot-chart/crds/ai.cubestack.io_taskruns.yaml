@@ -31,7 +31,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          TaskRun is the execution report (design §3.3.4) -- written by the scheduler
+          TaskRun is the execution report -- written by the scheduler
           with the platform identity, completing the template -> task -> run report
           loop.
         properties:
@@ -54,7 +54,7 @@ spec:
             type: object
           spec:
             description: |-
-              TaskRunSpec is the execution report of a task (design §3.3.4). It is
+              TaskRunSpec is the execution report of a task. It is
               created and written by the scheduler with the platform identity.
             properties:
               creatorTaskRef:
@@ -70,7 +70,7 @@ spec:
               owner:
                 description: |-
                   Owner is the task owner (execution identity; derived from the Task's
-                  owner -- design §3.5).
+                  owner).
                 type: string
               trigger:
                 description: |-
@@ -87,8 +87,8 @@ spec:
           status:
             description: |-
               TaskRunStatus is the execution report written by the scheduler with the
-              platform identity (design §3.3.4: written with the platform identity;
-              Agent instances and user credentials never write CRDs directly).
+              platform identity: Agent instances and user credentials never write CRDs
+              directly.
             properties:
               content:
                 description: Content is the full natural-language report text.
@@ -105,7 +105,7 @@ spec:
               skillRevision:
                 description: |-
                   SkillRevision is the skill revision actually used for this run
-                  (design §3.5: resolved at run time, recorded for audit/rollback).
+                  (resolved at run time, recorded for audit/rollback).
                 type: string
               startedAt:
                 description: StartedAt / FinishedAt bound the run.
@@ -114,7 +114,7 @@ spec:
               templateRevision:
                 description: |-
                   TemplateRevision is the TaskTemplate revision actually used for this run
-                  (design §3.5: resolved at run time, recorded for audit/rollback).
+                  (resolved at run time, recorded for audit/rollback).
                 type: string
             type: object
         type: object

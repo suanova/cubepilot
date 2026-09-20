@@ -28,8 +28,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          AgentTemplate is the declarative definition of an agent (design doc §3.1)
-          -- the platform's first-class object. The builtin cubepilot is the
+          AgentTemplate is the declarative definition of an agent -- the platform's
+          first-class object. The builtin cubepilot is the
           preset first template; the API exposes templates read-only, so a user
           cannot create one.
         properties:
@@ -53,7 +53,7 @@ spec:
           spec:
             description: |-
               AgentTemplateSpec defines what an AgentTemplate is: model, instructions,
-              tools (skill refs) and policy (design §3.1). It is the "class": shared by
+              tools (skill refs) and policy. It is the "class": shared by
               all instances, versioned, user-independent.
 
               Like gateway.ModelKey, the rule below leaves an id that already starts with
@@ -84,12 +84,12 @@ spec:
               allowlist:
                 description: |-
                   Allowlist optionally extends the template's default safe-command
-                  allowlist (issue #116): the effective allowlist is the union of the
-                  platform builtin, these entries and the instance's own (issue #185). Only
-                  meaningful under Allowlist policy.
+                  allowlist: the effective allowlist is the union of the platform builtin,
+                  these entries and the instance's own. Only meaningful under Allowlist
+                  policy.
                 items:
                   description: |-
-                    AllowlistRule is one entry of a safe-command allowlist (issue #116). The
+                    AllowlistRule is one entry of a safe-command allowlist. The
                     grammar is runtime-shaped today ({pattern, argPattern?} -- the OpenClaw argv
                     allowlist shape the builtin default uses); a runtime-neutral grammar is
                     deferred until a second runtime lands. Pattern is the command/executable;
@@ -138,14 +138,14 @@ spec:
                 type: string
               providers:
                 description: |-
-                  Providers is the inline provider list (design §3.3: models are inlined in
-                  the template -- no standalone Model CRD). Each provider declares an
+                  Providers is the inline provider list (models are inlined in the template
+                  -- no standalone Model CRD). Each provider declares an
                   endpoint, an optional credential and the model ids it serves; an instance
                   selects a <provider>/<modelId> ref within this list.
                 items:
                   description: |-
                     TemplateProviderSpec is one OpenAI-compatible LLM provider of an
-                    AgentTemplate (design §3.3: models are inlined -- no standalone Model CRD).
+                    AgentTemplate (models are inlined -- no standalone Model CRD).
                     A provider owns the endpoint and the credential once, and lists the backend
                     model ids reachable through it, so a gateway that serves many models behind
                     one base URL and one key is described once rather than once per model.
@@ -154,7 +154,7 @@ spec:
                       description: |-
                         CredentialRef optionally references a platform-managed Secret (name)
                         holding the apiKey; a provider that needs no credentials omits it (nil).
-                        References only -- never the key itself (design §4.4).
+                        References only -- never the key itself.
                       properties:
                         name:
                           default: ""
@@ -230,9 +230,9 @@ spec:
                 type: string
               skills:
                 description: |-
-                  Skills references Skills (domain knowledge + controlled scripts),
-                  design §3.1 `spec.skills` / §3.4. Generic tools (kubectl exec + schema
-                  discovery) are platform-provided and always available -- NOT listed here.
+                  Skills references Skills (domain knowledge + controlled scripts). Generic
+                  tools (kubectl exec + schema discovery) are platform-provided and always
+                  available -- NOT listed here.
                 items:
                   type: string
                 type: array

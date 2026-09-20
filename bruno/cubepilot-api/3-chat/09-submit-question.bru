@@ -17,7 +17,8 @@ docs {
 
   ⚠️ `id` 和 `questionId` 容易搞混，见 `08-question-pending` 的说明。
 
-  ⚠️ 和 `/approval` 一样，必须用 **canonical 形式的 sessionKey**（问题 #180）。
+  ⚠️ 短形式（`conv-...`）也能用 —— 服务端会先规范化；和 `message_start` 返回的
+  canonical key 保持一致更省事。
 
   回答后主流上出现 `question_resolved`（`answered` / `cancelled` / `expired`）。
 

@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TaskRunPhase is the lifecycle phase of a TaskRun (design §3.3.4:
-// Pending / Running / Completed / Failed / Cancelled).
+// TaskRunPhase is the lifecycle phase of a TaskRun:
+// Pending / Running / Completed / Failed / Cancelled.
 type TaskRunPhase string
 
 const (
@@ -21,15 +21,15 @@ const (
 	TaskRunCancelled TaskRunPhase = "Cancelled"
 )
 
-// TaskRef links a TaskRun back to its Task (design §3.3.4 creatorTaskRef).
+// TaskRef links a TaskRun back to its Task (creatorTaskRef).
 type TaskRef struct {
 	Name string `json:"name"`
 	UID  string `json:"uid,omitempty"`
 }
 
 // TaskRunStatus is the execution report written by the scheduler with the
-// platform identity (design §3.3.4: written with the platform identity;
-// Agent instances and user credentials never write CRDs directly).
+// platform identity: Agent instances and user credentials never write CRDs
+// directly.
 type TaskRunStatus struct {
 	// Phase is Pending / Running / Completed / Failed / Cancelled.
 	Phase TaskRunPhase `json:"phase,omitempty"`
@@ -37,11 +37,11 @@ type TaskRunStatus struct {
 	// +optional
 	Content string `json:"content,omitempty"`
 	// TemplateRevision is the TaskTemplate revision actually used for this run
-	// (design §3.5: resolved at run time, recorded for audit/rollback).
+	// (resolved at run time, recorded for audit/rollback).
 	// +optional
 	TemplateRevision string `json:"templateRevision,omitempty"`
 	// SkillRevision is the skill revision actually used for this run
-	// (design §3.5: resolved at run time, recorded for audit/rollback).
+	// (resolved at run time, recorded for audit/rollback).
 	// +optional
 	SkillRevision string `json:"skillRevision,omitempty"`
 	// StartedAt / FinishedAt bound the run.
@@ -54,13 +54,13 @@ type TaskRunStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-// TaskRunSpec is the execution report of a task (design §3.3.4). It is
+// TaskRunSpec is the execution report of a task. It is
 // created and written by the scheduler with the platform identity.
 type TaskRunSpec struct {
 	// CreatorTaskRef links back to the owning Task.
 	CreatorTaskRef TaskRef `json:"creatorTaskRef"`
 	// Owner is the task owner (execution identity; derived from the Task's
-	// owner -- design §3.5).
+	// owner).
 	Owner string `json:"owner,omitempty"`
 	// Trigger records how this run was started -- the same Task can be fired by
 	// cron and by hand, so this is provenance about the run, not something
@@ -76,7 +76,7 @@ type TaskRunSpec struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// TaskRun is the execution report (design §3.3.4) -- written by the scheduler
+// TaskRun is the execution report -- written by the scheduler
 // with the platform identity, completing the template -> task -> run report
 // loop.
 type TaskRun struct {

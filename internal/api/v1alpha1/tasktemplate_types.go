@@ -4,7 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TaskTriggerKind is how a task is triggered (design §3.3.3).
+// TaskTriggerKind is how a task is triggered.
 // +kubebuilder:validation:Enum=Manual;Cron
 type TaskTriggerKind string
 
@@ -15,7 +15,7 @@ const (
 	TaskTriggerCron TaskTriggerKind = "Cron"
 )
 
-// ParamSchema describes one task parameter (design §3.3.2 paramsSchema).
+// ParamSchema describes one task parameter (paramsSchema).
 type ParamSchema struct {
 	Name string `json:"name"`
 	// Default is the value used when the Task does not override this parameter.
@@ -26,15 +26,15 @@ type ParamSchema struct {
 	Enum []string `json:"enum,omitempty"`
 }
 
-// RequiredPermissions is the permission hint of a task template
-// (design §3.3.2: full-cluster inspection requires the creator to hold
-// cluster-level read permission).
+// RequiredPermissions is the permission hint of a task template:
+// full-cluster inspection requires the creator to hold cluster-level read
+// permission.
 type RequiredPermissions struct {
 	Level string `json:"level,omitempty"`
 	Note  string `json:"note,omitempty"`
 }
 
-// TaskTemplateSpec is a parameterized task template (design §3.3.2) -- the
+// TaskTemplateSpec is a parameterized task template -- the
 // template (what to do), the "class" of tasks. Preloaded: daily-inspection.
 type TaskTemplateSpec struct {
 	// DisplayName is the human-facing template name.
@@ -49,13 +49,13 @@ type TaskTemplateSpec struct {
 	// RequiredPermissions is the permission hint.
 	// +optional
 	RequiredPermissions *RequiredPermissions `json:"requiredPermissions,omitempty"`
-	// Skills declares the skills the task needs (design §3.5: resolved at
-	// execution time against the current versions; the actual revisions used
-	// are recorded on the TaskRun).
+	// Skills declares the skills the task needs (resolved at execution time
+	// against the current versions; the actual revisions used are recorded on
+	// the TaskRun).
 	// +optional
 	Skills []string `json:"skills,omitempty"`
-	// DefaultCron is the creation-wizard default schedule hint (design §3.5:
-	// the Task's own cron wins).
+	// DefaultCron is the creation-wizard default schedule hint (the Task's own
+	// cron wins).
 	// +optional
 	DefaultCron string `json:"defaultCron,omitempty"`
 }
@@ -64,7 +64,7 @@ type TaskTemplateSpec struct {
 // +kubebuilder:printcolumn:name="DisplayName",type="string",JSONPath=".spec.displayName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// TaskTemplate is a parameterized task template (design §3.3.2) -- template !=
+// TaskTemplate is a parameterized task template -- template !=
 // instance != run: TaskTemplate (what to do) != Task (whose task, when it runs)
 // != TaskRun (run report).
 type TaskTemplate struct {

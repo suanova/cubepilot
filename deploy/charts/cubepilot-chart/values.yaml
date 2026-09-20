@@ -16,7 +16,7 @@
 # builds published from main sets it to Always.
 imagePullPolicy: IfNotPresent
 
-# Agent runtime config (per-user OpenClaw instances, design §5).
+# Agent runtime config (per-user OpenClaw instances).
 # runtime names the agent runtime image family: openclaw today, hermes later.
 agents:
   runtime: openclaw
@@ -100,7 +100,7 @@ api:
   resources: {}
   nodeSelector: {}
   tolerations: []
-  # Human-in-the-loop write confirmations (issue #20 / #127) are always on:
+  # Human-in-the-loop write confirmations are always on:
   # the API auto-generates and persists a device root key in a Secret (no
   # operator key to supply) and the in-pod supervisors auto-pair the derived
   # per-user devices. Whether an agent's writes are gated is decided solely by

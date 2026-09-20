@@ -1,5 +1,5 @@
 # Operator -- platform controllers (AgentInstance / builtin bootstrap / CRD
-# scheduler). Leader election on; no HTTP listener, no PVC (design §9 / §11.1).
+# scheduler). Leader election on; no HTTP listener, no PVC.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

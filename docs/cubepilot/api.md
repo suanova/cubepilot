@@ -68,7 +68,7 @@ CubePilot 有**两条**给客户端用的路径。先确定你的客户端属于
 这样同一个概念在两条路径上是同一个名字。
 
 > CRD 是命名空间作用域的，组为 `ai.cubestack.io`，版本 `v1alpha1`。
-> 数据面契约的完整记录见 GitHub issue #148（设计决策记在 issue 里，不在仓库文档里）。
+> 数据面契约的完整记录见对应的 GitHub issue（设计决策记在 issue 里，不在仓库文档里）。
 
 ## 版本
 
@@ -111,7 +111,7 @@ X-CubePilot-User: <用户名>
 
 ## 2.2 响应形状
 
-两条路径共用同一套规则——这也是 §1「以 CRD 字段名为准」在响应结构上的体现：
+两条路径共用同一套规则——这也是第 1 节「以 CRD 字段名为准」在响应结构上的体现：
 
 > **返回一个完整的「东西」→ 用具名 key 包起来，key 就是那个东西的名字。**
 > **返回某个东西的若干字段 → 不加信封，字段直接摊平。**
@@ -171,7 +171,7 @@ X-CubePilot-User: <用户名>
 
 错误体是**可扩展**的：个别端点会在 `error` 之外附带结构化字段，客户端应当容忍未知键。
 目前只有一处：删掉正被选用的模型时——`DELETE` 整个 provider，或 `PUT` 把它服务的某个 id
-从列表里去掉——`409` 额外带一个 `instances` 数组（见 §6.3）。
+从列表里去掉——`409` 额外带一个 `instances` 数组（见第 6.3 节）。
 
 以下状态码**有特定语义**，客户端必须区别处理：
 
@@ -206,7 +206,7 @@ X-CubePilot-User: <用户名>
 - `sessionKey` 含冒号（形如 `agent:main:conv-<uuid>`），**必须 URL 编码**。
 - 会话子资源靠**后缀**匹配，所以 `/api/v1/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
 - 通配路由带尾斜杠会落到兜底 404（如 `/api/v1/llms/`），不会匹配 `{name}`。
-- `/internal/*` 不带版本前缀（见 §1）。
+- `/internal/*` 不带版本前缀（见第 1 节）。
 
 ---
 
@@ -321,7 +321,7 @@ data: {"type":"message_delta","sessionId":"agent:main:conv-x","delta":"集群里
 
 ```
 
-`event:` 名与 `data` 里的 `type` 字段始终一致。全部字段见 §7。
+`event:` 名与 `data` 里的 `type` 字段始终一致。全部字段见第 7 节。
 
 **客户端解析要求**：
 - `EventSource` 只支持 GET，此处是 POST，**必须用 `fetch` + `response.body.getReader()` 手写解析**。
@@ -690,7 +690,7 @@ GET /api/v1/sessions/{key}/question/pending
   空或缺失 → `400`（provider 没有 id 就什么都渲染不出来，也选不中）。
   「按原样」有一个例外：provider 名与 OpenClaw 内置 provider key 同名时会继承该内置 provider
   的 model id 归一化，发给 endpoint 的 id 可能被改写。见
-  [cubepilot-design.md](./cubepilot-design.md) §3.3。
+  [cubepilot-design.md](./cubepilot-design.md) 第 3.3 节。
 - `PUT` **整体替换** endpoint、凭证和 `models`：增删单个 id 就是同一次 PUT 带上全量列表
   （PUT 不带 `models` 不是「保持不变」，是 `400`）。
 - 凭据按 provider 建**一次**（`llm-<name>`），不是每个 id 一个。
@@ -788,7 +788,7 @@ GET /api/v1/sessions/{key}/question/pending
 | `tool_result` | `sessionId`,`name`,`callId`,`output` | 该工具的输出 |
 | `approval_pending` | `sessionId`,`callId`,`name`,`command`,`level`,`message` | 写操作待审批 |
 | `approval_resolved` | `sessionId`,`callId`,`approved` | 确认已提交 |
-| `question_pending` | `sessionId`,`callId`,`question` | 问答待回答（结构见 §5.2） |
+| `question_pending` | `sessionId`,`callId`,`question` | 问答待回答（结构见第 5.2 节） |
 | `question_resolved` | `sessionId`,`callId`,`message` | `answered`/`cancelled`/`expired` |
 | `message_done` | `sessionId`,`error?`,`stopped?` | **唯一的终止事件** |
 
@@ -821,7 +821,7 @@ GET /api/v1/sessions/{key}/question/pending
 5. **SSE 必须手写解析**（`EventSource` 不支持 POST），且要处理流提前断开。
 6. **`sessionKey` 必须 URL 编码**（含冒号）。
 7. **先判断信封再解包** —— 端点返回的是「一个东西」还是「若干字段」决定了要不要往下走一层，
-   见 §2.2。取错层不会报错，只会得到 `undefined`（界面显示为空，后端其实有数据）。
+   见第 2.2 节。取错层不会报错，只会得到 `undefined`（界面显示为空，后端其实有数据）。
 8. **新会话不要自己编 `sessionId`** —— 用 `message_start` 返回的那个。
 9. **创建成功是 `201` 不是 `200`** —— 只判断 `resp.ok` 就没问题；写死 `=== 200` 会误判为失败。
 10. **安装/卸载技能用 `PUT`** —— 幂等的集合成员变更，不是 POST。
