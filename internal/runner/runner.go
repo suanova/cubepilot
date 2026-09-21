@@ -52,7 +52,7 @@ func (r *Runner) RunTask(ctx context.Context, creator, sessionKey, prompt string
 	}
 	var buf strings.Builder
 	var doneErr string
-	err = client.StreamChat(ctx, openclaw.ChatParams{
+	err = client.RunOneShotTurn(ctx, openclaw.ChatParams{
 		Model:      model,
 		SessionKey: sessionKey,
 		Messages:   []openclaw.ChatMessage{{Role: "user", Content: prompt}},

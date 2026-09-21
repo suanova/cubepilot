@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
+func TestRunOneShotTurn_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 	// A canned OpenAI-compatible stream: assistant role -> tool call (exec) ->
 	// content delta -> [DONE]. This is the shape OpenClaw's gateway emits when the
 	// agent chooses to call a tool and then produces its final answer.
@@ -32,7 +32,7 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 
 	c := New(srv.URL, "secret")
 	var got []Event
-	err := c.StreamChat(t.Context(), ChatParams{
+	err := c.RunOneShotTurn(t.Context(), ChatParams{
 		SessionKey: "conv-abc",
 		Messages:   []ChatMessage{{Role: "user", Content: "check abnormal pods"}},
 	}, func(e Event) error {
@@ -40,7 +40,7 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("StreamChat: %v", err)
+		t.Fatalf("RunOneShotTurn: %v", err)
 	}
 
 	types := eventTypes(got)
@@ -76,7 +76,7 @@ func TestStreamChat_MapsOpenAISSEToCubePilotEvents(t *testing.T) {
 	}
 }
 
-func TestStreamChat_SurfacesStreamedError(t *testing.T) {
+func TestRunOneShotTurn_SurfacesStreamedError(t *testing.T) {
 	// The gateway streams an agent-run failure as an OpenAI-compatible error
 	// line before [DONE]. The client must surface it instead of finishing the
 	// turn with no content (which showed only "done" in the portal).
@@ -92,7 +92,7 @@ func TestStreamChat_SurfacesStreamedError(t *testing.T) {
 
 	c := New(srv.URL, "secret")
 	var got []Event
-	err := c.StreamChat(t.Context(), ChatParams{
+	err := c.RunOneShotTurn(t.Context(), ChatParams{
 		SessionKey: "conv-abc",
 		Messages:   []ChatMessage{{Role: "user", Content: "hi"}},
 	}, func(e Event) error {
