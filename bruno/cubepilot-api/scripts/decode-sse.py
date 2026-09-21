@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 /api/v1/messages 的原始 SSE 流转成可读的回放。
+"""把 /api/v1/sessions/{key}/messages 的原始 SSE 流转成可读的回放。
 
 在 Bruno 里把响应面板的内容复制出来存成文件,然后:
 

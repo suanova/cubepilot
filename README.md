@@ -258,7 +258,7 @@ the api `/healthz`, and the Portal HTML.
 # Deploy path only (placeholder apiKey is fine):
 CUBEPILOT_LLM_APIKEY='sk-placeholder' scripts/e2e.sh
 
-# Full conversational e2e (needs a real apiKey; drives POST /api/v1/messages
+# Full conversational e2e (needs a real apiKey; drives POST /api/v1/sessions/{key}/messages
 # over SSE and cold-starts a per-user agent Pod):
 CUBEPILOT_LLM_APIKEY='sk-real' CUBEPILOT_E2E_CHAT=1 scripts/e2e.sh
 ```

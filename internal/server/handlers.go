@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/suanova/cubepilot/internal/audit"
 	"github.com/suanova/cubepilot/internal/metrics"
 	"github.com/suanova/cubepilot/internal/openclaw"
@@ -124,15 +122,31 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(history)
 }
 
-// handleMessages streams one chat turn to the client as CubePilot SSE events.
+// handleMessages serves POST /api/v1/sessions/{key}/messages: it appends one
+// user message to the named conversation and answers with the SSE stream of the
+// turn that message starts.
+//
+// The key is part of the path, and for a conversation that does not exist yet
+// the client is the one that proposes it. The server canonicalises rather than
+// mints, which is what keeps this the only route a new conversation needs: the
+// first POST is the moment the conversation really begins, on the gateway, in
+// the same request that starts its first turn. There is deliberately no create
+// route -- one that answered before the gateway knew the session would hand
+// back a key its own list endpoint denies, and a server-minted key cannot be
+// retried safely, because a lost response leaves the client unable to name what
+// it just created.
+//
+// The client may therefore send either form: a bare "conv-<uuid>" it generated,
+// or a canonical key it got back from an earlier call. canonicalSessionKey
+// accepts both, and message_start reports the canonical one, which is what the
+// client must use from then on.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	var body struct {
-		SessionID string `json:"sessionId"`
-		Content   string `json:"content"`
+		Content string `json:"content"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -142,13 +156,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionKey := body.SessionID
-	if sessionKey == "" {
-		sessionKey = "conv-" + uuid.NewString()
-	}
 	// Use the gateway's canonical form (agent:main:<segment>) for everything so
 	// approval events (which carry it) route to the same stream (issue #20).
-	sessionKey = canonicalSessionKey(sessionKey)
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/messages"))
+	if !hasSessionKey(sessionKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
+		return
+	}
 	user := s.userOf(r)
 
 	metrics.Inc("cubepilot_messages_total", "role=user", 1)

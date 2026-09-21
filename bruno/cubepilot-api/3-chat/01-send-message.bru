@@ -15,10 +15,11 @@ docs {
 
   ## 必读
 
-  - 新会话**不要自己编 key**:`sessionId` 传空,服务端生成 `conv-<uuid>`
-    并**规范化**成 `agent:main:<key>`,在第一个 `message_start` 事件里告诉你。
-    **保存它**,后续所有请求都用它。
-    (本请求的后置脚本会自动把返回的 `sessionId` 写进环境变量。)
+  - **会话的 key 在路径里,新会话由客户端给出。**发请求前如果环境变量
+    `sessionId` 还是空的,前置脚本会生成一个 `conv-<随机>`;服务端把它
+    **规范化**成 `agent:main:<key>`,在第一个 `message_start` 事件里回传。
+    **此后一律用回传的那个**(后置脚本会自动写回环境变量)。
+  - 不要复用已有的 key:服务端区分不出「我就是要用这个会话」和「key 打错了」。
   - `message_delta` 是**追加**;`text_replace` 是**替换**(网关会在工具执行后重写先前的解说文本)。
     把 replace 当 delta 追加会出现重复内容。
   - `message_done` 是**唯一终态**,`error` 与 `stopped:true` 互斥。
@@ -27,8 +28,21 @@ docs {
   - 空闲 15 秒会收到 `: ping` 注释行,不是事件。
 }
 
+script:pre-request {
+  // 新会话的 key 由客户端给出,放在路径里。已经有一个(01 跑过,或手动设过)
+  // 就直接复用 —— 那才是同一个会话。
+  const hex = () => Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
+  let key = "";
+  try { key = bru.getEnvVar("sessionId") || ""; } catch (e) { /* 环境未就绪 */ }
+  if (!key) {
+    key = "conv-" + hex();
+    try { bru.setEnvVar("sessionId", key); } catch (e) { bru.setVar("sessionId", key); }
+    console.log("new conversation key ->", key);
+  }
+}
+
 post {
-  url: {{baseUrl}}/api/v1/messages
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/messages
   body: json
   auth: none
 }
@@ -40,7 +54,6 @@ headers {
 
 body:json {
   {
-    "sessionId": "{{sessionId}}",
     "content": "用一句话自我介绍,不要调用任何工具"
   }
 }

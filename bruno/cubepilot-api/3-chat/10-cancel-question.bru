@@ -15,7 +15,7 @@ docs {
 }
 
 post {
-  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/question
+  url: {{baseUrl}}/api/v1/sessions/{{sessionId}}/questions/cancel
   body: json
   auth: none
 }
@@ -26,8 +26,7 @@ headers {
 
 body:json {
   {
-    "id": "{{questionId}}",
-    "cancel": true
+    "id": "{{questionId}}"
   }
 }
 

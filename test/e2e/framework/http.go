@@ -148,25 +148,33 @@ type SSEEvent struct {
 	Data  json.RawMessage // the data: payload (JSON)
 }
 
-// ChatSSE posts a chat message to the portal's /api/messages and reads the SSE
-// reply stream until message_done (or the stream ends / context deadline). It
-// replicates the assertions the old scripts/e2e.sh chat phase made with curl.
+// ChatSSE posts a chat message to the portal's
+// /api/v1/sessions/{key}/messages and reads the SSE reply stream until
+// message_done (or the stream ends / context deadline). It replicates the
+// assertions the old scripts/e2e.sh chat phase made with curl.
+//
+// sessionID is the conversation the message belongs to, and it is the caller's
+// to choose: a new conversation is named by the client on its first message,
+// which is also the moment it is created. Every e2e caller passes a fresh
+// "e2e-<rand>" key, so each run starts a conversation of its own.
 //
 // HITL (issue #20): when the stream carries a approval_pending (a write paused
 // for a human), the stream only resumes after a decision, so the reader
-// auto-resolves it via POST /api/sessions/{key}/approval with the given decision
-// ("approve" by default; pass another decision to exercise the reject path).
+// auto-resolves it via POST /api/v1/sessions/{key}/approvals/decision with the
+// given decision ("approve" by default; pass another decision to exercise the
+// reject path).
 func (f *Framework) ChatSSE(ctx context.Context, user, sessionID, content string) ([]SSEEvent, error) {
 	return f.ChatSSEWithDecision(ctx, user, sessionID, content, "approve")
 }
 
 // ChatSSEWithDecision is ChatSSE with a configurable approval decision.
 func (f *Framework) ChatSSEWithDecision(ctx context.Context, user, sessionID, content, decision string) ([]SSEEvent, error) {
-	body, err := json.Marshal(map[string]string{"sessionId": sessionID, "content": content})
+	body, err := json.Marshal(map[string]string{"content": content})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := f.do(ctx, http.MethodPost, f.PortalBase+"/api/v1/messages",
+	resp, err := f.do(ctx, http.MethodPost,
+		f.PortalBase+"/api/v1/sessions/"+url.PathEscape(sessionID)+"/messages",
 		bytes.NewReader(body), map[string]string{
 			"Content-Type":     "application/json",
 			"X-CubePilot-User": user,
@@ -237,7 +245,7 @@ func (f *Framework) resolveApproval(ctx context.Context, user string, data json.
 		return err
 	}
 	resp, err := f.do(ctx, http.MethodPost,
-		f.PortalBase+"/api/v1/sessions/"+url.PathEscape(pending.SessionID)+"/approval",
+		f.PortalBase+"/api/v1/sessions/"+url.PathEscape(pending.SessionID)+"/approvals/decision",
 		bytes.NewReader(reqBody), map[string]string{
 			"Content-Type":     "application/json",
 			"X-CubePilot-User": user,

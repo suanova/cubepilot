@@ -194,15 +194,42 @@ type questionEntry struct {
 	TimeoutSeconds int                         `json:"timeoutSeconds,omitempty"`
 }
 
-// handleQuestion serves POST /api/sessions/{key}/question -- the human's answer
-// (or dismissal) for a pending question on this session.
+// handleQuestion serves POST /api/v1/sessions/{key}/questions/answer -- the
+// human's answer for a pending question on this session.
 func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
+	s.resolveQuestion(w, r, "/questions/answer", false)
+}
+
+// handleQuestionCancel serves POST /api/v1/sessions/{key}/questions/cancel --
+// dismissing a pending question so the agent continues its turn instead of
+// waiting out its own (long) timeout.
+//
+// Answer and cancel are two routes rather than one route with a flag, because
+// the body can then carry exactly the fields its route needs: bodies are
+// decoded strictly, so a cancel that arrived with `answers` is a 400 instead of
+// being silently ignored, and `id` keeps its single meaning of "the question
+// record this acts on" instead of doubling as a mode selector.
+func (s *Server) handleQuestionCancel(w http.ResponseWriter, r *http.Request) {
+	s.resolveQuestion(w, r, "/questions/cancel", true)
+}
+
+// resolveQuestion is the shared body of the two routes above: their validation
+// is identical -- the id must name a question record that is still pending on
+// this very session -- and only the gateway RPC differs.
+//
+// On ids: the body's `id` is the QUESTION RECORD id, the one the pending list
+// hands out and that the gateway's question.get / question.resolve /
+// question.cancel are keyed on. It is NOT the per-question `questionId` inside
+// that record, which is only ever the key of an entry in `answers`. The two are
+// easy to confuse, and sending the inner one is a 404 for a question that is
+// plainly on screen.
+func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request, suffix string, cancel bool) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/question"))
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, suffix))
 	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
@@ -214,7 +241,6 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID      string              `json:"id"`
 		Answers map[string][]string `json:"answers"`
-		Cancel  bool                `json:"cancel"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -223,15 +249,15 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id required"})
 		return
 	}
-	if body.Cancel == (len(body.Answers) > 0) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "send either answers or cancel"})
+	if !cancel && len(body.Answers) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "answers required"})
 		return
 	}
 	ctx := r.Context()
 	// Bind the id to this session before acting on it. A stale card (or any
 	// other client holding an id) must not answer a question belonging to a
 	// different session, and only a question the gateway still considers open
-	// may be answered.
+	// may be acted on.
 	rec, err := s.gatewayConns.GetQuestion(ctx, user, body.ID)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
@@ -247,11 +273,13 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	if rec.Status != "pending" || questionExpired(*rec) {
 		// The gateway may have expired it between the card being painted and the
-		// click; the Portal re-syncs the card from this status.
+		// click; the Portal re-syncs the card from this status. The same check is
+		// what refuses to cancel a question another tab already answered -- cancel
+		// acts on a pending record only, never on a settled one.
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "question is no longer pending"})
 		return
 	}
-	if body.Cancel {
+	if cancel {
 		err = s.gatewayConns.CancelQuestion(ctx, user, body.ID)
 	} else {
 		err = s.gatewayConns.ResolveQuestion(ctx, user, body.ID, body.Answers)
@@ -260,38 +288,41 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		s.writeGatewayError(w, user, "question "+body.ID, err, questionErrorStatus)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"questionId": body.ID, "cancelled": body.Cancel})
+	writeJSON(w, http.StatusOK, map[string]any{"questionId": body.ID, "cancelled": cancel})
 }
 
-// handlePendingQuestion serves GET /api/sessions/{key}/question/pending --
-// used to restore a question card after a Portal reload mid-question. It
-// answers 404 when the session has no open question, which is also what a
-// session with no live channel reports: an open question only ever exists
-// alongside the live turn that is parked on it.
+// handlePendingQuestion serves GET /api/v1/sessions/{key}/questions -- the
+// session's open questions, used to restore its cards after a Portal reload
+// mid-question. It is a collection read, so an empty one is 200 with an empty
+// list rather than a 404: that is also what a session with no live channel
+// reports, and it keeps "nothing is open" distinguishable from the 502 below,
+// which means the gateway could not be asked at all.
 func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/question/pending"))
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/questions"))
 	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	noPending := func() {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending question"})
+	empty := func() {
+		writeJSON(w, http.StatusOK, map[string]any{"questions": []questionEntry{}})
 	}
 	if s.gatewayConns == nil {
-		noPending()
+		empty()
 		return
 	}
 	list, err := s.gatewayConns.ListQuestions(r.Context(), user)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
-		noPending()
+		empty()
 		return
 	case err != nil:
+		// "Could not ask" is not "nothing is open". A parked turn would otherwise
+		// look idle, with no card and no way to send another message.
 		s.logf("pending question %s/%s: %v", user, sessionKey, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -313,10 +344,6 @@ func (s *Server) handlePendingQuestion(w http.ResponseWriter, r *http.Request) {
 			Questions:      questionPrompt(rec).Questions,
 			TimeoutSeconds: remainingSeconds(rec.ExpiresAtMs),
 		})
-	}
-	if len(out) == 0 {
-		noPending()
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"questions": out})
 }
