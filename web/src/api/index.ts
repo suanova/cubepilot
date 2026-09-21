@@ -16,86 +16,87 @@ import type {
   TaskTemplate,
 } from './types'
 
-// The server decodes request bodies strictly -- an unknown field is a 400
-// "bad JSON body" for the whole request -- and its rule type is only
-// { pattern, argPattern }. A rule read from the approval view also carries
-// label / source / command, so every rule is reduced to the two fields the
-// server knows before it goes on the wire. (issue #185)
+// wireRule reduces a rule to the two fields the server knows before it goes on
+// the wire. The server decodes request bodies strictly -- an unknown field is a
+// 400 for the whole request -- and its rule type is only { pattern, argPattern },
+// while a rule read from the approval view also carries label / source /
+// command. (issue #185)
 const wireRule = (r: AllowlistRule): AllowlistRule => ({ pattern: r.pattern, argPattern: r.argPattern })
+
+// sessionPath builds a per-session subresource URL. Every session route goes
+// through it so the key is encoded exactly once and exactly the same way: the
+// key contains colons and may contain slashes, and a route that encoded it
+// differently from its siblings would address a different conversation.
+export const sessionPath = (sessionKey: string, sub: string): string =>
+  `/api/v1/sessions/${encodeURIComponent(sessionKey)}${sub}`
 
 export const api = {
   // Chat / sessions
   listSessions: () =>
     apiFetch<{ sessions: SessionInfo[] }>('/api/v1/sessions').then((d) => d.sessions),
   sessionHistory: (sessionKey: string) =>
-    apiFetch<{ items: HistoryMessage[] }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/messages`,
-    ).then((d) => d.items),
+    apiFetch<{ items: HistoryMessage[] }>(sessionPath(sessionKey, '/messages')).then((d) => d.items),
 
   // Stops the session's running turn. The server does not answer until the turn
   // has settled, so a send issued after this resolves cannot be rejected as a
   // concurrent turn.
   abortSession: (sessionKey: string) =>
-    apiFetch<{ ok: boolean }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/abort`,
-      { method: 'POST' },
-    ),
+    apiFetch<{ ok: boolean }>(sessionPath(sessionKey, '/abort'), { method: 'POST' }),
 
   // Whether the session still has a turn in flight -- used after a reload, when
   // this tab has no stream to tell it.
-  sessionTurn: (sessionKey: string) =>
-    apiFetch<{ active: boolean }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/turn`,
-    ),
+  sessionTurn: (sessionKey: string) => apiFetch<{ active: boolean }>(sessionPath(sessionKey, '/turn')),
 
   // HITL write approvals (issue #20 / #116 / #226). A decision names the
   // approval it settles: a session can hold several pending approvals at once,
-  // so the id is what makes the answer land on the card the user clicked.
+  // so the id is what makes the answer land on the card the user clicked. It is
+  // the gateway's approval id, and the endpoint keeps checking it against the
+  // caller, the canonical session key and the still-pending state together.
   postApproval: (
     sessionKey: string,
     approvalId: string,
     decision: 'approve' | 'reject' | 'allow-always',
   ) =>
     apiFetch<{ approved: boolean; decision: string; approvalId?: string; allowlisted?: boolean }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/approval`,
+      sessionPath(sessionKey, '/approvals/decision'),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approvalId, decision }),
       },
     ),
-  // The session's whole pending set, oldest first. 404 (an ApiError) means
-  // nothing is pending, which is the ordinary answer for a session that is not
-  // parked.
+  // The session's whole pending set, oldest first, as a collection read: a
+  // session with nothing pending is an empty array, not a 404. A failure here
+  // is the gateway being unreachable, which is a different answer and must not
+  // be read as "nothing is pending".
   pendingApprovals: (sessionKey: string) =>
-    apiFetch<{ approvals: PendingApproval[] }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/approval/pending`,
-    ).then((d) => d.approvals ?? []),
+    apiFetch<{ approvals: PendingApproval[] }>(sessionPath(sessionKey, '/approvals')).then(
+      (d) => d.approvals ?? [],
+    ),
 
   // Ask-user questions (issue #161): answer or dismiss a question the agent is
   // blocked on, and restore the card after a reload.
+  //
+  // `id` is the QUESTION RECORD id -- the one the pending list hands out and the
+  // one the SSE event carries as callId. It is not the per-question
+  // `questionId` inside that record, which is only ever the key of an entry in
+  // `answers`. Sending the inner one is a 404 for a question that is on screen.
   postQuestion: (sessionKey: string, id: string, answers: Record<string, string[]>) =>
-    apiFetch<{ questionId: string; cancelled: boolean }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/question`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, answers }),
-      },
-    ),
+    apiFetch<{ questionId: string; cancelled: boolean }>(sessionPath(sessionKey, '/questions/answer'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, answers }),
+    }),
   postQuestionCancel: (sessionKey: string, id: string) =>
-    apiFetch<{ questionId: string; cancelled: boolean }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/question`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, cancel: true }),
-      },
-    ),
+    apiFetch<{ questionId: string; cancelled: boolean }>(sessionPath(sessionKey, '/questions/cancel'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }),
   pendingQuestions: (sessionKey: string) =>
-    apiFetch<{ questions: PendingQuestion[] }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionKey)}/question/pending`,
-    ).then((d) => d.questions ?? []),
+    apiFetch<{ questions: PendingQuestion[] }>(sessionPath(sessionKey, '/questions')).then(
+      (d) => d.questions ?? [],
+    ),
 
   // Tasks (FR-M4)
   listTasks: () => apiFetch<{ tasks: Task[] }>('/api/v1/tasks').then((d) => d.tasks),

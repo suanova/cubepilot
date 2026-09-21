@@ -23,13 +23,17 @@ export interface FakeGatewayInit {
   // session with no entry here falls back to `history`.
   historyFor?: Record<string, HistoryMessage[]>
   turnActive?: boolean
-  // A session parked on a human answer: what `/question/pending` serves, so the
-  // restore-on-open path can be exercised without a stream.
+  // A session parked on a human answer: what the questions collection serves, so
+  // the restore-on-open path can be exercised without a stream.
   pendingQuestions?: PendingQuestion[]
-  // A session parked on write approvals: what `/approval/pending` serves. A
+  // A session parked on write approvals: what the approvals collection serves. A
   // list, because one session can hold several pending approvals at once -- and
   // restoring only the newest of them is the bug this shape exists to prevent.
   pendingApprovals?: PendingApproval[]
+  // A pending read that could not be answered (the API's 502). An empty set is a
+  // 200 with an empty list now, so this is the only way the fake can say "we
+  // could not tell" -- which the client must not render as "nothing is parked".
+  pendingFails?: boolean
   // A turn-status read that cannot answer (the API's 502), which is not the same
   // answer as "not running" and must not be rendered as one.
   turnCheckFails?: boolean
@@ -78,7 +82,7 @@ export interface FakeGateway {
    */
   setHistory(items: HistoryMessage[]): void
   /**
-   * Pushes frames onto the attach stream (`GET /sessions/{key}/stream`), the one
+   * Pushes frames onto the attach stream (`GET /sessions/{key}/turn/events`), the one
    * a card restored from the pending endpoint opens. The stream is held open
    * like the real one -- a parked run produces nothing until it is answered.
    */
@@ -141,11 +145,11 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
   const decisions: RecordedRequest[] = []
   const sessions = init.sessions ?? []
   const history = init.history ?? []
-  // What `/question/pending` serves. Mutable, because a question that is
+  // What the questions collection serves. Mutable, because a question that is
   // answered is no longer pending on the gateway either -- and a fake that kept
   // serving it would answer a check the real one would not.
   const pendingQuestions = [...(init.pendingQuestions ?? [])]
-  // What `/approval/pending` serves, mutable for the same reason: an approval
+  // What the approvals collection serves, mutable for the same reason: an approval
   // that was answered is no longer pending, and a fake still serving it would
   // answer a check the real gateway would not.
   const pendingApprovals = [...(init.pendingApprovals ?? [])]
@@ -196,34 +200,38 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
     if (path === '/api/v1/sessions' && method === 'GET') {
       return json({ sessions })
     }
-    if (path === '/api/v1/messages' && method === 'POST') {
-      if (openMode) {
-        openMode = false
-        const body = new ReadableStream<Uint8Array>({
-          start(c) {
-            controller = c
-            for (const chunk of held) c.enqueue(encoder.encode(chunk))
-            held = []
-          },
-        })
-        return new Response(body, {
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
-        })
-      }
-      const chunks = turnChunks ?? []
-      turnChunks = null
-      return sseBody(chunks)
-    }
     const sub = /^\/api\/v1\/sessions\/([^/]+)\/(.+)$/.exec(path)
     if (sub) {
       const key = sub[1] ?? ''
       const known = sessions.some((s) => s.sessionKey === key)
       switch (sub[2]) {
-        // Nested under `items`, which is the wire shape and not a detail: the
-        // client unwraps it, so serving the array directly would test a
-        // client that does not exist.
+        // The conversation, both halves on one path. POST appends a message and
+        // answers with the SSE stream of the turn it starts -- a new
+        // conversation is named by the client in this very path, so there is no
+        // separate create to fake. GET reads the transcript, nested under
+        // `items`, which is the wire shape and not a detail: the client unwraps
+        // it, so serving the array directly would test a client that does not
+        // exist.
         case 'messages':
+          if (method === 'POST') {
+            if (openMode) {
+              openMode = false
+              const body = new ReadableStream<Uint8Array>({
+                start(c) {
+                  controller = c
+                  for (const chunk of held) c.enqueue(encoder.encode(chunk))
+                  held = []
+                },
+              })
+              return new Response(body, {
+                status: 200,
+                headers: { 'Content-Type': 'text/event-stream' },
+              })
+            }
+            const chunks = turnChunks ?? []
+            turnChunks = null
+            return sseBody(chunks)
+          }
           return known ? json({ items: init.historyFor?.[key] ?? history }) : json(NOT_FOUND, 404)
         case 'turn':
           // 502, not `{active:false}`: "could not determine" is the API's own
@@ -236,14 +244,16 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
         // made rather than that the view copes with a slow stop.
         case 'abort':
           return json({})
-        case 'approval':
-        case 'question':
+        case 'approvals/decision':
+        case 'questions/answer':
+        case 'questions/cancel':
           decisions.push(record)
           // The request was made either way, so it is recorded either way; only
           // the answer differs.
           if (init.decisionFails) return json({ error: 'decision not recorded' }, init.decisionStatus ?? 500)
-          if (sub[2] === 'question') pendingQuestions.length = 0
-          if (sub[2] === 'approval') {
+          if (sub[2] === 'questions/answer') pendingQuestions.length = 0
+          if (sub[2] === 'questions/cancel') pendingQuestions.length = 0
+          if (sub[2] === 'approvals/decision') {
             const settled = (record.body as { approvalId?: string })?.approvalId
             const at = pendingApprovals.findIndex((a) => a.approvalId === settled)
             if (at >= 0) pendingApprovals.splice(at, 1)
@@ -254,19 +264,19 @@ export function installFakeGateway(init: FakeGatewayInit = {}): FakeGateway {
           return json({ approved: (record.body as { decision?: string })?.decision !== 'reject',
                         decision: (record.body as { decision?: string })?.decision,
                         approvalId: (record.body as { approvalId?: string })?.approvalId })
-        // Nothing parked answers 404, not an empty list: the client treats 404 as
-        // "no pending approval" and any other failure as an unreadable gateway,
-        // so a fake that answered `{approvals: []}` would collapse the two.
-        case 'approval/pending':
-          return pendingApprovals.length
-            ? json({ approvals: pendingApprovals })
-            : json({ error: 'no pending approval' }, 404)
-        case 'question/pending':
+        // Both are collection reads now: an empty set is 200 with an empty list,
+        // not a 404. The 502 the server answers when it cannot read the gateway
+        // is the answer that must stay distinct, and `pendingFails` covers it in
+        // the tests that care.
+        case 'approvals':
+          if (init.pendingFails) return json({ error: 'gateway unreadable' }, 502)
+          return json({ approvals: pendingApprovals })
+        case 'questions':
           return json({ questions: pendingQuestions })
         // The re-attach stream. Held open: a parked run produces nothing while
         // it waits for the human, and the stream the browser opened for it stays
         // up for as long as that lasts.
-        case 'stream': {
+        case 'turn/events': {
           if (init.attachStatus) {
             return json({ error: 'attach refused' }, init.attachStatus)
           }
