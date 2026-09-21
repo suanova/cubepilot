@@ -47,11 +47,12 @@ type ChatMessage = agentruntime.ChatMessage
 // ChatParams carries the inputs for one agent turn.
 type ChatParams = agentruntime.ChatParams
 
-// StreamChat POSTs a one-shot/background turn and invokes emit for each mapped
+// RunOneShotTurn POSTs a one-shot/background turn and invokes emit for each mapped
 // CubePilot event as the OpenAI-compatible SSE stream is decoded. It always
 // emits a terminal message_done event (even on error). Portal chat does not use
-// this method; it runs over the gateway WebSocket protocol.
-func (c *Client) StreamChat(ctx context.Context, p ChatParams, emit func(Event) error) error {
+// this method; it runs over the gateway WebSocket protocol as a live turn (see
+// internal/openclaw/ws).
+func (c *Client) RunOneShotTurn(ctx context.Context, p ChatParams, emit func(Event) error) error {
 	// The request body carries the OpenClaw agent target. The runtime-neutral
 	// Model field is the backend model override and is sent separately below.
 	body, err := json.Marshal(map[string]any{

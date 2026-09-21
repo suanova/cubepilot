@@ -125,7 +125,7 @@ func TestClient_GetHistory_DefaultsLimit(t *testing.T) {
 	}
 }
 
-func TestClient_StreamChatSendsPerTurnModelOverride(t *testing.T) {
+func TestClient_RunOneShotTurnSendsPerTurnModelOverride(t *testing.T) {
 	type requestValues struct{ header, target string }
 	got := make(chan requestValues, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,8 +142,8 @@ func TestClient_StreamChatSendsPerTurnModelOverride(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "secret")
-	if err := c.StreamChat(t.Context(), ChatParams{Model: "gpt-4o", Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
-		t.Fatalf("StreamChat: %v", err)
+	if err := c.RunOneShotTurn(t.Context(), ChatParams{Model: "gpt-4o", Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
+		t.Fatalf("RunOneShotTurn: %v", err)
 	}
 	values := <-got
 	if values.header != "gpt-4o" {
@@ -163,8 +163,8 @@ func TestClient_NoModelOverride_OmitsHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := New(srv.URL, "secret").StreamChat(t.Context(), ChatParams{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
-		t.Fatalf("StreamChat: %v", err)
+	if err := New(srv.URL, "secret").RunOneShotTurn(t.Context(), ChatParams{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, func(Event) error { return nil }); err != nil {
+		t.Fatalf("RunOneShotTurn: %v", err)
 	}
 	if h := <-gotHeader; h != "" {
 		t.Errorf("x-openclaw-model = %q, want empty (no override set)", h)

@@ -80,7 +80,7 @@ CubePilot 有**两条**给客户端用的路径。先确定你的客户端属于
 
 ## 反向代理的硬性要求
 
-SSE（`POST /api/v1/messages`）必须**关闭代理缓冲**，否则事件会被攒着一起吐，失去流式效果。
+SSE（`POST /api/v1/sessions/{key}/messages`）必须**关闭代理缓冲**，否则事件会被攒着一起吐，失去流式效果。
 参考 `web/nginx.conf`：
 
 ```nginx
@@ -133,7 +133,7 @@ X-CubePilot-User: <用户名>
 | `/api/v1/tasktemplates` | `taskTemplates` |
 | `/api/v1/taskruns` · `/api/v1/taskruns/{name}` | `taskruns` · `taskrun` |
 | `/api/v1/kinds` | `kinds` |
-| `/api/v1/sessions/{key}/question/pending` · `.../approval/pending` | `questions` · `approvals` |
+| `/api/v1/sessions/{key}/questions` · `.../approvals` | `questions` · `approvals`（空集合是 `[]`，不是 404）|
 
 **扁平**（是某个东西的字段，不是一个独立的东西）：
 
@@ -142,8 +142,8 @@ X-CubePilot-User: <用户名>
 | `GET`·`PUT /api/v1/agent/config` | `{exists, selectedModel, userInstructions}` —— 是实例的两个字段，不是名为 config 的对象 |
 | `GET /api/v1/agent/status` | 实例的状态字段 |
 | `GET`·`PUT /api/v1/agent/approval` | 策略视图的字段 |
-| `POST /api/v1/sessions/{key}/approval` | `{approved, decision, approvalId, allowlisted?}` —— 请求要带 `approvalId` |
-| `POST /api/v1/sessions/{key}/question` | `{questionId, cancelled}` |
+| `POST /api/v1/sessions/{key}/approvals/decision` | `{approved, decision, approvalId, allowlisted?}` —— 请求要带 `approvalId` |
+| `POST /api/v1/sessions/{key}/questions/answer` · `.../cancel` | `{questionId, cancelled}` |
 | `POST /api/v1/sessions/{key}/abort` · `GET .../turn` | `{ok}` · `{active}` |
 | `DELETE /api/v1/sessions/{key}` | `{deleted, archived, worktreePreserved?}`，是这次删除的字段，不是一个叫 deleted 的对象 |
 | `DELETE /api/v1/tasks/{id}` | `{deleted}` |
@@ -153,8 +153,8 @@ X-CubePilot-User: <用户名>
 | 端点 | 说明 |
 | --- | --- |
 | `GET /api/v1/sessions/{key}/messages` | 运行时历史文档，原样转发，不重新编码 |
-| `POST /api/v1/messages` | SSE 流，不是 JSON |
-| `GET /api/v1/sessions/{key}/stream` | SSE 流，不是 JSON（观察别人发起的回合） |
+| `POST /api/v1/sessions/{key}/messages` | SSE 流，不是 JSON |
+| `GET /api/v1/sessions/{key}/turn/events` | SSE 流，不是 JSON（观察别人发起的回合） |
 | `GET /internal/gateway/config/{user}` | 原样转发 `openclaw.json` |
 | `GET /internal/skills/{name}/tar` | 原始 gzip |
 
@@ -180,7 +180,7 @@ X-CubePilot-User: <用户名>
 | **503** | `instance warming failed: ...` —— 实例正在冷启动（Pod 未就绪 / 网关未监听） | **等待并重试**，提示「正在启动实例」。这不是故障 |
 | **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
-| **404** | `no pending approval` / `no pending question` | 正常的「已过期 / 无未决项」，**静默忽略** |
+| **200** | `GET .../approvals` · `GET .../questions` 在一个没有未决项的会话上返回 **空集合**（`{"approvals":[]}` / `{"questions":[]}`）| 正常的「无未决项」，**静默忽略**。这不是 404 —— 集合存在，只是空的。注意空集合的含义是「这个进程没有可给你的东西」，不是「上游确定没有」：这两条读接口不新拨网关连接，所以连接断过之后上游可能仍停着一轮而卡片看不见 |
 | **409** | 审批已被别处结掉（`APPROVAL_ALREADY_RESOLVED`）| 这张卡已经不用你决定了。关掉卡片，**不要重试**；换一张卡再决定。同一张卡的两条并发决定不会得到 409 —— 后到的那条会等到前一条有了结果，再按结果回答（已结算 → `404`，前一条失败 → 由它自己结算） |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
@@ -199,12 +199,15 @@ X-CubePilot-User: <用户名>
 | --- | --- | --- |
 | `/api/v1/skills/{name}/install` · `uninstall` | **`PUT`** | 这是幂等的集合成员变更（重复调用结果一致），所以用 PUT 而非 POST |
 | `/api/v1/tasks/{id}/run` · `/toggle` | `POST` | 非幂等（触发一次执行 / 翻转状态），POST 正确 |
-| `POST /api/v1/sessions/{key}/approval` | `POST` | 提交一个决定，是动作 |
+| `POST /api/v1/sessions/{key}/approvals/decision` | `POST` | 提交一个决定，是动作 |
 
 ## 2.5 路径细节
 
 - `sessionKey` 含冒号（形如 `agent:main:conv-<uuid>`），**必须 URL 编码**。
 - 会话子资源靠**后缀**匹配，所以 `/api/v1/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
+- 因此子资源的段落**必须是固定字面量**：路径中间放不下可变参数（`/approvals/{id}/decision` 里的
+  id 与会话 key 无法区分——`agent:main:a/approvals/xyz` 本身是合法 key）。这类资源 id 走请求体，
+  且下面写明了它指的是哪一个 id。
 - 通配路由带尾斜杠会落到兜底 404（如 `/api/v1/llms/`），不会匹配 `{name}`。
 - `/internal/*` 不带版本前缀（见第 1 节）。
 
@@ -221,7 +224,7 @@ CubePilot 的 agent 实例是**常驻**的（起来后不回收），但第一�
 | --- |
 | `GET /api/v1/sessions` |
 | `GET /api/v1/sessions/{key}/messages` |
-| `POST /api/v1/messages` |
+| `POST /api/v1/sessions/{key}/messages` |
 
 **其余所有端点都不加热**——它们直接读 CR 或网关，永远快。
 调用顺序就建立在这条分界上。
@@ -272,15 +275,17 @@ POST /api/v1/instances               → 创建实例（201；已存在则 200 +
 ## 4.1 发送一条消息（SSE）
 
 ```ts
-const resp = await fetch('/api/v1/messages', {
+// 新会话：自己生成一个 key。此后改用 message_start 回传的那个。
+const key = currentSessionId ?? `conv-${crypto.randomUUID()}`
+
+const resp = await fetch(`/api/v1/sessions/${encodeURIComponent(key)}/messages`, {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
     'X-CubePilot-User': user,
   },
   body: JSON.stringify({
-    sessionId: currentSessionId,  // 新会话传 null / '' / 省略
-    content: text,                 // 必填，空白会被拒
+    content: text,   // 必填，空白会被拒
   }),
 })
 ```
@@ -290,17 +295,27 @@ const resp = await fetch('/api/v1/messages', {
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `content` | 是 | 用户消息。空或纯空白 → `400 {"error":"content required"}` |
-| `sessionId` | 否 | 省略或空 → 后端生成 `conv-<uuid>` |
 
-**新会话不要自己编 key。** 后端会生成并**规范化**为 `agent:main:<key>`，
-然后通过第一个事件告知：
+**会话由它的第一条消息创建，没有单独的创建端点。** 新会话时 key 由**客户端**给出：生成一个
+新的 `conv-<uuid>` 放进路径即可。服务端把它**规范化**为 `agent:main:<key>`，然后通过第一个
+事件回传：
 
 ```text
 event: message_start
 data: {"type":"message_start","sessionId":"agent:main:conv-9f3a..."}
 ```
 
-**必须保存这个 `sessionId`**，后续所有请求都用它（它就是 `{key}`）。
+**必须保存这个 `sessionId`**，后续所有请求都用它（它就是 `{key}`）。客户端也可以一直用自己
+生成的那个短 key——服务端每次都做同样的规范化——但用回传的规范形式最省心。
+
+**唯一性是客户端的事。** 服务端无法校验：POST 到一个**已存在**的会话正是常规用法，它区分不出
+"我就是要用这个会话"和"我 key 打错了"。所以**每次开新会话都要生成一个新的 UUID**，不要复用。
+
+**为什么没有 `POST /api/v1/sessions`**：会话存在于网关，平台只是转达。一个先返回 key、
+再由第一条消息真正建会话的端点，会让 `GET /api/v1/sessions`（读网关的会话列表）列不出它——
+一个创建出来却在自己的集合里看不见的资源；而让那个端点真的去网关建，就会多出一个需要预热
+实例的端点，并让侧边栏出现零消息的空会话。此外，服务端生成的 key 在响应丢失时无法安全重试：
+客户端不知道刚才建了哪个会话，重试会再建一个。
 
 响应头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`。
 空闲 15 秒会收到注释行 `: ping` 保活（客户端应忽略非 `data:` 行）。
@@ -381,10 +396,10 @@ GET /api/v1/sessions/{key}/turn   → {"active":true|false}
 ## 4.6 重连到已暂停的回合（re-attach）
 
 ```ts
-GET /api/v1/sessions/{key}/stream   → SSE 流
+GET /api/v1/sessions/{key}/turn/events   → SSE 流
 ```
 
-页面刷新、关标签或连接断开会让 `POST /api/v1/messages` 那条流消失，但**网关侧的回合还在跑**。
+页面刷新、关标签或连接断开会让 `POST /api/v1/sessions/{key}/messages` 那条流消失，但**网关侧的回合还在跑**。
 若它正停在一个人工决定上，卡片可以从 pending 端点恢复——可恢复出来的卡片答完之后，
 续写的输出已经没有流可以送达（写回答的那个标签页只会看到卡片被 settle）。
 这个端点补上那一段：它观察一个**不是自己发起**的回合，把续写送到回答卡片的那一页。
@@ -468,7 +483,7 @@ data: {"type":"approval_pending","sessionId":"...","callId":"<approval id>",
 用户决定后提交：
 
 ```ts
-POST /api/v1/sessions/{key}/approval
+POST /api/v1/sessions/{key}/approvals/decision
 body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-always"}
 ```
 
@@ -498,11 +513,12 @@ data: {"type":"approval_resolved","sessionId":"...","callId":"...","approved":tr
 **刷新后恢复卡片**（必需，不是可选）：
 
 ```ts
-GET /api/v1/sessions/{key}/approval/pending
-// 404 {"error":"no pending approval"} → 静默忽略
+GET /api/v1/sessions/{key}/approvals
+// 200：{"approvals":[]}                     → 没有未决审批，静默忽略
+//                                            （但也可能只是本进程没有连接，见 2.3 节）
 // 200：{"approvals":[{"sessionId","approvalId","tool","command","level","message",
 //                     "createdAtMs","expiresAtMs"}]}
-// 其它错误码（如 502）-> 读不到网关，**不能**当成「没有未决项」
+// 502 → 读不到网关，**不能**当成「没有未决项」
 ```
 
 **失败关闭语义**：`approvalPolicy` 要求「问」时，若审批通道不可用，回合会**直接失败**而不是静默放行。
@@ -531,25 +547,30 @@ data: {"type":"question_pending","sessionId":"...","callId":"<question id>",
 
 ```ts
 // 回答：选项 label
-POST /api/v1/sessions/{key}/question
+POST /api/v1/sessions/{key}/questions/answer
 body: {"id": "<call_id>", "answers": {"<questionId>": ["选项 label"]}}
 
 // 或回答人类自己的文本（`isOther` 或 `options` 为空的问题）
-POST /api/v1/sessions/{key}/question
+POST /api/v1/sessions/{key}/questions/answer
 body: {"id": "<call_id>", "answers": {"<questionId>": ["<自由文本>"]}}
 
 // 或取消（让 agent 继续而不是等到超时）
-POST /api/v1/sessions/{key}/question
-body: {"id": "<call_id>", "cancel": true}
+POST /api/v1/sessions/{key}/questions/cancel
+body: {"id": "<call_id>"}
 ```
+
+**`body.id` 是问答记录的 id**（即 `question_pending` 事件里的 `callId`），不是
+`question.questions[].questionId`。后者只是 `answers` 这个 map 的键，两者很容易混，
+送错会得到 404——而那张卡片明明还在屏幕上。
 
 服务端**原样转发**、不与选项做校验（它不知道网关的答案语义）。网关侧的约束：非多选问题只接受
 **一个**答案（给多个 → `400 does not allow multiple answers`），多选问题可以给多个；Portal 的卡片
 一律按"二选一"提交，不混用 label 与自由文本。
 
-`answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400 {"error":"send either answers or cancel"}`。
+回答和取消是**两条路径**，不是一个路径加 `cancel` 标志：请求体是严格解码的，所以
+`/questions/cancel` 带上 `answers` 会得到 `400` 而不是被静默忽略，`id` 也只有一个含义。
 
-响应：`{"questionId":"...","cancelled":bool}`
+响应：`{"questionId":"...","cancelled":bool}`（`cancelled` 取决于走的是哪条路径）
 
 ```text
 event: question_resolved
@@ -560,15 +581,17 @@ data: {"type":"question_resolved","sessionId":"...","callId":"...",
 **刷新后恢复**：
 
 ```ts
-GET /api/v1/sessions/{key}/question/pending
-// 404 {"error":"no pending question"} → 静默忽略
+GET /api/v1/sessions/{key}/questions
+// 200 {"questions":[]}                    → 没有未决问题，静默忽略
+//                                           （同上：空也可能只是本进程没有连接）
 // 200 {"questions":[{"id","questions":[QuestionItem],"timeoutSeconds"?}]}
+// 502 → 网关问不到，**不能**当成「没有未决问题」
 ```
 
 `timeoutSeconds` 是事件产生时的**剩余时间**，不是绝对截止时刻——倒计时不要依赖客户端时钟与
 服务端一致。
 
-**可能的错误**（`POST .../question`）：
+**可能的错误**（`POST .../questions/answer` · `.../questions/cancel`）：
 
 | 状态 | `error` | 含义 |
 | --- | --- | --- |
@@ -592,15 +615,23 @@ GET /api/v1/sessions/{key}/question/pending
 | --- | --- | --- | --- | --- |
 | GET | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
 | GET | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
-| POST | `/api/v1/messages` | `{"sessionId"?,"content"}` | **SSE 流** | 是 |
-| POST | `/api/v1/sessions/{key}/approval` | `{"approvalId","decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
-| GET | `/api/v1/sessions/{key}/approval/pending` | — | `{"approvals":[{"sessionId","approvalId","tool","command","level","message","createdAtMs","expiresAtMs"}]}` | 否 |
-| POST | `/api/v1/sessions/{key}/question` | `{"id","answers":{qid:[label\|text]}\|"cancel"}` | `{"questionId","cancelled"}` | 否 |
-| GET | `/api/v1/sessions/{key}/question/pending` | — | `{"questions":[...]}` | 否 |
+| POST | `/api/v1/sessions/{key}/messages` | `{"content"}` | **SSE 流** | 是 |
+| POST | `/api/v1/sessions/{key}/approvals/decision` | `{"approvalId","decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
+| GET | `/api/v1/sessions/{key}/approvals` | — | `{"approvals":[{...}]}`，空集合是 `[]` | 否 |
+| POST | `/api/v1/sessions/{key}/questions/answer` | `{"id","answers":{qid:[label\|text]}}` | `{"questionId","cancelled":false}` | 否 |
+| POST | `/api/v1/sessions/{key}/questions/cancel` | `{"id"}` | `{"questionId","cancelled":true}` | 否 |
+| GET | `/api/v1/sessions/{key}/questions` | — | `{"questions":[...]}`，空集合是 `[]` | 否 |
 | POST | `/api/v1/sessions/{key}/abort` | — | `{"ok":true}` | 否 |
 | GET | `/api/v1/sessions/{key}/turn` | — | `{"active":bool}` | 否 |
-| GET | `/api/v1/sessions/{key}/stream` | — | **SSE 流**（观察别人发起的、停在人工决定上的回合） | 否 |
+| GET | `/api/v1/sessions/{key}/turn/events` | — | **SSE 流**（观察别人发起的、停在人工决定上的回合） | 否 |
 | DELETE | `/api/v1/sessions/{key}` | — | `{"deleted":bool,"archived":[...],"worktreePreserved"?}` | 否 |
+
+**新会话的 key 由客户端给出**：第一次 `POST .../messages` 的路径里放一个自己生成的
+`conv-<uuid>`，服务端规范化成 `agent:main:<key>` 并用 `message_start` 回传，此后一律用回传的
+那个。**没有创建会话的端点**——会话由它的第一条消息创建，就是这一次请求。也因此
+没有哪个端点会返回 `201`。
+
+`{key}` 在路径里含冒号，**必须 URL 编码**。
 
 ## 6.2 Agent 配置与实例
 
@@ -774,7 +805,7 @@ GET /api/v1/sessions/{key}/question/pending
 
 # 7. SSE 事件参考
 
-`POST /api/v1/messages` 的全部事件（`event:` 名与 `data.type` 一致）。
+`POST /api/v1/sessions/{key}/messages` 的全部事件（`event:` 名与 `data.type` 一致）。
 除 `type` 外所有字段都是 `omitempty`——**不出现即缺席**。
 
 | `type` | 载荷字段 | 含义 |
@@ -818,11 +849,14 @@ GET /api/v1/sessions/{key}/question/pending
 2. **409 不要重试** —— 同一会话同时只有一个回合；应提示等待或调 `/abort`。
 3. **`text_replace` 是替换不是追加** —— 否则正文重复。
 4. **历史消息的 `content` 有字符串/数组两种形状** —— 必须归一化，否则用户消息消失。
-5. **SSE 必须手写解析**（`EventSource` 不支持 POST），且要处理流提前断开。
+5. **SSE 必须手写解析** —— `EventSource` 只能 GET 且**不能带请求头**，而两条流都要求
+   `X-CubePilot-User`（发消息那条还是 POST）。另外要处理流提前断开。
 6. **`sessionKey` 必须 URL 编码**（含冒号）。
 7. **先判断信封再解包** —— 端点返回的是「一个东西」还是「若干字段」决定了要不要往下走一层，
    见第 2.2 节。取错层不会报错，只会得到 `undefined`（界面显示为空，后端其实有数据）。
-8. **新会话不要自己编 `sessionId`** —— 用 `message_start` 返回的那个。
+8. **新会话的 key 由客户端生成** —— 自己造一个 `conv-<uuid>` 放进路径；服务端规范化后用
+   `message_start` 回传，**此后一律用回传的那个**。不要复用一个已有的 key：服务端区分不出
+   「我就是要用这个会话」和「我 key 打错了」。
 9. **创建成功是 `201` 不是 `200`** —— 只判断 `resp.ok` 就没问题；写死 `=== 200` 会误判为失败。
 10. **安装/卸载技能用 `PUT`** —— 幂等的集合成员变更，不是 POST。
 11. **`/api/v1/sessions` 与历史都要求实例是热的** —— 实例不可达时读不到历史，

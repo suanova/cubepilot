@@ -139,7 +139,7 @@ export interface PlatformObject {
   status?: Record<string, unknown>
 }
 
-// SSE events from /api/v1/messages
+// SSE events from POST /api/v1/sessions/{key}/messages
 export interface SSEMessageStart {
   type: 'message_start'
   sessionId: string
@@ -282,7 +282,7 @@ export type SSEEvent =
   | SSEQuestionResolved
 
 // A question awaiting an answer, served by GET
-// /api/v1/sessions/{key}/question/pending (used to restore a question card
+// /api/v1/sessions/{key}/questions (used to restore a question card
 // after a reload). Mirrors the question_pending event payload.
 export interface PendingQuestion {
   id: string
@@ -291,7 +291,7 @@ export interface PendingQuestion {
 }
 
 // A write awaiting a decision, served by GET
-// /api/v1/sessions/{key}/approval/pending (used to restore approval cards after
+// /api/v1/sessions/{key}/approvals (used to restore approval cards after
 // a reload). Mirrors the approval_pending event payload, stamps included. The
 // endpoint answers the session's whole set: a session can hold several.
 export interface PendingApproval {

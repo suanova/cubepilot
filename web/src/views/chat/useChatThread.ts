@@ -6,7 +6,7 @@
 // owns a line of what happens below -- which is the point: the SSE turn and
 // the parked-card races are the parts it would be worst to have two of.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '@/api'
+import { api, sessionPath } from '@/api'
 import { ApiError, getCurrentUser } from '@/api/client'
 import { streamSSE } from '@/api/sse'
 import type { HistoryContentBlock, HistoryMessage, PendingApproval, QuestionItem, SSEEvent } from '@/api/types'
@@ -63,6 +63,28 @@ export interface ChatThreadApi {
 // while they are still looking at it, slow enough that a turn running for
 // minutes does not become a request storm.
 const noStreamTurnPollInterval = 2000
+
+// newConversationKey names a conversation that does not exist yet. The key is
+// the client's to choose: it goes in the path of the first message, and that
+// POST is also the moment the conversation is created, so there is no create
+// call to ask for one. The server canonicalises it (agent:main:<key>) and
+// message_start reports that form, which is what the view keeps from then on.
+//
+// It must be unique per conversation, because the server cannot tell a reused
+// key from a deliberate one -- posting to an existing conversation is the
+// ordinary case. randomUUID would be the obvious source and is not usable here:
+// it is defined only in a secure context, and the Portal is served over plain
+// http on a cluster address. getRandomValues has no such restriction.
+function newConversationKey(): string {
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    // No Web Crypto at all: an exotic embedder, or a test realm without it.
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  return `conv-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`
+}
 
 export function useChatThread({
   initialSessionKey,
@@ -381,16 +403,25 @@ export function useChatThread({
         for (const p of pending) {
           bubble.items.push({ kind: 'question', question: newBubbleQuestion(id, p.id, p.questions, p.timeoutSeconds) })
         }
-        setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, bubble])
+        // Mirrored into the ref before the state update lands, because the
+        // approvals lookup below parks its cards on the newest assistant bubble
+        // and it is not a render: reading the list this push just replaced would
+        // make it append a second, empty bubble of its own -- and that bubble is
+        // what would be on screen, with the question nowhere in it.
+        const next = existed ? [...bubblesRef.current] : [...bubblesRef.current, bubble]
+        bubblesRef.current = next
+        setBubbles(next)
         requestAnimationFrame(scrollThread)
         attachBubble = bubble
       }
     } catch (e) {
-      // 404 is the ordinary "nothing pending for this session" answer. Anything
-      // else (a gateway failure, a dropped channel) means we could not tell: a
-      // parked turn would then look like an idle one, with no card and no way
-      // to send another message, so say so instead of staying silent.
-      if (!(e instanceof ApiError && e.status === 404) && activeSessionRef.current === id) {
+      // The pending set is a collection read, so "nothing is pending" is a 200
+      // with an empty list and never reaches here. Anything that does is a real
+      // failure to read it -- a gateway failure, a dropped channel -- which
+      // means we could not tell. A parked turn would then look like an idle one,
+      // with no card and no way to send another message, so say so instead of
+      // staying silent.
+      if (activeSessionRef.current === id) {
         setBubbles((prev) => [
           ...prev,
           {
@@ -407,19 +438,16 @@ export function useChatThread({
     try {
       approvals = await api.pendingApprovals(id)
     } catch (e) {
-      // No pending approval for this session; a restored question still needs the
-      // stream its answer's output comes back on. The card was appended before
-      // this lookup went out, so this path can land after a switch, with
+      // No pending approval for this session is an empty list, not an error, so
+      // whatever lands here is the platform failing to read the gateway --
+      // meaning a parked write may be invisible. A restored question still needs
+      // the stream its answer's output comes back on. The card was appended
+      // before this lookup went out, so this path can land after a switch, with
       // dropStream already run -- attaching then would open an invisible stream
       // for the session the user left, holding its one stream against every
       // legitimate client until the next switch or the server's cap. Same guard
       // as the success path below.
-      //
-      // A 404 is the ordinary "nothing pending" answer. Anything else means the
-      // platform could not read the gateway, so a parked write may be invisible
-      // here: say so rather than showing an idle conversation the user cannot
-      // unblock -- the same reasoning the question lookup above applies.
-      if (!(e instanceof ApiError && e.status === 404) && activeSessionRef.current === id) {
+      if (activeSessionRef.current === id) {
         setBubbles((prev) => [
           ...prev,
           {
@@ -436,6 +464,7 @@ export function useChatThread({
     }
     if (activeSessionRef.current !== id) return // stale: a different session is now active
     const { bubble: confirmBubble, existed } = parkedBubble()
+    let parkedBubbleHasCard = false
     for (const p of approvals) {
       // One card per approval, and none for one this view already holds: a
       // restore read and a live event are two accounts of the same approval,
@@ -444,14 +473,27 @@ export function useChatThread({
         continue
       }
       confirmBubble.items.push({ kind: 'approval', confirm: newBubbleConfirm(p.sessionId, p) })
+      parkedBubbleHasCard = true
     }
-    setBubbles(existed ? [...bubblesRef.current] : [...bubblesRef.current, confirmBubble])
-    syncAllowAlways()
-    requestAnimationFrame(scrollThread)
+    // An empty set draws nothing. Appending the bubble anyway would replace the
+    // one a restored question is already on -- this read is not a render, so
+    // `bubblesRef.current` is still the list from before that push -- and the
+    // question card would be off screen with no way back to it.
+    if (parkedBubbleHasCard) {
+      const next = existed ? [...bubblesRef.current] : [...bubblesRef.current, confirmBubble]
+      bubblesRef.current = next
+      setBubbles(next)
+      syncAllowAlways()
+      requestAnimationFrame(scrollThread)
+    }
     // An approval parks the run just like a question, so the same stream carries
     // its continuation. The question card wins when both exist: it sits above the
-    // approval, so the resumed output reads as its answer.
-    if (attach) void attachTurn(id, attachBubble || confirmBubble)
+    // approval, so the resumed output reads as its answer. Nothing parked means
+    // nothing to attach to -- and the route would refuse an attach for a run that
+    // is not parked, which the caller would then have to tell apart from a
+    // failure.
+    const card = attachBubble || (parkedBubbleHasCard ? confirmBubble : null)
+    if (attach && card) void attachTurn(id, card)
   }
 
   // parkedBubble is the bubble a restored card belongs to: the turn the parked
@@ -841,7 +883,7 @@ export function useChatThread({
     let observedTerminal = false
     try {
       await streamSSE(
-        `/api/v1/sessions/${encodeURIComponent(id)}/stream`,
+        sessionPath(id, '/turn/events'),
         // streamSSE fetches directly, so the identity every other request gets
         // from apiFetch has to be passed here explicitly, as the turn stream
         // does. Without it the server resolves the default user -- and a card
@@ -892,8 +934,10 @@ export function useChatThread({
 
   // applyTurnEvent folds one SSE event into the bubble it belongs to. It is the
   // one render path for a turn's output, shared by the stream this tab started
-  // (/api/v1/messages) and one it re-attached to (/api/v1/sessions/{key}/stream,
+  // (POST .../messages) and one it re-attached to (GET .../turn/events,
   // issue #167), so a turn this tab merely observes renders like one it drove.
+  // The two carry the same event vocabulary, which is why they are named after
+  // the events rather than after the stream.
   //
   // Two things are deliberately not here, because they belong to the stream
   // rather than to the bubble: `message_start` (which session the stream turned
@@ -1219,22 +1263,27 @@ export function useChatThread({
 
     const gen = ++streamGenRef.current
     const stale = () => streamGenRef.current !== gen
-    // The session this stream turned out to be for. A brand-new chat has no id
-    // at send time -- the server mints one and reports it in message_start --
-    // so the send-time `currentSessionId` cannot name it. Needed by the
-    // synthesized terminal below, which carries no sessionId of its own.
-    let turnSession = currentSessionId
+    // The conversation this send is for. A brand-new chat has no id yet, so
+    // this view names it: the key goes in the path, and this POST is also the
+    // moment the conversation is created. The server canonicalises it and
+    // message_start below reports the canonical form.
+    const proposedKey = currentSessionId ?? newConversationKey()
+    // The session this stream turned out to be for. A brand-new chat names
+    // itself with a short key that the server canonicalises, so the canonical
+    // form still only arrives in message_start. Needed by the synthesized
+    // terminal below, which carries no sessionId of its own.
+    let turnSession = proposedKey
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
 
     try {
       await streamSSE(
-        '/api/v1/messages',
+        sessionPath(proposedKey, '/messages'),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CubePilot-User': getCurrentUser() },
-          body: JSON.stringify({ sessionId: currentSessionId, content: text }),
+          body: JSON.stringify({ content: text }),
         },
         (_evName, ev) => {
           if (stale()) {

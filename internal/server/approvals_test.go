@@ -516,7 +516,7 @@ func TestHandleApprovalSettlesTheNamedId(t *testing.T) {
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "kubectl delete pod foo", 1000))
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 		map[string]any{"approvalId": "appr-1", "decision": "approve"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -546,7 +546,7 @@ func TestHandleApprovalRequiresTheId(t *testing.T) {
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 		map[string]any{"decision": "approve"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
@@ -564,11 +564,11 @@ func TestHandleApprovalIsConnectionScoped(t *testing.T) {
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "bob", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("bob pending GET status = %d, want 404", rec.Code)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approvals", "bob", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"approvals":[]`) {
+		t.Fatalf("bob pending GET status = %d body = %s, want 200 with an empty set", rec.Code, rec.Body.String())
 	}
-	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "bob",
+	rec = doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "bob",
 		map[string]any{"approvalId": "appr-1", "decision": "approve"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("bob decision status = %d, want 404", rec.Code)
@@ -601,7 +601,7 @@ func TestHandleApprovalMapsGatewayErrors(t *testing.T) {
 			}
 			srv, _ := newApprovalServer(t, gw)
 
-			rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+			rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 				map[string]any{"approvalId": "appr-1", "decision": "approve"})
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
@@ -616,7 +616,7 @@ func TestHandleApprovalMapsGatewayErrors(t *testing.T) {
 func TestHandleApprovalNoChannelIsUnavailable(t *testing.T) {
 	srv, _ := newApprovalServer(t, &gatewayStub{listErr: errNoApprovalChannel})
 
-	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 		map[string]any{"approvalId": "appr-1", "decision": "approve"})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
@@ -636,7 +636,7 @@ func TestHandleApprovalDoubleClickSettlesOnce(t *testing.T) {
 
 	first := make(chan int, 1)
 	go func() {
-		rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+		rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 			map[string]any{"approvalId": "appr-1", "decision": "approve"})
 		first <- rec.Code
 	}()
@@ -644,7 +644,7 @@ func TestHandleApprovalDoubleClickSettlesOnce(t *testing.T) {
 
 	second := make(chan int, 1)
 	go func() {
-		rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+		rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 			map[string]any{"approvalId": "appr-1", "decision": "reject"})
 		second <- rec.Code
 	}()
@@ -674,7 +674,7 @@ func TestHandlePendingApprovalListsTheSessionSet(t *testing.T) {
 	)
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "alice", nil)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approvals", "alice", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 	}
@@ -699,23 +699,25 @@ func TestHandlePendingApprovalListsTheSessionSet(t *testing.T) {
 }
 
 // TestHandlePendingApprovalEmptyOrUnavailable pins the two answers that are not
-// a list. "Nothing pending" is a 404, the convention the sibling question
-// endpoint uses; a gateway that could not answer is a 502, because a page that
-// reloaded onto a parked write must not be told there is nothing to show.
+// a list. "Nothing pending" is a 200 carrying an empty collection, the
+// convention the sibling questions endpoint uses; a gateway that could not
+// answer is a 502, because a page that reloaded onto a parked write must not be
+// told there is nothing to show. The two must stay distinguishable, which is
+// the whole reason the empty case stopped being a 404.
 func TestHandlePendingApprovalEmptyOrUnavailable(t *testing.T) {
 	gw := &gatewayStub{}
 	gw.set("alice", approvalRecord("appr-9", "agent:main:conv-2", "elsewhere", 1000))
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "alice", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("empty status = %d, want 404", rec.Code)
+	rec := doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approvals", "alice", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"approvals":[]`) {
+		t.Fatalf("empty status = %d body = %s, want 200 with an empty set", rec.Code, rec.Body.String())
 	}
 
 	gw.mu.Lock()
 	gw.listErr = errors.New("ws write exec.approval.list: broken pipe")
 	gw.mu.Unlock()
-	rec = doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approval/pending", "alice", nil)
+	rec = doReq(t, srv.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/approvals", "alice", nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("unreadable status = %d, want 502: a failed read must not read as \"nothing pending\"", rec.Code)
 	}
@@ -730,7 +732,7 @@ func TestHandleApprovalAcceptsAShortSessionKey(t *testing.T) {
 	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
 	srv, _ := newApprovalServer(t, gw)
 
-	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approval", "alice",
+	rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
 		map[string]any{"approvalId": "appr-1", "decision": "approve"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())

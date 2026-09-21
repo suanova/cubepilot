@@ -164,8 +164,16 @@ type LiveTurnRunner interface {
 
 // OneShotRunner drives non-interactive turns such as scheduled tasks and
 // synchronous inspections.
+//
+// RunOneShotTurn is deliberately named as the counterpart of RunLiveTurn. The
+// only reason to reach for this surface rather than the live one is that the
+// turn is one-shot, so the two names are what tells a caller which it holds --
+// the interface names alone are easy to skim past in a completion list. The
+// signature difference follows from the same distinction rather than being an
+// inconsistency: a one-shot turn has no Stop control, so there is no "stopped
+// by request" outcome for it to report (see TurnOutcome).
 type OneShotRunner interface {
-	StreamChat(ctx context.Context, params ChatParams, emit func(Event) error) error
+	RunOneShotTurn(ctx context.Context, params ChatParams, emit func(Event) error) error
 }
 
 // SessionReader exposes read-only session metadata and history.

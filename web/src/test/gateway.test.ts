@@ -32,7 +32,7 @@ describe('fake gateway', () => {
     gateway.setTurn(events)
 
     const seen: SSEEvent[] = []
-    await streamSSE('/api/v1/messages', { method: 'POST', body: '{}' }, (_n, ev) => seen.push(ev))
+    await streamSSE('/api/v1/sessions/agent:main:conv-1/messages', { method: 'POST', body: '{}' }, (_n, ev) => seen.push(ev))
 
     expect(seen).toEqual(events)
   })
@@ -50,7 +50,7 @@ describe('fake gateway', () => {
     gateway.setTurnRaw([whole.slice(0, 10), whole.slice(10)])
 
     const seen: SSEEvent[] = []
-    await streamSSE('/api/v1/messages', { method: 'POST', body: '{}' }, (_n, ev) => seen.push(ev))
+    await streamSSE('/api/v1/sessions/agent:main:conv-1/messages', { method: 'POST', body: '{}' }, (_n, ev) => seen.push(ev))
 
     expect(seen).toEqual([
       { type: 'message_delta', sessionId: 's', delta: 'split' },
@@ -62,11 +62,11 @@ describe('fake gateway', () => {
     gateway = installFakeGateway()
     gateway.install()
 
-    await fetch('/api/v1/messages', { method: 'POST', body: JSON.stringify({ content: 'hello' }) })
+    await fetch('/api/v1/sessions/agent:main:conv-1/messages', { method: 'POST', body: JSON.stringify({ content: 'hello' }) })
 
     expect(gateway.requests).toHaveLength(1)
     expect(gateway.requests[0]).toMatchObject({
-      path: '/api/v1/messages',
+      path: '/api/v1/sessions/agent:main:conv-1/messages',
       method: 'POST',
       body: { content: 'hello' },
     })
@@ -79,7 +79,7 @@ describe('fake gateway', () => {
 
     const seen: SSEEvent[] = []
     const streamed = streamSSE(
-      '/api/v1/messages',
+      '/api/v1/sessions/agent:main:conv-1/messages',
       { method: 'POST', body: '{}' },
       (_n, ev) => seen.push(ev),
     )

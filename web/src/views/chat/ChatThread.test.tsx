@@ -91,13 +91,12 @@ describe('a conversation with no session list', () => {
     await user.type(screen.getByLabelText('Message input'), 'follow-up')
     await user.click(screen.getByLabelText('Send'))
 
-    // The first message addresses the fixed conversation rather than leaving
-    // the server to mint one -- which is what makes the widget and the Chat
-    // view the same conversation instead of two.
-    expect(gateway.requests.find((r) => r.path === '/api/v1/messages')?.body).toMatchObject({
-      sessionId: KEY,
-      content: 'follow-up',
-    })
+    // The first message addresses the fixed conversation by name, in its path:
+    // a conversation is named by the client on its first message, and that is
+    // what makes the widget and the Chat view the same conversation instead of
+    // two.
+    const sent = gateway.requests.find((r) => r.method === 'POST' && r.path === `/api/v1/sessions/${KEY}/messages`)
+    expect(sent?.body).toMatchObject({ content: 'follow-up' })
     expect(await screen.findByText(/and the answer/)).toBeInTheDocument()
   })
 

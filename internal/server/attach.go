@@ -9,27 +9,31 @@ import (
 )
 
 // Re-attach to a parked turn (issue #167). A turn's events are written only to
-// the SSE stream that the POST /api/v1/messages request opened, so when that
-// request goes away -- a page reload, a closed or discarded tab, a dropped
-// connection -- nothing observes the run any more. The run itself keeps going:
-// it is parked on a human decision, and the next page load restores its card
-// from the gateway's own state. This route is what makes that restored card
+// the SSE stream that the POST /api/v1/sessions/{key}/messages request opened,
+// so when that request goes away -- a page reload, a closed or discarded tab, a
+// dropped connection -- nothing observes the run any more. The run itself keeps
+// going: it is parked on a human decision, and the next page load restores its
+// card from the gateway's own state. This route is what makes that restored card
 // answerable in place: it observes the parked run and carries its continuation
 // to the browser that answers.
 
-// handleSessionStream serves GET /api/v1/sessions/{key}/stream, an SSE stream
-// that observes a turn the caller did not start. It ends with a message_done
-// when the run goes terminal -- and without one when it never got that far: a
-// stream that observed no run of its own has no outcome to report, and reporting
-// one would settle the browser's card on a decision that may still be the live
-// one blocking the run (see errAttachSetup and the revalidation below).
+// handleSessionStream serves GET /api/v1/sessions/{key}/turn/events, an SSE
+// stream that observes a turn the caller did not start. The name is the turn's
+// events rather than "the stream" because that is what it carries -- the same
+// event vocabulary POST .../messages answers with, folded by the same client
+// path -- so the verb is what separates the two: POST creates a message and
+// starts a turn, GET only observes one. It ends with a message_done when the
+// run goes terminal -- and without one when it never got that far: a stream
+// that observed no run of its own has no outcome to report, and reporting one
+// would settle the browser's card on a decision that may still be the live one
+// blocking the run (see errAttachSetup and the revalidation below).
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/stream"))
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/turn/events"))
 	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return

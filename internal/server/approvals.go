@@ -368,15 +368,23 @@ var (
 
 // --- HTTP handlers -----------------------------------------------------------
 
-// handleApproval serves POST /api/sessions/{key}/approval -- the human's decision
-// for one pending write, named by its approval id.
+// handleApproval serves POST /api/v1/sessions/{key}/approvals/decision -- the
+// human's decision for one pending write, named by its approval id.
+//
+// The id travels in the body rather than the path. That is forced by the
+// subresource router, which recovers the session key by stripping a fixed
+// trailing literal and so cannot carry a path parameter (see
+// handleSessionSubresource). The id is nonetheless required and authoritative:
+// a session can hold several pending approvals, so a decision that does not
+// name one has no correct meaning, and defaulting to "the newest" is exactly
+// how a click on one card used to settle another (#226).
 func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval"))
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approvals/decision"))
 	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
@@ -467,39 +475,40 @@ type approvalEntry struct {
 	ExpiresAtMs int64  `json:"expiresAtMs,omitempty"`
 }
 
-// handlePendingApproval serves GET /api/sessions/{key}/approval/pending — used to
+// handlePendingApproval serves GET /api/v1/sessions/{key}/approvals — used to
 // restore confirmation cards after a Portal reload mid-approval. It answers the
 // session's whole pending set, because a session can hold several approvals at
 // once and the page that reloads must come back with all of them.
 //
-// 404 means "nothing pending", the same convention the sibling question endpoint
-// uses, so that two subresources of one session do not give an empty read two
-// different meanings.
+// An empty set is 200 with an empty list, the same convention the sibling
+// questions collection uses, so that two subresources of one session do not
+// give an empty read two different meanings -- and so that "nothing is pending"
+// and the 502 below ("the gateway could not be asked") stay distinguishable.
 func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
 		return
 	}
 	user := s.userOf(r)
-	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approval/pending"))
+	sessionKey := canonicalSessionKey(subresourceKey(r.URL.Path, "/approvals"))
 	if !hasSessionKey(sessionKey) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing session key"})
 		return
 	}
-	noPending := func() {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no pending approval"})
+	empty := func() {
+		writeJSON(w, http.StatusOK, map[string]any{"approvals": []approvalEntry{}})
 	}
 	if s.approvals == nil {
-		noPending()
+		empty()
 		return
 	}
 	list, err := s.approvals.Pending(r.Context(), user, sessionKey)
 	switch {
 	case errors.Is(err, errNoApprovalChannel):
 		// No channel means no open approval, the same answer the question
-		// endpoint gives: an approval only ever exists alongside the live turn
+		// collection gives: an approval only ever exists alongside the live turn
 		// that is parked on it, and that turn has the channel.
-		noPending()
+		empty()
 		return
 	case err != nil:
 		// A gateway that could not answer is not a session with nothing pending:
@@ -521,10 +530,6 @@ func (s *Server) handlePendingApproval(w http.ResponseWriter, r *http.Request) {
 			CreatedAtMs: p.CreatedAtMs,
 			ExpiresAtMs: p.ExpiresAtMs,
 		})
-	}
-	if len(out) == 0 {
-		noPending()
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
 }

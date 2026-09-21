@@ -52,7 +52,7 @@ const OPTIONS_QUESTION: QuestionItem = {
 }
 
 function answerBody(): unknown {
-  return gateway?.decisions.find((d) => d.path === `/api/v1/sessions/${KEY}/question`)?.body
+  return gateway?.decisions.find((d) => d.path === `/api/v1/sessions/${KEY}/questions/answer`)?.body
 }
 
 describe("answering a question with the human's own text", () => {

@@ -39,14 +39,14 @@ describe('ChatView turn', () => {
     render(<ChatView />)
     await send('how is the cluster?')
 
-    // The request carried the text, and named no session: the first turn of a
-    // conversation learns its key from `message_start`, which is the contract
-    // the widget's fixed key has to fit into.
+    // The request carried the text, and named its own conversation: the first
+    // turn of a new chat puts a client-generated key in the path, and the
+    // server's canonical form comes back in `message_start`.
     expect(await screen.findByText('how is the cluster?')).toBeInTheDocument()
-    expect(gateway!.requests.find((r) => r.path === '/api/v1/messages')?.body).toMatchObject({
-      sessionId: null,
-      content: 'how is the cluster?',
-    })
+    const first = gateway!.requests.find(
+      (r) => r.method === 'POST' && /^\/api\/v1\/sessions\/conv-[0-9a-f]+\/messages$/.test(r.path),
+    )
+    expect(first?.body).toMatchObject({ content: 'how is the cluster?' })
 
     // Both deltas landed, and the turn reached its terminal: the send control
     // is a Send again rather than a Stop.
@@ -185,7 +185,7 @@ describe('ChatView write confirmation', () => {
 
     expect(gateway!.decisions).toHaveLength(1)
     expect(gateway!.decisions[0]).toMatchObject({
-      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      path: '/api/v1/sessions/agent:main:conv-1/approvals/decision',
       // The decision names its approval. A session can hold several pending
       // approvals, so an answer that does not name one settles whichever the
       // platform looks up rather than the card that was clicked.
@@ -202,7 +202,7 @@ describe('ChatView write confirmation', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Reject' }))
 
     expect(gateway!.decisions[0]).toMatchObject({
-      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      path: '/api/v1/sessions/agent:main:conv-1/approvals/decision',
       body: { approvalId: 'a1', decision: 'reject' },
     })
   })
@@ -227,7 +227,7 @@ describe('ChatView write confirmation', () => {
 
     expect(gateway!.decisions).toHaveLength(1)
     expect(gateway!.decisions[0]).toMatchObject({
-      path: '/api/v1/sessions/agent:main:conv-1/approval',
+      path: '/api/v1/sessions/agent:main:conv-1/approvals/decision',
       body: { approvalId: 'a1', decision: 'approve' },
     })
     // The other card is untouched: it is still the user's to answer, and the
@@ -471,7 +471,7 @@ describe('ChatView question', () => {
     await user.click(screen.getByRole('button', { name: 'Submit' }))
 
     expect(gateway!.decisions[0]).toMatchObject({
-      path: '/api/v1/sessions/agent:main:conv-1/question',
+      path: '/api/v1/sessions/agent:main:conv-1/questions/answer',
       body: { id: 'q1', answers: { env: ['dev'] } },
     })
   })
@@ -740,9 +740,9 @@ describe('ChatView re-attach', () => {
   // waits for the request instead of driving it.
   async function attachRequest() {
     await waitFor(() => {
-      expect(gateway!.requests.some((r) => r.path.endsWith('/stream'))).toBe(true)
+      expect(gateway!.requests.some((r) => r.path.endsWith('/turn/events'))).toBe(true)
     })
-    return gateway!.requests.find((r) => r.path.endsWith('/stream'))!
+    return gateway!.requests.find((r) => r.path.endsWith('/turn/events'))!
   }
 
   it('identifies itself as the user the card was restored for', async () => {
@@ -769,7 +769,7 @@ describe('ChatView re-attach', () => {
     // The same identity the card was restored with, which is what makes the two
     // halves find the same session.
     expect(
-      gateway!.requests.find((r) => r.path.endsWith('/question/pending'))?.headers?.['X-CubePilot-User'],
+      gateway!.requests.find((r) => r.path.endsWith('/questions'))?.headers?.['X-CubePilot-User'],
     ).toBe('bob')
   })
 
@@ -788,7 +788,7 @@ describe('ChatView re-attach', () => {
     })
     gateway.install()
 
-    const release = gateway.holdPath('conv-1/stream')
+    const release = gateway.holdPath('conv-1/turn/events')
 
     const user = userEvent.setup()
     render(<ChatView />)
@@ -807,7 +807,7 @@ describe('ChatView re-attach', () => {
     expect(await screen.findByText(/All nodes are ready\./, undefined, { timeout: 5000 })).toBeInTheDocument()
     // Exactly one attach: the catch-up reload drew the card again and attached
     // nothing, so the refusal did not repeat.
-    expect(gateway.requests.filter((r) => r.path.endsWith('conv-1/stream'))).toHaveLength(1)
+    expect(gateway.requests.filter((r) => r.path.endsWith('conv-1/turn/events'))).toHaveLength(1)
   }, 15000)
 
   it('catches up when the card is answered before the attach arrives', async () => {
@@ -823,7 +823,7 @@ describe('ChatView re-attach', () => {
     gateway.install()
 
     // The attach is held at the gate until the answer has gone out.
-    const release = gateway.holdPath('conv-1/stream')
+    const release = gateway.holdPath('conv-1/turn/events')
 
     const user = userEvent.setup()
     render(<ChatView />)
@@ -948,7 +948,7 @@ describe('ChatView requests that outlive their session', () => {
     gateway.install()
 
     // No pending approval, and the answer is held until the user has moved on.
-    const release = gateway.holdPath('agent:main:conv-a/approval/pending')
+    const release = gateway.holdPath('agent:main:conv-a/approvals')
 
     const user = userEvent.setup()
     render(<ChatView />)
@@ -959,7 +959,7 @@ describe('ChatView requests that outlive their session', () => {
     release()
     await settle()
 
-    expect(gateway.requests.filter((r) => r.path.includes('conv-a/stream'))).toEqual([])
+    expect(gateway.requests.filter((r) => r.path.includes('conv-a/turn/events'))).toEqual([])
   })
 })
 

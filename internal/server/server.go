@@ -176,8 +176,7 @@ func (s *Server) Handler() http.Handler {
 	// published skill is tar content on the API-owned repository, not a Skill
 	// CR.
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
-	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource) // {key}/messages|approval[/pending]|question[/pending]|abort|turn, or the bare {key} itself
-	mux.HandleFunc("/api/v1/messages", s.handleMessages)
+	mux.HandleFunc("/api/v1/sessions/", s.handleSessionSubresource) // {key}/messages|turn[/events]|approvals[/decision]|questions[/answer|cancel]|abort, or the bare {key} itself
 	mux.HandleFunc("/api/v1/audit", s.handleAudit)
 	mux.HandleFunc("/api/v1/skills/{name}/publish", s.handlePublishSkill)
 
@@ -228,12 +227,14 @@ func (s *Server) Handler() http.Handler {
 }
 
 // handleSessionSubresource routes the per-session subresources under
-// /api/v1/sessions/{key}/: the conversation itself (messages), the
-// human-in-the-loop endpoints (approval, question), the turn controls
-// (abort, turn), and the observation stream (stream). History (messages) is
+// /api/v1/sessions/{key}/: the conversation itself (messages), the turn
+// controls and its observation stream (turn, turn/events, abort), and the
+// human-in-the-loop resources (approvals, questions). History (messages) is
 // served from the live runtime session -- the runtime is the only source of
 // truth for conversation content (design §3.6), so reading it requires the
-// instance to be warm.
+// instance to be warm. A new conversation names itself: the client proposes the
+// key on the first POST, which is also the moment the conversation really
+// begins, so there is no create route and no server-minted key to report back.
 //
 // DELETE is matched before the suffixes, because no subresource under this
 // prefix accepts it: they are read with GET and acted on with POST. So a DELETE
@@ -247,6 +248,14 @@ func (s *Server) Handler() http.Handler {
 // session itself: the bare-key route, which only DELETE acts on, so a non-DELETE
 // method there gets handleSessionDelete's 405.
 //
+// Every suffix is a fixed trailing literal, and that is a constraint rather
+// than a style: the session key is allowed to contain slashes, so the key is
+// recovered by stripping a known suffix off the whole remainder. A path
+// parameter in the middle (the shape "/approvals/{id}/decision" would want)
+// cannot be told apart from such a key -- "agent:main:a/approvals/xyz" is a
+// legal key -- so the ids these routes act on travel in the request body
+// instead. See api-conventions.md §3.
+//
 // That fallthrough is deliberately not a refusal. The key is the whole
 // remainder, so a session key containing a slash is reachable exactly as it is
 // on the subresource routes ("/api/v1/sessions/a/b" is the session "a/b"), and
@@ -259,21 +268,29 @@ func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request
 	case r.Method == http.MethodDelete:
 		s.handleSessionDelete(w, r)
 	case strings.HasSuffix(r.URL.Path, "/messages"):
+		// GET reads the transcript; POST appends a message and answers with the
+		// SSE stream of the turn that message starts.
+		if r.Method == http.MethodPost {
+			s.handleMessages(w, r)
+			return
+		}
 		s.handleHistory(w, r)
-	case strings.HasSuffix(r.URL.Path, "/stream"):
+	case strings.HasSuffix(r.URL.Path, "/turn/events"):
 		s.handleSessionStream(w, r)
-	case strings.HasSuffix(r.URL.Path, "/approval/pending"):
-		s.handlePendingApproval(w, r)
-	case strings.HasSuffix(r.URL.Path, "/approval"):
-		s.handleApproval(w, r)
-	case strings.HasSuffix(r.URL.Path, "/question/pending"):
-		s.handlePendingQuestion(w, r)
-	case strings.HasSuffix(r.URL.Path, "/question"):
-		s.handleQuestion(w, r)
-	case strings.HasSuffix(r.URL.Path, "/abort"):
-		s.handleAbort(w, r)
 	case strings.HasSuffix(r.URL.Path, "/turn"):
 		s.handleTurnStatus(w, r)
+	case strings.HasSuffix(r.URL.Path, "/approvals/decision"):
+		s.handleApproval(w, r)
+	case strings.HasSuffix(r.URL.Path, "/approvals"):
+		s.handlePendingApproval(w, r)
+	case strings.HasSuffix(r.URL.Path, "/questions/answer"):
+		s.handleQuestion(w, r)
+	case strings.HasSuffix(r.URL.Path, "/questions/cancel"):
+		s.handleQuestionCancel(w, r)
+	case strings.HasSuffix(r.URL.Path, "/questions"):
+		s.handlePendingQuestion(w, r)
+	case strings.HasSuffix(r.URL.Path, "/abort"):
+		s.handleAbort(w, r)
 	default:
 		s.handleSessionDelete(w, r)
 	}

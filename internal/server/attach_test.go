@@ -147,21 +147,21 @@ func TestAttachLiveTurnReportsAStoppedRun(t *testing.T) {
 func TestSessionStreamGates(t *testing.T) {
 	t.Run("no parked turn", func(t *testing.T) {
 		s := attachTestServer(t, &fakeGatewayClient{})
-		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
+		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/turn/events", "alice", nil)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
 		}
 	})
 	t.Run("gateway channel not configured", func(t *testing.T) {
 		s := platformTestServer(t)
-		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
+		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/turn/events", "alice", nil)
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 		}
 	})
 	t.Run("missing session key", func(t *testing.T) {
 		s := attachTestServer(t, &fakeGatewayClient{})
-		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/agent:main:/stream", "alice", nil)
+		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/agent:main:/turn/events", "alice", nil)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 		}
@@ -173,14 +173,14 @@ func TestSessionStreamGates(t *testing.T) {
 		if _, err := s.hub.Open(attachSession, held, held); err != nil {
 			t.Fatalf("open the turn's stream: %v", err)
 		}
-		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
+		rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/turn/events", "alice", nil)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
 		}
 	})
 	t.Run("POST is not the attach verb", func(t *testing.T) {
 		s := attachTestServer(t, &fakeGatewayClient{})
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/stream", "alice", nil)
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/turn/events", "alice", nil)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("status = %d, want 405: %s", rec.Code, rec.Body.String())
 		}
@@ -203,7 +203,7 @@ func TestSessionStreamCarriesTheResumedTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/stream", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn/events", nil)
 		req.Header.Set("X-CubePilot-User", "alice")
 		s.Handler().ServeHTTP(rr, req)
 	}()
@@ -303,7 +303,7 @@ func TestSessionStreamEndsWhenTheDecisionIsAnsweredDuringSetup(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/stream", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/conv-1/turn/events", nil)
 		req.Header.Set("X-CubePilot-User", "alice")
 		s.Handler().ServeHTTP(rr, req)
 	}()
@@ -343,7 +343,7 @@ func TestSessionStreamLeavesTheCardAnswerableWhenTheAttachFailsToSetUp(t *testin
 	}
 	s := attachTestServer(t, gw)
 
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/stream", "alice", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/turn/events", "alice", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -355,7 +355,7 @@ func TestSessionStreamLeavesTheCardAnswerableWhenTheAttachFailsToSetUp(t *testin
 	}
 	// The decider is what has to survive: the run is still parked, so the card
 	// that answers it must still be served and still be answerable.
-	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
+	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/questions", "alice", nil)
 	if pending.Code != http.StatusOK || !strings.Contains(pending.Body.String(), "ask_1") {
 		t.Errorf("pending = %d %s, want the parked question still answerable", pending.Code, pending.Body.String())
 	}

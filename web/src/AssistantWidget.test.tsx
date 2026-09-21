@@ -17,8 +17,13 @@ afterEach(() => {
   gateway = undefined
 })
 
+// The transcript reads, by method: one path now serves both halves of the
+// conversation -- GET reads it, POST appends to it -- so counting by path alone
+// would count a send as a read.
 const historyReads = () =>
-  gateway!.requests.filter((r) => r.path === `/api/v1/sessions/${ASSISTANT_SESSION_KEY}/messages`)
+  gateway!.requests.filter(
+    (r) => r.method === 'GET' && r.path === `/api/v1/sessions/${ASSISTANT_SESSION_KEY}/messages`,
+  )
 
 describe('the floating assistant', () => {
   it('opens the fixed conversation, and keeps it while the panel is collapsed', async () => {
@@ -47,10 +52,13 @@ describe('the floating assistant', () => {
     expect(await screen.findByText(/part one and part two/)).toBeInTheDocument()
 
     turn.close()
-    expect(gateway!.requests.find((r) => r.path === '/api/v1/messages')?.body).toMatchObject({
-      sessionId: ASSISTANT_SESSION_KEY,
-      content: 'hello',
-    })
+    // The message names the fixed conversation in its path -- the widget's key
+    // is the client's to choose, and that is what makes it the same
+    // conversation as the Chat view's rather than a second one.
+    const sent = gateway!.requests.find(
+      (r) => r.method === 'POST' && r.path === `/api/v1/sessions/${ASSISTANT_SESSION_KEY}/messages`,
+    )
+    expect(sent?.body).toMatchObject({ content: 'hello' })
   })
 
   it('re-reads the conversation when it is reopened', async () => {

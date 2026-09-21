@@ -238,7 +238,7 @@ func TestHandleQuestionAnswers(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -259,7 +259,7 @@ func TestHandleQuestionRelaysFreeTextAnswer(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {typed}}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -275,8 +275,8 @@ func TestHandleQuestionCancel(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
-		map[string]any{"id": "ask_1", "cancel": true})
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/cancel", "alice",
+		map[string]any{"id": "ask_1"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -288,6 +288,33 @@ func TestHandleQuestionCancel(t *testing.T) {
 	}
 }
 
+// TestHandleQuestionCancelRefusesTheAnswerBody: cancel is its own route, so its
+// body is only the id. Both superseded shapes must be refused, and the second
+// one is the one that matters: `answers` is a real field of the sibling route,
+// so a cancel that shared its body struct would accept it and settle a question
+// the caller meant to answer. Bodies are decoded strictly, which is what turns
+// each into a 400 instead.
+func TestHandleQuestionCancelRefusesTheAnswerBody(t *testing.T) {
+	for name, body := range map[string]map[string]any{
+		"the superseded cancel flag": {"id": "ask_1", "cancel": true},
+		"the answer route's body":    {"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}},
+	} {
+		gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
+			"ask_1": questionRecord("ask_1", questionTestSession),
+		}}
+		s, _ := questionTestServer(t, gw, questionTestSession)
+
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/cancel", "alice", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400: %s", name, rec.Code, rec.Body.String())
+		}
+		if len(gw.questionCancels) != 0 || len(gw.questionResolves) != 0 {
+			t.Errorf("%s: a rejected body reached the gateway: cancels=%v resolves=%v",
+				name, gw.questionCancels, gw.questionResolves)
+		}
+	}
+}
+
 // TestHandleQuestionRejectsForeignSession is the guard that stops a stale card
 // for one session from resolving a question belonging to another.
 func TestHandleQuestionRejectsForeignSession(t *testing.T) {
@@ -296,7 +323,7 @@ func TestHandleQuestionRejectsForeignSession(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
@@ -318,7 +345,7 @@ func TestHandleQuestionRejectsNotPendingOrExpired(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
 	for id, scenario := range map[string]string{"ask_1": "expired", "ask_2": "already answered"} {
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 			map[string]any{"id": id, "answers": map[string][]string{"where": {"workspace"}}})
 		if rec.Code != http.StatusConflict {
 			t.Errorf("%s (%s): status = %d, want 409: %s", id, scenario, rec.Code, rec.Body.String())
@@ -337,12 +364,12 @@ func TestHandleQuestionBadRequests(t *testing.T) {
 
 	cases := map[string]map[string]any{
 		"missing id":            {"answers": map[string][]string{"where": {"workspace"}}},
-		"answers and cancel":    {"id": "ask_1", "cancel": true, "answers": map[string][]string{"where": {"workspace"}}},
+		"unknown field":         {"id": "ask_1", "cancel": true, "answers": map[string][]string{"where": {"workspace"}}},
 		"neither answers":       {"id": "ask_1"},
 		"answers with no entry": {"id": "ask_1", "answers": map[string][]string{}},
 	}
 	for name, body := range cases {
-		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice", body)
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice", body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400: %s", name, rec.Code, rec.Body.String())
 		}
@@ -359,7 +386,7 @@ func TestHandleQuestionWithoutChannel(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	delete(s.gatewayConns.conns, "alice")
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
@@ -377,14 +404,14 @@ func TestHandleQuestionDuringPairingReportsUnavailable(t *testing.T) {
 	s, _ := questionTestServer(t, gw, questionTestSession)
 	gw.setConnected(false) // registered, handshake still in flight
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/question", "alice",
+	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/answer", "alice",
 		map[string]any{"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
-	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
-	if pending.Code != http.StatusNotFound {
-		t.Fatalf("pending status = %d, want 404: %s", pending.Code, pending.Body.String())
+	pending := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/questions", "alice", nil)
+	if pending.Code != http.StatusOK || !strings.Contains(pending.Body.String(), `"questions":[]`) {
+		t.Fatalf("pending status = %d body = %s, want 200 with an empty set", pending.Code, pending.Body.String())
 	}
 }
 
@@ -402,7 +429,7 @@ func TestHandlePendingQuestion(t *testing.T) {
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/questions", "alice", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -426,26 +453,29 @@ func TestHandlePendingQuestion(t *testing.T) {
 	}
 }
 
-// TestHandlePendingQuestionNoPending: a session with nothing open reports 404,
-// which is what the browser uses to decide whether to render a card.
+// TestHandlePendingQuestionNoPending: a session with nothing open reports 200
+// with an empty collection, which is what the browser uses to decide whether to
+// render a card. An empty set is not a 404 -- the collection exists and is
+// empty, and the 502 it sits beside must keep meaning "the gateway could not be
+// asked".
 func TestHandlePendingQuestionNoPending(t *testing.T) {
 	gw := &fakeGatewayClient{pendingQuestions: []ws.QuestionRecord{
 		questionRecord("ask_1", "agent:main:other-session"),
 	}}
 	s, _ := questionTestServer(t, gw, questionTestSession)
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/questions", "alice", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"questions":[]`) {
+		t.Fatalf("status = %d body = %s, want 200 with an empty set", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandleQuestionRoutePrecedence(t *testing.T) {
 	gw := &fakeGatewayClient{pendingQuestions: nil}
 	s, _ := questionTestServer(t, gw, questionTestSession)
-	// /question/pending must not be swallowed by the /question route.
-	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/question/pending", "alice", nil)
+	// /questions must not be swallowed by the /question route.
+	rec := doReq(t, s.Handler(), http.MethodGet, "/api/v1/sessions/conv-1/questions", "alice", nil)
 	if rec.Code == http.StatusMethodNotAllowed {
-		t.Fatalf("GET .../question/pending was routed to the answer handler: %s", rec.Body.String())
+		t.Fatalf("GET .../questions was routed to the answer handler: %s", rec.Body.String())
 	}
 }
 
