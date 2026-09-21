@@ -54,14 +54,21 @@
 现在它们是 `GET .../approvals` 和 `POST .../approvals/decision`：两个段落，各自只有
 一个意思。
 
-**段落必须是固定字面量——这是路由的硬约束，不是风格。** 会话 key 允许含斜杠
-（`/api/v1/sessions/a/b/messages` 是会话 `a/b`），子资源路由器靠"剥掉一个已知后缀"
-还原 key，所以路径中间放不下可变参数：`/approvals/{id}/decision` 里的 id 和 key 无法
-区分——`agent:main:a/approvals/xyz` 本身就是合法 key。这类资源 id 只能走请求体，
-且**必须在 api.md 里写明它指的是哪个 id**（见第 4 节上方 questions 的两个 id）。
+**段落必须是固定字面量——这是当前路由器（`subresourceKey`）的性质，不是这套 URL 空间的
+性质。** 会话 key 允许含斜杠（`/api/v1/sessions/a/b/messages` 是会话 `a/b`），而
+`subresourceKey` 只剥掉**一个**已知后缀来还原 key。
 
-> **守住**：⚠️ 靠 review。路由器那条约束有用例守着（`sessiondelete_test.go`、
-> `apidoc_test.go` 的斜杠 key 用例），但"段落在不在理"没有。
+像 `/approvals/{id}/decision` 这种"中间一段可变、且只有一段"的形状其实**有唯一解析**：
+从右往左按字面量锚定——先 `/decision`，再取一段作 id，再 `/approvals`，剩下的就是 key。
+即使 key 本身就长成 `agent:main:a/approvals/xyz`，或者结尾带 `/approvals/appr-1/decision`，
+剥完仍然只剩一个解。所以问题不是"放不下"，而是**每条这样的路由都要有自己一套这样的解析
+语法，外加各自的用例**——那是一次路由模型变更，不是多几行判断。
+
+**在有人做那次变更之前**，这类资源 id 走请求体，且**必须在 api.md 里写明它指的是哪个 id**
+——questions 有两个 id，很容易送错那一个。
+
+> **守住**：⚠️ 靠 review。斜杠 key 的现有行为有用例守着（`sessiondelete_test.go`、
+> `apidoc_test.go`），但"段落这么写合不合理"没有。
 
 ## 4. 响应形状
 

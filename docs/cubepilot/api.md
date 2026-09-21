@@ -205,9 +205,9 @@ X-CubePilot-User: <用户名>
 
 - `sessionKey` 含冒号（形如 `agent:main:conv-<uuid>`），**必须 URL 编码**。
 - 会话子资源靠**后缀**匹配，所以 `/api/v1/sessions/a/b/messages` 也命中，且 `sessionKey` 取 `a/b`。
-- 因此子资源的段落**必须是固定字面量**：路径中间放不下可变参数（`/approvals/{id}/decision` 里的
-  id 与会话 key 无法区分——`agent:main:a/approvals/xyz` 本身是合法 key）。这类资源 id 走请求体，
-  且下面写明了它指的是哪一个 id。
+- 因此子资源的段落**必须是固定字面量**：`subresourceKey` 只剥掉一个已知后缀来还原 key，
+  中间带一段可变参数、且参数只有一段的形状（如 `/approvals/{appr-1}/decision`）它表达不了。
+  这类资源 id 走请求体，且下面写明了它指的是哪一个 id。
 - 通配路由带尾斜杠会落到兜底 404（如 `/api/v1/llms/`），不会匹配 `{name}`。
 - `/internal/*` 不带版本前缀（见第 1 节）。
 
