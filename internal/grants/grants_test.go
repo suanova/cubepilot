@@ -440,3 +440,57 @@ func TestAddEvictsToStayUnderTheSizeBudget(t *testing.T) {
 		t.Errorf("newest grant evicted: %+v", got)
 	}
 }
+
+// omittedEmptyData models what the API server does with an empty `data` map.
+//
+// ConfigMap.Data is `json:"data,omitempty"`, so an empty map is left out of the
+// response body, and controller-runtime decodes that body back into the object
+// the caller passed to Create -- which leaves Data nil. The fake client stores
+// the object it was handed and gives the same one back, so it never reproduces
+// that round trip. That is why every other test in this file passed while the
+// create path handed callers a nil map.
+type omittedEmptyData struct {
+	client.Client
+}
+
+func (c omittedEmptyData) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if err := c.Client.Create(ctx, obj, opts...); err != nil {
+		return err
+	}
+	// The response carried no `data` key, so the decoded object has none.
+	if cm, ok := obj.(*corev1.ConfigMap); ok && len(cm.Data) == 0 {
+		cm.Data = nil
+	}
+	return nil
+}
+
+// TestAddFirstGrantToAnAbsentDataMap is the regression test for the panic on a
+// user's first allow-always. Recording the grant wrote into a map the create
+// path had handed back nil, so the request died with "assignment to entry in
+// nil map" and the Portal could only answer 502. The ConfigMap itself was
+// created before the panic, which is why the second click always worked and the
+// symptom looked like a flake.
+func TestAddFirstGrantToAnAbsentDataMap(t *testing.T) {
+	s := testStore(t)
+	s.cr = omittedEmptyData{s.cr}
+	ctx := context.Background()
+	now := time.Date(2026, 9, 21, 12, 58, 33, 0, time.UTC)
+	rule := v1alpha1.AllowlistRule{Pattern: "kubectl", ArgPattern: `^delete ns test-1 --ignore-not-found$`}
+
+	// The first grant is the only one that writes into an empty map, so it is
+	// the only one that could panic.
+	if err := s.Add(ctx, "admin", rule, "kubectl delete ns test-1 --ignore-not-found", now); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+
+	got, err := s.List(ctx, "admin")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d grants, want the one just recorded", len(got))
+	}
+	if got[0].ArgPattern != rule.ArgPattern || got[0].Pattern != rule.Pattern {
+		t.Errorf("round trip lost the rule: %+v", got[0])
+	}
+}

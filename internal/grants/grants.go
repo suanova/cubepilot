@@ -318,9 +318,15 @@ func (s *Store) ensure(ctx context.Context, user string) (*corev1.ConfigMap, err
 		if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.ns, Name: name}, &cm); err != nil {
 			return nil, err
 		}
-		if cm.Data == nil {
-			cm.Data = map[string]string{}
-		}
+	}
+	// The create path is the one that cannot rely on its own initializer. An
+	// empty `data` map is omitted from the API server's JSON
+	// (json:"data,omitempty"), and Create decodes the response back into cm, so a
+	// successful create hands back a nil map exactly like a Get does -- and the
+	// first grant for a user is the only time the map is empty. Callers write
+	// into it, so every path out of here must hand back a map.
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
 	}
 	return &cm, nil
 }
