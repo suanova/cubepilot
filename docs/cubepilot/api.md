@@ -180,7 +180,7 @@ X-CubePilot-User: <用户名>
 | **503** | `instance warming failed: ...` —— 实例正在冷启动（Pod 未就绪 / 网关未监听） | **等待并重试**，提示「正在启动实例」。这不是故障 |
 | **503** | `CRD path disabled` —— 部署未启用 CRD 路径 | 视为部署配置问题，不要重试 |
 | **409** | `another turn is already streaming for this session` | 同一会话已有回合在跑。**不要重试发送**，提示等待或先调 `/abort` |
-| **200** | `GET .../approvals` · `GET .../questions` 在一个没有未决项的会话上返回 **空集合**（`{"approvals":[]}` / `{"questions":[]}`）| 正常的「无未决项」，**静默忽略**。这不是 404 —— 集合存在，只是空的 |
+| **200** | `GET .../approvals` · `GET .../questions` 在一个没有未决项的会话上返回 **空集合**（`{"approvals":[]}` / `{"questions":[]}`）| 正常的「无未决项」，**静默忽略**。这不是 404 —— 集合存在，只是空的。注意空集合的含义是「这个进程没有可给你的东西」，不是「上游确定没有」：这两条读接口不新拨网关连接，所以连接断过之后上游可能仍停着一轮而卡片看不见 |
 | **409** | 审批已被别处结掉（`APPROVAL_ALREADY_RESOLVED`）| 这张卡已经不用你决定了。关掉卡片，**不要重试**；换一张卡再决定。同一张卡的两条并发决定不会得到 409 —— 后到的那条会等到前一条有了结果，再按结果回答（已结算 → `404`，前一条失败 → 由它自己结算） |
 | **502** | 网关往返失败 | 后端到实例的链路问题，可重试一次 |
 | **504** | `the run did not settle in time; try again`（`/abort`）· 删除会话的两种超时（`DELETE /api/v1/sessions/{key}`）：`the session delete did not finish in time; retrying it is safe and idempotent`，以及 `the conversation was deleted, but the session's turn did not release in time; retry (the delete is idempotent)`——后者会话**已经删掉** | 重试 |
@@ -515,6 +515,7 @@ data: {"type":"approval_resolved","sessionId":"...","callId":"...","approved":tr
 ```ts
 GET /api/v1/sessions/{key}/approvals
 // 200：{"approvals":[]}                     → 没有未决审批，静默忽略
+//                                            （但也可能只是本进程没有连接，见 2.3 节）
 // 200：{"approvals":[{"sessionId","approvalId","tool","command","level","message",
 //                     "createdAtMs","expiresAtMs"}]}
 // 502 → 读不到网关，**不能**当成「没有未决项」
@@ -582,6 +583,7 @@ data: {"type":"question_resolved","sessionId":"...","callId":"...",
 ```ts
 GET /api/v1/sessions/{key}/questions
 // 200 {"questions":[]}                    → 没有未决问题，静默忽略
+//                                           （同上：空也可能只是本进程没有连接）
 // 200 {"questions":[{"id","questions":[QuestionItem],"timeoutSeconds"?}]}
 // 502 → 网关问不到，**不能**当成「没有未决问题」
 ```

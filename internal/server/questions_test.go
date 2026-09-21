@@ -288,23 +288,30 @@ func TestHandleQuestionCancel(t *testing.T) {
 	}
 }
 
-// TestHandleQuestionCancelRefusesTheOldBodyShape: cancel is its own route now,
-// so a body still carrying the old `cancel` flag is an unknown field. Bodies
-// are decoded strictly, which is what turns a client left on the superseded
-// shape into a 400 instead of an answer it did not intend to send.
-func TestHandleQuestionCancelRefusesTheOldBodyShape(t *testing.T) {
-	gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
-		"ask_1": questionRecord("ask_1", questionTestSession),
-	}}
-	s, _ := questionTestServer(t, gw, questionTestSession)
+// TestHandleQuestionCancelRefusesTheAnswerBody: cancel is its own route, so its
+// body is only the id. Both superseded shapes must be refused, and the second
+// one is the one that matters: `answers` is a real field of the sibling route,
+// so a cancel that shared its body struct would accept it and settle a question
+// the caller meant to answer. Bodies are decoded strictly, which is what turns
+// each into a 400 instead.
+func TestHandleQuestionCancelRefusesTheAnswerBody(t *testing.T) {
+	for name, body := range map[string]map[string]any{
+		"the superseded cancel flag": {"id": "ask_1", "cancel": true},
+		"the answer route's body":    {"id": "ask_1", "answers": map[string][]string{"where": {"workspace"}}},
+	} {
+		gw := &fakeGatewayClient{questionRecords: map[string]ws.QuestionRecord{
+			"ask_1": questionRecord("ask_1", questionTestSession),
+		}}
+		s, _ := questionTestServer(t, gw, questionTestSession)
 
-	rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/cancel", "alice",
-		map[string]any{"id": "ask_1", "cancel": true})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
-	}
-	if len(gw.questionCancels) != 0 || len(gw.questionResolves) != 0 {
-		t.Errorf("a rejected body reached the gateway: cancels=%v resolves=%v", gw.questionCancels, gw.questionResolves)
+		rec := doReq(t, s.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/questions/cancel", "alice", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400: %s", name, rec.Code, rec.Body.String())
+		}
+		if len(gw.questionCancels) != 0 || len(gw.questionResolves) != 0 {
+			t.Errorf("%s: a rejected body reached the gateway: cancels=%v resolves=%v",
+				name, gw.questionCancels, gw.questionResolves)
+		}
 	}
 }
 

@@ -11,9 +11,10 @@ docs {
   对话 SSE 流仍开着并停在 pending 上。
 
   body 形状：
-  - `id` = **问答会话 id**（事件里的 `callId`，形如 `ask_<hex>`）
+  - `id` = **问答记录 id**（事件里的 `callId`，形如 `ask_<hex>`）
   - `answers` = `{ "<questionId>": ["选项的 label"] }`
-  - `answers` 与 `cancel` **必须二选一**，同时给或都不给 → `400`
+
+  取消失**另一条路径**（`10-cancel-question`），不是一个 body 标志。
 
   ⚠️ `id` 和 `questionId` 容易搞混，见 `08-question-pending` 的说明。
 

@@ -7,7 +7,14 @@ meta {
 docs {
   # 取消提问 —— 让 agent 继续，而不是干等到超时
 
-  同一个端点，换成 `{"id": ..., "cancel": true}`。
+  **自己的路径** `/questions/cancel`，body 只有 `{"id": ...}`。回答走
+  `/questions/answer`（`09-submit-question`）。
+
+  body 只有 id 是有意的：请求体是严格解码的，所以这条路径**拒绝** `answers` ——
+  否则一个本想回答的调用会被静默当成取消。
+
+  ⚠️ `id` 是**问答记录 id**（`callId`），不是每个问题的 `questionId`。
+
   默认超时是 **900 秒**，所以不回答的话这个回合会挂很久。
 
   响应 `{"questionId":..., "cancelled":true}`；

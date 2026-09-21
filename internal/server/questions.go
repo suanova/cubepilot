@@ -238,18 +238,37 @@ func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request, suffix 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	}
-	var body struct {
-		ID      string              `json:"id"`
-		Answers map[string][]string `json:"answers"`
+	// The two routes decode different bodies, and that is the point rather than
+	// duplication: one struct shared by both would give the cancel route the
+	// answer route's `answers` field, and strict decoding would then accept a
+	// cancel that carried answers -- settling a question the caller meant to
+	// answer. A field a route does not act on is a field it must not accept.
+	var id string
+	var answers map[string][]string
+	if cancel {
+		var body struct {
+			ID string `json:"id"`
+		}
+		if !decodeJSONBody(w, r, &body) {
+			return
+		}
+		id = body.ID
+	} else {
+		var body struct {
+			ID      string              `json:"id"`
+			Answers map[string][]string `json:"answers"`
+		}
+		if !decodeJSONBody(w, r, &body) {
+			return
+		}
+		id = body.ID
+		answers = body.Answers
 	}
-	if !decodeJSONBody(w, r, &body) {
-		return
-	}
-	if body.ID == "" {
+	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id required"})
 		return
 	}
-	if !cancel && len(body.Answers) == 0 {
+	if !cancel && len(answers) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "answers required"})
 		return
 	}
@@ -258,13 +277,13 @@ func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request, suffix 
 	// other client holding an id) must not answer a question belonging to a
 	// different session, and only a question the gateway still considers open
 	// may be acted on.
-	rec, err := s.gatewayConns.GetQuestion(ctx, user, body.ID)
+	rec, err := s.gatewayConns.GetQuestion(ctx, user, id)
 	switch {
 	case errors.Is(err, errNoQuestionChannel):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "question channel unavailable"})
 		return
 	case err != nil:
-		s.writeGatewayError(w, user, "question "+body.ID, err, questionErrorStatus)
+		s.writeGatewayError(w, user, "question "+id, err, questionErrorStatus)
 		return
 	}
 	if canonicalSessionKey(rec.SessionKey) != sessionKey {
@@ -280,15 +299,15 @@ func (s *Server) resolveQuestion(w http.ResponseWriter, r *http.Request, suffix 
 		return
 	}
 	if cancel {
-		err = s.gatewayConns.CancelQuestion(ctx, user, body.ID)
+		err = s.gatewayConns.CancelQuestion(ctx, user, id)
 	} else {
-		err = s.gatewayConns.ResolveQuestion(ctx, user, body.ID, body.Answers)
+		err = s.gatewayConns.ResolveQuestion(ctx, user, id, answers)
 	}
 	if err != nil {
-		s.writeGatewayError(w, user, "question "+body.ID, err, questionErrorStatus)
+		s.writeGatewayError(w, user, "question "+id, err, questionErrorStatus)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"questionId": body.ID, "cancelled": cancel})
+	writeJSON(w, http.StatusOK, map[string]any{"questionId": id, "cancelled": cancel})
 }
 
 // handlePendingQuestion serves GET /api/v1/sessions/{key}/questions -- the
