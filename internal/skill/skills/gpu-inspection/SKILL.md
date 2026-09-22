@@ -12,7 +12,8 @@ are not running. Read-only throughout (`get` / `list` / `watch` / `logs`).
 ## Discover the GPU resource name first
 
 Vendors expose GPUs under different extended resource names. Read the name the
-cluster actually uses instead of assuming one:
+cluster actually uses instead of assuming one, and keep it in `GPU_RES` -- every
+command below reads it from there:
 
 ```bash
 kubectl get nodes -o json | jq -r '.items[].status.allocatable | keys[]' \
@@ -22,25 +23,43 @@ kubectl get nodes -o json | jq -r '.items[].status.allocatable | keys[]' \
 On an nvidia cluster this prints `nvidia.com/gpu`. If it prints nothing, the
 cluster has no GPU nodes -- say so and stop.
 
+A mixed cluster prints one name per vendor. Then there is no single `GPU_RES`:
+run the per-resource steps once for each name, and report per resource rather
+than summing unrelated accelerators into one figure. Never let an nvidia name
+stand in for a count of Metax cards, or the reverse -- that reports zero
+allocated GPUs on hardware that has them.
+
+When the run names a vendor, inspect only that vendor's resource name; when it
+says all, cover every name the cluster reports.
+
+```bash
+GPU_RES=nvidia.com/gpu   # <- the name discovered above, per vendor
+```
+
 ## Steps
 
 ```bash
-# 1. GPU nodes. The label below is the nvidia GPU operator's; without that
-#    operator, list the nodes that report the resource name from above.
-kubectl get nodes -l nvidia.com/gpu.present=true -o wide
+# 1. GPU nodes: the nodes that report GPU_RES as allocatable. The
+#    nvidia.com/gpu.present label is the nvidia GPU operator's and is a faster
+#    filter on an nvidia cluster, but it does not exist for other vendors --
+#    never make the inventory depend on it.
+kubectl get nodes -o json | jq -r --arg res "$GPU_RES" '
+  .items[] | select(.status.allocatable[$res] != null)
+  | "\(.metadata.name)\t\(.status.allocatable[$res])"'
 
 # 2. How many GPUs each node carries, next to its other allocatable resources.
-#    (Substitute the resource name discovered above.)
-kubectl get nodes -o custom-columns='NODE:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory'
+kubectl get nodes -o json | jq -r --arg res "$GPU_RES" '
+  .items[] | select(.status.allocatable[$res] != null)
+  | [.metadata.name, .status.allocatable[$res],
+     .status.allocatable.cpu, .status.allocatable.memory] | @tsv'
 
 # 3. GPUs requested per node, summed over the Pods scheduled there. A node whose
 #    requests exceed its allocatable GPUs is over-committed.
-kubectl get pods -A -o json | jq -r '
+kubectl get pods -A -o json | jq -r --arg res "$GPU_RES" '
   .items[]
   | select(.status.phase != "Succeeded" and .status.phase != "Failed")
   | .spec.nodeName as $n
-  | (([.spec.containers[].resources.requests["nvidia.com/gpu"] // 0]
-      | add) // 0)
+  | (([.spec.containers[].resources.requests[$res] // 0] | add) // 0)
   | select(. > 0)
   | "\($n)\t\(.)"' | awk '{s[$1]+=$2} END {for (n in s) print n, s[n]}'
 
@@ -57,13 +76,13 @@ kubectl logs -n <device-plugin-namespace> <pod> --tail=100
 ```bash
 # Pods Pending because there is no free GPU.
 kubectl get pods -A --field-selector=status.phase=Pending -o wide
-kubectl describe pod -n <namespace> <pod> | grep -A5 -i 'insufficient\|nvidia.com/gpu'
+kubectl describe pod -n <namespace> <pod> | grep -A5 -i "insufficient\|$GPU_RES"
 
 # Pods holding a GPU while not Running -- a leak the scheduler cannot reclaim.
-kubectl get pods -A -o json | jq -r '
+kubectl get pods -A -o json | jq -r --arg res "$GPU_RES" '
   .items[]
   | select(.status.phase != "Running" and .status.phase != "Succeeded")
-  | select([.spec.containers[].resources.requests["nvidia.com/gpu"] // 0] | add > 0)
+  | select([.spec.containers[].resources.requests[$res] // 0] | add > 0)
   | "\(.metadata.namespace)/\(.metadata.name)\t\(.status.phase)"'
 
 # Nodes tainted or cordoned while still holding GPUs nothing can use.
