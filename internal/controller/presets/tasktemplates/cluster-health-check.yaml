@@ -1,0 +1,29 @@
+apiVersion: ai.cubestack.io/v1alpha1
+kind: TaskTemplate
+metadata:
+  name: cluster-health-check
+spec:
+  displayName: Cluster Health Check
+  description: "On-demand triage: node conditions, control plane, abnormal Pods and warning events, most severe first"
+  # What is wrong right now, without the nightly sweep's storage and
+  # platform-component depth. No default schedule: it is the one you run when
+  # something already looks wrong.
+  instruction: |-
+    Triage the cluster as it is right now, read-only (get/list/watch/logs):
+    1. Nodes: Ready condition, plus MemoryPressure / DiskPressure / PIDPressure / NetworkUnavailable
+    2. Control plane: apiserver / scheduler / controller-manager / etcd Pods Running, and how often each restarted
+    3. Abnormal Pods in every namespace (CrashLoopBackOff / Pending / ImagePullBackOff / OOMKilled / Error)
+    4. Recent Warning events, newest first, with the count of each
+    5. Add-ons the cluster cannot run without: CNI, CoreDNS, ingress, GPU device plugin
+    Report only what is wrong right now, most severe first, each with the command output that shows it.
+    Inspection scope: {{scope}} within {{target}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace; target names that pool or namespace, or is all to cover every one of them. No write operations allowed.
+  paramsSchema:
+    - name: scope
+      default: all
+      enum: [all, node-pool, project]
+    - name: target
+      default: all
+  requiredPermissions:
+    level: cluster-read
+    note: Node conditions and cluster-wide events require cluster-level read permission
+  skills: [cluster-inspection]

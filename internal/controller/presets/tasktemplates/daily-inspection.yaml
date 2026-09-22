@@ -1,0 +1,29 @@
+apiVersion: ai.cubestack.io/v1alpha1
+kind: TaskTemplate
+metadata:
+  name: daily-inspection
+spec:
+  displayName: Daily Cluster Inspection
+  description: "Preset inspection: nodes / Pods / storage / platform components + AI smart inspection"
+  # The nightly full sweep: everything the platform checks on its own, with an
+  # evidence chain per finding. The only preset that carries a schedule.
+  instruction: |-
+    Inspect the cluster in read-only mode (get/list/watch/logs):
+    1. Check node Ready status and pressure (Disk / Mem / PID)
+    2. Check GPU health and utilization (nvidia.com/gpu)
+    3. Check abnormal Pods (CrashLoopBackOff / Pending / ImagePullBackOff / OOM)
+    4. Check storage (PVC usage)
+    5. Check platform component health (Harbor / Keycloak / Prometheus)
+    Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.
+    Inspection scope: {{scope}} within {{target}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace; target names that pool or namespace, or is all to cover every one of them.
+  paramsSchema:
+    - name: scope
+      default: all
+      enum: [all, node-pool, project]
+    - name: target
+      default: all
+  requiredPermissions:
+    level: cluster-read
+    note: Full-cluster inspection requires the creator to have cluster-level read permission
+  skills: [cluster-inspection]
+  defaultCron: "0 2 * * *"

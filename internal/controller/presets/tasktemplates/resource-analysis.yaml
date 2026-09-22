@@ -1,0 +1,25 @@
+apiVersion: ai.cubestack.io/v1alpha1
+kind: TaskTemplate
+metadata:
+  name: resource-analysis
+spec:
+  displayName: Cluster Resource Analysis
+  description: "Capacity and utilization over a window: headroom per node pool, top consumers, idle GPUs and fragmentation"
+  instruction: |-
+    Analyse cluster capacity and utilization, read-only, and report what the platform team has to act on. Window: {{window}}.
+    1. Committed vs. allocatable: per node and per node pool, the sum of container requests and limits for CPU, memory and GPU against what each node allocates
+    2. Headroom: how many more Pods of the common shape each pool takes before it runs out of requests
+    3. Top consumers: the namespaces and workloads requesting the most CPU / memory / GPU, and those requesting a lot while using little
+    4. GPU: GPUs allocated to workloads that are not using them, and GPU nodes running no GPU workload at all
+    5. Fragmentation: nodes whose free capacity is too small to fit anything useful, and Pods Pending for capacity rather than for a missing scheduler
+    6. Trend: if the platform's Prometheus is reachable, repeat the key figures across the window and say what is growing; if it is not, say the trend part could not be measured
+    Report every figure with the command or query that produced it, and finish with the concrete capacity risks. No write operations allowed.
+  paramsSchema:
+    - name: window
+      default: 7d
+      enum: [24h, 7d, 30d]
+  requiredPermissions:
+    level: cluster-read
+    note: Node capacity and every namespace's Pods must be readable; the trend part additionally needs Prometheus access
+  skills: [cluster-inspection, kubectl-platform]
+  defaultCron: "0 8 * * 1"
