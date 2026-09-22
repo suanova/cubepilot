@@ -243,9 +243,10 @@ spec:
   instruction: |
     以只读方式巡检集群（get/list/watch/logs）：检查节点 Ready 与压力、
     GPU 健康、异常 Pod、PVC 使用率与平台组件；异常附证据链并按 P0/P1/P2 分级；禁止写操作。
-    巡检范围：{{scope}}。
+    巡检范围：{{scope}} 内的 {{target}}。
   paramsSchema:
-    - { name: scope, default: All, enum: [All, NodePool, Project] }
+    - { name: scope, default: all, enum: [all, node-pool, project] }
+    - { name: target, default: all }        # node-pool / project 时指明是哪一个，all = 全部都查
   requiredPermissions: { level: ClusterRead }
   skills: [cluster-inspection]              # 声明任务所需 skill（执行时解析当前版本）
   defaultCron: "0 2 * * *"                # 创建向导的默认调度提示；以 Task.cron 为准
@@ -287,7 +288,7 @@ status:
 
 模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 skill 版本**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `cubepilot` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
 
-平台预置一组模板作为起点（bootstrap 按「没有就建」种下，已存在的 CR 不被覆盖，因此运维改过的模板不会被平台改回去）。除每天定时跑的 `daily-inspection` 外，其余按需手动触发：
+平台预置一组模板作为起点（bootstrap 按「没有就建」种下，已存在的 CR 不被覆盖，因此运维改过的模板不会被平台改回去）。带默认调度的自动跑，没有调度的（`cluster-health-check`、`model-deployment-check`、`upgrade-precheck`）只能手动触发——它们本来就是「出事了」或「动手前」才跑的：
 
 | 模板 | 用途 | 默认调度 | 依赖 skill |
 |---|---|---|---|

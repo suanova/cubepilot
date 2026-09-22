@@ -158,9 +158,10 @@ func dailyInspectionTemplate() *v1alpha1.TaskTemplate {
 4. Check storage (PVC usage)
 5. Check platform component health (Harbor / Keycloak / Prometheus)
 Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.
-Inspection scope: {{scope}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace.`,
+Inspection scope: {{scope}} within {{target}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace; target names that pool or namespace, or is all to cover every one of them.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
 				{Name: "scope", Default: "all", Enum: []string{"all", "node-pool", "project"}},
+				{Name: "target", Default: "all"},
 			},
 			RequiredPermissions: &v1alpha1.RequiredPermissions{
 				Level: "cluster-read",
@@ -188,9 +189,10 @@ func clusterHealthCheckTemplate() *v1alpha1.TaskTemplate {
 4. Recent Warning events, newest first, with the count of each
 5. Add-ons the cluster cannot run without: CNI, CoreDNS, ingress, GPU device plugin
 Report only what is wrong right now, most severe first, each with the command output that shows it.
-Scope: {{scope}}. No write operations allowed.`,
+Inspection scope: {{scope}} within {{target}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace; target names that pool or namespace, or is all to cover every one of them. No write operations allowed.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
 				{Name: "scope", Default: "all", Enum: []string{"all", "node-pool", "project"}},
+				{Name: "target", Default: "all"},
 			},
 			RequiredPermissions: &v1alpha1.RequiredPermissions{
 				Level: "cluster-read",
