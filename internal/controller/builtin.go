@@ -119,6 +119,11 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 // daily-inspection is the one preset with a schedule of its own.
 // cluster-health-check is deliberately the lighter, on-demand triage of the
 // same cluster, so the two are not duplicates.
+//
+// An upgrade pre-check is deliberately not among them: it needs cluster-scoped
+// reads the agent's identity does not carry (nodes, CRDs) plus a target release
+// to check against, so shipping it as a preset would only produce runs that
+// report Forbidden.
 func BuiltinTaskTemplates() []*v1alpha1.TaskTemplate {
 	return []*v1alpha1.TaskTemplate{
 		dailyInspectionTemplate(),
@@ -127,7 +132,6 @@ func BuiltinTaskTemplates() []*v1alpha1.TaskTemplate {
 		inferenceValidationTemplate(),
 		modelDeploymentCheckTemplate(),
 		resourceAnalysisTemplate(),
-		upgradePrecheckTemplate(),
 	}
 }
 
@@ -314,35 +318,6 @@ Report every figure with the command or query that produced it, and finish with 
 			},
 			Skills:      []string{"cluster-inspection", "kubectl-platform"},
 			DefaultCron: "0 8 * * 1",
-		},
-	}
-}
-
-// upgradePrecheckTemplate reports what has to be true before an upgrade, and
-// never performs it.
-func upgradePrecheckTemplate() *v1alpha1.TaskTemplate {
-	return &v1alpha1.TaskTemplate{
-		ObjectMeta: builtinTaskTemplateMeta("upgrade-precheck"),
-		Spec: v1alpha1.TaskTemplateSpec{
-			DisplayName: "Upgrade Pre-check",
-			Description: "What must be true before an upgrade: component versions, removed APIs, disruption budgets, capacity and backups",
-			Instruction: `Check what an upgrade requires beforehand, read-only, and report everything that would block it. Target version: {{target}}.
-1. Component versions: the version of every control-plane and platform component, taken from the images and labels actually in use
-2. Removed APIs: every resource whose apiVersion is removed or deprecated in the target, and every CRD whose stored version the target no longer serves
-3. Workload readiness: Pods not Ready, Deployments and StatefulSets below their replica count, Jobs still running
-4. Disruption budgets: PodDisruptionBudgets already at their healthy minimum, where draining a node would hang
-5. Capacity: whether the cluster absorbs one node at a time being drained, in each node pool
-6. Backups: the PVCs and platform databases that need one, and whether a recent snapshot or backup exists
-7. Leftovers: unfinished or failed upgrade attempts still in the cluster
-Report pass / fail / unknown per check with the evidence, then list everything that must be fixed before the upgrade starts. Do not attempt the upgrade. No write operations allowed.`,
-			ParamsSchema: []v1alpha1.ParamSchema{
-				{Name: "target", Default: "next"},
-			},
-			RequiredPermissions: &v1alpha1.RequiredPermissions{
-				Level: "cluster-read",
-				Note:  "Cluster-wide reads of workloads, CRDs and budgets are required; a target version needs the release notes to check against",
-			},
-			Skills: []string{"upgrade-precheck"},
 		},
 	}
 }

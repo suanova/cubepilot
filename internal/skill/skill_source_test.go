@@ -17,7 +17,6 @@ func TestBuiltinSkillNames(t *testing.T) {
 		"gpu-inspection":       true,
 		"inference-validation": true,
 		"kubectl-platform":     true,
-		"upgrade-precheck":     true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("builtin names = %v, want %d", names, len(want))

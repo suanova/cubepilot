@@ -288,7 +288,7 @@ status:
 
 模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 skill 版本**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `cubepilot` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
 
-平台预置一组模板作为起点（bootstrap 按「没有就建」种下，已存在的 CR 不被覆盖，因此运维改过的模板不会被平台改回去）。带默认调度的自动跑，没有调度的（`cluster-health-check`、`model-deployment-check`、`upgrade-precheck`）只能手动触发——它们本来就是「出事了」或「动手前」才跑的：
+平台预置一组模板作为起点（bootstrap 按「没有就建」种下，已存在的 CR 不被覆盖，因此运维改过的模板不会被平台改回去）。带默认调度的自动跑，没有调度的（`cluster-health-check`、`model-deployment-check`）只能手动触发——它们本来就是「出事了」或「动手前」才跑的：
 
 | 模板 | 用途 | 默认调度 | 依赖 skill |
 |---|---|---|---|
@@ -298,7 +298,6 @@ status:
 | `inference-validation` | 推理服务端到端验证：引用解析、副本就绪、端点可达、真实请求 | `0 4 * * *` | `inference-validation` |
 | `model-deployment-check` | 部署前预检：模型存储可达、RuntimeProfile 接受该模型、GPU 容量与配额 | 手动 | `cubestack-platform` |
 | `resource-analysis` | 集群资源分析：各节点池余量、Top 消耗方、空占的 GPU、碎片化与趋势 | `0 8 * * 1` | `cluster-inspection`、`kubectl-platform` |
-| `upgrade-precheck` | 升级前检查：组件版本、目标版本已移除的 API、干扰预算、容量与备份 | 手动 | `upgrade-precheck` |
 
 模板里声明的参数必须在 `instruction` 中以 `{{name}}` 出现：参数只在渲染时插值，没有占位符的参数等于向导上一个不起作用的下拉框。`defaultCron` 只是创建向导的默认值，留空即「只能手动触发」。
 
