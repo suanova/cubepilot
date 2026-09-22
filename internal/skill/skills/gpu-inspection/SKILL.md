@@ -55,11 +55,17 @@ kubectl get nodes -o json | jq -r --arg res "$GPU_RES" '
 
 # 3. GPUs requested per node, summed over the Pods scheduled there. A node whose
 #    requests exceed its allocatable GPUs is over-committed.
+#
+#    Quantities arrive as JSON strings, and jq's `add` concatenates strings: a
+#    Pod with two containers asking for "1" each would report "11", not 2. So
+#    every value is converted to a number first. `tonumber` is safe on this
+#    resource specifically -- GPUs are extended resources, whose quantities are
+#    always whole numbers (unlike cpu's "100m" or memory's "1Gi").
 kubectl get pods -A -o json | jq -r --arg res "$GPU_RES" '
   .items[]
   | select(.status.phase != "Succeeded" and .status.phase != "Failed")
   | .spec.nodeName as $n
-  | (([.spec.containers[].resources.requests[$res] // 0] | add) // 0)
+  | (([.spec.containers[].resources.requests[$res] // "0" | tonumber] | add) // 0)
   | select(. > 0)
   | "\($n)\t\(.)"' | awk '{s[$1]+=$2} END {for (n in s) print n, s[n]}'
 
@@ -82,7 +88,7 @@ kubectl describe pod -n <namespace> <pod> | grep -A5 -i "insufficient\|$GPU_RES"
 kubectl get pods -A -o json | jq -r --arg res "$GPU_RES" '
   .items[]
   | select(.status.phase != "Running" and .status.phase != "Succeeded")
-  | select([.spec.containers[].resources.requests[$res] // 0] | add > 0)
+  | select(([.spec.containers[].resources.requests[$res] // "0" | tonumber] | add) > 0)
   | "\(.metadata.namespace)/\(.metadata.name)\t\(.status.phase)"'
 
 # Nodes tainted or cordoned while still holding GPUs nothing can use.
