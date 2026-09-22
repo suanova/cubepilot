@@ -209,20 +209,30 @@ Inspection scope: {{scope}} within {{target}} -- all covers every node and names
 
 // gpuInspectionTemplate inspects GPU nodes and the workloads holding their
 // GPUs, going past the single GPU line of the nightly sweep.
+//
+// The instruction carries the method rather than delegating it to a skill: the
+// resource name has to be discovered rather than assumed, and the request sum
+// is a jq trap worth stating outright. Both are the difference between a report
+// and a plausible-looking wrong one.
 func gpuInspectionTemplate() *v1alpha1.TaskTemplate {
 	return &v1alpha1.TaskTemplate{
 		ObjectMeta: builtinTaskTemplateMeta("gpu-inspection"),
 		Spec: v1alpha1.TaskTemplateSpec{
 			DisplayName: "GPU Node Inspection",
 			Description: "Per GPU node: inventory, allocatable vs. allocated, device plugin health, stuck allocations and hardware errors",
-			Instruction: `Inspect every GPU node and the workloads holding its GPUs, read-only (get/list/watch/logs):
-1. Inventory: which nodes carry GPU resources, and each node's GPU model and count from its labels
-2. Allocatable vs. allocated: for each GPU node, compare status.allocatable with the sum of container requests on that node
+			Instruction: `Inspect every GPU node and the workloads holding its GPUs, read-only (get/list/watch/logs).
+
+Find the GPU extended resource name this cluster actually uses before anything else -- vendors differ, and reading a Metax cluster through an nvidia name reports zero cards:
+  kubectl get nodes -o json | jq -r '.items[].status.allocatable | keys[]' | grep -i gpu | sort -u
+Call that name $RES below. On a mixed cluster it prints one name per vendor: run the per-resource steps once for each, and report per resource rather than summing unrelated accelerators into one figure.
+
+1. Inventory: the nodes where .status.allocatable[$RES] is set, and how many GPUs each carries
+2. Allocated: sum the container requests for $RES per node. Quantities arrive as JSON strings and jq's add concatenates them, so convert with tonumber first -- two containers asking for "1" each otherwise report "11". GPUs are extended resources, so their quantities are always whole numbers. A node whose requests exceed its allocatable is over-committed
 3. Device plugin: the device-plugin Pod on each GPU node is present, Running and not restarting; read its log for registration failures
 4. Scheduling: GPU node taints, and whether an unschedulable node is holding GPUs nothing can use
 5. Stuck allocations: Pods Pending on insufficient GPU, and Pods holding a GPU while not Running
-6. Hardware errors: GPU errors reported as node events, or by a node problem detector / DCGM exporter if the cluster runs one
-Vendor: {{vendor}}. Report per node, with the command output behind each figure, and flag every GPU that is allocated but not usable. When a check cannot be made from this identity, say so rather than guessing. No write operations allowed.`,
+6. Hardware errors: GPU errors reported as node events, or by a node problem detector / DCGM exporter if the cluster runs one. If neither is present this check cannot be made -- say so instead of inferring hardware health from Pods being Running
+Vendor: {{vendor}}. Report per node, with the command output behind each figure, classify by P0/P1/P2, and flag every GPU that is allocated but not usable. State plainly which checks could not be made from this identity. No write operations allowed.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
 				{Name: "vendor", Default: "all", Enum: []string{"all", "nvidia", "metax"}},
 			},
@@ -230,7 +240,7 @@ Vendor: {{vendor}}. Report per node, with the command output behind each figure,
 				Level: "cluster-read",
 				Note:  "Node status and Pods in every namespace must be readable; the device plugin runs in a platform namespace",
 			},
-			Skills:      []string{"gpu-inspection"},
+			Skills:      []string{"cluster-inspection", "kubectl-platform"},
 			DefaultCron: "0 3 * * *",
 		},
 	}
@@ -238,20 +248,27 @@ Vendor: {{vendor}}. Report per node, with the command output behind each figure,
 
 // inferenceValidationTemplate proves a deployed service actually serves, rather
 // than only that its Pods are Running.
+//
+// The instruction carries the method: a service that is up but answers nothing
+// looks identical to a healthy one until a request is actually sent, so the
+// checks are ordered to stop at the first real failure.
 func inferenceValidationTemplate() *v1alpha1.TaskTemplate {
 	return &v1alpha1.TaskTemplate{
 		ObjectMeta: builtinTaskTemplateMeta("inference-validation"),
 		Spec: v1alpha1.TaskTemplateSpec{
 			DisplayName: "Inference Service Validation",
 			Description: "Validate a running InferenceService end to end: references bound, replicas ready, endpoint answering, one real request",
-			Instruction: `Validate the InferenceService resources and prove they actually serve, read-only against the cluster plus one inference request:
+			Instruction: `Validate the InferenceService resources and prove they actually serve, read-only against the cluster plus one inference request. Stop at the first step that fails and report that step, not its symptoms.
+
 1. References: the service's modelRef (ModelVersion) and profileRef (InferenceRuntimeProfile) both exist and resolve
-2. Workload: every role in the profile has its ready replicas; no CrashLoopBackOff and no OOMKilled restart
+2. Workload: every role the profile declares has its ready replicas. Read the Pod's State and Last State first -- OOMKilled and CrashLoopBackOff point at the model or the engine, a Pending Pod at capacity
 3. Readiness: the profile's readinessPolicy is satisfied before the service is treated as up
-4. Endpoint: the role's Service exposes the profile's endpoint portName, and that port answers
-5. Functional: send one real request using the route's modelName, confirm a well-formed response, and record the latency
-6. Route: whether route.publish makes the service reachable from outside, and whether the model name a caller must send matches the route
-Namespace: {{namespace}}. Report per service: pass, or the first failing step with the output that shows it. A service that is Running but answers nothing is a failure, not a pass. No write operations beyond the single inference request.`,
+4. Endpoint: the Service exposes the profile's endpoint portName. A mismatch looks exactly like a dead service
+5. Functional: send one real request using route.modelName and record the latency. Read the response, not only the status code -- a 200 carrying an error body, an empty choices, or a stream that never ends is a failure
+6. Route: whether route.publish makes the service reachable from outside
+
+Reaching the endpoint takes an address published by route.publish, or the Service DNS name if you are inside the cluster, or -- failing both -- running a Pod. That last one is a write: state the command and its blast radius and wait for approval. If it is not approved, report the functional check as not performed, never as a pass.
+Namespace: {{namespace}}. Report per service: pass, or the first failing step with the output that shows it. A service that is Running but answers nothing is a failure, not a pass.`,
 			ParamsSchema: []v1alpha1.ParamSchema{
 				{Name: "namespace", Default: "all"},
 			},
@@ -259,7 +276,7 @@ Namespace: {{namespace}}. Report per service: pass, or the first failing step wi
 				Level: "cluster-read",
 				Note:  "Reading model and profile CRs plus the workload in the service's namespace requires read permission there",
 			},
-			Skills:      []string{"inference-validation"},
+			Skills:      []string{"cubestack-platform"},
 			DefaultCron: "0 4 * * *",
 		},
 	}

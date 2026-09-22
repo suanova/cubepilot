@@ -9,8 +9,6 @@
 - `kubectl-platform`：集群资源（节点/Pod/命名空间/事件）的查询与操作，以及通用 CRD 的 schema 发现。
 - `cluster-inspection`：集群健康巡检清单与异常分级。
 - `cubestack-platform`：CubeStack 平台资源（`ai.cubestack.io` 组）的 schema 速查与使用指南——含 `crd-reference.md` 生成的各 CR 必填/默认/枚举，及已知可用的 DevEnvironment 清单。
-- `gpu-inspection`：GPU 节点巡检——显卡清单、可分配 vs 已分配、device plugin 健康、卡位泄漏与硬件报错。
-- `inference-validation`：推理服务端到端验证——引用解析、副本就绪、端点可达、真实请求是否返回。
 
 ## 执行原则
 

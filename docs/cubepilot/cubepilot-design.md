@@ -294,12 +294,14 @@ status:
 |---|---|---|---|
 | `daily-inspection` | 每日全量巡检：节点/Pod/存储/平台组件 + AI 智能巡检 | `0 2 * * *` | `cluster-inspection` |
 | `cluster-health-check` | 现场定性排查：节点状况、控制面、异常 Pod、Warning 事件，只报当前有问题的 | 手动 | `cluster-inspection` |
-| `gpu-inspection` | GPU 节点巡检：显卡清单、可分配 vs 已分配、device plugin 健康、卡位泄漏与硬件报错 | `0 3 * * *` | `gpu-inspection` |
-| `inference-validation` | 推理服务端到端验证：引用解析、副本就绪、端点可达、真实请求 | `0 4 * * *` | `inference-validation` |
+| `gpu-inspection` | GPU 节点巡检：显卡清单、可分配 vs 已分配、device plugin 健康、卡位泄漏与硬件报错 | `0 3 * * *` | `cluster-inspection`、`kubectl-platform` |
+| `inference-validation` | 推理服务端到端验证：引用解析、副本就绪、端点可达、真实请求 | `0 4 * * *` | `cubestack-platform` |
 | `model-deployment-check` | 部署前预检：模型存储可达、RuntimeProfile 接受该模型、GPU 容量与配额 | 手动 | `cubestack-platform` |
 | `resource-analysis` | 集群资源分析：各节点池余量、Top 消耗方、空占的 GPU、碎片化与趋势 | `0 8 * * 1` | `cluster-inspection`、`kubectl-platform` |
 
 模板里声明的参数必须在 `instruction` 中以 `{{name}}` 出现：参数只在渲染时插值，没有占位符的参数等于向导上一个不起作用的下拉框。`defaultCron` 只是创建向导的默认值，留空即「只能手动触发」。
+
+`gpu-inspection` 与 `inference-validation` 的方法写在 `instruction` 里，不为它们新立 skill。它们要做的事——先发现集群真正使用的显卡资源名、Quantity 是字符串不能直接求和、服务 `Running` 不等于在服务——是这两个任务自带的步骤，不是跨对话复用的领域知识。写在 instruction 里还有个实际好处：模板自足，判据不随「这个 skill 有没有被启用」漂移。代价是这两条 instruction 偏长，这个代价是明知接受的。新领域知识该进 skill 时仍然进 skill。
 
 ## 3.6 数据真源
 
