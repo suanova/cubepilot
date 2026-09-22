@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
@@ -83,6 +86,42 @@ var _ = Describe("Builtin bootstrap", func() {
 		Expect(tt.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
 	})
 
+	It("gives the assistant identity cluster-scoped reads, but never secrets", func() {
+		// The per-user ServiceAccount is what the assistant runs kubectl as, so
+		// this is the RBAC the assistant actually ends up with. Both halves are
+		// worth asserting, and the refusals more than the grants: a missing read
+		// surfaces downstream as a Forbidden that someone will notice, while a
+		// widened one -- secrets above all -- is silent.
+		for _, user := range fw.Users {
+			subject := "system:serviceaccount:" + fw.Namespace + ":" + k8s.UserServiceAccountName(user)
+
+			for _, allow := range []struct{ resource, verb string }{
+				{"nodes", "list"},
+				{"nodes/status", "get"},
+				{"persistentvolumes", "list"},
+				{"pods/log", "get"},
+				{"events", "list"},
+				{"deployments.apps", "list"},
+				{"customresourcedefinitions.apiextensions.k8s.io", "list"},
+				{"agenttemplates.ai.cubestack.io", "list"},
+			} {
+				Expect(subjectMay(ctx, subject, allow.resource, allow.verb)).To(BeTrue(),
+					"%s should be allowed to %s %s", subject, allow.verb, allow.resource)
+			}
+
+			for _, deny := range []struct{ resource, verb, why string }{
+				{"secrets", "get", "reading a secret is what this identity is defined not to do"},
+				{"nodes/proxy", "get", "the kubelet API is node root"},
+				{"pods/proxy", "get", "proxying to a Pod's own ports bypasses the app's auth"},
+				{"pods/exec", "create", "a shell in someone else's container"},
+				{"serviceaccounts/token", "create", "minting an identity is privilege escalation"},
+			} {
+				Expect(subjectMay(ctx, subject, deny.resource, deny.verb)).To(BeFalse(),
+					"%s must not be allowed to %s %s: %s", subject, deny.verb, deny.resource, deny.why)
+			}
+		}
+	})
+
 	It("instantiates one agent per configured user", func() {
 		for _, user := range fw.Users {
 			name := controller.InstanceNameFor(user, controller.BuiltinAgentName)
@@ -96,3 +135,31 @@ var _ = Describe("Builtin bootstrap", func() {
 		}
 	})
 })
+
+// subjectMay asks the API server whether the named identity may perform the
+// verb, through a SubjectAccessReview, so the answer comes from the same
+// authorizer the assistant's own requests pass through. resource is written
+// "pods", "pods/log", or "deployments.apps"; the group is the suffix after the
+// first dot (empty for the core group). Namespace is deliberately left unset --
+// the per-user grants are ClusterRoleBindings, so the question is whether the
+// permission exists anywhere, not in one namespace.
+func subjectMay(ctx context.Context, subject, resource, verb string) bool {
+	attrs := &authorizationv1.ResourceAttributes{Verb: verb}
+	rest := resource
+	if i := strings.Index(rest, "/"); i >= 0 {
+		attrs.Subresource = rest[i+1:]
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, "."); i >= 0 {
+		attrs.Group = rest[i+1:]
+		rest = rest[:i]
+	}
+	attrs.Resource = rest
+
+	resp, err := fw.KubeClient.AuthorizationV1().SubjectAccessReviews().
+		Create(ctx, &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{User: subject, ResourceAttributes: attrs},
+		}, metav1.CreateOptions{})
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return resp.Status.Allowed
+}

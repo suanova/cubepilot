@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -134,7 +138,7 @@ func TestBootstrapEnsure(t *testing.T) {
 		if err := cl.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "cubepilot"}, &sa); err != nil {
 			t.Errorf("per-user SA %s not created: %v", saName, err)
 		}
-		for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
+		for _, role := range userClusterRoles {
 			var crb rbacv1.ClusterRoleBinding
 			if err := cl.Get(context.Background(), types.NamespacedName{Name: userCRBName(u, role)}, &crb); err != nil {
 				t.Errorf("CRB %s not created: %v", userCRBName(u, role), err)
@@ -287,4 +291,47 @@ func TestCreateIfMissingNamesTheKind(t *testing.T) {
 	if got := buf.String(); !strings.Contains(got, "bootstrap: created ServiceAccount/admin-cubepilot") {
 		t.Fatalf("log = %q, want it to contain %q", got, "bootstrap: created ServiceAccount/admin-cubepilot")
 	}
+}
+
+// TestPerUserRolesAreBindable guards the one failure in this area that nothing
+// else sees. The operator creates the per-user ClusterRoleBindings, and the API
+// server refuses to create a binding whose roleRef its creator may not `bind`.
+// The chart lists the bindable names in the `resourceNames` of its
+// clusterroles/bind rule, so a role added to userClusterRoles and bound by the
+// code but not listed there produces a binding that is never created -- an
+// error that only ever surfaces in the operator's log, never in a test or a
+// reconcile failure the user sees.
+func TestPerUserRolesAreBindable(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "charts", "cubepilot-chart", "templates", "rbac.yaml"))
+	if err != nil {
+		t.Fatalf("read the chart rbac: %v", err)
+	}
+	bindable := bindableClusterRoleNames(string(raw))
+	if len(bindable) == 0 {
+		t.Fatal("the chart lists no bindable ClusterRole names -- has the rule moved?")
+	}
+	for _, role := range userClusterRoles {
+		if !bindable[role] {
+			t.Errorf("the chart does not let the operator bind %q: add it to the resourceNames of the clusterroles/bind rule", role)
+		}
+	}
+}
+
+// bindableClusterRoleNames collects the names from the chart's `resourceNames`
+// arrays, restricted to the rule that grants `bind` -- the one listing `view`.
+func bindableClusterRoleNames(chart string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range regexp.MustCompile(`resourceNames:\s*\[([^\]]*)\]`).FindAllStringSubmatch(chart, -1) {
+		var names []string
+		for _, part := range strings.Split(m[1], ",") {
+			names = append(names, strings.Trim(strings.TrimSpace(part), `"'`))
+		}
+		if !slices.Contains(names, UserViewClusterRole) {
+			continue // some other rule's resourceNames
+		}
+		for _, n := range names {
+			out[n] = true
+		}
+	}
+	return out
 }

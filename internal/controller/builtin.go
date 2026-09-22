@@ -37,25 +37,48 @@ const BuiltinTaskTemplateName = "daily-inspection"
 const BuiltinProviderName = "platform"
 
 // Per-user identity ClusterRoles the platform binds each user's ServiceAccount
-// to (issue #19): `view` is the built-in read-only ClusterRole (deliberately
-// excludes secrets); cubepilot-user-crds (declared in the chart rbac.yaml)
-// grants full ai.cubestack.io CRUD cluster-wide. The assistant executes kubectl
-// with the user's identity and must operate platform CRs in any namespace
-// (generic CRD discovery creates e.g. CubeStack DevEnvironments in arbitrary
-// namespaces, not only the install namespace), so even though the six platform
-// CRDs are Namespaced (issue #146) the per-user binding stays a
-// ClusterRoleBinding. ClusterRoleBindings reference these roles by name, so
-// the operator needs only get/bind on them.
+// to (issue #19), all declared in the chart rbac.yaml:
+//
+//   - `view`, the built-in read-only ClusterRole. It is namespaced by design and
+//     deliberately excludes secrets, which is why it is safe to bind widely --
+//     and also why it is not enough on its own: it grants no cluster-scoped
+//     resource, so nothing node-level is readable through it.
+//   - cubepilot-cluster-read, the cluster-scoped read `view` does not grant
+//     (nodes and the rest), with secrets and the kubelet proxies excluded.
+//   - cubepilot-user-crds, full ai.cubestack.io CRUD cluster-wide.
+//
+// The assistant executes kubectl with the user's identity and must operate
+// platform CRs in any namespace (generic CRD discovery creates e.g. CubeStack
+// DevEnvironments in arbitrary namespaces, not only the install namespace), so
+// even though the six platform CRDs are Namespaced (issue #146) the per-user
+// bindings stay ClusterRoleBindings. ClusterRoleBindings reference these roles
+// by name, so the operator needs only get/bind on them -- and the chart lists
+// every name here in that role's resourceNames.
 const (
-	UserViewClusterRole = "view"
-	UserCRDsClusterRole = "cubepilot-user-crds"
+	UserViewClusterRole        = "view"
+	UserClusterReadClusterRole = "cubepilot-cluster-read"
+	UserCRDsClusterRole        = "cubepilot-user-crds"
 )
 
-// userCRBName builds the per-user ClusterRoleBinding name.
+// userClusterRoles is the set bound per user, in binding order. One list, so a
+// role added here is bound, covered by the bootstrap test, and (once its name
+// is in the chart's resourceNames) bindable by the operator.
+var userClusterRoles = []string{
+	UserViewClusterRole,
+	UserClusterReadClusterRole,
+	UserCRDsClusterRole,
+}
+
+// userCRBName builds the per-user ClusterRoleBinding name. The role segment is
+// shortened where the full name is redundant next to the "cubepilot-user-"
+// prefix, so binding names stay readable.
 func userCRBName(user, role string) string {
 	short := role
-	if role == UserCRDsClusterRole {
+	switch role {
+	case UserCRDsClusterRole:
 		short = "crds"
+	case UserClusterReadClusterRole:
+		short = "cluster-read"
 	}
 	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
 }
@@ -164,7 +187,7 @@ type BuiltinBootstrapReconciler struct {
 // +kubebuilder:rbac:groups=ai.cubestack.io,resources=agentinstances/status;skills/status;tasks/status;taskruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;bind,resourceNames=view;cubepilot-user-crds
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;bind,resourceNames=view;cubepilot-cluster-read;cubepilot-user-crds
 
 // Reconcile ensures the builtin objects exist (create-if-missing).
 func (r *BuiltinBootstrapReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -261,7 +284,7 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		return err
 	}
 
-	for _, role := range []string{UserViewClusterRole, UserCRDsClusterRole} {
+	for _, role := range userClusterRoles {
 		crb := &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(user, role), Labels: builtinLabels},
 			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role},
