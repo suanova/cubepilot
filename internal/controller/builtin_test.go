@@ -163,10 +163,51 @@ func TestBootstrapEnsure(t *testing.T) {
 		t.Errorf("agent skills = %v, want the builtin presets", agent.Spec.Skills)
 	}
 
-	// TaskTemplate exists.
-	var tpl v1alpha1.TaskTemplate
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: "daily-inspection", Namespace: "cubepilot"}, &tpl); err != nil {
-		t.Fatalf("daily-inspection template not created: %v", err)
+	// Every preset TaskTemplate exists, carries the builtin label, and survives
+	// being rendered. Three failures this catches are all silent at runtime:
+	// params travel through the instruction and nowhere else, so a param with no
+	// default reaches the agent as a literal {{placeholder}}, a declared param
+	// the instruction never mentions is dropped without a trace, and a skill the
+	// platform does not ship drops that run's skill revision.
+	builtinSkills := map[string]bool{}
+	for _, n := range skill.BuiltinSkillNames() {
+		builtinSkills[n] = true
+	}
+	presets := BuiltinTaskTemplates()
+	if len(presets) == 0 {
+		t.Fatal("no builtin task templates")
+	}
+	seen := map[string]bool{}
+	for _, preset := range presets {
+		name := preset.Name
+		if seen[name] {
+			t.Errorf("builtin task template %s declared twice", name)
+		}
+		seen[name] = true
+		var got v1alpha1.TaskTemplate
+		if err := cl.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "cubepilot"}, &got); err != nil {
+			t.Errorf("task template %s not created: %v", name, err)
+			continue
+		}
+		if got.Labels["cubepilot/builtin"] != "true" {
+			t.Errorf("task template %s missing the builtin label", name)
+		}
+		for _, p := range got.Spec.ParamsSchema {
+			if p.Default == "" {
+				t.Errorf("task template %s: param %q has no default, so the agent would see a literal {{%s}}", name, p.Name, p.Name)
+			}
+			if !strings.Contains(got.Spec.Instruction, "{{"+p.Name+"}}") {
+				t.Errorf("task template %s: param %q is declared but the instruction never interpolates it, so the wizard's value goes nowhere", name, p.Name)
+			}
+		}
+		for _, s := range got.Spec.Skills {
+			if !builtinSkills[s] {
+				t.Errorf("task template %s references skill %q, which the platform does not ship", name, s)
+			}
+		}
+	}
+	if !seen[BuiltinTaskTemplateName] {
+		t.Errorf("the presets no longer include %s", BuiltinTaskTemplateName)
 	}
 
 	// Providers are inlined in the template (design §3.3): the builtin template

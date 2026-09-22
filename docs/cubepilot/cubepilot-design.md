@@ -243,9 +243,10 @@ spec:
   instruction: |
     以只读方式巡检集群（get/list/watch/logs）：检查节点 Ready 与压力、
     GPU 健康、异常 Pod、PVC 使用率与平台组件；异常附证据链并按 P0/P1/P2 分级；禁止写操作。
-    巡检范围：{{scope}}。
+    巡检范围：{{scope}} 内的 {{target}}。
   paramsSchema:
-    - { name: scope, default: All, enum: [All, NodePool, Project] }
+    - { name: scope, default: all, enum: [all, node-pool, project] }
+    - { name: target, default: all }        # node-pool / project 时指明是哪一个，all = 全部都查
   requiredPermissions: { level: ClusterRead }
   skills: [cluster-inspection]              # 声明任务所需 skill（执行时解析当前版本）
   defaultCron: "0 2 * * *"                # 创建向导的默认调度提示；以 Task.cron 为准
@@ -286,6 +287,21 @@ status:
 ```
 
 模板只回答「做什么」，调度与归属放在 Task 上。`templateRef` 只存名字、不钉版本，执行时解析当前模板（模板更新下次执行生效，不影响正在跑的一次）；因此 Task 上**不固化 skill 版本**——审计由 TaskRun 在运行时记录实际用到的 revision（见 §7）。`params` 只能覆盖模板 `paramsSchema` 允许的参数。阶段一每用户只有一个 `cubepilot` 实例，可从 `owner` 推导，故不写 `agentInstanceRef`（阶段二多 Agent 时再加回）。每次执行前，Scheduler 重新验证用户有效性与授权；失败时写入 TaskRun，不执行工具操作。
+
+平台预置一组模板作为起点（bootstrap 按「没有就建」种下，已存在的 CR 不被覆盖，因此运维改过的模板不会被平台改回去）。带默认调度的自动跑，没有调度的（`cluster-health-check`、`model-deployment-check`）只能手动触发——它们本来就是「出事了」或「动手前」才跑的：
+
+| 模板 | 用途 | 默认调度 | 依赖 skill |
+|---|---|---|---|
+| `daily-inspection` | 每日全量巡检：节点/Pod/存储/平台组件 + AI 智能巡检 | `0 2 * * *` | `cluster-inspection` |
+| `cluster-health-check` | 现场定性排查：节点状况、控制面、异常 Pod、Warning 事件，只报当前有问题的 | 手动 | `cluster-inspection` |
+| `gpu-inspection` | GPU 节点巡检：显卡清单、可分配 vs 已分配、device plugin 健康、卡位泄漏与硬件报错 | `0 3 * * *` | `cluster-inspection`、`kubectl-platform` |
+| `inference-validation` | 推理服务端到端验证：引用解析、副本就绪、端点可达、真实请求 | `0 4 * * *` | `cubestack-platform` |
+| `model-deployment-check` | 部署前预检：模型存储可达、RuntimeProfile 接受该模型、GPU 容量与配额 | 手动 | `cubestack-platform` |
+| `resource-analysis` | 集群资源分析：各节点池余量、Top 消耗方、空占的 GPU、碎片化与趋势 | `0 8 * * 1` | `cluster-inspection`、`kubectl-platform` |
+
+模板里声明的参数必须在 `instruction` 中以 `{{name}}` 出现：参数只在渲染时插值，没有占位符的参数等于向导上一个不起作用的下拉框。`defaultCron` 只是创建向导的默认值，留空即「只能手动触发」。
+
+`gpu-inspection` 与 `inference-validation` 的方法写在 `instruction` 里，不为它们新立 skill。它们要做的事——先发现集群真正使用的显卡资源名、Quantity 是字符串不能直接求和、服务 `Running` 不等于在服务——是这两个任务自带的步骤，不是跨对话复用的领域知识。写在 instruction 里还有个实际好处：模板自足，判据不随「这个 skill 有没有被启用」漂移。代价是这两条 instruction 偏长，这个代价是明知接受的。新领域知识该进 skill 时仍然进 skill。
 
 ## 3.6 数据真源
 
@@ -502,7 +518,7 @@ TaskRun 至少记录：Task UID、AgentInstance、Template revision（运行时�
 | 每用户实例 | 一个 `cubepilot` 模板，每用户一个 Pod + PVC | 用户间物理隔离；会话/记忆跨重启保留 |
 | 平台资源操作 | OpenClaw skill + exec kubectl（用户最小权限 + RBAC 兜底）+ schema 发现（两个 kubeconfig + 内置 skill） | **自然语言创建 DevEnvironment、部署 InferenceService、查异常 Pod / GPU / 资源状态**，越权被 RBAC 拒绝 |
 | 简单 HITL | 写操作命令匹配命中即确认（尽力而为，不保证防住变体） | 常见写操作（如 `kubectl delete`）有确认，变体可能漏网（接受） |
-| 定时巡检 | TaskTemplate/Task/TaskRun，预置 `daily-inspection` | 每日自动出 P0/P1/P2 巡检报告，附证据链 |
+| 定时巡检 | TaskTemplate/Task/TaskRun，预置一组巡检与检查模板（见 §3.5） | 每日自动出 P0/P1/P2 巡检报告，附证据链；GPU 巡检、推理服务验证、升级前检查按需触发 |
 | 技能市场与配置注入 | skill 经技能市场发布/安装（Skill CRD + 共享文件卷）；提示词/模型注入配置 | 模块发布技能、用户一键安装；改模型/提示词即时生效 |
 
 ## 阶段一明确不做（缺口，待后续阶段补）
