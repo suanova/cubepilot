@@ -1,0 +1,33 @@
+apiVersion: ai.cubestack.io/v1alpha1
+kind: TaskTemplate
+metadata:
+  name: gpu-inspection
+spec:
+  displayName: GPU Node Inspection
+  description: "Per GPU node: inventory, allocatable vs. allocated, device plugin health, stuck allocations and hardware errors"
+  # The instruction carries the method: the resource name has to be discovered
+  # rather than assumed, and the request sum is a jq trap worth stating outright.
+  # Both are the difference between a report and a plausible-looking wrong one.
+  instruction: |-
+    Inspect every GPU node and the workloads holding its GPUs, read-only (get/list/watch/logs).
+
+    Find the GPU extended resource name this cluster actually uses before anything else -- vendors differ, and reading a Metax cluster through an nvidia name reports zero cards:
+      kubectl get nodes -o json | jq -r '.items[].status.allocatable | keys[]' | grep -i gpu | sort -u
+    Call that name $RES below. On a mixed cluster it prints one name per vendor: run the per-resource steps once for each, and report per resource rather than summing unrelated accelerators into one figure.
+
+    1. Inventory: the nodes where .status.allocatable[$RES] is set, and how many GPUs each carries
+    2. Allocated: sum the container requests for $RES per node. Quantities arrive as JSON strings and jq's add concatenates them, so convert with tonumber first -- two containers asking for "1" each otherwise report "11". GPUs are extended resources, so their quantities are always whole numbers. A node whose requests exceed its allocatable is over-committed
+    3. Device plugin: the device-plugin Pod on each GPU node is present, Running and not restarting; read its log for registration failures
+    4. Scheduling: GPU node taints, and whether an unschedulable node is holding GPUs nothing can use
+    5. Stuck allocations: Pods Pending on insufficient GPU, and Pods holding a GPU while not Running
+    6. Hardware errors: GPU errors reported as node events, or by a node problem detector / DCGM exporter if the cluster runs one. If neither is present this check cannot be made -- say so instead of inferring hardware health from Pods being Running
+    Vendor: {{vendor}}. Report per node, with the command output behind each figure, classify by P0/P1/P2, and flag every GPU that is allocated but not usable. State plainly which checks could not be made from this identity. No write operations allowed.
+  paramsSchema:
+    - name: vendor
+      default: all
+      enum: [all, nvidia, metax]
+  requiredPermissions:
+    level: cluster-read
+    note: Node status and Pods in every namespace must be readable; the device plugin runs in a platform namespace
+  skills: [cluster-inspection, kubectl-platform]
+  defaultCron: "0 3 * * *"

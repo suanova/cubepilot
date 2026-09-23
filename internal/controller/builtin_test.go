@@ -173,7 +173,10 @@ func TestBootstrapEnsure(t *testing.T) {
 	for _, n := range skill.BuiltinSkillNames() {
 		builtinSkills[n] = true
 	}
-	presets := BuiltinTaskTemplates()
+	presets, err := BuiltinTaskTemplates()
+	if err != nil {
+		t.Fatalf("load the preset task templates: %v", err)
+	}
 	if len(presets) == 0 {
 		t.Fatal("no builtin task templates")
 	}

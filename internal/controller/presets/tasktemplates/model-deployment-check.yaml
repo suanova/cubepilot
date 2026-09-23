@@ -1,0 +1,23 @@
+apiVersion: ai.cubestack.io/v1alpha1
+kind: TaskTemplate
+metadata:
+  name: model-deployment-check
+spec:
+  displayName: Model Deployment Check
+  description: "Pre-flight a deployment before it is applied: model storage reachable, runtime profile accepts the model, GPU capacity available"
+  instruction: |-
+    Check whether a model can be deployed, before anything is applied, read-only. Model filter: {{model}} (all = every ModelVersion).
+    1. Model: a ModelVersion exists with architecture, quantization, version and storage.strategy set, and that storage backend (HostPath / Dynamic / Static / S3) is actually reachable from the cluster
+    2. Profile: an InferenceRuntimeProfile whose accelerator.vendor and accelerator.models match a GPU model the cluster really has, and whose modelRequirements.architectures and modelRequirements.quantization admit this model
+    3. Engine: the profile's engine.name and engine.version are versions this cluster can pull
+    4. Capacity: enough free GPUs of that model on nodes the profile's scheduling rules and the target namespace can use
+    5. Data path: for S3 storage the referenced endpoint and credential Secret are present; for HostPath the path exists on the target nodes
+    6. Quota: the namespace's ResourceQuota and LimitRange admit the resources the profile declares
+    Report pass / fail / unknown per check with the evidence, and for each failure state exactly what has to change for it to pass. No write operations allowed.
+  paramsSchema:
+    - name: model
+      default: all
+  requiredPermissions:
+    level: cluster-read
+    note: ModelVersion and InferenceRuntimeProfile are cluster-scoped; the namespace's quota and storage also have to be readable
+  skills: [cubestack-platform]

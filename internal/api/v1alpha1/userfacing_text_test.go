@@ -18,6 +18,9 @@ import (
 //     `helm get manifest` output;
 //   - the embedded SKILL.md files are baked into the agent image and read by the
 //     agent (and listed in the skill catalog);
+//   - the preset TaskTemplates are seeded as CRs, and their displayName,
+//     description and instruction are what the Portal's Templates tab shows and
+//     what every run of the task is prompted with;
 //   - README.md is the repository's public front page;
 //   - api.md and api-conventions.md are the contract for anyone integrating
 //     against the API, and the bruno collection is the walkthrough they follow.
@@ -46,6 +49,7 @@ var shippedText = []struct {
 	{"chart-manifests", "deploy/charts/cubepilot-chart/templates/*.yaml", false},
 	{"chart-values", "deploy/charts/cubepilot-chart/values.yaml", false},
 	{"embedded-skills", "internal/skill/skills/*/SKILL.md", false},
+	{"preset-task-templates", "internal/controller/presets/tasktemplates/*.yaml", false},
 	{"readme", "README.md", false},
 	{"api-doc", "docs/cubepilot/api.md", false},
 	{"api-conventions", "docs/cubepilot/api-conventions.md", false},
