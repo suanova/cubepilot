@@ -754,6 +754,9 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 		// The shared name is the accepted edge: a platform name that leaves the
 		// set and is re-created by the agent before this pass runs is removed as a
 		// platform one. The window is one poll.
+		//
+		// The adjacent case: an agent that deletes .cubepilot.json makes that
+		// directory its own, so a withdrawn skill cannot be swept from it.
 		if _, err := os.Stat(filepath.Join(skillsDir, e.Name(), skillMarker)); err != nil {
 			continue
 		}

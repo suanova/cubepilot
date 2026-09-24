@@ -89,8 +89,8 @@ func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) str
 
 // TestSyncSkills verifies the supervisor pulls a skill tar from the internal
 // API, extracts it into workspace/skills/<name>/, writes the .cubepilot.json
-// marker, clears stale entries, and verifies -- without re-pulling -- a tree it
-// installed itself.
+// marker, clears the stale entries it rendered itself, and verifies -- without
+// re-pulling -- a tree it installed itself.
 func TestSyncSkills(t *testing.T) {
 	ws := t.TempDir()
 	// Pre-existing stale skill dir (platform-rendered: it carries the marker) that
@@ -160,7 +160,7 @@ func TestSyncSkillsKeepsAgentAuthoredSkill(t *testing.T) {
 	ws := t.TempDir()
 	repo := &skill.PathRepository{Root: t.TempDir()}
 	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n")
-	srv, _ := testAPIWithCounter(t, nil, "", repo.Root)
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
 	s := New(Config{Workspace: ws, APIURL: srv.URL})
 	s.http = srv.Client()
 	// The agent's own skill, authored through skill_workshop: no marker.
@@ -177,6 +177,10 @@ func TestSyncSkillsKeepsAgentAuthoredSkill(t *testing.T) {
 	if err := s.syncSkills(context.Background(), cfg); err != nil {
 		t.Fatalf("syncSkills: %v", err)
 	}
+	// The platform skill was really installed, not merely skipped.
+	if got := requests(); got != 1 {
+		t.Fatalf("install fetches = %d, want 1", got)
+	}
 	if b, err := os.ReadFile(filepath.Join(own, "SKILL.md")); err != nil || string(b) != "# Mine\n" {
 		t.Errorf("agent-authored skill was touched: %q, %v", b, err)
 	}
@@ -185,6 +189,9 @@ func TestSyncSkillsKeepsAgentAuthoredSkill(t *testing.T) {
 	cfg.Skills[0].Revision = "rev2"
 	if err := s.syncSkills(context.Background(), cfg); err != nil {
 		t.Fatalf("syncSkills after revision change: %v", err)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("revision change did not re-fetch (fetches = %d, want 2)", got)
 	}
 	if _, err := os.Stat(own); err != nil {
 		t.Errorf("agent-authored skill removed on a revision change: %v", err)
