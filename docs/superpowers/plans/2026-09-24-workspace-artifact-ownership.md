@@ -122,42 +122,59 @@ func TestTreeHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base, err := TreeHash(dir, ".cubepilot.json")
-	if err != nil {
-		t.Fatalf("TreeHash: %v", err)
+	// hash is the current tree hash; a failure here is a test failure, not
+	// something to compare against "".
+	hash := func() string {
+		t.Helper()
+		got, err := TreeHash(dir, ".cubepilot.json")
+		if err != nil {
+			t.Fatalf("TreeHash: %v", err)
+		}
+		return got
 	}
-	if again, err := TreeHash(dir, ".cubepilot.json"); err != nil || again != base {
-		t.Fatalf("TreeHash not stable: %q vs %q (%v)", base, again, err)
+	base := hash()
+	if again := hash(); again != base {
+		t.Fatalf("TreeHash not stable: %q vs %q", base, again)
 	}
 	// The skipped entry is not part of the tree: rewriting it changes nothing.
 	write(".cubepilot.json", `{"tree":"another"}`)
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got != base {
+	if got := hash(); got != base {
 		t.Error("the skipped file changed the tree hash")
 	}
-	// Each of these is drift, so each must change the hash.
+	// Each of these is drift, so each must change the hash. Each mutation is
+	// compared against the hash taken immediately before it: comparing every step
+	// against base would let an earlier mutation mask a later one that does nothing.
+	prev := hash()
 	write("SKILL.md", "# b\n")
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("a content change did not change the hash")
 	}
+	prev = hash()
 	write("SKILL.md", "# a\n")
 	write("extra.md", "x\n")
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("an added file did not change the hash")
 	}
+	prev = hash()
 	if err := os.Remove(filepath.Join(dir, "extra.md")); err != nil {
 		t.Fatal(err)
 	}
+	if got := hash(); got == prev {
+		t.Error("a removed file did not change the hash")
+	}
+	prev = hash()
 	if err := os.MkdirAll(filepath.Join(dir, "empty2"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("an added empty directory did not change the hash")
 	}
+	prev = hash()
 	if err := os.Remove(filepath.Join(dir, "refs", "one.md")); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
-		t.Error("a removed file did not change the hash")
+	if got := hash(); got == prev {
+		t.Error("a removed nested file did not change the hash")
 	}
 }
 
@@ -1493,12 +1510,22 @@ var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
 			"printf '# agent skill\\n' > " + agentWorkspace + "/skills/e2e-agent-skill/SKILL.md")
 		Expect(err).NotTo(HaveOccurred())
 
-		// Tamper: rewrite the platform's gateway config and the first installed
-		// platform skill, if any is installed.
+		// The instance has platform skills installed (the builtin template ships
+		// them). Require one: if none were installed the tamper step below would
+		// silently skip, and the skill half of this test would pass without
+		// exercising convergence at all.
+		out, err := exec("ls -1d " + agentWorkspace + "/skills/*/ | grep -v e2e-agent-skill | head -1")
+		Expect(err).NotTo(HaveOccurred())
+		platformSkill := strings.TrimSpace(out)
+		Expect(platformSkill).NotTo(BeEmpty(),
+			"no platform skill installed: the skill-drift half of this test would pass vacuously")
+
+		// Tamper: rewrite the platform's gateway config and that skill. `ls -1d` on
+		// a directory glob yields a trailing slash, hence `platformSkill + "SKILL.md"`.
 		_, err = exec("printf '{\"rogue\":true}' > " + agentConfigPath)
 		Expect(err).NotTo(HaveOccurred())
-		_, _ = exec("first=$(ls -1d " + agentWorkspace + "/skills/*/ | grep -v e2e-agent-skill | head -1); " +
-			"[ -n \"$first\" ] && printf '\\ntampered\\n' >> \"${first}SKILL.md\"; true")
+		_, err = exec("printf '\\ntampered\\n' >> " + platformSkill + "SKILL.md")
+		Expect(err).NotTo(HaveOccurred())
 
 		// Within a poll or two the platform content is back, and the agent's skill
 		// is untouched.
@@ -1516,16 +1543,16 @@ var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
 			return nil
 		}, convergeTimeout, 5*time.Second).Should(Succeed())
 
-		// No installed platform skill carries the tampered line.
-		out, err := exec("grep -rl tampered " + agentWorkspace + "/skills/ | grep -v e2e-agent-skill || true")
+		// The tampered skill is back to the platform's content.
+		out, err = exec("grep -l tampered " + platformSkill + "SKILL.md || true")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(BeEmpty())
 	})
 })
 ```
 
-The `grep -v e2e-agent-skill` guards are needed because the tamper command and the
-check both have to skip the agent-authored directory.
+The `grep -v e2e-agent-skill` guard on the platform-skill lookup keeps the
+agent-authored directory from being mistaken for the one to tamper with.
 
 - [ ] **Step 3: Run it against the cluster**
 
