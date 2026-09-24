@@ -67,15 +67,19 @@ var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
 		Expect(platformSkill).NotTo(BeEmpty(),
 			"no platform skill installed: the skill-drift half of this test would pass vacuously")
 
-		// Tamper: rewrite the platform's gateway config and that skill. `ls -1d` on
-		// a directory glob yields a trailing slash, hence `platformSkill + "SKILL.md"`.
+		// Tamper: rewrite the platform's gateway config, edit that skill, and drop
+		// the skill's ownership marker. `ls -1d` on a directory glob yields a
+		// trailing slash, hence `platformSkill + "SKILL.md"`.
 		_, err = exec("printf '{\"rogue\":true}' > " + agentConfigPath)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = exec("printf '\\ntampered\\n' >> " + platformSkill + "SKILL.md")
 		Expect(err).NotTo(HaveOccurred())
+		_, err = exec("rm -f " + platformSkill + ".cubepilot.json")
+		Expect(err).NotTo(HaveOccurred())
 
 		// Within a poll or two the platform content is back, and the agent's skill
-		// is untouched.
+		// is untouched. A deleted marker is drift too, so the platform must have
+		// re-asserted it.
 		Eventually(func() error {
 			got, err := exec("cat " + agentConfigPath)
 			if err != nil {
@@ -87,12 +91,16 @@ var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
 			if _, err := exec("test -f " + agentWorkspace + "/skills/e2e-agent-skill/SKILL.md"); err != nil {
 				return fmt.Errorf("agent-authored skill removed: %w", err)
 			}
+			if _, err := exec("test -f " + platformSkill + ".cubepilot.json"); err != nil {
+				return fmt.Errorf("ownership marker not re-asserted: %w", err)
+			}
 			return nil
 		}, convergeTimeout, 5*time.Second).Should(Succeed())
 
-		// The tampered skill is back to the platform's content.
-		out, err = exec("grep -l tampered " + platformSkill + "SKILL.md || true")
+		// The platform skill is present and back to the platform's content: `cat`
+		// fails on a missing file, so this asserts presence and repair at once.
+		out, err = exec("cat " + platformSkill + "SKILL.md")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(strings.TrimSpace(out)).To(BeEmpty())
+		Expect(out).NotTo(ContainSubstring("tampered"))
 	})
 })
