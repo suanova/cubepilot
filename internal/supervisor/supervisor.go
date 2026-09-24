@@ -543,10 +543,10 @@ func revisionLabel(from string) string {
 // managedBlockBody composes the platform-owned text of the AGENTS.md managed
 // block: the operating conventions followed by the resolved instructions (the
 // template's and the user's). Both are platform-rendered, so both converge.
-func managedBlockBody(instructions string) string {
+func managedBlockBody(text string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(personaText))
-	if s := strings.TrimSpace(instructions); s != "" {
+	if s := strings.TrimSpace(text); s != "" {
 		b.WriteString("\n\n" + systemPromptHeader + "\n\n" + s)
 	}
 	return b.String()

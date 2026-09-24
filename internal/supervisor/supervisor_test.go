@@ -725,6 +725,37 @@ func TestReconcileManagedBlock(t *testing.T) {
 			t.Errorf("agent content lost:\n%s", second)
 		}
 	})
+	t.Run("keeps content written after the block after it", func(t *testing.T) {
+		// Content the agent writes *below* the block must stay below it. The
+		// suffix is a distinct section, not part of the block: splicing it back
+		// out of order silently reorders the file under the agent, which is what
+		// the dropped guard caught once before.
+		notes := "## 我的笔记\n\n这个必须留在块后面。"
+		file := append(append([]byte{}, reconcileManagedBlock(nil, "old")...), []byte("\n\n"+notes+"\n")...)
+		got := string(reconcileManagedBlock(file, "new"))
+		if !strings.Contains(got, notes) {
+			t.Fatalf("agent content after the block was lost:\n%s", got)
+		}
+		end := strings.Index(got, systemPromptEnd)
+		notesIdx := strings.Index(got, notes)
+		if end < 0 || notesIdx < end {
+			t.Errorf("agent content after the block was moved before it (end=%d, notes=%d):\n%s", end, notesIdx, got)
+		}
+	})
+	t.Run("removes the block when the desired body is empty", func(t *testing.T) {
+		if got := reconcileManagedBlock(nil, ""); got != nil {
+			t.Errorf("reconcileManagedBlock(nil, \"\") = %q, want nil (nothing to write)", got)
+		}
+		notes := "## 我的笔记\n\n块移除后也要留下。"
+		file := append(append([]byte{}, reconcileManagedBlock(nil, "old")...), []byte("\n\n"+notes+"\n")...)
+		got := string(reconcileManagedBlock(file, ""))
+		if !strings.Contains(got, notes) {
+			t.Errorf("agent content lost when the block is removed:\n%s", got)
+		}
+		if strings.Contains(got, systemPromptStart) || strings.Contains(got, systemPromptEnd) {
+			t.Errorf("block not removed (markers still present):\n%s", got)
+		}
+	})
 	t.Run("tolerates an unterminated block", func(t *testing.T) {
 		broken := systemPromptStart + "\nleft over\n"
 		got := string(reconcileManagedBlock([]byte(broken), "fresh"))
@@ -840,6 +871,36 @@ func TestSyncAgentsFile(t *testing.T) {
 		if !bytes.Equal(markerAfter, markerBefore) {
 			t.Errorf("marker sync #%d grew the file: %d -> %d bytes", i, len(markerBefore), len(markerAfter))
 		}
+	}
+}
+
+// TestSyncAgentsFileNilConfig covers the nil-config path through the sync: a
+// failed poll (or an instance with no resolved config) used to leave the file
+// untouched, and now reconciles it to the persona alone. The persona is the part
+// of the managed block that depends on no config, so it must land either way.
+func TestSyncAgentsFileNilConfig(t *testing.T) {
+	ws := t.TempDir()
+	s := New(Config{Workspace: ws})
+	agentsPath := filepath.Join(ws, agentsFileName)
+
+	if err := s.syncAgentsFile(nil); err != nil {
+		t.Fatalf("syncAgentsFile(nil): %v", err)
+	}
+	raw, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", agentsPath, err)
+	}
+	if !strings.Contains(string(raw), "CubePilot 操作约定") {
+		t.Errorf("persona not written on the nil-config path:\n%s", raw)
+	}
+	// No user-configured instructions section: the header count is the observable
+	// for it. reconcileManagedBlock labels every managed block with
+	// systemPromptHeader unconditionally, so the persona-only file carries that
+	// one label; a second occurrence is the section managedBlockBody emits around
+	// instructions, and it must be absent when there are no instructions.
+	if n := strings.Count(string(raw), systemPromptHeader); n != 1 {
+		t.Errorf("nil config should yield no %q section; header count = %d, want 1 (the managed block's own label):\n%s",
+			systemPromptHeader, n, raw)
 	}
 }
 
