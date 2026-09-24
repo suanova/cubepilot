@@ -101,14 +101,23 @@ mean the repository's own write path has to be trustworthy; that is the subject 
 the API-authentication issue filed alongside this one, and a repository an attacker
 can write is a compromise of the skill content itself rather than of this check.
 
-Per poll, for each wanted skill: compare `TreeHash(dir)` against the in-memory
-expected tree for that skill and re-extract on any difference. A skill with no
-in-memory expectation -- every wanted skill after a pod start -- is fetched and
-extracted first rather than trusted to its marker, so the check always begins from
-platform-derived content. When the repository is unreachable, the last verified
-expectation stays in memory and the check continues against it; only a pod start
-with the repository down leaves a wanted skill unverified, and that resolves on the
-first poll that reaches the API.
+The expectation is keyed by the skill's **resolved identity** -- its `revision`, tar
+`path` and `sha256` -- not by name alone. Per poll, for each wanted skill, in this
+order:
+
+- the resolved identity differs from the identity stored with the expectation, or no
+  expectation is stored (every wanted skill after a pod start): fetch, extract, and
+  replace the expectation with the staged tree;
+- otherwise: compare `TreeHash(dir)` against the stored expectation, and re-extract
+  when it differs.
+
+The identity has to be part of the key, not just the name: keyed by name alone, a new
+platform revision would leave the installed content matching the stale expectation,
+so the poll would find "no difference" forever and the new content would never land --
+the same class of bug this design exists to remove. When the repository is
+unreachable, the last verified expectation stays in memory and the check continues
+against it; only a pod start with the repository down leaves a wanted skill
+unverified, and that resolves on the first poll that reaches the API.
 
 Cleanup keeps the ownership rule: a directory under `skills/` is removed only when
 the marker says the platform put it there **and** the name is no longer in the
@@ -251,7 +260,10 @@ Unit (supervisor / skill packages):
   `revision`) is still detected and restored** -- the marker is not trusted; an
   unmarked directory survives a revision change and a cleanup pass; a marked
   directory whose name left the resolved set is removed; a pod start re-fetches and
-  re-verifies every wanted skill rather than skipping on a marker match.
+  re-verifies every wanted skill rather than skipping on a marker match; **a platform
+  revision change re-fetches and installs the new content even though the on-disk tree
+  matched the previous expectation** -- the expectation is keyed by the resolved
+  identity, not by name.
 - `openclaw.json`: a hand-edited file is rewritten with the desired content; an
   unchanged file is left untouched (no write).
 - Managed block: persona + instructions are written together; a hand-edited block is
