@@ -725,13 +725,11 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	return &cfg, nil
 }
 
-// syncSkills pulls the enabled skills' tars from the internal API and
-// extracts them into Workspace/skills/<name>/ (clearing stale dirs first).
-// Every wanted skill is verified on every call: the content this process
-// installed is re-hashed, and anything that no longer matches -- an agent edit,
-// a truncated dir, a fresh pod whose expectations are empty -- is re-pulled from
-// the platform. The gateway hot-reloads the extracted files itself; the
-// supervisor never restarts it.
+// syncSkills pulls the enabled skills' tars from the internal API, installs them
+// under Workspace/skills/<name>/, verifies the installed content on every call,
+// and removes the skill directories it rendered that are no longer in the
+// resolved set. Directories it did not render (no marker) are the agent's and are
+// left untouched.
 func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
 	skillsDir := filepath.Join(s.cfg.Workspace, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -746,10 +744,21 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 		return err
 	}
 	for _, e := range entries {
-		if _, ok := wanted[e.Name()]; !ok {
-			if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
-				return err
-			}
+		if _, ok := wanted[e.Name()]; ok {
+			continue
+		}
+		// Ownership decides: a directory carrying our marker is one the platform
+		// rendered, so it is ours to remove once its name leaves the resolved set.
+		// Anything else is the agent's own skill and stays.
+		//
+		// The shared name is the accepted edge: a platform name that leaves the
+		// set and is re-created by the agent before this pass runs is removed as a
+		// platform one. The window is one poll.
+		if _, err := os.Stat(filepath.Join(skillsDir, e.Name(), skillMarker)); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
+			return err
 		}
 	}
 	for name, skill := range wanted {

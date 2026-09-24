@@ -93,11 +93,17 @@ func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) str
 // installed itself.
 func TestSyncSkills(t *testing.T) {
 	ws := t.TempDir()
-	// Pre-existing stale skill dir that must be cleared.
-	if err := os.MkdirAll(filepath.Join(ws, "skills", "stale"), 0o755); err != nil {
+	// Pre-existing stale skill dir (platform-rendered: it carries the marker) that
+	// must be cleared once its name leaves the resolved set.
+	staleDir := filepath.Join(ws, "skills", "stale")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "skills", "stale", "SKILL.md"), []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(staleDir, "SKILL.md"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, skillMarker),
+		[]byte(`{"skill":"stale","revision":"r0","tree":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Seed the "repo" with the skill tar.
@@ -145,6 +151,43 @@ func TestSyncSkills(t *testing.T) {
 	// skill is not re-pulled.
 	if err := s.syncSkills(context.Background(), cfg); err != nil {
 		t.Fatalf("re-sync: %v", err)
+	}
+}
+
+// TestSyncSkillsKeepsAgentAuthoredSkill verifies a skill directory the platform
+// did not render is left alone: no marker, no ownership, no deletion.
+func TestSyncSkillsKeepsAgentAuthoredSkill(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n")
+	srv, _ := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	// The agent's own skill, authored through skill_workshop: no marker.
+	own := filepath.Join(ws, "skills", "my-own-skill")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(own, "SKILL.md"), []byte("# Mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("syncSkills: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(own, "SKILL.md")); err != nil || string(b) != "# Mine\n" {
+		t.Errorf("agent-authored skill was touched: %q, %v", b, err)
+	}
+	// A later revision change (the cleanup runs on every sync) must still leave it.
+	cfg.Revision = "rev2"
+	cfg.Skills[0].Revision = "rev2"
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("syncSkills after revision change: %v", err)
+	}
+	if _, err := os.Stat(own); err != nil {
+		t.Errorf("agent-authored skill removed on a revision change: %v", err)
 	}
 }
 
