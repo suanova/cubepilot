@@ -546,6 +546,23 @@ func TestApplyGatewayConfig(t *testing.T) {
 	if string(got) != `{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}` {
 		t.Errorf("config = %q, want the new content", got)
 	}
+
+	// A hand-edited file is rewritten: the comparison is against the bytes on
+	// disk, so a write the supervisor did not make is visible.
+	if err := os.WriteFile(path, []byte(`{"models":{"providers":{"rogue":{}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"models":{"providers":{"my-glm":{"api":"openai-completions"}}}}`
+	changed, err = s.applyGatewayConfig([]byte(want))
+	if err != nil {
+		t.Fatalf("apply after edit: %v", err)
+	}
+	if !changed {
+		t.Error("a hand-edited file should be rewritten")
+	}
+	if got, _ = os.ReadFile(path); string(got) != want {
+		t.Errorf("edited file not restored: %q, want %q", got, want)
+	}
 }
 
 // TestLoadFromEnvHasNoAmbientAPIURL pins issue #172: the supervisor must never

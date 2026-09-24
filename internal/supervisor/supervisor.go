@@ -178,10 +178,6 @@ type Supervisor struct {
 	cmd    *exec.Cmd
 	waitCh chan error // receives the gateway child's Wait result when it exits
 
-	// lastCfgHash is the sha256 of the gateway config file as last loaded (or
-	// detected); configHashChanged compares against it. Only touched by Run.
-	lastCfgHash string
-
 	// lastCfg is the most recently fetched resolved config (for the credential
 	// sync). Only touched by Run.
 	lastCfg *resolver.ResolvedAgentConfig
@@ -438,16 +434,22 @@ func (s *Supervisor) fetchGatewayConfig(ctx context.Context) ([]byte, error) {
 	return body, nil
 }
 
-// applyGatewayConfig writes the gateway config to the writable ConfigPath when
-// its content changed, and reports whether a gateway restart is needed. Same
-// content is a no-op, so the poll never restarts for an unchanged config.
+// applyGatewayConfig writes the gateway config to ConfigPath when the bytes on
+// disk differ from the desired bytes, and reports whether it wrote. Comparing
+// against the file -- not against the hash of what this process last wrote -- is
+// what makes a write nobody asked for visible: the file is on the PVC, the
+// gateway watches it, and a comparison against in-memory state would never notice
+// it changed.
 func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if s.cfg.ConfigPath == "" {
 		return false, nil
 	}
-	h := fmt.Sprintf("%x", sha256.Sum256(data))
-	if h == s.lastCfgHash {
-		return false, nil
+	current, err := os.ReadFile(s.cfg.ConfigPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read %s: %w", s.cfg.ConfigPath, err)
+	}
+	if bytes.Equal(current, data) {
+		return false, nil // already the desired bytes
 	}
 	if err := os.MkdirAll(filepath.Dir(s.cfg.ConfigPath), 0o755); err != nil {
 		return false, err
@@ -455,7 +457,7 @@ func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if err := os.WriteFile(s.cfg.ConfigPath, data, 0o644); err != nil {
 		return false, err
 	}
-	s.lastCfgHash = h
+	log.Printf("supervisor: gateway config written (%d bytes)", len(data))
 	return true, nil
 }
 
