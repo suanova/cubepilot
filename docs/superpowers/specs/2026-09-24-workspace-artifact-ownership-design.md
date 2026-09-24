@@ -77,6 +77,14 @@ revision was installed, `tree` records the content fingerprint at install time, 
 the file's presence is the ownership marker cleanup keys on. It is a record for
 diagnosis and for cleanup, not a trust anchor -- the next paragraph says why.
 
+**Presence is re-asserted; the value never is.** Because the marker is also the
+directory's only ownership record, its absence is drift: the verified branch checks
+that the marker exists and reinstalls the skill when it does not. Otherwise an agent
+that deletes the file would leave a platform directory permanently un-owned -- it
+could never be swept once the platform withdrew the skill, and it would be
+indistinguishable from one the agent authored. Only presence is read; reading the
+value back is what the forgery defence forbids.
+
 `TreeHash(dir)`: sha256 over the sorted list of entries under the directory, each
 entry rendered as `f\x00<relative path>\x00<sha256 of file content>` for a regular
 file and `d\x00<relative path>` for a directory; the marker file itself is excluded,
@@ -148,6 +156,17 @@ The block mechanics are unchanged: reconciled every poll against the bytes on di
 idempotent, content-hash guarded, removed only when the desired content is empty
 (which the persona makes unreachable in practice), and skipped with the last-good
 file kept when validation fails.
+
+**The section's budget has one definition, in `internal/instructions`.** The
+instructions are accepted against `MaxChars` minus a reserve for the platform's own
+text (the persona plus the heading and separators that introduce the instructions
+section), while the composer checks what it actually writes -- persona and
+instructions together -- against the whole `MaxChars`. Two independent gates against
+the same number would mean an operator saving a prompt the pod then refuses to
+render, with the rejection visible only in a pod log; the reserve makes an accepted
+value always deliverable. The reserve must cover the real persona, which a test in
+the package that owns the persona text pins -- so a persona that outgrows it fails
+a test instead of quietly eating the operator's budget.
 
 Everything outside the block stays the agent's.
 
@@ -237,6 +256,14 @@ can give is "a drift is corrected within one poll", not "a drift is impossible".
 
 - Resolved config or repository unreachable: log, retry next poll, leave existing
   content in place. A poll failure never clears what is already on the PVC.
+- **A skill that cannot be installed does not gate the gateway.** The boot path waits
+  for the resolved config and the gateway config, not for skill installation: whether
+  a tarball is reachable does not change whether the gateway can run, and since every
+  wanted skill is re-fetched at process start, gating on it would leave a restarted
+  pod Running with the gateway never started -- and the operator's view of that is an
+  instance that never becomes ready, with no failure to act on. A skill failure is
+  logged and retried on the next poll, which is the previous rule applied to a
+  narrower failure.
 - Extraction failure: the existing staged-swap keeps the installed skill; the
   revision is not recorded, so the next poll retries.
 - Marker write failure: abort before the swap (today's ordering, kept).
