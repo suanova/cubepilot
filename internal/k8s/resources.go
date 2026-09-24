@@ -155,15 +155,15 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 			InitContainers: []corev1.Container{
 				// Seed the workspace from the image's read-only layer into the
 				// per-instance PVC (design §3.6: runtime caches live on the
-				// instance PVC, not the image). The gateway maintains files in
-				// the workspace (e.g. TOOLS.md) -- under readOnlyRootFilesystem
-				// the image layer is not writable, so the workspace must be on
-				// the PVC.
+				// instance PVC, not the image). The copy is no-clobber: a file
+				// the agent has since written -- SOUL.md, its own notes -- is
+				// left alone, matching OpenClaw's own writeFileIfMissing
+				// semantics for workspace bootstrap files.
 				{
 					Name:            "seed-workspace",
 					Image:           s.Image,
 					ImagePullPolicy: s.PullPolicy,
-					Command:         []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
+					Command:         []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a -n /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "data", MountPath: "/mnt/data"},
 					},

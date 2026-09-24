@@ -35,10 +35,10 @@ RUN apt-get update \
 # change.
 COPY --from=supervisor-build /out/cubepilot-supervisor /usr/local/bin/cubepilot-supervisor
 
-# Workspace persona (AGENTS.md / SOUL.md) seed for the per-instance PVC; the
-# seed-workspace initContainer copies it to the PVC on first start.
-# Capability skills flow dynamically via the resolved agent config (Capability
-# CRD -> operator resolver -> internal API -> supervisor renders into workspace).
+# Workspace seed for the per-instance PVC: SOUL.md (the agent's tone file) only --
+# the operating conventions are part of the supervisor binary and are rendered
+# into the AGENTS.md managed block, so they are not seeded here. The
+# seed-workspace initContainer copies this with --no-clobber, once.
 COPY --chown=node:node workspace/ /opt/cubepilot/workspace/
 
 USER node
