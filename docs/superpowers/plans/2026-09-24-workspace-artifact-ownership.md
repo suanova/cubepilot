@@ -175,8 +175,9 @@ Expected: FAIL -- `undefined: TreeHash`
 
 - [ ] **Step 3: Implement `TreeHash`**
 
-Add to `internal/skill/repository.go` (imports `sort` and `io/fs` are already
-present in this file):
+Add to `internal/skill/repository.go` (`io/fs`, `crypto/sha256`, `encoding/hex`,
+`fmt`, `io`, `os` and `path/filepath` are already imported there; **`sort` is not --
+add it to the import block**):
 
 ```go
 // TreeHash returns a sha256 over the directory tree rooted at dir, skipping the
@@ -224,8 +225,9 @@ func TreeHash(dir, skip string) (string, error) {
 	sort.Strings(entries)
 	h := sha256.New()
 	for _, e := range entries {
-		io.WriteString(h, e)
-		io.WriteString(h, "\n")
+		// One line per entry, so a path can never merge with the next entry's
+		// rendering (Write on a hash.Hash has no error to check).
+		h.Write([]byte(e + "\n"))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
