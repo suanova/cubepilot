@@ -72,6 +72,14 @@ var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
 		// trailing slash, hence `platformSkill + "SKILL.md"`.
 		_, err = exec("printf '{\"rogue\":true}' > " + agentConfigPath)
 		Expect(err).NotTo(HaveOccurred())
+		// A platform skill's files land read-only: the tarball is built from the
+		// embedded skill sources, Go's embed reports those as 0444, and the extract
+		// stamps each entry with its source mode. The pod owns the file and runs
+		// with full exec, so making it writable is the route an agent takes before
+		// editing -- not a workaround. It is not drift either: skill.TreeHash keys
+		// on content, so the chmod alone changes nothing and the edit below does.
+		_, err = exec("chmod u+w " + platformSkill + "SKILL.md")
+		Expect(err).NotTo(HaveOccurred())
 		_, err = exec("printf '\\ntampered\\n' >> " + platformSkill + "SKILL.md")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = exec("rm -f " + platformSkill + ".cubepilot.json")
