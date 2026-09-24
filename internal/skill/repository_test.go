@@ -209,3 +209,75 @@ func TestWriteTarPropagatesWriterError(t *testing.T) {
 		t.Fatal("writeTar with a failing writer should error")
 	}
 }
+
+// TestTreeHash verifies the tree hash answers "is the content on disk the
+// content we installed": it is stable, it ignores the entry the caller skips
+// (the platform's own bookkeeping file), and every drift a re-extract would
+// fix -- changed content, an added or removed file, an added empty directory --
+// changes the result.
+func TestTreeHash(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("SKILL.md", "# a\n")
+	write("refs/one.md", "one\n")
+	write(".cubepilot.json", `{"tree":"whatever"}`)
+	if err := os.MkdirAll(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := TreeHash(dir, ".cubepilot.json")
+	if err != nil {
+		t.Fatalf("TreeHash: %v", err)
+	}
+	if again, err := TreeHash(dir, ".cubepilot.json"); err != nil || again != base {
+		t.Fatalf("TreeHash not stable: %q vs %q (%v)", base, again, err)
+	}
+	// The skipped entry is not part of the tree: rewriting it changes nothing.
+	write(".cubepilot.json", `{"tree":"another"}`)
+	if got, _ := TreeHash(dir, ".cubepilot.json"); got != base {
+		t.Error("the skipped file changed the tree hash")
+	}
+	// Each of these is drift, so each must change the hash.
+	write("SKILL.md", "# b\n")
+	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+		t.Error("a content change did not change the hash")
+	}
+	write("SKILL.md", "# a\n")
+	write("extra.md", "x\n")
+	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+		t.Error("an added file did not change the hash")
+	}
+	if err := os.Remove(filepath.Join(dir, "extra.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "empty2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+		t.Error("an added empty directory did not change the hash")
+	}
+	if err := os.Remove(filepath.Join(dir, "refs", "one.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+		t.Error("a removed file did not change the hash")
+	}
+}
+
+// TestTreeHashMissingDir verifies a directory that is not there is an error,
+// not an empty tree: reporting a hash for missing content would let the
+// supervisor believe an uninstalled skill is in place.
+func TestTreeHashMissingDir(t *testing.T) {
+	if _, err := TreeHash(filepath.Join(t.TempDir(), "gone"), ".cubepilot.json"); err == nil {
+		t.Fatal("a missing directory should error, not report a hash")
+	}
+}
