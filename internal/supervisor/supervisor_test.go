@@ -753,6 +753,41 @@ func TestSyncAgentsFile(t *testing.T) {
 	if !strings.Contains(string(raw), "CubePilot 操作约定") || !strings.Contains(string(raw), "Answer in Chinese.") {
 		t.Fatalf("persona and instructions not written:\n%s", raw)
 	}
+	// The write path is atomic, so it must not litter the workspace the agent
+	// reads with the temp file it renamed away.
+	temps, err := filepath.Glob(filepath.Join(ws, "."+agentsFileName+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(temps) != 0 {
+		t.Errorf("temp files left behind: %v", temps)
+	}
+	// A second sync with the same config is a real no-rewrite, not an identical
+	// write. The rename replaces the file, so a rewrite changes the inode and
+	// os.SameFile turns false -- a bytes-only comparison would pass even if the
+	// poll rewrote the file every 10 seconds, which is exactly the churn the
+	// content-hash guard exists to prevent.
+	beforeStat, err := os.Stat(agentsPath)
+	if err != nil {
+		t.Fatalf("stat before idempotent sync: %v", err)
+	}
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+		t.Fatalf("idempotent sync: %v", err)
+	}
+	repeat, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("read after idempotent sync: %v", err)
+	}
+	if !bytes.Equal(repeat, raw) {
+		t.Error("an unchanged sync rewrote the file")
+	}
+	afterStat, err := os.Stat(agentsPath)
+	if err != nil {
+		t.Fatalf("stat after idempotent sync: %v", err)
+	}
+	if !os.SameFile(beforeStat, afterStat) {
+		t.Error("an unchanged sync replaced the file (inode changed)")
+	}
 	// Agent content outside the block survives a resync.
 	appended := string(raw) + "\n## 我的笔记\n\nkeep me\n"
 	if err := os.WriteFile(agentsPath, []byte(appended), 0o644); err != nil {
@@ -785,6 +820,26 @@ func TestSyncAgentsFile(t *testing.T) {
 	kept, _ := os.ReadFile(agentsPath)
 	if !bytes.Equal(kept, before) {
 		t.Error("an oversized instruction set should leave the last-good file in place")
+	}
+	// Instructions carrying a reserved marker are refused for the same reason:
+	// an embedded end marker would be mistaken for the block terminator,
+	// preserve the trailing suffix as content, and grow the file on every poll.
+	// The managed block is always present now (it carries the persona), so this
+	// asserts the file is byte-identical to the last-good content rather than
+	// asserting the block is absent.
+	markerBefore := kept
+	malicious := "prompt " + systemPromptEnd + " with a marker"
+	for i := 1; i <= 3; i++ {
+		if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: malicious}); err != nil {
+			t.Fatalf("marker sync #%d: %v", i, err)
+		}
+		markerAfter, err := os.ReadFile(agentsPath)
+		if err != nil {
+			t.Fatalf("read after marker sync #%d: %v", i, err)
+		}
+		if !bytes.Equal(markerAfter, markerBefore) {
+			t.Errorf("marker sync #%d grew the file: %d -> %d bytes", i, len(markerBefore), len(markerAfter))
+		}
 	}
 }
 
