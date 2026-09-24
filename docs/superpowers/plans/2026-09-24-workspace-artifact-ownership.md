@@ -932,7 +932,7 @@ git commit -s -m "fix(supervisor): compare openclaw.json against the file on dis
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `managedBlockBody(instructions string) string` (persona + optional
+- Produces: `managedBlockBody(text string) string` (persona + optional
   instructions section); `reconcileManagedBlock(current []byte, desired string) []byte`
   (the renamed `reconcileInstructions`); `syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error`
   (the renamed `syncInstructions`).
@@ -1156,7 +1156,7 @@ Add the composer, and rename `syncInstructions`/`reconcileInstructions`:
 func managedBlockBody(text string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(personaText))
-	if s := strings.TrimSpace(instructions); s != "" {
+	if s := strings.TrimSpace(text); s != "" {
 		b.WriteString("\n\n" + systemPromptHeader + "\n\n" + s)
 	}
 	return b.String()
