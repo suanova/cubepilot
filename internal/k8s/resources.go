@@ -192,9 +192,12 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 			Containers: []corev1.Container{{
 				// The supervisor is pid 1: it pulls the resolved agent config
 				// (internal API), renders skills into the PVC workspace, and
-				// runs the OpenClaw gateway as a child process. Config changes
-				// trigger a graceful gateway restart -- the pod is never
-				// deleted, so sessions/PVC/IP survive (final architecture).
+				// runs the OpenClaw gateway as a child process. The gateway
+				// reloads its own config (its config reloader watches
+				// openclaw.json and re-scans workspace skills), so the
+				// supervisor never restarts it for a config change; it only
+				// respawns a child that exited. The pod is never deleted, so
+				// sessions/PVC/IP survive (final architecture).
 				Name:            "supervisor",
 				Image:           s.Image,
 				ImagePullPolicy: s.PullPolicy,
