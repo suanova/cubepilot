@@ -52,9 +52,11 @@ update to a skill directory the workshop did not create is refused at apply
 
 **A file or directory carrying our marker is the platform's, and converges to the
 platform's desired state. Anything without the marker belongs to the agent, and the
-platform never reads, rewrites or deletes it -- with one stated exception, the name
-collision in "Skills" below, where a platform skill name that returns to the
-resolved set wins over an agent-authored directory holding it.**
+platform never reads, rewrites or deletes it -- with two stated exceptions:
+`openclaw.json`, which is platform-owned by definition (it is the runtime's own
+config file, not workspace content, and needs no marker), and the name collision in
+"Skills" below, where a platform skill name that returns to the resolved set wins
+over an agent-authored directory holding it.**
 
 Every decision below follows from this. It is also the rule OpenClaw itself applies
 to skills (workshop-owned vs user-authored), which is why the two layers agree
@@ -70,9 +72,10 @@ Replace the revision-only marker with one file that carries both facts:
 {"skill": "kubectl-platform", "revision": "<resolved revision>", "tree": "<sha256>"}
 ```
 
-`.cubepilot.json`, inside the skill directory. `revision` answers "has the platform
-published new content"; `tree` answers "is the content on disk the content we
-landed". The marker is simultaneously the ownership marker for cleanup.
+`.cubepilot.json`, inside the skill directory. `revision` records which platform
+revision was installed, `tree` records the content fingerprint at install time, and
+the file's presence is the ownership marker cleanup keys on. It is a record for
+diagnosis and for cleanup, not a trust anchor -- the next paragraph says why.
 
 `TreeHash(dir)`: sha256 over the sorted list of entries under the directory, each
 entry rendered as `f\x00<relative path>\x00<sha256 of file content>` for a regular
@@ -82,10 +85,30 @@ change what a text skill instructs and including them invites spurious
 re-extraction churn; directories are included so an empty added directory is still
 drift.
 
-Per poll, for each wanted skill: skip only when the marker exists, `revision`
-matches the resolved revision **and** `tree` matches the directory on disk.
-Otherwise pull, extract into a temp dir, compute the tree, write the marker, swap
-(the existing staged-swap with backup/restore is kept unchanged).
+**The expected tree is derived from platform content, never from the marker.** The
+marker lives in the same agent-writable directory as the skill, so an agent that
+edits `SKILL.md` can recompute the tree and rewrite the marker while leaving
+`revision` alone -- if the check trusted the marker, that forgery would be accepted
+on every later poll and the drift would never be corrected. So the value the
+convergence decision compares against is computed from the fetched tarball (the tree
+of the staged directory, which is what the swap installs) and held in supervisor
+memory, keyed by skill name. The marker keeps `revision` and `tree` as the
+ownership marker and as a readable record for diagnosis; it is never the authority.
+
+This moves the trust anchor to the platform repository. That is the intended
+boundary -- content served by the platform is what the pod must match -- but it does
+mean the repository's own write path has to be trustworthy; that is the subject of
+the API-authentication issue filed alongside this one, and a repository an attacker
+can write is a compromise of the skill content itself rather than of this check.
+
+Per poll, for each wanted skill: compare `TreeHash(dir)` against the in-memory
+expected tree for that skill and re-extract on any difference. A skill with no
+in-memory expectation -- every wanted skill after a pod start -- is fetched and
+extracted first rather than trusted to its marker, so the check always begins from
+platform-derived content. When the repository is unreachable, the last verified
+expectation stays in memory and the check continues against it; only a pod start
+with the repository down leaves a wanted skill unverified, and that resolves on the
+first poll that reaches the API.
 
 Cleanup keeps the ownership rule: a directory under `skills/` is removed only when
 the marker says the platform put it there **and** the name is no longer in the
@@ -181,7 +204,7 @@ work, and only one of them is ours.
 |---|---|---|
 | Workshop | agent-originated `update` / `patch` to a platform skill dir, including `apply` | OpenClaw, inside the apply commit lock, independent of `autonomous.mode` |
 | Workshop | an agent `create` that would land inside an existing platform skill dir | OpenClaw (`Skill already exists at ...`) |
-| Supervisor | direct file writes by the agent (`exec` / `write`) and file add/remove inside a platform skill dir | our `TreeHash` check, converged within one poll |
+| Supervisor | direct file writes by the agent (`exec` / `write`) and file add/remove inside a platform skill dir, including a forged marker | our `TreeHash` check against the tree computed from the fetched tarball, converged within one poll |
 | Supervisor | the platform deleting an agent-authored skill | ownership-aware cleanup |
 | Managed block | the agent rewriting its operating conventions | the existing per-poll reconcile |
 
@@ -195,7 +218,9 @@ can give is "a drift is corrected within one poll", not "a drift is impossible".
 ## Per-poll sequence for these artifacts (10s)
 
 1. Reconcile the managed block in `AGENTS.md` against persona + resolved instructions.
-2. For each wanted skill: verify marker revision and tree; pull and re-extract on drift.
+2. For each wanted skill: compare the on-disk tree against the expected tree derived
+   from platform content, fetching first when that expectation is not yet known;
+   re-extract on any difference.
 3. Remove marked skill directories that are no longer resolved.
 4. Rewrite `openclaw.json` if the bytes on disk differ from the desired bytes.
 
@@ -206,9 +231,13 @@ can give is "a drift is corrected within one poll", not "a drift is impossible".
 - Extraction failure: the existing staged-swap keeps the installed skill; the
   revision is not recorded, so the next poll retries.
 - Marker write failure: abort before the swap (today's ordering, kept).
-- Drift detected: log it (skill name, whether revision or tree differed) and
-  converge. No platform-side event is raised -- the Portal has no place to show one,
-  and the persona constraint is what keeps the case rare.
+- Drift detected: log it (skill name, and whether the content drifted or the platform
+  published a new revision) and converge. No platform-side event is raised -- the
+  Portal has no place to show one, and the persona constraint is what keeps the case
+  rare.
+- A wanted skill that has never been verified against platform content -- a pod start
+  with the repository down -- is not counted as verified. Its on-disk content is left
+  in place and it is verified on the first poll that reaches the API.
 
 ## Testing
 
@@ -217,10 +246,12 @@ Unit (supervisor / skill packages):
 - `TreeHash`: nested directories, an empty directory, a deleted file, a changed
   file, and stability across repeated calls on an unchanged tree.
 - Skills: an edited `SKILL.md` under an intact marker is restored on the next poll;
-  a deleted marker is rewritten with the content restored; an unmarked directory
-  survives a revision change and a cleanup pass; a marked directory whose name left
-  the resolved set is removed; a marker whose revision already matches but whose
-  tree does not is re-pulled.
+  a deleted marker is rewritten with the content restored; **an edited `SKILL.md`
+  whose marker was rewritten in step (content plus recomputed `tree`, same
+  `revision`) is still detected and restored** -- the marker is not trusted; an
+  unmarked directory survives a revision change and a cleanup pass; a marked
+  directory whose name left the resolved set is removed; a pod start re-fetches and
+  re-verifies every wanted skill rather than skipping on a marker match.
 - `openclaw.json`: a hand-edited file is rewritten with the desired content; an
   unchanged file is left untouched (no write).
 - Managed block: persona + instructions are written together; a hand-edited block is
