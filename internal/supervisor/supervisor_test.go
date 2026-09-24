@@ -784,6 +784,12 @@ func TestSyncAgentsFile(t *testing.T) {
 	if !strings.Contains(string(raw), "CubePilot 操作约定") || !strings.Contains(string(raw), "Answer in Chinese.") {
 		t.Fatalf("persona and instructions not written:\n%s", raw)
 	}
+	// Exactly one instructions heading: the body composer emits it around the
+	// instructions, and reconcileManagedBlock must not add a second one.
+	if n := strings.Count(string(raw), systemPromptHeader); n != 1 {
+		t.Errorf("configured file should carry exactly one %q heading; count = %d:\n%s",
+			systemPromptHeader, n, raw)
+	}
 	// The write path is atomic, so it must not litter the workspace the agent
 	// reads with the temp file it renamed away.
 	temps, err := filepath.Glob(filepath.Join(ws, "."+agentsFileName+".tmp-*"))
@@ -894,13 +900,25 @@ func TestSyncAgentsFileNilConfig(t *testing.T) {
 		t.Errorf("persona not written on the nil-config path:\n%s", raw)
 	}
 	// No user-configured instructions section: the header count is the observable
-	// for it. reconcileManagedBlock labels every managed block with
-	// systemPromptHeader unconditionally, so the persona-only file carries that
-	// one label; a second occurrence is the section managedBlockBody emits around
-	// instructions, and it must be absent when there are no instructions.
-	if n := strings.Count(string(raw), systemPromptHeader); n != 1 {
-		t.Errorf("nil config should yield no %q section; header count = %d, want 1 (the managed block's own label):\n%s",
+	// for it. Only the body composer emits the heading, and only around
+	// instructions, so a persona-only file must carry none -- a count of one would
+	// mean reconcileManagedBlock is labelling the platform persona as
+	// user-configured again.
+	if n := strings.Count(string(raw), systemPromptHeader); n != 0 {
+		t.Errorf("nil config should yield no %q section; header count = %d, want 0:\n%s",
 			systemPromptHeader, n, raw)
+	}
+	// The same mislabel, asserted structurally: the persona is the block's first
+	// line after the start marker. A heading there means the persona renders under
+	// a label claiming it is user-configured.
+	lines := strings.Split(string(raw), "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != systemPromptStart || i+1 >= len(lines) {
+			continue
+		}
+		if strings.TrimSpace(lines[i+1]) == systemPromptHeader {
+			t.Errorf("persona is preceded by %q in a file with no instructions:\n%s", systemPromptHeader, raw)
+		}
 	}
 }
 

@@ -671,7 +671,7 @@ func reconcileManagedBlock(current []byte, desired string) []byte {
 
 	block := ""
 	if strings.TrimSpace(desired) != "" {
-		block = systemPromptStart + "\n" + systemPromptHeader + "\n\n" +
+		block = systemPromptStart + "\n" +
 			strings.TrimSpace(desired) + "\n" + systemPromptEnd
 	}
 	return spliceSections(prefix, block, suffix)
