@@ -234,42 +234,61 @@ func TestTreeHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base, err := TreeHash(dir, ".cubepilot.json")
-	if err != nil {
-		t.Fatalf("TreeHash: %v", err)
+	// hash is the current tree hash; a failure here is a test failure, not
+	// something to compare against "".
+	hash := func() string {
+		t.Helper()
+		got, err := TreeHash(dir, ".cubepilot.json")
+		if err != nil {
+			t.Fatalf("TreeHash: %v", err)
+		}
+		return got
 	}
-	if again, err := TreeHash(dir, ".cubepilot.json"); err != nil || again != base {
-		t.Fatalf("TreeHash not stable: %q vs %q (%v)", base, again, err)
+
+	base := hash()
+	if again := hash(); again != base {
+		t.Fatalf("TreeHash not stable: %q vs %q", base, again)
 	}
 	// The skipped entry is not part of the tree: rewriting it changes nothing.
 	write(".cubepilot.json", `{"tree":"another"}`)
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got != base {
+	if got := hash(); got != base {
 		t.Error("the skipped file changed the tree hash")
 	}
-	// Each of these is drift, so each must change the hash.
+	// Each of these is drift, so each must change the hash. Each step is
+	// compared with the hash taken immediately before it rather than with
+	// base: the mutations accumulate, so an earlier one would otherwise mask
+	// a later one that changed nothing.
+	prev := hash()
 	write("SKILL.md", "# b\n")
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("a content change did not change the hash")
 	}
+	prev = hash()
 	write("SKILL.md", "# a\n")
 	write("extra.md", "x\n")
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("an added file did not change the hash")
 	}
+	prev = hash()
 	if err := os.Remove(filepath.Join(dir, "extra.md")); err != nil {
 		t.Fatal(err)
 	}
+	if got := hash(); got == prev {
+		t.Error("a removed file did not change the hash")
+	}
+	prev = hash()
 	if err := os.MkdirAll(filepath.Join(dir, "empty2"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
+	if got := hash(); got == prev {
 		t.Error("an added empty directory did not change the hash")
 	}
+	prev = hash()
 	if err := os.Remove(filepath.Join(dir, "refs", "one.md")); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := TreeHash(dir, ".cubepilot.json"); got == base {
-		t.Error("a removed file did not change the hash")
+	if got := hash(); got == prev {
+		t.Error("a removed nested file did not change the hash")
 	}
 }
 
