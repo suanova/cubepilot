@@ -509,14 +509,20 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	s.lastCfg = cfg
-	return s.applyConfig(ctx, cfg)
+	return s.applyConfig(ctx, cfg), nil
 }
 
 // applyConfig verifies the installed skills against the resolved config on every
 // poll -- drift does not announce itself through a revision change -- and records
-// the revision. The returned bool still means "the resolved revision changed",
-// which is what the caller logs.
-func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) (bool, error) {
+// the revision. The returned bool means "the resolved revision changed", which is
+// what the caller logs.
+//
+// Skill installation is verified on every call and retried on the next poll; a
+// failure there is logged, never returned. Whether a skill tar is reachable does
+// not change whether the gateway can run, and the boot path waits on this call,
+// so returning the error would leave the Pod Running with no gateway ever started
+// and no Failed condition for the operator to act on.
+func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := s.current != cfg.Revision
@@ -525,9 +531,9 @@ func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgen
 		s.current = cfg.Revision
 	}
 	if err := s.syncSkills(ctx, cfg); err != nil {
-		return changed, fmt.Errorf("sync skills: %w", err)
+		log.Printf("supervisor: sync skills: %v (retrying next poll)", err)
 	}
-	return changed, nil
+	return changed
 }
 
 // revisionLabel names the revision a config sync is replacing. The first sync

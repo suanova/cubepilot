@@ -284,6 +284,76 @@ func TestPollNoChange(t *testing.T) {
 	}
 }
 
+// TestSkillSyncFailureDoesNotGateGateway pins the rule that a skill-sync failure
+// must not keep the gateway down. The supervisor waits for the initial config
+// before it starts the gateway, so returning a skill error from the poll would
+// leave the Pod Running with the gateway never started: a Skill CR pointing at a
+// missing tar, or an unreachable repository, would look like a hung pod with no
+// Failed signal for the operator to act on. Whether a skill tar is reachable does
+// not change whether the gateway can run, so the failure is logged and retried on
+// the next poll.
+func TestSkillSyncFailureDoesNotGateGateway(t *testing.T) {
+	ws := t.TempDir()
+	const user = "li.ming"
+	cfg := &resolver.ResolvedAgentConfig{
+		Revision: "rev1",
+		Agent:    "cubepilot",
+		Instance: "li-ming-cubepilot",
+		// The resolved set names a skill whose tar the repository cannot serve.
+		Skills: []resolver.ResolvedSkill{
+			{Name: "gone", Path: "gone/v1.tar.gz", Sha256: "deadbeef", Revision: "rev1"},
+		},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/agents/"+user+"/config", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"config": cfg}); err != nil {
+			t.Errorf("encode: %v", err)
+		}
+	})
+	// Every skill tar fetch fails -- an unreachable repository, not a missing one.
+	mux.HandleFunc("/internal/skills/", http.NotFound)
+	mux.HandleFunc("/internal/gateway/config/"+user, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"gateway":{"mode":"local"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s := New(Config{
+		APIURL:     srv.URL,
+		User:       user,
+		Workspace:  ws,
+		ConfigPath: filepath.Join(t.TempDir(), "openclaw.json"),
+	})
+	s.http = srv.Client()
+
+	// The skill failure is not a poll failure ...
+	changed, err := s.poll(context.Background())
+	if err != nil {
+		t.Fatalf("poll surfaced a skill-sync failure: %v", err)
+	}
+	if !changed {
+		t.Error("poll did not report the first application of the revision")
+	}
+	// ... and the revision was still recorded, so the config side is not gated
+	// either.
+	if s.current != "rev1" {
+		t.Errorf("current = %q, want rev1", s.current)
+	}
+	// ... nor does it stop the boot path from returning. A context deadline here
+	// is the failure mode the fix removes: the wait loop retrying a skill error
+	// forever while the gateway is never started.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.waitForInitialConfig(ctx); err != nil {
+		t.Fatalf("a skill-sync failure gated the gateway: %v", err)
+	}
+	// The gateway config really landed, so the return above is not vacuous.
+	if b, err := os.ReadFile(s.cfg.ConfigPath); err != nil || len(b) == 0 {
+		t.Errorf("gateway config not written: %q, %v", b, err)
+	}
+}
+
 // TestPollSyncsOnChange verifies a skill content revision change re-pulls the
 // tar (the marker advances to the new revision).
 func TestPollSyncsOnChange(t *testing.T) {
