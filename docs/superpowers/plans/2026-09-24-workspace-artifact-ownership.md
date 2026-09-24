@@ -1153,7 +1153,7 @@ Add the composer, and rename `syncInstructions`/`reconcileInstructions`:
 // managedBlockBody composes the platform-owned text of the AGENTS.md managed
 // block: the operating conventions followed by the resolved instructions (the
 // template's and the user's). Both are platform-rendered, so both converge.
-func managedBlockBody(instructions string) string {
+func managedBlockBody(text string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(personaText))
 	if s := strings.TrimSpace(instructions); s != "" {
@@ -1199,9 +1199,15 @@ func (s *Supervisor) syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error {
 }
 ```
 
-`reconcileManagedBlock` is `reconcileInstructions` unchanged except its name and
+`reconcileManagedBlock` is `reconcileInstructions` with two changes: its name and
 its doc comment's subject ("the managed instructions block" -> "the managed block
-whose desired body is `desired`"). Delete the now-unreachable
+whose desired body is `desired`"), **and the `systemPromptHeader` line removed from
+its block template** -- the block is exactly
+`systemPromptStart + "\n" + <trimmed desired body> + "\n" + systemPromptEnd`. The
+heading belongs to `managedBlockBody` alone, because only it knows whether there
+are instructions at all: left in the wrapper it would label the platform persona
+as "user-configured" whenever there are none, and would appear twice whenever
+there are. Delete the now-unreachable
 `if len(target) == 0 { log.Printf("supervisor: removed ...") }` branch from
 `syncAgentsFile` -- the persona makes an empty block impossible -- and leave
 `spliceSections` as it is.
