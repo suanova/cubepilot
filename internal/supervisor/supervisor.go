@@ -815,9 +815,12 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 		// set and is re-created by the agent before this pass runs is removed as a
 		// platform one. The window is one poll.
 		//
-		// The adjacent case: an agent that deletes .cubepilot.json makes that
-		// directory its own, so a withdrawn skill cannot be swept from it.
-		if _, err := os.Stat(filepath.Join(skillsDir, e.Name(), skillMarker)); err != nil {
+		// What remains: a marker deleted *and* the skill withdrawn before the next
+		// poll. The poll that would re-assert the marker (a missing one is drift,
+		// so syncSkill reinstalls) never runs for a skill that is no longer in the
+		// resolved set, so the directory keeps no ownership record and cannot be
+		// swept -- the window is one poll.
+		if !markerPresent(filepath.Join(skillsDir, e.Name())) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
@@ -852,8 +855,10 @@ func (s *Supervisor) fetchSkillTar(ctx context.Context, name string) ([]byte, er
 
 // syncSkill installs one skill and verifies it on every later poll. The tree it
 // compares against is the one this process computed from the platform's tarball;
-// the marker on disk is never consulted for the decision, because it is writable
-// by the agent and a forged one would make drift permanent.
+// the marker on disk is never read for the decision -- but its presence is
+// checked, because the marker is the directory's only ownership record and
+// cleanup keys on it. It is the marker's value that cannot be trusted: the file
+// is writable by the agent, and a forged revision would make drift permanent.
 //
 // A skill with no stored expectation -- every wanted skill after a pod start -- is
 // fetched rather than trusted to its marker, so verification always starts from
