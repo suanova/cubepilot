@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -25,10 +26,19 @@ import (
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
-// testAPI serves a fixed resolved config on /internal/agents/{user}/config and
-// skill tars on /internal/skills/{name}/tar from a skill.PathRepository.
+// testAPI is testAPIWithCounter without the counter, for tests that do not care.
 func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir string) *httptest.Server {
 	t.Helper()
+	srv, _ := testAPIWithCounter(t, cfg, user, skillsDir)
+	return srv
+}
+
+// testAPIWithCounter serves the same routes as before plus a count of
+// skill-tar requests, so a test can assert the verification path did (or did
+// not) go back to the API.
+func testAPIWithCounter(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir string) (*httptest.Server, func() int) {
+	t.Helper()
+	var n int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/agents/"+user+"/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -40,6 +50,7 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir st
 		}
 	})
 	mux.HandleFunc("/internal/skills/", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&n, 1)
 		rest := strings.TrimPrefix(r.URL.Path, "/internal/skills/")
 		name, tail, ok := strings.Cut(rest, "/")
 		if !ok || tail != "tar" || name == "" {
@@ -59,7 +70,7 @@ func testAPI(t *testing.T, cfg *resolver.ResolvedAgentConfig, user, skillsDir st
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, func() int { return int(atomic.LoadInt64(&n)) }
 }
 
 // seedTar packs a single SKILL.md into the repo and returns its sha256.
@@ -77,8 +88,9 @@ func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) str
 }
 
 // TestSyncSkills verifies the supervisor pulls a skill tar from the internal
-// API, extracts it into workspace/skills/<name>/, writes the .sha256 marker,
-// clears stale entries, and skips an unchanged skill.
+// API, extracts it into workspace/skills/<name>/, writes the .cubepilot.json
+// marker, clears stale entries, and verifies -- without re-pulling -- a tree it
+// installed itself.
 func TestSyncSkills(t *testing.T) {
 	ws := t.TempDir()
 	// Pre-existing stale skill dir that must be cleared.
@@ -114,16 +126,23 @@ func TestSyncSkills(t *testing.T) {
 	if !strings.Contains(string(skillBody), "Read-only inspection.") {
 		t.Errorf("skill content wrong: %s", skillBody)
 	}
-	marker, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", ".sha256"))
-	if err != nil || string(marker) != "rev1" {
-		t.Errorf("marker = %q, %v; want rev1", marker, err)
+	raw, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", skillMarker))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	var marker skillMarkerFile
+	if err := json.Unmarshal(raw, &marker); err != nil {
+		t.Fatalf("decode marker: %v", err)
+	}
+	if marker.Skill != "cluster-inspection" || marker.Revision != "rev1" || len(marker.Tree) != 64 {
+		t.Errorf("marker = %+v; want skill cluster-inspection, revision rev1, 64-char tree", marker)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "skills", "stale")); !os.IsNotExist(err) {
 		t.Errorf("stale skill dir not cleared")
 	}
 
-	// Same revision -> no re-pull (the API client is untouched; re-sync is a
-	// no-op even if the server were gone).
+	// Same resolved identity -> the tree this process installed verifies and the
+	// skill is not re-pulled.
 	if err := s.syncSkills(context.Background(), cfg); err != nil {
 		t.Fatalf("re-sync: %v", err)
 	}
@@ -161,9 +180,6 @@ func TestSyncSkillPreservesOldOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("old content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".sha256"), []byte("rev-old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The repo has no tar for "good" -> the API 404s the fetch.
@@ -219,7 +235,7 @@ func TestPollNoChange(t *testing.T) {
 }
 
 // TestPollSyncsOnChange verifies a skill content revision change re-pulls the
-// tar (the .sha256 marker advances).
+// tar (the marker advances to the new revision).
 func TestPollSyncsOnChange(t *testing.T) {
 	ws := t.TempDir()
 	repo := &skill.PathRepository{Root: t.TempDir()}
@@ -253,9 +269,153 @@ func TestPollSyncsOnChange(t *testing.T) {
 	if err := s.syncSkills(context.Background(), cfg2); err != nil {
 		t.Fatal(err)
 	}
-	marker, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", ".sha256"))
-	if err != nil || string(marker) != "r2" {
-		t.Errorf("marker = %q, %v; want r2", marker, err)
+	raw, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", skillMarker))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	var marker skillMarkerFile
+	if err := json.Unmarshal(raw, &marker); err != nil {
+		t.Fatalf("decode marker: %v", err)
+	}
+	if marker.Revision != "r2" {
+		t.Errorf("marker revision = %q, want r2", marker.Revision)
+	}
+}
+
+// TestSyncSkillRestoresDrift verifies an edit to an installed platform skill is
+// corrected on the next sync, and that a clean tree is not re-fetched.
+func TestSyncSkillRestoresDrift(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nOriginal content.")
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := requests(); got != 1 {
+		t.Fatalf("install fetches = %d, want 1", got)
+	}
+	// A clean tree verifies without fetching.
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if got := requests(); got != 1 {
+		t.Errorf("a clean tree re-fetched (fetches = %d, want 1)", got)
+	}
+	// Drift: the agent edits the installed SKILL.md.
+	body := filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md")
+	if err := os.WriteFile(body, []byte("# Inspection\n\nTampered."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("heal: %v", err)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("drift did not re-fetch (fetches = %d, want 2)", got)
+	}
+	restored, err := os.ReadFile(body)
+	if err != nil || !strings.Contains(string(restored), "Original content.") {
+		t.Errorf("drift not corrected: %q, %v", restored, err)
+	}
+}
+
+// TestSyncSkillDetectsForgedMarker verifies the marker cannot be used to make
+// drift permanent: an agent that rewrites the skill and recomputes the marker's
+// tree, leaving the revision alone, is still corrected.
+func TestSyncSkillDetectsForgedMarker(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nOriginal content.")
+	srv, _ := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	dir := filepath.Join(ws, "skills", "cluster-inspection")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Inspection\n\nTampered."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	forged, err := skill.TreeHash(dir, skillMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedMarker, err := json.Marshal(skillMarkerFile{Skill: "cluster-inspection", Revision: "rev1", Tree: forged})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, skillMarker), forgedMarker, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("heal: %v", err)
+	}
+	restored, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || !strings.Contains(string(restored), "Original content.") {
+		t.Errorf("forged marker defeated the check: %q, %v", restored, err)
+	}
+}
+
+// TestSyncSkillRefetchesOnNewRevision verifies new platform content lands even
+// though the installed tree matched the previous expectation.
+func TestSyncSkillRefetchesOnNewRevision(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha1 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 1.")
+	srv, _ := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg1 := &resolver.ResolvedAgentConfig{Revision: "rev-1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha1, Revision: "r1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg1); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// The platform publishes v2 at the same path; the resolved identity changes.
+	sha2 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 2.")
+	cfg2 := &resolver.ResolvedAgentConfig{Revision: "rev-2", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha2, Revision: "r2"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg2); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
+	if err != nil || !strings.Contains(string(got), "Version 2.") {
+		t.Errorf("new revision not installed: %q, %v", got, err)
+	}
+}
+
+// TestSyncSkillsVerifiesAtPodStart verifies a fresh supervisor process does not
+// trust the marker it finds on the PVC: it re-fetches and re-verifies.
+func TestSyncSkillsVerifiesAtPodStart(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nOriginal content.")
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	first := New(Config{Workspace: ws, APIURL: srv.URL})
+	first.http = srv.Client()
+	if err := first.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// A new process: same workspace, empty expectations.
+	second := New(Config{Workspace: ws, APIURL: srv.URL})
+	second.http = srv.Client()
+	if err := second.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("pod start: %v", err)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("a pod start did not re-fetch (fetches = %d, want 2)", got)
 	}
 }
 

@@ -130,6 +130,37 @@ const (
 	systemPromptHeader = "## User-configured instructions"
 )
 
+// skillMarker is the file the supervisor writes into every skill directory it
+// renders. Its presence is what marks a directory as the platform's own (cleanup
+// removes only marked directories), and it records which revision was installed
+// and what that content hashed to. It is deliberately not the authority for drift
+// detection: it is writable by the agent, so a value read back from it is a claim
+// by whoever could write it. The authority is the tree this process derived from
+// the platform's tarball.
+const skillMarker = ".cubepilot.json"
+
+// skillMarkerFile is the marker's on-disk shape.
+type skillMarkerFile struct {
+	Skill    string `json:"skill"`
+	Revision string `json:"revision"`
+	Tree     string `json:"tree"`
+}
+
+// skillExpectation is what this process last installed for one skill: the
+// resolved identity it came from and the tree hash of the content it wrote.
+type skillExpectation struct {
+	identity string
+	tree     string
+}
+
+// skillIdentity is the resolved artifact identity a skill's content came from.
+// The expectation is keyed by it so that a new platform revision -- or the same
+// revision served under a different path or digest -- re-fetches instead of
+// matching the previous content for as long as the process lives.
+func skillIdentity(rs resolver.ResolvedSkill) string {
+	return rs.Revision + "\x00" + rs.Path + "\x00" + rs.Sha256
+}
+
 // Supervisor manages the OpenClaw gateway process and keeps the workspace
 // skills in sync with the resolved agent config.
 type Supervisor struct {
@@ -137,6 +168,11 @@ type Supervisor struct {
 	http    *http.Client
 	mu      sync.Mutex
 	current string // last applied config revision
+
+	// expectations records what this process installed for each skill, keyed by
+	// name. Only touched by the poll goroutine (syncSkills runs under s.mu via
+	// applyConfig) and by tests.
+	expectations map[string]skillExpectation
 
 	cmdMu  sync.Mutex
 	cmd    *exec.Cmd
@@ -166,8 +202,9 @@ type Supervisor struct {
 // New returns a Supervisor for the given config.
 func New(cfg Config) *Supervisor {
 	return &Supervisor{
-		cfg:  cfg,
-		http: &http.Client{Timeout: 15 * time.Second},
+		cfg:          cfg,
+		http:         &http.Client{Timeout: 15 * time.Second},
+		expectations: map[string]skillExpectation{},
 	}
 }
 
@@ -460,20 +497,22 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	return s.applyConfig(ctx, cfg)
 }
 
-// applyConfig renders the skills when the revision changed and records it.
-// Returns whether the resolved config changed (for logging only).
+// applyConfig verifies the installed skills against the resolved config on every
+// poll -- drift does not announce itself through a revision change -- and records
+// the revision. The returned bool still means "the resolved revision changed",
+// which is what the caller logs.
 func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.current == cfg.Revision {
-		return false, nil // no change -- skills are current
+	changed := s.current != cfg.Revision
+	if changed {
+		log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
+		s.current = cfg.Revision
 	}
-	log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
 	if err := s.syncSkills(ctx, cfg); err != nil {
-		return false, fmt.Errorf("sync skills: %w", err)
+		return changed, fmt.Errorf("sync skills: %w", err)
 	}
-	s.current = cfg.Revision
-	return true, nil
+	return changed, nil
 }
 
 // revisionLabel names the revision a config sync is replacing. The first sync
@@ -688,9 +727,11 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 
 // syncSkills pulls the enabled skills' tars from the internal API and
 // extracts them into Workspace/skills/<name>/ (clearing stale dirs first).
-// A skill is re-pulled only when its content revision differs from the
-// .sha256 marker on the PVC (which survives pod restarts). The gateway
-// hot-reloads the extracted files itself; the supervisor never restarts it.
+// Every wanted skill is verified on every call: the content this process
+// installed is re-hashed, and anything that no longer matches -- an agent edit,
+// a truncated dir, a fresh pod whose expectations are empty -- is re-pulled from
+// the platform. The gateway hot-reloads the extracted files itself; the
+// supervisor never restarts it.
 func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
 	skillsDir := filepath.Join(s.cfg.Workspace, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -719,30 +760,51 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 	return nil
 }
 
-// syncSkill pulls one skill's tar, verifies its sha256 (when the CRD carries
-// one), and extracts it — unless the .sha256 marker already matches the
-// desired revision. The installed dir is preserved until the new content is
-// fully fetched, verified and extracted (a failure leaves the old skill).
-func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
-	dir := filepath.Join(skillsDir, rs.Name)
-	marker := filepath.Join(dir, ".sha256")
-	if b, err := os.ReadFile(marker); err == nil && string(b) == rs.Revision {
-		return nil // unchanged -- no pull
-	}
-	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(rs.Name))
+// fetchSkillTar pulls a skill's tar from the internal API.
+func (s *Supervisor) fetchSkillTar(ctx context.Context, name string) ([]byte, error) {
+	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(name))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
+		return nil, fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
 	}
-	tarBytes, err := io.ReadAll(resp.Body)
+	return io.ReadAll(resp.Body)
+}
+
+// syncSkill installs one skill and verifies it on every later poll. The tree it
+// compares against is the one this process computed from the platform's tarball;
+// the marker on disk is never consulted for the decision, because it is writable
+// by the agent and a forged one would make drift permanent.
+//
+// A skill with no stored expectation -- every wanted skill after a pod start -- is
+// fetched rather than trusted to its marker, so verification always starts from
+// platform content. The expectation is keyed by the resolved identity, not by
+// name: keyed by name alone, a new revision would match the old content forever.
+func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
+	dir := filepath.Join(skillsDir, rs.Name)
+	identity := skillIdentity(rs)
+	if want, ok := s.expectations[rs.Name]; ok && want.identity == identity {
+		got, err := skill.TreeHash(dir, skillMarker)
+		switch {
+		case err != nil:
+			// Unreadable -- most often the directory is gone. That is drift like
+			// any other, so reinstall rather than propagate: a skill that left
+			// the resolved set and returned still lands.
+			log.Printf("supervisor: skill %s unreadable (%v); reinstalling", rs.Name, err)
+		case got == want.tree:
+			return nil // verified -- no fetch
+		default:
+			log.Printf("supervisor: skill %s content drifted; reinstalling", rs.Name)
+		}
+	}
+	tarBytes, err := s.fetchSkillTar(ctx, rs.Name)
 	if err != nil {
 		return err
 	}
@@ -761,13 +823,24 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if err := skill.ExtractTar(bytes.NewReader(tarBytes), tmpDir); err != nil {
 		return err
 	}
-	// Write the marker into the staged dir, so a marker failure aborts before
-	// the swap and the installed skill stays untouched.
-	if err := os.WriteFile(filepath.Join(tmpDir, ".sha256"), []byte(rs.Revision), 0o644); err != nil {
+	// Hash the staged content, then record it in the marker. The marker itself is
+	// skipped by TreeHash, so the hash stays true after the marker lands -- which
+	// is what makes the post-swap directory match the expectation exactly.
+	tree, err := skill.TreeHash(tmpDir, skillMarker)
+	if err != nil {
 		return err
 	}
-	// Swap: move the current dir aside, bring the staged dir in, drop the
-	// backup only after the swap succeeds.
+	body, err := json.Marshal(skillMarkerFile{Skill: rs.Name, Revision: rs.Revision, Tree: tree})
+	if err != nil {
+		return err
+	}
+	// Written into the staged dir, so a marker failure aborts before the swap and
+	// the installed skill stays untouched.
+	if err := os.WriteFile(filepath.Join(tmpDir, skillMarker), body, 0o644); err != nil {
+		return err
+	}
+	// Swap: move the current dir aside, bring the staged dir in, drop the backup
+	// only after the swap succeeds.
 	backup := dir + ".backup"
 	if _, err := os.Lstat(dir); err == nil {
 		if err := os.Rename(dir, backup); err != nil {
@@ -781,7 +854,8 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if err := os.RemoveAll(backup); err != nil {
 		return err
 	}
-	log.Printf("supervisor: skill %s/%s extracted", rs.Name, rs.Revision)
+	s.expectations[rs.Name] = skillExpectation{identity: identity, tree: tree}
+	log.Printf("supervisor: skill %s/%s installed (tree %.12s)", rs.Name, rs.Revision, tree)
 	return nil
 }
 
