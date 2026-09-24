@@ -174,6 +174,22 @@ func skillIdentity(rs resolver.ResolvedSkill) string {
 	return rs.Revision + "\x00" + rs.Path + "\x00" + rs.Sha256
 }
 
+// markerPresent reports whether a skill directory still carries the supervisor's
+// ownership marker. Only its presence is read, never its value: the marker is
+// writable by the agent, so a value read back from it is a claim by whoever could
+// write it, and trusting it is exactly what the forgery defence forbids.
+//
+// Presence is nonetheless load-bearing. The marker is the directory's only
+// ownership record, and cleanup removes a directory only when it is there, so a
+// skill whose marker was deleted could never be swept once the platform withdraws
+// it -- and the directory would be indistinguishable from one the agent authored.
+// Absence is therefore drift, and it is invisible to the tree hash because the
+// marker's name is the hash's skip argument.
+func markerPresent(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, skillMarker))
+	return err == nil
+}
+
 // Supervisor manages the OpenClaw gateway process and keeps the workspace
 // skills in sync with the resolved agent config.
 type Supervisor struct {
@@ -840,10 +856,15 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 			// any other, so reinstall rather than propagate: a skill that left
 			// the resolved set and returned still lands.
 			log.Printf("supervisor: skill %s unreadable (%v); reinstalling", rs.Name, err)
-		case got == want.tree:
-			return nil // verified -- no fetch
-		default:
+		case got != want.tree:
 			log.Printf("supervisor: skill %s content drifted; reinstalling", rs.Name)
+		case !markerPresent(dir):
+			// The marker is excluded from the tree hash, so removing it is not
+			// content drift -- but it is the directory's only ownership record,
+			// and cleanup keys on it.
+			log.Printf("supervisor: skill %s lost its ownership marker; reinstalling", rs.Name)
+		default:
+			return nil // verified -- no fetch
 		}
 	}
 	tarBytes, err := s.fetchSkillTar(ctx, rs.Name)

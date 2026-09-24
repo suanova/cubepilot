@@ -480,6 +480,54 @@ func TestSyncSkillReinstallsWhenDirectoryIsGone(t *testing.T) {
 	}
 }
 
+// TestSyncSkillRestoresDeletedMarker verifies a deleted ownership marker is
+// treated as drift. The marker is excluded from the tree hash (its name is the
+// hash's skip argument), so an agent that deletes it from an otherwise intact
+// platform skill directory leaves the content hash matching -- yet the marker is
+// the directory's only ownership record: cleanup removes a directory only when the
+// marker is there, so without this the withdrawn skill could never be swept and
+// the directory would be indistinguishable from one the agent authored.
+func TestSyncSkillRestoresDeletedMarker(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nOriginal content.")
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	dir := filepath.Join(ws, "skills", "cluster-inspection")
+	before, err := skill.TreeHash(dir, skillMarker)
+	if err != nil {
+		t.Fatalf("TreeHash: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, skillMarker)); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+	// The premise of the fix, asserted rather than assumed: deleting the marker
+	// leaves the content hash unchanged, so the hash alone cannot see this drift.
+	if after, err := skill.TreeHash(dir, skillMarker); err != nil || after != before {
+		t.Fatalf("removing the marker changed the tree hash (%q -> %q, err %v); the test no longer covers the gap it exists for", before, after, err)
+	}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("heal: %v", err)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("a deleted ownership marker did not trigger a re-fetch (fetches = %d, want 2)", got)
+	}
+	if !markerPresent(dir) {
+		t.Error("ownership marker not restored")
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || !strings.Contains(string(body), "Original content.") {
+		t.Errorf("content not restored: %q, %v", body, err)
+	}
+}
+
 // TestSyncSkillDetectsForgedMarker verifies the marker cannot be used to make
 // drift permanent: an agent that rewrites the skill and recomputes the marker's
 // tree, leaving the revision alone, is still corrected.
