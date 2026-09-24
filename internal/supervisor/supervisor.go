@@ -469,12 +469,20 @@ func (s *Supervisor) fetchGatewayConfig(ctx context.Context) ([]byte, error) {
 // what makes a write nobody asked for visible: the file is on the PVC, the
 // gateway watches it, and a comparison against in-memory state would never notice
 // it changed.
+//
+// The file gets the same symlink-safe read and atomic write as AGENTS.md, for the
+// same reason: the agent shares the pod uid and can plant a symlink at the path or
+// catch a half-written file. No privilege turns on it -- the gateway token is
+// already readable in the container -- so this is consistency, not a fix for a
+// hole.
 func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if s.cfg.ConfigPath == "" {
 		return false, nil
 	}
-	current, err := os.ReadFile(s.cfg.ConfigPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	// A symlink is treated as absent, so the write below replaces it with a
+	// regular file instead of following it to an arbitrary path.
+	current, err := readNoFollow(s.cfg.ConfigPath)
+	if err != nil {
 		return false, fmt.Errorf("read %s: %w", s.cfg.ConfigPath, err)
 	}
 	if bytes.Equal(current, data) {
@@ -483,7 +491,7 @@ func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(s.cfg.ConfigPath), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(s.cfg.ConfigPath, data, 0o644); err != nil {
+	if err := writeTempAndRename(s.cfg.ConfigPath, data); err != nil {
 		return false, err
 	}
 	log.Printf("supervisor: gateway config written (%d bytes)", len(data))
@@ -642,10 +650,12 @@ func readNoFollow(path string) ([]byte, error) {
 // created temporary file in the same directory (so the rename stays on one
 // filesystem). os.CreateTemp uses a random suffix with O_EXCL, so a
 // pre-created symlink at a predictable temp name cannot redirect the write
-// outside the workspace.
+// outside the workspace. The temp file is named after the file being written
+// (.<base>.tmp-*), so anything that globs for one name's leftovers sees only its
+// own.
 func writeTempAndRename(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+agentsFileName+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
@@ -905,6 +915,10 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	// Swap: move the current dir aside, bring the staged dir in, drop the backup
 	// only after the swap succeeds.
 	backup := dir + ".backup"
+	// A leftover backup -- a RemoveAll that failed, or the process dying between
+	// the two renames -- would make the rename below fail on every later poll,
+	// so clear it before it can wedge this skill forever.
+	_ = os.RemoveAll(backup)
 	if _, err := os.Lstat(dir); err == nil {
 		if err := os.Rename(dir, backup); err != nil {
 			return err

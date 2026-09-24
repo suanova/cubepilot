@@ -250,6 +250,50 @@ func TestSyncSkillPreservesOldOnFailure(t *testing.T) {
 	}
 }
 
+// TestSyncSkillRecoversFromLeftoverBackup verifies a leftover swap backup does not
+// wedge a skill forever. The swap renames the installed directory aside, so a
+// non-empty <name>.backup -- left by a failed RemoveAll, or by the process dying
+// between the two renames -- makes that rename fail on every later poll. The error
+// returns before the expectation is stored, so the skill re-fetches and fails
+// forever, defeating the promise that drift converges within one poll.
+func TestSyncSkillRecoversFromLeftoverBackup(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha1 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 1.")
+	srv, _ := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg1 := &resolver.ResolvedAgentConfig{Revision: "rev-1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha1, Revision: "r1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg1); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// An interrupted swap: the backup dir survived, and it is non-empty, so a
+	// rename over it fails.
+	backup := filepath.Join(ws, "skills", "cluster-inspection.backup")
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sha2 := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nVersion 2.")
+	cfg2 := &resolver.ResolvedAgentConfig{Revision: "rev-2", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha2, Revision: "r2"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg2); err != nil {
+		t.Fatalf("a leftover backup wedged the skill: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
+	if err != nil || !strings.Contains(string(got), "Version 2.") {
+		t.Errorf("new revision not installed: %q, %v", got, err)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Errorf("leftover backup not cleared: %v", err)
+	}
+}
+
 // TestPollNoChange verifies poll is a no-op when the revision is unchanged.
 func TestPollNoChange(t *testing.T) {
 	ws := t.TempDir()
@@ -714,6 +758,53 @@ func TestRunRequiresAPIURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), k8s.APIURLEnv) {
 		t.Errorf("Run error = %v, want it to name %s", err, k8s.APIURLEnv)
+	}
+}
+
+// TestApplyGatewayConfigSymlink verifies openclaw.json gets the same file
+// handling as AGENTS.md: a symlink planted at its path is not followed (a plain
+// read would copy the target's bytes into the config, and a plain write would
+// clobber the target through it), and the write is atomic so no temp file is left
+// in the workspace the agent reads.
+func TestApplyGatewayConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("do not touch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "openclaw.json")
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{ConfigPath: path})
+
+	changed, err := s.applyGatewayConfig([]byte(`{"gateway":{"mode":"local"}}`))
+	if err != nil {
+		t.Fatalf("apply over symlink: %v", err)
+	}
+	if !changed {
+		t.Error("apply over a symlink should report changed")
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("openclaw.json is still a symlink after the write")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(got), `"mode":"local"`) {
+		t.Errorf("config not written to the path: %q, %v", got, err)
+	}
+	if b, _ := os.ReadFile(outside); string(b) != "do not touch" {
+		t.Errorf("the symlink target was written through: %q", b)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".openclaw.json.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(temps) != 0 {
+		t.Errorf("temp files left behind: %v", temps)
 	}
 }
 
