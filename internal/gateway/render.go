@@ -131,16 +131,9 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			"exec":     map[string]any{"security": "full", "ask": "off"},
 			"sessions": map[string]any{"visibility": "all"},
 		},
-		// Skill authoring is user-requested only. The runtime defaults this block
-		// to autonomous (capture and repair both on), which would let the agent
-		// accumulate its own skills in the workspace unasked -- instructions it
-		// then follows, invisible to the platform. "off" disables the autonomous
-		// path while leaving the explicit create-then-apply flow, which is what a
-		// user request uses. approvalPolicy stays "auto" because there is no
-		// proposal-review surface here: a "pending" policy would make every apply
-		// wait for an approval nobody can give. Rendered rather than left to the
-		// default so an upstream default change cannot silently alter platform
-		// behaviour.
+		// Skill authoring is user-requested only: the runtime default lets the agent capture
+		// and repair its own skills unasked, which the platform never sees. approvalPolicy stays
+		// "auto" -- there is no proposal-review surface for a "pending" to reach.
 		"skills": map[string]any{
 			"workshop": map[string]any{
 				"autonomous":     map[string]any{"mode": "off"},

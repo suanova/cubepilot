@@ -155,10 +155,8 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 			InitContainers: []corev1.Container{
 				// Seed the workspace from the image's read-only layer into the
 				// per-instance PVC (design §3.6: runtime caches live on the
-				// instance PVC, not the image). The copy is no-clobber: a file
-				// the agent has since written -- SOUL.md, its own notes -- is
-				// left alone, matching OpenClaw's own writeFileIfMissing
-				// semantics for workspace bootstrap files.
+				// instance PVC, not the image). The copy is no-clobber, so a file
+				// the agent has since written is left alone.
 				{
 					Name:            "seed-workspace",
 					Image:           s.Image,
@@ -190,14 +188,9 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				},
 			},
 			Containers: []corev1.Container{{
-				// The supervisor is pid 1: it pulls the resolved agent config
-				// (internal API), renders skills into the PVC workspace, and
-				// runs the OpenClaw gateway as a child process. The gateway
-				// reloads its own config (its config reloader watches
-				// openclaw.json and re-scans workspace skills), so the
-				// supervisor never restarts it for a config change; it only
-				// respawns a child that exited. The pod is never deleted, so
-				// sessions/PVC/IP survive (final architecture).
+				// The supervisor is pid 1: it pulls the resolved agent config (internal API) and runs
+				// the OpenClaw gateway as a child. The gateway reloads its own config, so a config
+				// change never restarts it -- only a crashed child is respawned (never a pod delete).
 				Name:            "supervisor",
 				Image:           s.Image,
 				ImagePullPolicy: s.PullPolicy,

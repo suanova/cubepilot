@@ -91,13 +91,8 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		// Validate what will actually be rendered, not the user's half alone: the
-		// managed AGENTS.md section carries the template's instructions followed by
-		// the user's (resolver.MergeInstructions), and the supervisor refuses a
-		// composed block over the file budget. A set that fits on its own but
-		// overflows once merged would otherwise be written to the instance and then
-		// refused on every poll -- logged only in the agent Pod, so the operator's
-		// prompt is saved and never delivered.
+		// Validate what will actually be rendered -- the template's instructions merged
+		// with the user's (see instructions.Validate) -- not the user's half alone.
 		templateInstructions := ""
 		if tmpl != nil {
 			templateInstructions = tmpl.Spec.Instructions
@@ -164,10 +159,9 @@ func (s *Server) agentTemplate(ctx context.Context) (*v1alpha1.AgentTemplate, er
 	return &tmpl, nil
 }
 
-// agentTemplateHasModel reports whether model is a <provider>/<modelId> ref
-// served by tmpl (the builtin cubepilot template, read by agentTemplate). Empty
-// is always allowed ("Runtime Default"); a nil template serves nothing, so every
-// explicit selection is refused when there is none.
+// agentTemplateHasModel reports whether model is a <provider>/<modelId> ref served by
+// tmpl. Empty is always allowed ("Runtime Default"); a nil template serves nothing, so
+// every explicit selection is refused.
 func agentTemplateHasModel(tmpl *v1alpha1.AgentTemplate, model string) bool {
 	if model == "" {
 		return true

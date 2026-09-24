@@ -12,10 +12,8 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
-// Exec runs cmd in container of pod and returns its stdout, with stderr folded
-// into the error. It exists so a test can observe and perturb what the supervisor
-// installs inside a running agent pod: the pod-side ownership rules can only be
-// verified against the real supervisor/gateway pair, not a fake.
+// Exec runs cmd in container of pod and returns its stdout, with stderr folded into
+// the error.
 func (f *Framework) Exec(ctx context.Context, pod, container string, cmd ...string) (string, error) {
 	req := f.KubeClient.CoreV1().RESTClient().Post().
 		Resource("pods").Name(pod).Namespace(f.Namespace).

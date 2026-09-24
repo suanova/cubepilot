@@ -18,42 +18,27 @@ const (
 	// usable budget as English text.
 	MaxChars = 20_000
 
-	// PersonaReserveChars is the share of the managed-section budget that the
-	// platform's own text occupies: the persona, plus the heading and separators
-	// that introduce the instructions section. Instructions are accepted against
-	// MaxChars-PersonaReserveChars so that a set the API accepts always fits the
-	// section it is rendered into -- a block that does not fit is skipped by the
-	// supervisor, which would leave the operator with a saved prompt that is never
-	// delivered and no error to see.
-	//
-	// The reserve must cover the real persona; a test in internal/supervisor pins
-	// that, because that package is where the persona text lives.
+	// PersonaReserveChars is the budget the platform's own text occupies in the managed
+	// section -- the persona plus the heading and separators -- so that a set the API
+	// accepts always fits the block it is rendered into.
 	PersonaReserveChars = 3_200
 )
 
-// Validate rejects a user- or operator-supplied instruction set that cannot be
-// safely rendered into the managed AGENTS.md section.
-//
-// The limit is MaxChars-PersonaReserveChars rather than the whole file budget:
-// the section it is rendered into also carries the platform's own text, and the
-// supervisor skips a composed block that exceeds the file budget. Enforcing the
-// smaller limit here is what makes an accepted value always deliverable.
+// Validate rejects a user- or operator-supplied instruction set that cannot be safely
+// rendered into the managed AGENTS.md section. It measures against MaxChars minus the
+// persona's reserve, because the block it renders into carries the platform text too.
 func Validate(value string) error {
 	return validateAgainst(value, MaxChars-PersonaReserveChars)
 }
 
-// ValidateRendered rejects a composed managed-section body -- the platform text
-// and the instructions together -- that cannot be safely rendered.
-//
-// The renderer uses this instead of Validate because it composes the persona
-// with the instructions, so the budget that applies to what it builds is the
-// whole section's. The value passed to Validate is only the instructions.
+// ValidateRendered rejects a composed managed-section body -- the platform text and the
+// instructions together -- that cannot be safely rendered; it is the check for what the
+// renderer actually writes.
 func ValidateRendered(body string) error {
 	return validateAgainst(body, MaxChars)
 }
 
-// validateAgainst is the shared shape of both checks: the character limit and
-// the reserved-marker check, measured against the budget the caller applies.
+// validateAgainst applies the character limit and the reserved-marker check.
 func validateAgainst(value string, limit int) error {
 	value = strings.TrimSpace(value)
 	if utf8.RuneCountInString(value) > limit {

@@ -178,15 +178,9 @@ func ExtractTar(r io.Reader, destDir string) error {
 	}
 }
 
-// TreeHash returns a sha256 over the directory tree rooted at dir, skipping the
-// entry whose path relative to dir equals skip ("" skips nothing). It answers
-// "is the content on disk the content we installed": the supervisor records the
-// tree of a freshly extracted skill and compares the tree it finds later.
-//
-// The rendering is a fixed line per entry rather than the file bytes alone, so
-// adding an empty directory or a symlink counts as a difference too. File modes
-// are deliberately not part of an entry: they cannot change what a text skill
-// instructs, and including them invites churn that re-extracts identical content.
+// TreeHash returns a sha256 over the directory tree rooted at dir, skipping the entry
+// whose path relative to dir equals skip ("" skips nothing). Each entry renders as one
+// line -- directories and symlinks count too; file modes deliberately do not.
 func TreeHash(dir, skip string) (string, error) {
 	var entries []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -211,8 +205,7 @@ func TreeHash(dir, skip string) (string, error) {
 			sum := sha256.Sum256(b)
 			entries = append(entries, "f\x00"+rel+"\x00"+hex.EncodeToString(sum[:]))
 		default:
-			// ExtractTar skips symlinks and other special entries, so one
-			// appearing here is drift that the re-extract removes.
+			// ExtractTar skips these, so one here is drift the re-extract removes.
 			entries = append(entries, "o\x00"+rel)
 		}
 		return nil
@@ -223,8 +216,7 @@ func TreeHash(dir, skip string) (string, error) {
 	sort.Strings(entries)
 	h := sha256.New()
 	for _, e := range entries {
-		// One line per entry, so a path can never merge with the next entry's
-		// rendering (Write on a hash.Hash has no error to check).
+		// The "\n" keeps a path from merging with the next entry's rendering.
 		h.Write([]byte(e + "\n"))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
