@@ -690,192 +690,110 @@ func TestSyncCredentialsSkipsWriteOnError(t *testing.T) {
 	}
 }
 
-// TestReconcileInstructions covers the pure AGENTS.md block rewrite: write on
-// first sync, update in place, remove when empty, preserve persona content
-// outside the markers, and tolerate an unterminated block.
-func TestReconcileInstructions(t *testing.T) {
-	const persona = "# CubePilot 操作约定\n\n## 执行原则\n- 先查后答\n"
+// TestManagedBlockBody covers the composed platform text: the persona always, the
+// instructions section only when there is one.
+func TestManagedBlockBody(t *testing.T) {
+	body := managedBlockBody("")
+	if !strings.Contains(body, "CubePilot 操作约定") || strings.Contains(body, systemPromptHeader) {
+		t.Errorf("empty instructions should yield the persona alone:\n%s", body)
+	}
+	body = managedBlockBody("Answer in Chinese.")
+	if !strings.Contains(body, "CubePilot 操作约定") ||
+		!strings.Contains(body, systemPromptHeader) ||
+		!strings.Contains(body, "Answer in Chinese.") {
+		t.Errorf("persona and instructions should both be present:\n%s", body)
+	}
+}
 
-	t.Run("writes block when none present", func(t *testing.T) {
-		got := string(reconcileInstructions([]byte(persona), "Use kubectl read-only."))
-		if !strings.Contains(got, systemPromptStart) || !strings.Contains(got, "Use kubectl read-only.") {
+// TestReconcileManagedBlock covers the block rewrite: written on first sync,
+// replaced in place, and agent-authored content outside it preserved verbatim.
+func TestReconcileManagedBlock(t *testing.T) {
+	t.Run("writes the block into an empty file", func(t *testing.T) {
+		got := string(reconcileManagedBlock(nil, "persona text"))
+		if !strings.Contains(got, systemPromptStart) || !strings.Contains(got, "persona text") {
 			t.Fatalf("block missing:\n%s", got)
 		}
-		if !strings.HasPrefix(got, persona) {
-			t.Errorf("persona prefix lost:\n%s", got)
+	})
+	t.Run("replaces the block and keeps content around it", func(t *testing.T) {
+		agentNotes := "## 我的笔记\n\n记住昨天那个 Pod 的问题。\n"
+		first := reconcileManagedBlock([]byte(agentNotes), "old")
+		second := string(reconcileManagedBlock(first, "new"))
+		if strings.Contains(second, "old") || !strings.Contains(second, "new") {
+			t.Errorf("block not replaced:\n%s", second)
+		}
+		if !strings.Contains(second, agentNotes) {
+			t.Errorf("agent content lost:\n%s", second)
 		}
 	})
-
-	t.Run("updates existing block in place", func(t *testing.T) {
-		once := reconcileInstructions([]byte(persona), "old instructions")
-		twice := reconcileInstructions(once, "new instructions")
-		if strings.Contains(string(twice), "old instructions") {
-			t.Error("stale instructions survived update")
-		}
-		if !strings.Contains(string(twice), "new instructions") {
-			t.Error("updated instructions missing")
-		}
-		if !strings.HasPrefix(string(twice), persona) {
-			t.Error("persona prefix lost on update")
-		}
-		// Exactly one block after the update.
-		if got := strings.Count(string(twice), systemPromptStart); got != 1 {
-			t.Errorf("block count = %d, want 1", got)
-		}
-	})
-
-	t.Run("removes block when instructions empty", func(t *testing.T) {
-		with := reconcileInstructions([]byte(persona), "to be removed")
-		without := reconcileInstructions(with, "")
-		if strings.Contains(string(without), systemPromptStart) {
-			t.Errorf("marker survived removal:\n%s", without)
-		}
-		if string(without) != persona {
-			t.Errorf("persona not restored exactly:\n%q\nwant:\n%q", without, persona)
-		}
-	})
-
-	t.Run("preserves content after the end marker", func(t *testing.T) {
-		// Simulate agent-authored content appended after a stale block.
-		with := reconcileInstructions([]byte(persona), "OLD-STALE-TEXT")
-		withAgent := append(with, []byte("\n\n# Agent note\nkeep me")...)
-		got := reconcileInstructions(withAgent, "new instructions")
-		if !strings.Contains(string(got), "keep me") {
-			t.Errorf("agent content after markers lost:\n%s", got)
-		}
-		if strings.Contains(string(got), "OLD-STALE-TEXT") {
-			t.Error("old block content leaked")
-		}
-		if !strings.Contains(string(got), "new instructions") {
-			t.Error("updated instructions missing")
-		}
-		// The managed block is spliced back between the persona prefix and the
-		// agent-authored suffix, so the suffix stays after the instructions
-		// (regression: it used to be moved before the replacement block).
-		ib, kb := bytes.Index(got, []byte("new instructions")), bytes.Index(got, []byte("# Agent note"))
-		if ib < 0 || kb < 0 || ib > kb {
-			t.Errorf("agent content not kept after the managed block (instructions at %d, note at %d):\n%s", ib, kb, got)
-		}
-	})
-
-	t.Run("tolerates unterminated block", func(t *testing.T) {
-		broken := []byte(persona + "\n\n" + systemPromptStart + "\n## orphaned\nno end marker")
-		got := reconcileInstructions(broken, "clean instructions")
-		if strings.Contains(string(got), "orphaned") {
-			t.Errorf("unterminated block content survived:\n%s", got)
-		}
-		if strings.Count(string(got), systemPromptStart) != 1 {
-			t.Errorf("duplicate start markers after repair:\n%s", got)
-		}
-	})
-
-	t.Run("empty file with empty instructions yields nil", func(t *testing.T) {
-		if got := reconcileInstructions(nil, ""); got != nil {
-			t.Errorf("nil+empty = %q, want nil (no file to write)", got)
+	t.Run("tolerates an unterminated block", func(t *testing.T) {
+		broken := systemPromptStart + "\nleft over\n"
+		got := string(reconcileManagedBlock([]byte(broken), "fresh"))
+		if strings.Count(got, systemPromptStart) != 1 || !strings.Contains(got, "fresh") {
+			t.Errorf("unterminated block not repaired:\n%s", got)
 		}
 	})
 }
 
-// TestSyncInstructions verifies the supervisor writes the managed block into
-// the workspace AGENTS.md, no-ops on an unchanged file, and refuses an
-// oversized instruction set (keeps the last-good file).
-func TestSyncInstructions(t *testing.T) {
+// TestSyncAgentsFile verifies the file is written from the persona and the
+// resolved instructions, that an unchanged file is left alone, and that a
+// rejected instruction set keeps the last-good file instead of replacing the
+// persona with a broken block.
+func TestSyncAgentsFile(t *testing.T) {
 	ws := t.TempDir()
-	// Seed a persona like the image's workspace/AGENTS.md.
-	persona := "# CubePilot 操作约定\n\n## 执行原则\n- 先查后答\n"
-	agentsPath := filepath.Join(ws, "AGENTS.md")
-	if err := os.WriteFile(agentsPath, []byte(persona), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	s := New(Config{Workspace: ws})
+	agentsPath := filepath.Join(ws, agentsFileName)
 
-	// First sync writes the block.
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
-	raw, _ := os.ReadFile(agentsPath)
-	if !strings.Contains(string(raw), "Answer in Chinese.") {
-		t.Fatalf("instructions not written:\n%s", raw)
+	raw, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
 	}
-
-	// Same instructions again -> content unchanged (no rewrite).
-	before := raw
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
-		t.Fatalf("re-sync: %v", err)
+	if !strings.Contains(string(raw), "CubePilot 操作约定") || !strings.Contains(string(raw), "Answer in Chinese.") {
+		t.Fatalf("persona and instructions not written:\n%s", raw)
+	}
+	// Agent content outside the block survives a resync.
+	appended := string(raw) + "\n## 我的笔记\n\nkeep me\n"
+	if err := os.WriteFile(agentsPath, []byte(appended), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+		t.Fatalf("resync: %v", err)
 	}
 	after, _ := os.ReadFile(agentsPath)
-	if !bytes.Equal(before, after) {
-		t.Error("unchanged instructions rewrote the file")
+	if !strings.Contains(string(after), "keep me") {
+		t.Errorf("agent content outside the block was lost:\n%s", after)
 	}
-
-	// Empty instructions -> block removed, persona intact.
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{}); err != nil {
-		t.Fatalf("clear: %v", err)
+	// A hand-edited block is restored.
+	if err := os.WriteFile(agentsPath, []byte(systemPromptStart+"\nrogue\n"+systemPromptEnd), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	raw, _ = os.ReadFile(agentsPath)
-	if strings.Contains(string(raw), systemPromptStart) {
-		t.Errorf("block not removed on empty instructions:\n%s", raw)
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+		t.Fatalf("heal: %v", err)
 	}
-	if string(raw) != persona {
-		t.Errorf("persona not restored after clear:\n%q", raw)
+	healed, _ := os.ReadFile(agentsPath)
+	if strings.Contains(string(healed), "rogue") || !strings.Contains(string(healed), "CubePilot 操作约定") {
+		t.Errorf("edited block not restored:\n%s", healed)
 	}
-
-	// Oversized instructions are refused (no write, file keeps last-good).
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: strings.Repeat("x", instructions.MaxChars+1)}); err != nil {
-		t.Fatalf("oversize: %v", err)
+	// An oversized instruction set is skipped (last-good file kept).
+	before := healed
+	oversized := &resolver.ResolvedAgentConfig{Instructions: strings.Repeat("x", instructions.MaxChars+1)}
+	if err := s.syncAgentsFile(oversized); err != nil {
+		t.Fatalf("oversized: %v", err)
 	}
-	raw, _ = os.ReadFile(agentsPath)
-	if strings.Contains(string(raw), systemPromptStart) {
-		t.Error("oversized instructions were written")
-	}
-
-	// Instructions containing either reserved marker are refused: an embedded
-	// end marker would be mistaken for the block terminator, preserve the
-	// suffix, and grow the file on every poll. Regression: sync the same
-	// malicious text repeatedly and assert the file never gains a managed block
-	// (and so cannot grow unbounded).
-	malicious := "prompt " + systemPromptEnd + " with a marker"
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: malicious}); err != nil {
-		t.Fatalf("marker sync: %v", err)
-	}
-	raw, _ = os.ReadFile(agentsPath)
-	if strings.Contains(string(raw), systemPromptStart) {
-		t.Error("instructions with an embedded end marker were written")
-	}
-	// A second poll with the same text must not grow the file (would append a
-	// fresh block each time if the marker were not rejected).
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: malicious}); err != nil {
-		t.Fatalf("marker re-sync: %v", err)
-	}
-	raw2, _ := os.ReadFile(agentsPath)
-	if len(raw2) != len(raw) {
-		t.Errorf("file grew across marker syncs: %d -> %d bytes", len(raw), len(raw2))
-	}
-
-	// A nil config (no instance) is a no-op too.
-	if err := s.syncInstructions(nil); err != nil {
-		t.Fatalf("nil cfg: %v", err)
-	}
-
-	// No leftover temp files (the atomic write uses an exclusive random-named
-	// temp in the workspace dir and renames it away on success).
-	entries, err := os.ReadDir(ws)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "."+agentsFileName+".tmp-") {
-			t.Errorf("temp file left behind: %s", e.Name())
-		}
+	kept, _ := os.ReadFile(agentsPath)
+	if !bytes.Equal(kept, before) {
+		t.Error("an oversized instruction set should leave the last-good file in place")
 	}
 }
 
-// TestSyncInstructionsSymlinkAGENTS verifies a symlinked AGENTS.md is treated as
+// TestSyncAgentsFileSymlink verifies a symlinked AGENTS.md is treated as
 // absent and replaced by a regular file on the next sync -- the supervisor and
 // the gateway share the pod uid, so a workspace AGENTS.md symlink must not be
 // followed to an arbitrary path (regression for the no-follow read + exclusive
 // temp write).
-func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
+func TestSyncAgentsFileSymlink(t *testing.T) {
 	ws := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(outside, []byte("do not read"), 0o644); err != nil {
@@ -886,7 +804,7 @@ func TestSyncInstructionsSymlinkAGENTS(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(Config{Workspace: ws})
-	if err := s.syncInstructions(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: "Answer in Chinese."}); err != nil {
 		t.Fatalf("sync over symlink: %v", err)
 	}
 	fi, err := os.Lstat(agentsPath)

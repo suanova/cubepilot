@@ -1,20 +1,23 @@
 // Package supervisor implements the agent-pod-side runtime supervisor: it
 // pulls the resolved agent config from the platform internal API, renders
 // domain skills into the OpenClaw workspace as skills, and manages the
-// OpenClaw gateway process (graceful restart on config change -- the pod is
-// never deleted, so sessions/PVC/IP survive). It is the "agent supervisor"
-// of the final architecture: CRDs declare -> operator resolves -> supervisor
-// renders -> OpenClaw executes.
+// OpenClaw gateway process (the gateway reloads its own config, so the
+// supervisor never restarts it for a config change; it only respawns a child
+// that crashed -- the pod is never deleted, so sessions/PVC/IP survive). It is
+// the "agent supervisor" of the final architecture: CRDs declare -> operator
+// resolves -> supervisor renders -> OpenClaw executes.
 //
 // The gateway config (LLM providers / model allowlist) is rendered by the
 // operator into the openclaw-config Secret and pulled by the supervisor from
 // the internal API (GET /internal/gateway/config) into openclaw's default
-// config path; when the content changes the gateway is gracefully restarted.
+// config path; the gateway watches that file and reloads it itself.
 // This is how providers are added/edited post-install without touching Pods or
 // scripts/setup.sh.
 package supervisor
 
 import (
+	_ "embed"
+
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -113,15 +116,16 @@ func getInt(key string, def int) int {
 }
 
 // SystemPrompt markers: the supervisor owns only the section of AGENTS.md
-// between these two markers (the per-user instructions rendered from the
-// resolved config). Everything else in the file — the baked persona, skills,
-// agent-authored content — is preserved verbatim. OpenClaw re-reads the
-// workspace-root bootstrap files (AGENTS.md first) at the start of every run,
-// so a write here is observed on the next turn without a gateway restart.
+// between these two markers (the platform's text: the embedded persona followed
+// by the instructions resolved from the config). Everything else in the file —
+// skills, agent-authored content, other bootstrap files — is preserved
+// verbatim. OpenClaw re-reads the workspace-root bootstrap files (AGENTS.md
+// first) at the start of every run, so a write here is observed on the next
+// turn without a gateway restart.
 const (
 	// agentsFileName is the OpenClaw workspace bootstrap file that carries the
-	// managed instructions section (the first file in OpenClaw's canonical
-	// workspace bootstrap set, re-read from disk at the start of each run).
+	// managed block (the first file in OpenClaw's canonical workspace bootstrap
+	// set, re-read from disk at the start of each run).
 	agentsFileName = "AGENTS.md"
 
 	systemPromptStart = instructions.ManagedStart
@@ -129,6 +133,15 @@ const (
 	// systemPromptHeader prefixes the managed instructions inside the markers.
 	systemPromptHeader = "## User-configured instructions"
 )
+
+// personaText is the platform's operating conventions for every agent: the
+// unchangeable part of the managed block. It lives in this binary rather than in
+// the image's workspace seed, because the block is the only place the platform
+// owns: a copy seeded into the workspace would also sit outside the block, and
+// the same text would then appear twice in AGENTS.md.
+//
+//go:embed persona.md
+var personaText string
 
 // skillMarker is the file the supervisor writes into every skill directory it
 // renders. Its presence is what marks a directory as the platform's own (cleanup
@@ -482,12 +495,12 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Instructions are reconciled every poll (not just on a revision change):
-	// the seed initContainer re-copies the pristine AGENTS.md on every pod
-	// start and the agent may edit the file, so the managed block must be
-	// re-asserted whenever the on-disk content drifts from the desired state.
-	if err := s.syncInstructions(cfg); err != nil {
-		log.Printf("supervisor: sync instructions: %v", err)
+	// The managed block of AGENTS.md is reconciled every poll (not just on a
+	// revision change): the file is the agent's to edit, so the managed block
+	// must be re-asserted whenever the on-disk content drifts from the desired
+	// state (persona + resolved instructions).
+	if err := s.syncAgentsFile(cfg); err != nil {
+		log.Printf("supervisor: sync AGENTS.md: %v", err)
 	}
 	if cfg.Empty() {
 		// No instance config yet -- the gateway runs with its runtime
@@ -527,23 +540,35 @@ func revisionLabel(from string) string {
 	return from
 }
 
-// syncInstructions reconciles the marker-guarded instructions section of the
-// workspace AGENTS.md with the resolved config's Instructions (template
-// instructions + per-user UserInstructions, merged by the resolver). The block
-// is (re)written whenever the on-disk content differs from the desired state
-// and removed when the effective instructions are empty; everything outside the
-// markers is preserved verbatim. Idempotent and content-hash guarded: an
-// unchanged file is left untouched. A nil/empty cfg or an oversized instruction
-// block is skipped (keep the last-good file) rather than corrupting the persona.
-func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
-	path := filepath.Join(s.cfg.Workspace, agentsFileName)
-	desired := ""
-	if cfg != nil {
-		desired = strings.TrimSpace(cfg.Instructions)
+// managedBlockBody composes the platform-owned text of the AGENTS.md managed
+// block: the operating conventions followed by the resolved instructions (the
+// template's and the user's). Both are platform-rendered, so both converge.
+func managedBlockBody(instructions string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(personaText))
+	if s := strings.TrimSpace(instructions); s != "" {
+		b.WriteString("\n\n" + systemPromptHeader + "\n\n" + s)
 	}
-	// Instructions are rendered verbatim into the managed block. Keep the
-	// last-good file when an operator-controlled template bypasses the public
-	// API policy and supplies oversized content or a reserved marker.
+	return b.String()
+}
+
+// syncAgentsFile reconciles the marker-guarded managed block of the workspace
+// AGENTS.md with the platform's desired text (persona + instructions). The block
+// is (re)written whenever the on-disk content differs and everything outside the
+// markers is preserved verbatim, so the agent's own notes in that file survive.
+// Idempotent and content-hash guarded: an unchanged file is left untouched. A
+// rejected instruction set is skipped (keep the last-good file) rather than
+// corrupting the persona.
+func (s *Supervisor) syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error {
+	path := filepath.Join(s.cfg.Workspace, agentsFileName)
+	text := ""
+	if cfg != nil {
+		text = strings.TrimSpace(cfg.Instructions)
+	}
+	desired := managedBlockBody(text)
+	// Validate what is actually written. The block carries the persona too, so the
+	// budget that matters is the whole block's: OpenClaw truncates an oversized
+	// AGENTS.md, and a truncated file would take the operating conventions with it.
 	if err := instructions.Validate(desired); err != nil {
 		log.Printf("supervisor: %v; skipping AGENTS.md sync", err)
 		return nil
@@ -552,18 +577,14 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 	if err != nil {
 		return err
 	}
-	target := reconcileInstructions(current, desired)
+	target := reconcileManagedBlock(current, desired)
 	if bytes.Equal(target, current) {
-		return nil // no change (or file absent + no block to write)
+		return nil // no change (or file absent + nothing to write)
 	}
 	if err := writeTempAndRename(path, target); err != nil {
 		return err
 	}
-	if len(target) == 0 {
-		log.Printf("supervisor: removed AGENTS.md instructions block")
-	} else {
-		log.Printf("supervisor: AGENTS.md instructions synced (%d bytes)", len(target))
-	}
+	log.Printf("supervisor: AGENTS.md managed block synced (%d bytes)", len(target))
 	return nil
 }
 
@@ -623,15 +644,16 @@ func writeTempAndRename(path string, data []byte) error {
 	return nil
 }
 
-// reconcileInstructions returns the AGENTS.md content with the managed
-// instructions block matching `desired` (the merged template+user text). The
-// file is split into prefix (before the block) and suffix (after it); the block
-// is spliced back between them so agent-authored content that follows the block
-// stays after it. When no block is present the whole file is the prefix. When
-// `desired` is empty the block is removed (prefix + suffix rejoined). Content
-// outside the markers is preserved byte-for-byte; a missing/empty input file
-// (nil current) with no desired block yields nil (nothing to write).
-func reconcileInstructions(current []byte, desired string) []byte {
+// reconcileManagedBlock returns the AGENTS.md content with the managed
+// block whose desired body is `desired` (the persona followed by the resolved
+// instructions). The file is split into prefix (before the block) and suffix
+// (after it); the block is spliced back between them so agent-authored content
+// that follows the block stays after it. When no block is present the whole file
+// is the prefix. When `desired` is empty the block is removed (prefix + suffix
+// rejoined). Content outside the markers is preserved byte-for-byte; a
+// missing/empty input file (nil current) with no desired block yields nil
+// (nothing to write).
+func reconcileManagedBlock(current []byte, desired string) []byte {
 	startIdx := bytes.Index(current, []byte(systemPromptStart))
 	var prefix, suffix []byte
 	if startIdx >= 0 {
