@@ -157,16 +157,23 @@ idempotent, content-hash guarded, removed only when the desired content is empty
 (which the persona makes unreachable in practice), and skipped with the last-good
 file kept when validation fails.
 
-**The section's budget has one definition, in `internal/instructions`.** The
-instructions are accepted against `MaxChars` minus a reserve for the platform's own
-text (the persona plus the heading and separators that introduce the instructions
-section), while the composer checks what it actually writes -- persona and
-instructions together -- against the whole `MaxChars`. Two independent gates against
-the same number would mean an operator saving a prompt the pod then refuses to
-render, with the rejection visible only in a pod log; the reserve makes an accepted
-value always deliverable. The reserve must cover the real persona, which a test in
-the package that owns the persona text pins -- so a persona that outgrows it fails
-a test instead of quietly eating the operator's budget.
+**The section's budget has one definition, in `internal/instructions`, and the API
+checks the value that will actually be rendered.** Instructions are accepted against
+`MaxChars` minus a reserve for the platform's own text (the persona plus the heading and
+separators that introduce the instructions section); the composer checks what it writes --
+persona and instructions together -- against the whole `MaxChars`. The API validates the
+*merged* instructions, the template's and the user's joined by the one definition in
+`internal/resolver`, not the user's alone: a value that fits on its own can overflow once
+the template's text is prepended, and the renderer would then refuse it on every poll with
+the rejection visible only in a pod log. Two gates against two different numbers -- or
+against the wrong value -- is the failure this replaces.
+
+The reserve must cover the real persona, which a test in the package that owns the persona
+text pins, so a persona that outgrows it fails a test instead of quietly eating the
+operator's budget. One path stays outside the API: an operator who writes the template's
+instructions directly on the CR can still hand the renderer a body it will not write --
+which is why the renderer keeps the last-good file and logs the refusal rather than
+writing a broken section.
 
 Everything outside the block stays the agent's.
 
@@ -301,8 +308,10 @@ Unit (supervisor / skill packages):
 - Pod spec: the seed initContainer uses copy-if-missing.
 
 e2e (extending the existing gateway/skill coverage): inside a running pod, edit a
-platform skill file and `openclaw.json`, wait one poll interval, assert both are
-back, and assert a hand-created skill directory is still there.
+platform skill file, delete that skill's ownership marker and rewrite `openclaw.json`;
+wait one poll interval; assert the skill's content is back (asserted by reading the
+file, so a deleted skill fails the check rather than passing it), the marker is back,
+the config is back, and a hand-created skill directory is still there.
 
 ## Upstream dependencies to re-check on a base image bump
 
