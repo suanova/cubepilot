@@ -329,7 +329,12 @@ landing, explicit create+apply still works".
 
 ## Accepted costs
 
-- Platform skills are not read-only on disk; drift is corrected, not prevented.
+- Platform skills land **read-only** in the pod -- their tarball carries the embedded
+  sources' mode (`0444`), so an agent that wants to edit one must `chmod` it first. That
+  is not a defence and is not what the guarantee rests on: the agent owns the file and
+  runs with full `exec`, and the drift check deliberately excludes file modes (a `chmod`
+  alone is not drift; a `chmod` followed by an edit is). The guarantee is that drift is
+  corrected within a poll, not that it is impossible.
 - A platform skill's directory may hold nothing of the agent's: a file the agent
   adds there is removed by the next re-extract. Skills the agent wants to keep go in
   their own directory.
