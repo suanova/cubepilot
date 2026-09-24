@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,8 +18,10 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/controller"
 	"github.com/suanova/cubepilot/internal/instances"
 	"github.com/suanova/cubepilot/internal/instructions"
+	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/store"
 )
 
@@ -183,6 +186,61 @@ func TestHandleInstancesCreateValidatesUserInstructions(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("invalid instructions status = %d, want 400: %s", rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestHandleInstancesCreateRejectsInstructionsThatOverflowOnlyWhenMerged is the
+// same band on the provisioning endpoint: the instance's user instructions are
+// composed with the referenced template's for the managed AGENTS.md section, and
+// the supervisor refuses a composed block over the file budget. Checking the
+// user's value alone accepted a set that was then never delivered. The over-band
+// value is derived from the template the endpoint resolves, so the test tracks
+// whatever the builtin ships.
+func TestHandleInstancesCreateRejectsInstructionsThatOverflowOnlyWhenMerged(t *testing.T) {
+	builtin := controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash")
+	s := platformTestServer(t, builtin)
+	h := s.Handler()
+	tmplRunes := utf8.RuneCountInString(builtin.Spec.Instructions)
+	userBudget := instructions.MaxChars - instructions.PersonaReserveChars
+
+	// Accepted on its own, over the limit once merged with the template's.
+	over := strings.Repeat("x", userBudget-tmplRunes-1)
+	if err := instructions.Validate(over); err != nil {
+		t.Fatalf("the over-band value is not one the API accepts on its own: %v", err)
+	}
+	if err := instructions.Validate(resolver.MergeInstructions(builtin.Spec.Instructions, over)); err == nil {
+		t.Fatal("the over-band value no longer overflows when merged; the band this test targets is closed")
+	}
+	rec := doReq(t, h, http.MethodPost, "/api/v1/instances", "wang.wu", map[string]any{
+		"templateRef":      v1alpha1.DefaultAgentName,
+		"userInstructions": over,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-band status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	var list v1alpha1.AgentInstanceList
+	if err := s.cr.List(t.Context(), &list, client.InNamespace(s.cfg.Namespace)); err != nil {
+		t.Fatalf("list instances: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("the rejected request still created %d instance(s)", len(list.Items))
+	}
+
+	// One rune shorter: the merge lands exactly on the limit and is accepted.
+	fits := strings.Repeat("x", userBudget-tmplRunes-2)
+	rec = doReq(t, h, http.MethodPost, "/api/v1/instances", "wang.wu", map[string]any{
+		"templateRef":      v1alpha1.DefaultAgentName,
+		"userInstructions": fits,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("in-budget status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	created := decode[struct {
+		Instance v1alpha1.AgentInstance `json:"instance"`
+	}](t, rec)
+	if created.Instance.Spec.UserInstructions != fits {
+		t.Errorf("in-budget prompt was not saved (%d runes stored, want %d)",
+			utf8.RuneCountInString(created.Instance.Spec.UserInstructions), utf8.RuneCountInString(fits))
 	}
 }
 

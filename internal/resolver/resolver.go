@@ -90,6 +90,26 @@ type ResolvedCredential struct {
 	SecretName string `json:"secretName"`
 }
 
+// MergeInstructions composes the instruction set of the managed AGENTS.md
+// section from the template's default and the instance's user instructions:
+// both trimmed, joined by a blank line, and an empty side contributing nothing.
+//
+// It is the one definition of what that section's instructions are. Resolve
+// renders through it and the API's size checks validate through it, so the
+// value the API accepts is the value the supervisor later renders -- two copies
+// of this rule is how a band opened between the checks in the first place.
+func MergeInstructions(template, user string) string {
+	t := strings.TrimSpace(template)
+	u := strings.TrimSpace(user)
+	switch {
+	case t == "":
+		return u
+	case u == "":
+		return t
+	}
+	return t + "\n\n" + u
+}
+
 // Empty reports whether the config is the zero default (no instance -- the
 // runtime keeps its normal configured model and skills).
 func (c *ResolvedAgentConfig) Empty() bool {
@@ -182,16 +202,12 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 				})
 			}
 			// Final instructions are the template's instructions with the
-			// user's appended (design §3.2). There is no platform-level text
-			// layer: the safety boundary is enforced by mechanism -- the
-			// per-user read-only RBAC, the allowlist and the HITL gate -- not
-			// by prompt text.
-			if ui := strings.TrimSpace(inst.Spec.UserInstructions); ui != "" {
-				if cfg.Instructions != "" {
-					cfg.Instructions += "\n\n"
-				}
-				cfg.Instructions += ui
-			}
+			// user's appended (design §3.2); MergeInstructions is the definition
+			// of that composition, shared with the API's size checks. There is no
+			// platform-level text layer: the safety boundary is enforced by
+			// mechanism -- the per-user read-only RBAC, the allowlist and the
+			// HITL gate -- not by prompt text.
+			cfg.Instructions = MergeInstructions(def.Spec.Instructions, inst.Spec.UserInstructions)
 			// Model selection: only an explicitly chosen model
 			// (instance.selectedModel) is sent as the per-turn override, so the
 			// agent's default model is whatever the runtime's configured primary

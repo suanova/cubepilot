@@ -21,6 +21,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
@@ -152,7 +153,14 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		owner := s.userOf(r)
 		name := k8s.InstanceName(owner, templateRef)
 		userInstructions := strings.TrimSpace(body.UserInstructions)
-		if err := instructions.Validate(userInstructions); err != nil {
+		// Validate what will actually be rendered, not the user's half alone: the
+		// managed AGENTS.md section carries the template's instructions followed by
+		// the user's (resolver.MergeInstructions), and the supervisor refuses a
+		// composed block over the file budget. A set that fits on its own but
+		// overflows once merged would otherwise be accepted and saved, and then
+		// refused on every poll -- logged only in the agent Pod, which is exactly
+		// the silent failure this budget exists to remove.
+		if err := instructions.Validate(resolver.MergeInstructions(tmpl.Spec.Instructions, userInstructions)); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}

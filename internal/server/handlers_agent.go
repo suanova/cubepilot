@@ -15,6 +15,7 @@ import (
 	"github.com/suanova/cubepilot/internal/gateway"
 	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/resolver"
 )
 
 // handleAudit serves GET /api/audit?limit=400 -- the caller's own newest-first
@@ -83,14 +84,29 @@ func (s *Server) handleAgentConfig(w http.ResponseWriter, r *http.Request) {
 		// "Runtime Default" (clear the override).
 		model := strings.TrimSpace(body.SelectedModel)
 		systemPrompt := strings.TrimSpace(body.UserInstructions)
-		if err := instructions.Validate(systemPrompt); err != nil {
+		// One template read serves both checks below (this one validates the
+		// instructions against the template's, the next against its providers).
+		tmpl, err := s.agentTemplate(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		// Validate what will actually be rendered, not the user's half alone: the
+		// managed AGENTS.md section carries the template's instructions followed by
+		// the user's (resolver.MergeInstructions), and the supervisor refuses a
+		// composed block over the file budget. A set that fits on its own but
+		// overflows once merged would otherwise be written to the instance and then
+		// refused on every poll -- logged only in the agent Pod, so the operator's
+		// prompt is saved and never delivered.
+		templateInstructions := ""
+		if tmpl != nil {
+			templateInstructions = tmpl.Spec.Instructions
+		}
+		if err := instructions.Validate(resolver.MergeInstructions(templateInstructions, systemPrompt)); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		if ok, err := s.agentTemplateHasModel(r.Context(), model); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		} else if !ok {
+		if !agentTemplateHasModel(tmpl, model) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("model %q is not served by any provider of the cubepilot template (add it under Agent Config -> LLM Config first)", model)})
 			return
 		}
@@ -134,29 +150,39 @@ func (s *Server) agentConfig(ctx context.Context, user string) agentConfigView {
 	return v
 }
 
-// agentTemplateHasModel reports whether model is a <provider>/<modelId> ref
-// served by the builtin cubepilot template (the template every AgentConfig
-// applies to). Empty is always allowed ("Runtime Default"). With the CRD path
-// disabled there is no template to validate against, so anything is accepted.
-func (s *Server) agentTemplateHasModel(ctx context.Context, model string) (bool, error) {
-	if model == "" || s.cr == nil {
-		return true, nil
-	}
+// agentTemplate reads the builtin cubepilot template -- the template every
+// AgentConfig applies to. A missing template is (nil, nil): the callers decide
+// whether that means "nothing to validate against" or "nothing is served".
+func (s *Server) agentTemplate(ctx context.Context) (*v1alpha1.AgentTemplate, error) {
 	var tmpl v1alpha1.AgentTemplate
 	if err := s.cr.Get(ctx, types.NamespacedName{Namespace: s.cfg.Namespace, Name: v1alpha1.DefaultAgentName}, &tmpl); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
+	}
+	return &tmpl, nil
+}
+
+// agentTemplateHasModel reports whether model is a <provider>/<modelId> ref
+// served by tmpl (the builtin cubepilot template, read by agentTemplate). Empty
+// is always allowed ("Runtime Default"); a nil template serves nothing, so every
+// explicit selection is refused when there is none.
+func agentTemplateHasModel(tmpl *v1alpha1.AgentTemplate, model string) bool {
+	if model == "" {
+		return true
+	}
+	if tmpl == nil {
+		return false
 	}
 	for _, pr := range tmpl.Spec.Providers {
 		for _, id := range pr.Models {
 			if gateway.ModelKey(pr.Name, id) == model {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
 }
 
 // handleAgentStatus reports the live state of the caller's agent instance
