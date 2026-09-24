@@ -1,0 +1,98 @@
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
+	"github.com/suanova/cubepilot/internal/k8s"
+)
+
+const (
+	agentContainer  = "supervisor"
+	agentWorkspace  = "/home/node/.openclaw/workspace"
+	agentConfigPath = "/home/node/.openclaw/openclaw.json"
+	// A poll is 10s; two of them leave room for a slow fetch without hiding a
+	// supervisor that never converges.
+	convergeTimeout = 45 * time.Second
+)
+
+var _ = Describe("Workspace artifact ownership", Label("workspace"), func() {
+	It("restores platform content the agent changed and leaves the agent's own skill alone", func() {
+		ctx := context.Background()
+		user := fw.DefaultUser
+		name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+
+		var pod string
+		Eventually(func() error {
+			if err := agentStabilityErr(ctx, user); err != nil {
+				return err
+			}
+			var inst v1alpha1.AgentInstance
+			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: name, Namespace: fw.Namespace}, &inst); err != nil {
+				return err
+			}
+			pod = inst.Status.PodName
+			return nil
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		exec := func(cmd string) (string, error) {
+			return fw.Exec(ctx, pod, agentContainer, "sh", "-c", cmd)
+		}
+
+		// The platform config is the artifact every instance has.
+		before, err := exec("cat " + agentConfigPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(before).To(ContainSubstring(`"gateway"`))
+
+		// A skill the agent authored itself: unmarked, so the platform must not
+		// delete it.
+		_, err = exec("mkdir -p " + agentWorkspace + "/skills/e2e-agent-skill && " +
+			"printf '# agent skill\\n' > " + agentWorkspace + "/skills/e2e-agent-skill/SKILL.md")
+		Expect(err).NotTo(HaveOccurred())
+
+		// The instance has platform skills installed (the builtin template ships
+		// them). Require one: if none were installed the tamper step below would
+		// silently skip, and the skill half of this test would pass without
+		// exercising convergence at all.
+		out, err := exec("ls -1d " + agentWorkspace + "/skills/*/ | grep -v e2e-agent-skill | head -1")
+		Expect(err).NotTo(HaveOccurred())
+		platformSkill := strings.TrimSpace(out)
+		Expect(platformSkill).NotTo(BeEmpty(),
+			"no platform skill installed: the skill-drift half of this test would pass vacuously")
+
+		// Tamper: rewrite the platform's gateway config and that skill. `ls -1d` on
+		// a directory glob yields a trailing slash, hence `platformSkill + "SKILL.md"`.
+		_, err = exec("printf '{\"rogue\":true}' > " + agentConfigPath)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = exec("printf '\\ntampered\\n' >> " + platformSkill + "SKILL.md")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Within a poll or two the platform content is back, and the agent's skill
+		// is untouched.
+		Eventually(func() error {
+			got, err := exec("cat " + agentConfigPath)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(got, `"gateway"`) {
+				return fmt.Errorf("openclaw.json still tampered: %s", got)
+			}
+			if _, err := exec("test -f " + agentWorkspace + "/skills/e2e-agent-skill/SKILL.md"); err != nil {
+				return fmt.Errorf("agent-authored skill removed: %w", err)
+			}
+			return nil
+		}, convergeTimeout, 5*time.Second).Should(Succeed())
+
+		// The tampered skill is back to the platform's content.
+		out, err = exec("grep -l tampered " + platformSkill + "SKILL.md || true")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(BeEmpty())
+	})
+})
