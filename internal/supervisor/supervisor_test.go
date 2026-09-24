@@ -324,6 +324,42 @@ func TestSyncSkillRestoresDrift(t *testing.T) {
 	}
 }
 
+// TestSyncSkillReinstallsWhenDirectoryIsGone covers the unreadable-tree arm: a
+// wanted skill whose directory has been removed is reinstalled rather than
+// reported as an error. Deleting the directory is the cheapest drift the agent
+// can cause, and the same arm is what lets a skill that left the resolved set and
+// returned land again.
+func TestSyncSkillReinstallsWhenDirectoryIsGone(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nOriginal content.")
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := requests(); got != 1 {
+		t.Fatalf("install fetches = %d, want 1", got)
+	}
+	if err := os.RemoveAll(filepath.Join(ws, "skills", "cluster-inspection")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("a removed skill directory did not trigger a re-fetch (fetches = %d, want 2)", got)
+	}
+	body, err := os.ReadFile(filepath.Join(ws, "skills", "cluster-inspection", "SKILL.md"))
+	if err != nil || !strings.Contains(string(body), "Original content.") {
+		t.Errorf("skill not reinstalled: %q, %v", body, err)
+	}
+}
+
 // TestSyncSkillDetectsForgedMarker verifies the marker cannot be used to make
 // drift permanent: an agent that rewrites the skill and recomputes the marker's
 // tree, leaving the revision alone, is still corrected.
