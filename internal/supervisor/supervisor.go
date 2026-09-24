@@ -510,10 +510,11 @@ func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
 	return s.applyGatewayConfig(data)
 }
 
-// poll fetches the resolved config and applies it (renders skills + the
-// AGENTS.md instructions block, records the revision). It reports whether the
-// resolved config changed so the caller can log it; the gateway reloads skills
-// itself, so no restart is needed.
+// poll fetches the resolved config and applies it (renders the skills and the
+// managed block of AGENTS.md -- the platform persona followed by the resolved
+// instructions -- and records the revision). It reports whether the resolved
+// config changed so the caller can log it; the gateway reloads skills itself, so
+// no restart is needed.
 func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	cfg, err := s.fetchConfig(ctx)
 	if err != nil {

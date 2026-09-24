@@ -89,8 +89,11 @@ func seedTar(t *testing.T, repo *skill.PathRepository, relPath, body string) str
 
 // TestSyncSkills verifies the supervisor pulls a skill tar from the internal
 // API, extracts it into workspace/skills/<name>/, writes the .cubepilot.json
-// marker, clears the stale entries it rendered itself, and verifies -- without
-// re-pulling -- a tree it installed itself.
+// marker, clears the stale entries it rendered itself, and leaves an installed
+// tree in place on a second sync. That the second sync re-verifies rather than
+// re-pulls is asserted by fetch count in TestSyncSkillRestoresDrift and
+// TestSyncSkillsVerifiesAtPodStart; this test runs on the harness without a
+// counter, so it asserts only that re-syncing an installed tree succeeds.
 func TestSyncSkills(t *testing.T) {
 	ws := t.TempDir()
 	// Pre-existing stale skill dir (platform-rendered: it carries the marker) that
@@ -195,6 +198,46 @@ func TestSyncSkillsKeepsAgentAuthoredSkill(t *testing.T) {
 	}
 	if _, err := os.Stat(own); err != nil {
 		t.Errorf("agent-authored skill removed on a revision change: %v", err)
+	}
+}
+
+// TestSyncSkillsPlatformNameWins pins the design's collision rule: when a name in
+// the resolved set already exists in the workspace as an unmarked
+// (agent-authored) directory, the platform content is installed into that name.
+// The agent's directory is not spared -- a directory name is not ownership, only
+// the marker is -- because otherwise a skill the platform resolves would silently
+// never arrive, which is harder to notice than a replaced directory.
+func TestSyncSkillsPlatformNameWins(t *testing.T) {
+	ws := t.TempDir()
+	repo := &skill.PathRepository{Root: t.TempDir()}
+	sha := seedTar(t, repo, "cluster-inspection/v1.tar.gz", "# Inspection\n\nPlatform content.")
+	srv, requests := testAPIWithCounter(t, nil, "", repo.Root)
+	s := New(Config{Workspace: ws, APIURL: srv.URL})
+	s.http = srv.Client()
+	// The agent's own skill, authored through skill_workshop: no marker, and it
+	// happens to sit at a name the platform resolves.
+	dir := filepath.Join(ws, "skills", "cluster-inspection")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &resolver.ResolvedAgentConfig{Revision: "rev1", Skills: []resolver.ResolvedSkill{
+		{Name: "cluster-inspection", Path: "cluster-inspection/v1.tar.gz", Sha256: sha, Revision: "rev1"},
+	}}
+	if err := s.syncSkills(context.Background(), cfg); err != nil {
+		t.Fatalf("syncSkills: %v", err)
+	}
+	if got := requests(); got != 1 {
+		t.Fatalf("install fetches = %d, want 1", got)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil || !strings.Contains(string(body), "Platform content.") {
+		t.Errorf("platform content did not land on the unmarked directory: %q, %v", body, err)
+	}
+	if !markerPresent(dir) {
+		t.Error("the directory was not marked as the platform's own")
 	}
 }
 

@@ -292,6 +292,45 @@ func TestTreeHash(t *testing.T) {
 	}
 }
 
+// TestTreeHashSymlink verifies the special-entry arm: a symlink inside the tree
+// changes the hash, and removing it changes the hash back. ExtractTar skips
+// entries that are not regular files, so a symlink appearing in an installed
+// skill afterwards is drift the re-extract removes -- and TreeHash has to see it
+// as such. Hashing through the link would be worse than missing it (the hash
+// would then cover content that is not in the tree), which is why the arm
+// records the entry itself rather than following it.
+func TestTreeHashSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash := func() string {
+		t.Helper()
+		got, err := TreeHash(dir, ".cubepilot.json")
+		if err != nil {
+			t.Fatalf("TreeHash: %v", err)
+		}
+		return got
+	}
+	base := hash()
+
+	link := filepath.Join(dir, "escape")
+	// A dangling link on purpose: following it would fail, and the point is that
+	// TreeHash never tries.
+	if err := os.Symlink(filepath.Join(t.TempDir(), "somewhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got == base {
+		t.Error("an added symlink did not change the hash")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got != base {
+		t.Errorf("removing the symlink did not restore the hash: %q, want %q", got, base)
+	}
+}
+
 // TestTreeHashMissingDir verifies a directory that is not there is an error,
 // not an empty tree: reporting a hash for missing content would let the
 // supervisor believe an uninstalled skill is in place.
