@@ -1143,6 +1143,10 @@ In `internal/supervisor/supervisor.go`, add next to the other consts:
 var personaText string
 ```
 
+(`_ "embed"` must be added to the import block: a `//go:embed` of a `string`
+needs the blank import. The local below is named `text`, not `instructions`,
+so it does not shadow the `instructions` package this function calls.)
+
 Add the composer, and rename `syncInstructions`/`reconcileInstructions`:
 
 ```go
@@ -1167,11 +1171,11 @@ func managedBlockBody(instructions string) string {
 // corrupting the persona.
 func (s *Supervisor) syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error {
 	path := filepath.Join(s.cfg.Workspace, agentsFileName)
-	instructions := ""
+	text := ""
 	if cfg != nil {
-		instructions = strings.TrimSpace(cfg.Instructions)
+		text = strings.TrimSpace(cfg.Instructions)
 	}
-	desired := managedBlockBody(instructions)
+	desired := managedBlockBody(text)
 	// Validate what is actually written. The block carries the persona too, so the
 	// budget that matters is the whole block's: OpenClaw truncates an oversized
 	// AGENTS.md, and a truncated file would take the operating conventions with it.
