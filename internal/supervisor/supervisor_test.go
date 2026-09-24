@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1310,5 +1311,59 @@ func TestRevisionLabel(t *testing.T) {
 				t.Errorf("revisionLabel(%q) = %q, want %q", tc.from, got, tc.want)
 			}
 		})
+	}
+}
+
+// personaOverheadRunes is the platform text the composer wraps around a non-empty
+// instruction set, on top of the persona itself: managedBlockBody writes the
+// heading between a pair of blank lines.
+func personaOverheadRunes() int {
+	return utf8.RuneCountInString(strings.TrimSpace(personaText) + "\n\n" + systemPromptHeader + "\n\n")
+}
+
+// TestPersonaFitsTheReserve pins the contract between the two packages.
+// PersonaReserveChars is the share of the file budget the API subtracts before
+// accepting an instruction set, so it has to cover the platform text the
+// supervisor actually composes. A persona that grew past the reserve would not
+// fail anywhere visible: it would quietly shrink the operator's usable budget,
+// and a value the API accepted would then be skipped by the supervisor. The
+// persona lives in this package, so the check does too.
+func TestPersonaFitsTheReserve(t *testing.T) {
+	if got := personaOverheadRunes(); got >= instructions.PersonaReserveChars {
+		t.Errorf("platform text is %d runes, at or above the %d-rune reserve; raise instructions.PersonaReserveChars to cover it",
+			got, instructions.PersonaReserveChars)
+	}
+}
+
+// TestLargestAcceptedInstructionSetRenders is the regression the split budget
+// exists to prevent: a set the API accepts must still render. When both sides
+// measured against the whole file budget, a set in the band between the API's
+// limit and the persona-adjusted one passed validation, was saved, and was then
+// refused by the supervisor on every poll -- so the operator's prompt was never
+// delivered and nothing reported it.
+func TestLargestAcceptedInstructionSetRenders(t *testing.T) {
+	ws := t.TempDir()
+	s := New(Config{Workspace: ws})
+	// The largest value Validate accepts, in CJK so the rune/byte distinction is
+	// exercised on this path too.
+	largest := strings.Repeat("界", instructions.MaxChars-instructions.PersonaReserveChars)
+	if err := instructions.Validate(largest); err != nil {
+		t.Fatalf("the API side rejects the value this test calls largest: %v", err)
+	}
+	if err := s.syncAgentsFile(&resolver.ResolvedAgentConfig{Instructions: largest}); err != nil {
+		t.Fatalf("syncAgentsFile(largest accepted set): %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(ws, agentsFileName))
+	if err != nil {
+		t.Fatalf("the largest accepted set did not render: %v", err)
+	}
+	if !strings.Contains(string(raw), strings.TrimSpace(personaText)) {
+		t.Error("the rendered file lost the persona")
+	}
+	if !strings.Contains(string(raw), largest) {
+		t.Error("the rendered file lost the instructions")
+	}
+	if got := utf8.RuneCountInString(string(raw)); got > instructions.MaxChars {
+		t.Errorf("the rendered file is %d runes, above the %d-rune file budget", got, instructions.MaxChars)
 	}
 }

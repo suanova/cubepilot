@@ -600,7 +600,10 @@ func (s *Supervisor) syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error {
 	// Validate what is actually written. The block carries the persona too, so the
 	// budget that matters is the whole block's: OpenClaw truncates an oversized
 	// AGENTS.md, and a truncated file would take the operating conventions with it.
-	if err := instructions.Validate(desired); err != nil {
+	// ValidateRendered (not Validate) because `desired` is the composed section,
+	// while Validate measures an instruction set against the smaller budget the API
+	// accepts.
+	if err := instructions.ValidateRendered(desired); err != nil {
 		log.Printf("supervisor: %v; skipping AGENTS.md sync", err)
 		return nil
 	}
