@@ -131,6 +131,15 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			"exec":     map[string]any{"security": "full", "ask": "off"},
 			"sessions": map[string]any{"visibility": "all"},
 		},
+		// Skill authoring is user-requested only: the runtime default lets the agent capture
+		// and repair its own skills unasked, which the platform never sees. approvalPolicy stays
+		// "auto" -- there is no proposal-review surface for a "pending" to reach.
+		"skills": map[string]any{
+			"workshop": map[string]any{
+				"autonomous":     map[string]any{"mode": "off"},
+				"approvalPolicy": "auto",
+			},
+		},
 		// Memory runs FTS5 keyword search only (issue #163): with no embedding
 		// provider configured, OpenClaw's default vector search resolves
 		// embeddings to an unavailable "openai" adapter, so the vector index was

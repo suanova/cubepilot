@@ -308,6 +308,34 @@ func TestResolveUserInstructionsOnly(t *testing.T) {
 	}
 }
 
+// TestMergeInstructions pins the one definition of the composition the managed
+// AGENTS.md section renders: the template's instructions, then the user's,
+// joined by a blank line, each trimmed, an empty side contributing nothing. The
+// API's size checks validate through this same function, so a divergence here is
+// how a band of values one side accepts and the other refuses opens up.
+func TestMergeInstructions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		user     string
+		want     string
+	}{
+		{"both present: template first, blank line, then user", "template text", "user text", "template text\n\nuser text"},
+		{"template only", "template text", "", "template text"},
+		{"user only (no stray separator)", "", "user text", "user text"},
+		{"both empty", "", "", ""},
+		{"both sides trimmed", "  template text\n", "\n user text  ", "template text\n\nuser text"},
+		{"a whitespace-only user side contributes nothing", "template text", "   \n", "template text"},
+		{"a whitespace-only template side contributes nothing", "  ", "user text", "user text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MergeInstructions(tc.template, tc.user); got != tc.want {
+				t.Errorf("MergeInstructions(%q, %q) = %q, want %q", tc.template, tc.user, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveApprovalPolicyOverride verifies an instance approvalPolicy override
 // wins over the template default (issue #116 inherit-or-own).
 func TestResolveApprovalPolicyOverride(t *testing.T) {

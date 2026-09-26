@@ -137,19 +137,23 @@ curl -sf --max-time 10 -X PUT "http://127.0.0.1:18080/api/v1/agent/config" \
   || fail "system prompt PUT failed"
 AGENT_POD="$(kubectl -n "$NAMESPACE" get pods -o name | grep -E "pod/agent-${E2E_USER}-" | head -1 | sed 's#pod/##')"
 [ -n "$AGENT_POD" ] || fail "could not resolve agent pod for $E2E_USER"
+# The managed block is present from the first poll after pod start (it carries
+# the platform persona), so its presence is not a synchronisation signal. Wait
+# on the saved text itself, which appears when the supervisor's next poll
+# applies it.
+kubectl -n "$NAMESPACE" exec "$AGENT_POD" -c supervisor -- \
+  grep -q "cubepilot:system-prompt" /home/node/.openclaw/workspace/AGENTS.md \
+  || fail "managed system-prompt block not found in AGENTS.md"
 found=""
 for _ in $(seq 1 15); do
   if kubectl -n "$NAMESPACE" exec "$AGENT_POD" -c supervisor -- \
-      grep -q "cubepilot:system-prompt" /home/node/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      grep -q "$SP_MARKER" /home/node/.openclaw/workspace/AGENTS.md 2>/dev/null; then
     found=1
     break
   fi
   sleep 2
 done
-[ -n "$found" ] || fail "managed system-prompt block not found in AGENTS.md within ~30s"
-kubectl -n "$NAMESPACE" exec "$AGENT_POD" -c supervisor -- \
-  grep -q "$SP_MARKER" /home/node/.openclaw/workspace/AGENTS.md \
-  || fail "AGENTS.md does not carry the saved system prompt text"
+[ -n "$found" ] || fail "AGENTS.md does not carry the saved system prompt text within ~30s"
 ok "system prompt block present in the agent workspace AGENTS.md"
 
 echo "E2E PASS (deploy + chat)"

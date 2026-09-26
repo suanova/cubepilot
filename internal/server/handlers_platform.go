@@ -21,6 +21,7 @@ import (
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
+	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
 )
 
@@ -152,7 +153,9 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		owner := s.userOf(r)
 		name := k8s.InstanceName(owner, templateRef)
 		userInstructions := strings.TrimSpace(body.UserInstructions)
-		if err := instructions.Validate(userInstructions); err != nil {
+		// Validate what will actually be rendered -- the template's instructions merged
+		// with the user's (see instructions.Validate) -- not the user's half alone.
+		if err := instructions.Validate(resolver.MergeInstructions(tmpl.Spec.Instructions, userInstructions)); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
