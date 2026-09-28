@@ -155,15 +155,13 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 			InitContainers: []corev1.Container{
 				// Seed the workspace from the image's read-only layer into the
 				// per-instance PVC (design §3.6: runtime caches live on the
-				// instance PVC, not the image). The gateway maintains files in
-				// the workspace (e.g. TOOLS.md) -- under readOnlyRootFilesystem
-				// the image layer is not writable, so the workspace must be on
-				// the PVC.
+				// instance PVC, not the image). The copy is no-clobber, so a file
+				// the agent has since written is left alone.
 				{
 					Name:            "seed-workspace",
 					Image:           s.Image,
 					ImagePullPolicy: s.PullPolicy,
-					Command:         []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
+					Command:         []string{"sh", "-c", "mkdir -p /mnt/data/workspace && cp -a -n /opt/cubepilot/workspace/. /mnt/data/workspace/ 2>/dev/null || true"},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "data", MountPath: "/mnt/data"},
 					},
@@ -190,11 +188,9 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 				},
 			},
 			Containers: []corev1.Container{{
-				// The supervisor is pid 1: it pulls the resolved agent config
-				// (internal API), renders skills into the PVC workspace, and
-				// runs the OpenClaw gateway as a child process. Config changes
-				// trigger a graceful gateway restart -- the pod is never
-				// deleted, so sessions/PVC/IP survive (final architecture).
+				// The supervisor is pid 1: it pulls the resolved agent config (internal API) and runs
+				// the OpenClaw gateway as a child. The gateway reloads its own config, so a config
+				// change never restarts it -- only a crashed child is respawned (never a pod delete).
 				Name:            "supervisor",
 				Image:           s.Image,
 				ImagePullPolicy: s.PullPolicy,
