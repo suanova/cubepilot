@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/instructions"
 	"github.com/suanova/cubepilot/internal/k8s"
 	"github.com/suanova/cubepilot/internal/resolver"
 	"github.com/suanova/cubepilot/internal/skill"
@@ -291,6 +294,57 @@ func TestAgentConfigRejectsUnsafeInstructions(t *testing.T) {
 	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "zhang.wei", nil))
 	if resp.UserInstructions != "" {
 		t.Fatalf("rejected prompt was persisted: %q", resp.UserInstructions)
+	}
+}
+
+// TestAgentConfigRejectsInstructionsThatOverflowOnlyWhenMerged pins the band a
+// check on the user's value alone leaves open. The managed AGENTS.md section
+// carries the template's instructions followed by the user's, and the supervisor
+// refuses a composed block over the file budget on every poll -- so a set that
+// fits on its own but overflows once merged was accepted, saved, and never
+// delivered: the silent failure the budget work exists to remove. The over-band
+// value is derived from the template this endpoint resolves, so the test tracks
+// whatever the builtin ships.
+func TestAgentConfigRejectsInstructionsThatOverflowOnlyWhenMerged(t *testing.T) {
+	builtin := controller.BuiltinAgentTemplate("https://api.deepseek.com", "deepseek-v4-flash")
+	s := platformTestServerStore(t, nil,
+		builtin,
+		internalTestInstance("zhang.wei", v1alpha1.DefaultAgentName),
+	)
+	tmplRunes := utf8.RuneCountInString(builtin.Spec.Instructions)
+	userBudget := instructions.MaxChars - instructions.PersonaReserveChars
+
+	// Accepted on its own, over the limit once merged: the whole band (one rune
+	// wide here, because the check measures the composition).
+	over := strings.Repeat("x", userBudget-tmplRunes-1)
+	if err := instructions.Validate(over); err != nil {
+		t.Fatalf("the over-band value is not one the API accepts on its own: %v", err)
+	}
+	if err := instructions.Validate(resolver.MergeInstructions(builtin.Spec.Instructions, over)); err == nil {
+		t.Fatal("the over-band value no longer overflows when merged; the band this test targets is closed")
+	}
+	rec := doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"userInstructions": over})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-band status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	resp := decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "zhang.wei", nil))
+	if resp.UserInstructions != "" {
+		t.Fatalf("the over-band prompt was persisted (%d runes)", utf8.RuneCountInString(resp.UserInstructions))
+	}
+
+	// One rune shorter: the merge lands exactly on the limit, so it must be
+	// accepted and saved.
+	fits := strings.Repeat("x", userBudget-tmplRunes-2)
+	rec = doReq(t, s.Handler(), http.MethodPut, "/api/v1/agent/config", "zhang.wei",
+		map[string]any{"userInstructions": fits})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("in-budget status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	resp = decode[configResponse](t, doReq(t, s.Handler(), http.MethodGet, "/api/v1/agent/config", "zhang.wei", nil))
+	if resp.UserInstructions != fits {
+		t.Errorf("in-budget prompt was not saved (%d runes stored, want %d)",
+			utf8.RuneCountInString(resp.UserInstructions), utf8.RuneCountInString(fits))
 	}
 }
 
