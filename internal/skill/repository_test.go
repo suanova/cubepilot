@@ -209,3 +209,133 @@ func TestWriteTarPropagatesWriterError(t *testing.T) {
 		t.Fatal("writeTar with a failing writer should error")
 	}
 }
+
+// TestTreeHash verifies the tree hash answers "is the content on disk the
+// content we installed": it is stable, it ignores the entry the caller skips
+// (the platform's own bookkeeping file), and every drift a re-extract would
+// fix -- changed content, an added or removed file, an added empty directory --
+// changes the result.
+func TestTreeHash(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("SKILL.md", "# a\n")
+	write("refs/one.md", "one\n")
+	write(".cubepilot.json", `{"tree":"whatever"}`)
+	if err := os.MkdirAll(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// hash is the current tree hash; a failure here is a test failure, not
+	// something to compare against "".
+	hash := func() string {
+		t.Helper()
+		got, err := TreeHash(dir, ".cubepilot.json")
+		if err != nil {
+			t.Fatalf("TreeHash: %v", err)
+		}
+		return got
+	}
+
+	base := hash()
+	if again := hash(); again != base {
+		t.Fatalf("TreeHash not stable: %q vs %q", base, again)
+	}
+	// The skipped entry is not part of the tree: rewriting it changes nothing.
+	write(".cubepilot.json", `{"tree":"another"}`)
+	if got := hash(); got != base {
+		t.Error("the skipped file changed the tree hash")
+	}
+	// Each of these is drift, so each must change the hash. Each step is
+	// compared with the hash taken immediately before it rather than with
+	// base: the mutations accumulate, so an earlier one would otherwise mask
+	// a later one that changed nothing.
+	prev := hash()
+	write("SKILL.md", "# b\n")
+	if got := hash(); got == prev {
+		t.Error("a content change did not change the hash")
+	}
+	prev = hash()
+	write("SKILL.md", "# a\n")
+	write("extra.md", "x\n")
+	if got := hash(); got == prev {
+		t.Error("an added file did not change the hash")
+	}
+	prev = hash()
+	if err := os.Remove(filepath.Join(dir, "extra.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got == prev {
+		t.Error("a removed file did not change the hash")
+	}
+	prev = hash()
+	if err := os.MkdirAll(filepath.Join(dir, "empty2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got == prev {
+		t.Error("an added empty directory did not change the hash")
+	}
+	prev = hash()
+	if err := os.Remove(filepath.Join(dir, "refs", "one.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got == prev {
+		t.Error("a removed nested file did not change the hash")
+	}
+}
+
+// TestTreeHashSymlink verifies the special-entry arm: a symlink inside the tree
+// changes the hash, and removing it changes the hash back. ExtractTar skips
+// entries that are not regular files, so a symlink appearing in an installed
+// skill afterwards is drift the re-extract removes -- and TreeHash has to see it
+// as such. Hashing through the link would be worse than missing it (the hash
+// would then cover content that is not in the tree), which is why the arm
+// records the entry itself rather than following it.
+func TestTreeHashSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash := func() string {
+		t.Helper()
+		got, err := TreeHash(dir, ".cubepilot.json")
+		if err != nil {
+			t.Fatalf("TreeHash: %v", err)
+		}
+		return got
+	}
+	base := hash()
+
+	link := filepath.Join(dir, "escape")
+	// A dangling link on purpose: following it would fail, and the point is that
+	// TreeHash never tries.
+	if err := os.Symlink(filepath.Join(t.TempDir(), "somewhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got == base {
+		t.Error("an added symlink did not change the hash")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if got := hash(); got != base {
+		t.Errorf("removing the symlink did not restore the hash: %q, want %q", got, base)
+	}
+}
+
+// TestTreeHashMissingDir verifies a directory that is not there is an error,
+// not an empty tree: reporting a hash for missing content would let the
+// supervisor believe an uninstalled skill is in place.
+func TestTreeHashMissingDir(t *testing.T) {
+	if _, err := TreeHash(filepath.Join(t.TempDir(), "gone"), ".cubepilot.json"); err == nil {
+		t.Fatal("a missing directory should error, not report a hash")
+	}
+}
