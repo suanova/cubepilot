@@ -90,6 +90,21 @@ type ResolvedCredential struct {
 	SecretName string `json:"secretName"`
 }
 
+// MergeInstructions composes the managed AGENTS.md section's instructions from the
+// template's default and the instance's user instructions: both trimmed, joined by a
+// blank line. Resolve renders through it and the API's size checks validate through it.
+func MergeInstructions(template, user string) string {
+	t := strings.TrimSpace(template)
+	u := strings.TrimSpace(user)
+	switch {
+	case t == "":
+		return u
+	case u == "":
+		return t
+	}
+	return t + "\n\n" + u
+}
+
 // Empty reports whether the config is the zero default (no instance -- the
 // runtime keeps its normal configured model and skills).
 func (c *ResolvedAgentConfig) Empty() bool {
@@ -181,17 +196,10 @@ func (r *Resolver) Resolve(ctx context.Context, user, agent string) (*ResolvedAg
 					SecretName: pr.CredentialRef.Name,
 				})
 			}
-			// Final instructions are the template's instructions with the
-			// user's appended (design §3.2). There is no platform-level text
-			// layer: the safety boundary is enforced by mechanism -- the
-			// per-user read-only RBAC, the allowlist and the HITL gate -- not
-			// by prompt text.
-			if ui := strings.TrimSpace(inst.Spec.UserInstructions); ui != "" {
-				if cfg.Instructions != "" {
-					cfg.Instructions += "\n\n"
-				}
-				cfg.Instructions += ui
-			}
+			// Final instructions are the template's with the user's appended (design
+			// §3.2), composed by MergeInstructions. There is no platform-level text
+			// layer: the safety boundary is mechanism, not prompt text.
+			cfg.Instructions = MergeInstructions(def.Spec.Instructions, inst.Spec.UserInstructions)
 			// Model selection: only an explicitly chosen model
 			// (instance.selectedModel) is sent as the per-turn override, so the
 			// agent's default model is whatever the runtime's configured primary

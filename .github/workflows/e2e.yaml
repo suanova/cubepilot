@@ -47,7 +47,7 @@ jobs:
       # A docs-only change skips the heavy steps below. Only docs/**, root-level
       # *.md, and .claude/** are treated as documentation. Everything else --
       # including runtime/embedded markdown (internal/skill/skills/**/*.md,
-      # workspace/AGENTS.md, workspace/SOUL.md), .github/, go.mod, Makefile,
+      # internal/supervisor/persona.md, workspace/SOUL.md), .github/, go.mod, Makefile,
       # deploy/, web/ -- counts as a code change and runs the full job.
       # pull_request_target PRs are diffed through the GitHub REST API; pushes
       # to main are diffed against the pre-push tip (github.event.before). A

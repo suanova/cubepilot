@@ -1,20 +1,22 @@
 // Package supervisor implements the agent-pod-side runtime supervisor: it
 // pulls the resolved agent config from the platform internal API, renders
 // domain skills into the OpenClaw workspace as skills, and manages the
-// OpenClaw gateway process (graceful restart on config change -- the pod is
-// never deleted, so sessions/PVC/IP survive). It is the "agent supervisor"
-// of the final architecture: CRDs declare -> operator resolves -> supervisor
-// renders -> OpenClaw executes.
+// OpenClaw gateway process (the gateway reloads its own config; the supervisor only
+// respawns a crashed child -- the pod is never deleted, so sessions/PVC/IP survive).
+// It is the "agent supervisor" of the final architecture: CRDs declare -> operator
+// resolves -> supervisor renders -> OpenClaw executes.
 //
 // The gateway config (LLM providers / model allowlist) is rendered by the
 // operator into the openclaw-config Secret and pulled by the supervisor from
 // the internal API (GET /internal/gateway/config) into openclaw's default
-// config path; when the content changes the gateway is gracefully restarted.
+// config path; the gateway watches that file and reloads it itself.
 // This is how providers are added/edited post-install without touching Pods or
 // scripts/setup.sh.
 package supervisor
 
 import (
+	_ "embed"
+
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -113,15 +115,13 @@ func getInt(key string, def int) int {
 }
 
 // SystemPrompt markers: the supervisor owns only the section of AGENTS.md
-// between these two markers (the per-user instructions rendered from the
-// resolved config). Everything else in the file — the baked persona, skills,
-// agent-authored content — is preserved verbatim. OpenClaw re-reads the
-// workspace-root bootstrap files (AGENTS.md first) at the start of every run,
-// so a write here is observed on the next turn without a gateway restart.
+// between these two markers (the embedded persona followed by the resolved
+// instructions); the rest of the file is preserved verbatim. OpenClaw re-reads
+// the workspace bootstrap files each run, so a write here is seen next turn.
 const (
 	// agentsFileName is the OpenClaw workspace bootstrap file that carries the
-	// managed instructions section (the first file in OpenClaw's canonical
-	// workspace bootstrap set, re-read from disk at the start of each run).
+	// managed block (the first file in OpenClaw's canonical workspace bootstrap
+	// set, re-read from disk at the start of each run).
 	agentsFileName = "AGENTS.md"
 
 	systemPromptStart = instructions.ManagedStart
@@ -129,6 +129,44 @@ const (
 	// systemPromptHeader prefixes the managed instructions inside the markers.
 	systemPromptHeader = "## User-configured instructions"
 )
+
+// personaText is the platform's operating conventions; it is embedded rather than
+// seeded because the managed block is the only part of AGENTS.md the platform owns.
+//
+//go:embed persona.md
+var personaText string
+
+// skillMarker marks a skill directory as one the supervisor rendered.
+const skillMarker = ".cubepilot.json"
+
+// skillMarkerFile is the marker's on-disk shape.
+type skillMarkerFile struct {
+	Skill    string `json:"skill"`
+	Revision string `json:"revision"`
+	Tree     string `json:"tree"`
+}
+
+// skillExpectation is what this process last installed for one skill: the
+// resolved identity it came from and the tree hash of the content it wrote.
+type skillExpectation struct {
+	identity string
+	tree     string
+}
+
+// skillIdentity is the resolved artifact identity a skill's content came from. The
+// expectation is keyed by it, not by name, so a new revision -- or the same one
+// served under a different path or digest -- re-fetches.
+func skillIdentity(rs resolver.ResolvedSkill) string {
+	return rs.Revision + "\x00" + rs.Path + "\x00" + rs.Sha256
+}
+
+// markerPresent reports whether a skill directory still carries the supervisor's
+// ownership marker. Only its presence is read, never its value: the file is writable
+// by the agent, so a value read back is a claim, not evidence -- and absence is drift.
+func markerPresent(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, skillMarker))
+	return err == nil
+}
 
 // Supervisor manages the OpenClaw gateway process and keeps the workspace
 // skills in sync with the resolved agent config.
@@ -138,13 +176,13 @@ type Supervisor struct {
 	mu      sync.Mutex
 	current string // last applied config revision
 
+	// expectations records what this process installed for each skill, keyed by
+	// name. Touched by the poll goroutine (syncSkills runs under s.mu) and tests.
+	expectations map[string]skillExpectation
+
 	cmdMu  sync.Mutex
 	cmd    *exec.Cmd
 	waitCh chan error // receives the gateway child's Wait result when it exits
-
-	// lastCfgHash is the sha256 of the gateway config file as last loaded (or
-	// detected); configHashChanged compares against it. Only touched by Run.
-	lastCfgHash string
 
 	// lastCfg is the most recently fetched resolved config (for the credential
 	// sync). Only touched by Run.
@@ -166,8 +204,9 @@ type Supervisor struct {
 // New returns a Supervisor for the given config.
 func New(cfg Config) *Supervisor {
 	return &Supervisor{
-		cfg:  cfg,
-		http: &http.Client{Timeout: 15 * time.Second},
+		cfg:          cfg,
+		http:         &http.Client{Timeout: 15 * time.Second},
+		expectations: map[string]skillExpectation{},
 	}
 }
 
@@ -401,24 +440,27 @@ func (s *Supervisor) fetchGatewayConfig(ctx context.Context) ([]byte, error) {
 	return body, nil
 }
 
-// applyGatewayConfig writes the gateway config to the writable ConfigPath when
-// its content changed, and reports whether a gateway restart is needed. Same
-// content is a no-op, so the poll never restarts for an unchanged config.
+// applyGatewayConfig writes the gateway config to ConfigPath when the bytes on disk
+// differ from the desired bytes, and reports whether it wrote. Comparing against the
+// file, not in-memory state, is what makes a write nobody asked for visible.
 func (s *Supervisor) applyGatewayConfig(data []byte) (bool, error) {
 	if s.cfg.ConfigPath == "" {
 		return false, nil
 	}
-	h := fmt.Sprintf("%x", sha256.Sum256(data))
-	if h == s.lastCfgHash {
-		return false, nil
+	current, err := readNoFollow(s.cfg.ConfigPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", s.cfg.ConfigPath, err)
+	}
+	if bytes.Equal(current, data) {
+		return false, nil // already the desired bytes
 	}
 	if err := os.MkdirAll(filepath.Dir(s.cfg.ConfigPath), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(s.cfg.ConfigPath, data, 0o644); err != nil {
+	if err := writeTempAndRename(s.cfg.ConfigPath, data); err != nil {
 		return false, err
 	}
-	s.lastCfgHash = h
+	log.Printf("supervisor: gateway config written (%d bytes)", len(data))
 	return true, nil
 }
 
@@ -434,21 +476,18 @@ func (s *Supervisor) refreshGatewayConfig(ctx context.Context) (bool, error) {
 	return s.applyGatewayConfig(data)
 }
 
-// poll fetches the resolved config and applies it (renders skills + the
-// AGENTS.md instructions block, records the revision). It reports whether the
-// resolved config changed so the caller can log it; the gateway reloads skills
-// itself, so no restart is needed.
+// poll fetches the resolved config and applies it (the skills and the managed
+// block of AGENTS.md, plus the revision). It reports whether the resolved config
+// changed, for logging; the gateway reloads skills itself, so no restart is needed.
 func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 	cfg, err := s.fetchConfig(ctx)
 	if err != nil {
 		return false, err
 	}
-	// Instructions are reconciled every poll (not just on a revision change):
-	// the seed initContainer re-copies the pristine AGENTS.md on every pod
-	// start and the agent may edit the file, so the managed block must be
-	// re-asserted whenever the on-disk content drifts from the desired state.
-	if err := s.syncInstructions(cfg); err != nil {
-		log.Printf("supervisor: sync instructions: %v", err)
+	// Reconciled every poll, not just on a revision change: the file is the
+	// agent's to edit, so drift is the normal case.
+	if err := s.syncAgentsFile(cfg); err != nil {
+		log.Printf("supervisor: sync AGENTS.md: %v", err)
 	}
 	if cfg.Empty() {
 		// No instance config yet -- the gateway runs with its runtime
@@ -457,23 +496,24 @@ func (s *Supervisor) poll(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	s.lastCfg = cfg
-	return s.applyConfig(ctx, cfg)
+	return s.applyConfig(ctx, cfg), nil
 }
 
-// applyConfig renders the skills when the revision changed and records it.
-// Returns whether the resolved config changed (for logging only).
-func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) (bool, error) {
+// applyConfig verifies the installed skills against the resolved config on every poll:
+// drift does not announce itself through a revision change. A skill-sync failure is
+// logged, never returned -- it must not gate the gateway start.
+func (s *Supervisor) applyConfig(ctx context.Context, cfg *resolver.ResolvedAgentConfig) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.current == cfg.Revision {
-		return false, nil // no change -- skills are current
+	changed := s.current != cfg.Revision
+	if changed {
+		log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
+		s.current = cfg.Revision
 	}
-	log.Printf("supervisor: config revision %s -> %s", revisionLabel(s.current), cfg.Revision)
 	if err := s.syncSkills(ctx, cfg); err != nil {
-		return false, fmt.Errorf("sync skills: %w", err)
+		log.Printf("supervisor: sync skills: %v (retrying next poll)", err)
 	}
-	s.current = cfg.Revision
-	return true, nil
+	return changed
 }
 
 // revisionLabel names the revision a config sync is replacing. The first sync
@@ -486,24 +526,30 @@ func revisionLabel(from string) string {
 	return from
 }
 
-// syncInstructions reconciles the marker-guarded instructions section of the
-// workspace AGENTS.md with the resolved config's Instructions (template
-// instructions + per-user UserInstructions, merged by the resolver). The block
-// is (re)written whenever the on-disk content differs from the desired state
-// and removed when the effective instructions are empty; everything outside the
-// markers is preserved verbatim. Idempotent and content-hash guarded: an
-// unchanged file is left untouched. A nil/empty cfg or an oversized instruction
-// block is skipped (keep the last-good file) rather than corrupting the persona.
-func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
-	path := filepath.Join(s.cfg.Workspace, agentsFileName)
-	desired := ""
-	if cfg != nil {
-		desired = strings.TrimSpace(cfg.Instructions)
+// managedBlockBody composes the managed block's platform-owned text: the operating
+// conventions, then the resolved instructions.
+func managedBlockBody(text string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(personaText))
+	if s := strings.TrimSpace(text); s != "" {
+		b.WriteString("\n\n" + systemPromptHeader + "\n\n" + s)
 	}
-	// Instructions are rendered verbatim into the managed block. Keep the
-	// last-good file when an operator-controlled template bypasses the public
-	// API policy and supplies oversized content or a reserved marker.
-	if err := instructions.Validate(desired); err != nil {
+	return b.String()
+}
+
+// syncAgentsFile reconciles the managed block of AGENTS.md with the platform's
+// desired text (persona + instructions), preserving everything outside the markers.
+// A rejected block is skipped, keeping the last-good file.
+func (s *Supervisor) syncAgentsFile(cfg *resolver.ResolvedAgentConfig) error {
+	path := filepath.Join(s.cfg.Workspace, agentsFileName)
+	text := ""
+	if cfg != nil {
+		text = strings.TrimSpace(cfg.Instructions)
+	}
+	desired := managedBlockBody(text)
+	// Validate the whole block, not just the instructions: it carries the persona
+	// too, and OpenClaw truncates an oversized AGENTS.md.
+	if err := instructions.ValidateRendered(desired); err != nil {
 		log.Printf("supervisor: %v; skipping AGENTS.md sync", err)
 		return nil
 	}
@@ -511,18 +557,14 @@ func (s *Supervisor) syncInstructions(cfg *resolver.ResolvedAgentConfig) error {
 	if err != nil {
 		return err
 	}
-	target := reconcileInstructions(current, desired)
+	target := reconcileManagedBlock(current, desired)
 	if bytes.Equal(target, current) {
-		return nil // no change (or file absent + no block to write)
+		return nil // no change (or file absent + nothing to write)
 	}
 	if err := writeTempAndRename(path, target); err != nil {
 		return err
 	}
-	if len(target) == 0 {
-		log.Printf("supervisor: removed AGENTS.md instructions block")
-	} else {
-		log.Printf("supervisor: AGENTS.md instructions synced (%d bytes)", len(target))
-	}
+	log.Printf("supervisor: AGENTS.md managed block synced (%d bytes)", len(target))
 	return nil
 }
 
@@ -561,7 +603,7 @@ func readNoFollow(path string) ([]byte, error) {
 // outside the workspace.
 func writeTempAndRename(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+agentsFileName+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
@@ -582,15 +624,10 @@ func writeTempAndRename(path string, data []byte) error {
 	return nil
 }
 
-// reconcileInstructions returns the AGENTS.md content with the managed
-// instructions block matching `desired` (the merged template+user text). The
-// file is split into prefix (before the block) and suffix (after it); the block
-// is spliced back between them so agent-authored content that follows the block
-// stays after it. When no block is present the whole file is the prefix. When
-// `desired` is empty the block is removed (prefix + suffix rejoined). Content
-// outside the markers is preserved byte-for-byte; a missing/empty input file
-// (nil current) with no desired block yields nil (nothing to write).
-func reconcileInstructions(current []byte, desired string) []byte {
+// reconcileManagedBlock returns the AGENTS.md content with the managed block set to
+// `desired`, spliced between the text before and after it so agent-authored content
+// survives. An empty `desired` removes the block.
+func reconcileManagedBlock(current []byte, desired string) []byte {
 	startIdx := bytes.Index(current, []byte(systemPromptStart))
 	var prefix, suffix []byte
 	if startIdx >= 0 {
@@ -608,7 +645,7 @@ func reconcileInstructions(current []byte, desired string) []byte {
 
 	block := ""
 	if strings.TrimSpace(desired) != "" {
-		block = systemPromptStart + "\n" + systemPromptHeader + "\n\n" +
+		block = systemPromptStart + "\n" +
 			strings.TrimSpace(desired) + "\n" + systemPromptEnd
 	}
 	return spliceSections(prefix, block, suffix)
@@ -686,11 +723,8 @@ func (s *Supervisor) fetchConfig(ctx context.Context) (*resolver.ResolvedAgentCo
 	return &cfg, nil
 }
 
-// syncSkills pulls the enabled skills' tars from the internal API and
-// extracts them into Workspace/skills/<name>/ (clearing stale dirs first).
-// A skill is re-pulled only when its content revision differs from the
-// .sha256 marker on the PVC (which survives pod restarts). The gateway
-// hot-reloads the extracted files itself; the supervisor never restarts it.
+// syncSkills installs the resolved skills under Workspace/skills/<name>/, verifies
+// them on every call, and removes the rendered directories no longer in the set.
 func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgentConfig) error {
 	skillsDir := filepath.Join(s.cfg.Workspace, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -705,10 +739,16 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 		return err
 	}
 	for _, e := range entries {
-		if _, ok := wanted[e.Name()]; !ok {
-			if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
-				return err
-			}
+		if _, ok := wanted[e.Name()]; ok {
+			continue
+		}
+		// Only a directory carrying our marker is ours to remove; anything else is
+		// the agent's own skill and stays.
+		if !markerPresent(filepath.Join(skillsDir, e.Name())) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(skillsDir, e.Name())); err != nil {
+			return err
 		}
 	}
 	for name, skill := range wanted {
@@ -719,30 +759,46 @@ func (s *Supervisor) syncSkills(ctx context.Context, cfg *resolver.ResolvedAgent
 	return nil
 }
 
-// syncSkill pulls one skill's tar, verifies its sha256 (when the CRD carries
-// one), and extracts it — unless the .sha256 marker already matches the
-// desired revision. The installed dir is preserved until the new content is
-// fully fetched, verified and extracted (a failure leaves the old skill).
-func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
-	dir := filepath.Join(skillsDir, rs.Name)
-	marker := filepath.Join(dir, ".sha256")
-	if b, err := os.ReadFile(marker); err == nil && string(b) == rs.Revision {
-		return nil // unchanged -- no pull
-	}
-	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(rs.Name))
+// fetchSkillTar pulls a skill's tar from the internal API.
+func (s *Supervisor) fetchSkillTar(ctx context.Context, name string) ([]byte, error) {
+	u := fmt.Sprintf("%s/internal/skills/%s/tar", strings.TrimRight(s.cfg.APIURL, "/"), url.PathEscape(name))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
+		return nil, fmt.Errorf("fetch %s: %d", u, resp.StatusCode)
 	}
-	tarBytes, err := io.ReadAll(resp.Body)
+	return io.ReadAll(resp.Body)
+}
+
+// syncSkill installs one skill and re-verifies it on every later poll against the
+// tree hash this process derived from the platform's tarball. A skill with no stored
+// expectation is fetched, so verification always starts from platform content.
+func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, skillsDir string) error {
+	dir := filepath.Join(skillsDir, rs.Name)
+	identity := skillIdentity(rs)
+	if want, ok := s.expectations[rs.Name]; ok && want.identity == identity {
+		got, err := skill.TreeHash(dir, skillMarker)
+		switch {
+		case err != nil:
+			// Unreadable -- most often the directory is gone -- is drift too: reinstall.
+			log.Printf("supervisor: skill %s unreadable (%v); reinstalling", rs.Name, err)
+		case got != want.tree:
+			log.Printf("supervisor: skill %s content drifted; reinstalling", rs.Name)
+		case !markerPresent(dir):
+			// Absence is drift even though the tree hash skips the marker.
+			log.Printf("supervisor: skill %s lost its ownership marker; reinstalling", rs.Name)
+		default:
+			return nil // verified -- no fetch
+		}
+	}
+	tarBytes, err := s.fetchSkillTar(ctx, rs.Name)
 	if err != nil {
 		return err
 	}
@@ -761,14 +817,26 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if err := skill.ExtractTar(bytes.NewReader(tarBytes), tmpDir); err != nil {
 		return err
 	}
-	// Write the marker into the staged dir, so a marker failure aborts before
-	// the swap and the installed skill stays untouched.
-	if err := os.WriteFile(filepath.Join(tmpDir, ".sha256"), []byte(rs.Revision), 0o644); err != nil {
+	// Hash the staged content first: TreeHash skips the marker, so the directory
+	// still hashes to `tree` once the marker below lands in it.
+	tree, err := skill.TreeHash(tmpDir, skillMarker)
+	if err != nil {
 		return err
 	}
-	// Swap: move the current dir aside, bring the staged dir in, drop the
-	// backup only after the swap succeeds.
+	body, err := json.Marshal(skillMarkerFile{Skill: rs.Name, Revision: rs.Revision, Tree: tree})
+	if err != nil {
+		return err
+	}
+	// Written into the staged dir, so a marker failure aborts before the swap.
+	if err := os.WriteFile(filepath.Join(tmpDir, skillMarker), body, 0o644); err != nil {
+		return err
+	}
+	// Swap: move the current dir aside, bring the staged dir in, drop the backup
+	// only after the swap succeeds.
 	backup := dir + ".backup"
+	// A leftover backup would make the rename below fail on every later poll, so
+	// clear it before it can wedge this skill forever.
+	_ = os.RemoveAll(backup)
 	if _, err := os.Lstat(dir); err == nil {
 		if err := os.Rename(dir, backup); err != nil {
 			return err
@@ -781,7 +849,8 @@ func (s *Supervisor) syncSkill(ctx context.Context, rs resolver.ResolvedSkill, s
 	if err := os.RemoveAll(backup); err != nil {
 		return err
 	}
-	log.Printf("supervisor: skill %s/%s extracted", rs.Name, rs.Revision)
+	s.expectations[rs.Name] = skillExpectation{identity: identity, tree: tree}
+	log.Printf("supervisor: skill %s/%s installed (tree %.12s)", rs.Name, rs.Revision, tree)
 	return nil
 }
 

@@ -25,8 +25,10 @@ browser (host) -- kubectl port-forward --- inside the kind cluster:
 
 - Per-user isolation = **Pod + dedicated PVC**; sessions persist on each PVC.
 - Skill catalog = OpenClaw **Skills** (`internal/controller/skills/*/SKILL.md`,
-  embedded and rendered by the supervisor) plus `workspace/SOUL.md` / `AGENTS.md`,
-  baked into the agent image.
+  embedded and rendered by the supervisor) plus `workspace/SOUL.md` (the agent's
+  tone file, baked into the agent image). The platform persona and the resolved
+  per-instance instructions travel in the AGENTS.md managed block, which the
+  supervisor renders into the instance workspace.
 - Chat flows through OpenClaw's `/v1/chat/completions` (OpenAI-compatible,
   `stream:true`, `model: openclaw/default`); the gateway runs the full agent
   loop. Session lists/history go through `/tools/invoke` (`sessions_list`) and
@@ -53,7 +55,7 @@ internal/store          platform metadata store (JSON on PVC)
 web/                    Portal SPA -- React 19 + TypeScript + Vite (independent
                         component; nginx serves it and proxies /api)
 internal/controller/skills/   embedded skill catalog SKILL.md × 4
-workspace/              SOUL.md / AGENTS.md
+workspace/              SOUL.md (AGENTS.md is rendered by the supervisor)
 config/crd/bases        generated CRD manifests
 deploy/                 images Dockerfiles + charts/cubepilot-chart Helm chart + kubeconfig template
 scripts/setup.sh        one-shot deployment (build -> kind -> helm install)

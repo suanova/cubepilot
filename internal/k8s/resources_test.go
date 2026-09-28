@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -96,6 +97,15 @@ func TestPodForSecurityBaseline(t *testing.T) {
 	// seed-workspace is an InitContainer (writes only to the mounted PVC).
 	assertNonPrivilegedContainer(t, containerByName(t, pod, "seed-workspace"))
 	assertNonPrivilegedContainer(t, containerByName(t, pod, "supervisor"))
+
+	// The seed must not clobber what the agent wrote: only missing files are
+	// copied (OpenClaw's own workspace bootstrap does the same with
+	// writeFileIfMissing). A plain `cp -a` would overwrite AGENTS.md and SOUL.md
+	// on every pod start.
+	seed := containerByName(t, pod, "seed-workspace")
+	if len(seed.Command) != 3 || !strings.Contains(seed.Command[2], "cp -a -n ") {
+		t.Errorf("seed-workspace must copy only missing files, got %q", seed.Command)
+	}
 }
 
 // TestPodForImagePullPolicy verifies the operator's configured pull policy is

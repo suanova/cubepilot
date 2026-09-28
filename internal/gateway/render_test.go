@@ -355,3 +355,38 @@ func TestRenderDeterministic(t *testing.T) {
 		t.Errorf("Render should be indented JSON for humans: %s", b1)
 	}
 }
+
+// TestRenderWorkshop verifies the skill-workshop settings are rendered rather than
+// inherited: the runtime's defaults are autonomous, which would let the agent
+// accumulate skills in the workspace on its own, and a platform behaviour that
+// depends on an upstream default changes when that default changes.
+func TestRenderWorkshop(t *testing.T) {
+	b, err := Render("tok", "m", nil)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var cfg struct {
+		Skills struct {
+			Workshop struct {
+				Autonomous struct {
+					Mode string `json:"mode"`
+				} `json:"autonomous"`
+				ApprovalPolicy string `json:"approvalPolicy"`
+			} `json:"workshop"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// "off" removes the runtime's autonomous path (capture and repair), so a skill
+	// only lands when the user asks for it. "auto" keeps the explicit
+	// create-then-apply flow working: there is no proposal-review surface in this
+	// product, so a "pending" policy would leave every apply waiting for an
+	// approval nobody can give.
+	if got := cfg.Skills.Workshop.Autonomous.Mode; got != "off" {
+		t.Errorf("skills.workshop.autonomous.mode = %q, want off", got)
+	}
+	if got := cfg.Skills.Workshop.ApprovalPolicy; got != "auto" {
+		t.Errorf("skills.workshop.approvalPolicy = %q, want auto", got)
+	}
+}

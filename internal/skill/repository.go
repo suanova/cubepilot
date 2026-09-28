@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -175,6 +176,50 @@ func ExtractTar(r io.Reader, destDir string) error {
 			// Skip symlinks / hardlinks / other special entries.
 		}
 	}
+}
+
+// TreeHash returns a sha256 over the directory tree rooted at dir, skipping the entry
+// whose path relative to dir equals skip ("" skips nothing). Each entry renders as one
+// line -- directories and symlinks count too; file modes deliberately do not.
+func TreeHash(dir, skip string) (string, error) {
+	var entries []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." || rel == skip {
+			return nil
+		}
+		switch {
+		case d.IsDir():
+			entries = append(entries, "d\x00"+rel)
+		case d.Type().IsRegular():
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(b)
+			entries = append(entries, "f\x00"+rel+"\x00"+hex.EncodeToString(sum[:]))
+		default:
+			// ExtractTar skips these, so one here is drift the re-extract removes.
+			entries = append(entries, "o\x00"+rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash tree %s: %w", dir, err)
+	}
+	sort.Strings(entries)
+	h := sha256.New()
+	for _, e := range entries {
+		// The "\n" keeps a path from merging with the next entry's rendering.
+		h.Write([]byte(e + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Validation caps for the user-facing publish path (CWE-409): the request
