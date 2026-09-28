@@ -33,7 +33,7 @@
 3. 一个 Runtime 接口、一个实现：平台依赖 `AgentRuntime`，当前唯一实现是 `OpenClawRuntime`。
 4. 工具用 **OpenClaw 原生 skill + exec kubectl** 执行（用户最小权限 + RBAC 兜底）；写操作加**尽力而为的简单 HITL**（命令匹配命中即确认，不保证防住所有变体）。MCP Gateway 是阶段二统一执行边界，阶段一不建。
 5. 能力分两层：generic（kubectl 执行 + schema 发现，零登记）+ skill（经**技能市场**发布、一键安装的 SKILL.md 目录）。不单独建 Model CRD——模型 provider 内联在 AgentTemplate 的 `providers` 列表（每个 provider 一份端点/凭据，服务多个模型 id，支持外部端点）。
-6. 声明配置在控制面，私有状态在 PVC：PVC 不作为 Agent 配置真源。
+6. 声明配置在控制面，私有状态在 PVC：PVC 不作为 Agent 配置真源。平台渲染进 workspace 的内容由平台收敛（§3.7），其余 workspace 内容归 Agent。
 
 ---
 
@@ -316,6 +316,31 @@ status:
 | 工具调用索引、确认决定、trajectory | —（阶段一不落） | 阶段二 MCP Gateway / 审计体系落地后引入 |
 
 启动时，将 AgentTemplate、AgentInstance、Skill 合并为不可变 `ResolvedAgentConfig` 注入 Runtime（§4 配置注入）；模型 provider（名 + 端点 + 凭据引用 + 它服务的模型 id 列表）内联在 AgentTemplate.providers。PVC 不是配置真源。
+
+## 3.7 工作区内容的归属与收敛
+
+同一份 workspace 里有两方在写：平台渲染的内容（skill 目录、AGENTS.md 的托管段、`openclaw.json`）和 Agent 自己的内容（它有 `exec`，能写 workspace 里的一切）。判据只有一条：
+
+> **带平台标记的产物归平台，每个 poll（默认 10s）与平台状态对齐；没有标记的归 Agent，平台不读、不写、不删。**
+
+| 产物 | 平台侧真源 | pod 侧副本 | 对齐方式 |
+|---|---|---|---|
+| skill 目录 | Skill CR + 技能仓库 tar | `workspace/skills/<name>/` | 每 poll 比对**从 tar 推导的树指纹**，不符即重取重解压；解析身份（revision / tar 路径 / sha256）变化同样重取 |
+| AGENTS.md 托管段 | 内嵌人设 + 解析出的 instructions | 两个标记之间 | 每 poll 与磁盘比对后重写 |
+| `openclaw.json` | AgentTemplate.providers（平台渲染） | `~/.openclaw/openclaw.json` | 每 poll 读磁盘字节比对 |
+
+支撑它的四条：
+
+1. **信任锚只能来自平台侧**：`skills/<name>/.cubepilot.json` 只作归属记录与诊断，**只读它的存在性、绝不读它的值**——值写在 Agent 可写目录里，读它等于信一个可以被改写的东西。
+2. **标记缺失本身算 drift**：平台会把归属记录重新写上，因此不存在"永久脱管"的目录。
+3. **失败方向是"保留现状 + 下轮重试"**：仓库不可达时不清内容；技能装不上不阻塞网关启动；模板绕过 API 给出超预算内容时保留上一份好文件。
+4. **预算两端口径一致**：API 校验的就是渲染端要写的那份（模板 + 用户合成后），因此 API 接受的一定能落地。
+
+平台**不**承诺一致的三类，归 Agent：`SOUL.md`（语气）、托管段之外的内容、`USER.md`/`MEMORY.md` 以及 Agent 自建的 skill。平台换代对它们不生效——这与 OpenClaw 自身的语义一致（SOUL/MEMORY 属于 Agent，服从更高优先级的指令）。
+
+已知边界：收敛窗口是一个 poll（不是实时）；平台 skill 文件在 pod 内为只读（`0444`，tar 携带嵌入源的 mode），Agent 需先 `chmod` 才能改，而文件 mode 不参与判据（只 chmod 不算 drift、chmod 后改内容算）；平台 skill 名优先，Agent 自建目录与之同名时会被平台覆盖。
+
+完整论证与取舍见 `docs/superpowers/specs/2026-09-24-workspace-artifact-ownership-design.md`。
 
 ---
 
