@@ -150,9 +150,13 @@ deploy:
 	$(KUBECTL) apply -f $(CHART_DIR)/crds
 	$(HELM) upgrade --install $(HELM_RELEASE) $(CHART_DIR) -n $(NAMESPACE)
 
-## Remove the release.
+## Revoke the per-user identity and remove the release, in that order: deleting
+## the instances is what revokes (their finalizer waits for the owner's identity
+## to go), so this needs the operator running. It also takes their Pods and
+## workspace PVCs with them.
 undeploy:
-	$(HELM) uninstall $(HELM_RELEASE) -n $(NAMESPACE)
+	$(KUBECTL) -n $(NAMESPACE) delete agentinstance --all --wait=true --ignore-not-found
+	$(HELM) uninstall $(HELM_RELEASE) -n $(NAMESPACE) --ignore-not-found
 
 ## Remove build artifacts.
 clean:
