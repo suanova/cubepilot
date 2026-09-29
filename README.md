@@ -245,9 +245,9 @@ selectable -- no hand-edited Secret. When no model is configured, the
 `AgentInstance` status shows `ModelConfigured=False` and the Portal nudges you
 to Agent Config.
 
-The first message cold-starts the `agent-admin` Pod (the Portal shows the
-assistant as thinking while it waits for the gateway to become ready), then
-streams tool calls and the answer back.
+The first message provisions the instance if the user has none yet -- the Portal
+shows the assistant as thinking while the identity is minted and the gateway
+becomes ready -- then streams tool calls and the answer back.
 
 ## Uninstall
 
@@ -275,10 +275,12 @@ start the operator or clear the finalizer by hand. And the instances take their
 Pods and workspace PVCs with them, so this removes the assistant's data too.
 
 The platform creates no instance of its own. A user gets an assistant when the
-Portal (Agent Config) or the API creates one -- the first message does that
-too -- and their credentials exist only while they have one: the operator mints
-them for the owner of an instance and revokes them when that user's last
-instance is gone, which is what the delete above does to every user at once.
+Portal (Agent Config) or the API creates one -- the first message does that too,
+and that first start takes about a minute, most of it the API server filling in
+the credential. Credentials exist only while the user has an instance: the
+operator mints them for the owner of an instance and revokes them when that
+user's last instance is gone, which is what the delete above does to every user
+at once.
 
 Deleting an AgentInstance is enough to be rid of that assistant's own objects --
 its Pod, Service and workspace PVC hang off it by owner reference, so the
