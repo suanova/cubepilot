@@ -207,8 +207,8 @@ export default function AgentView() {
     if (provisioning) return
     setProvisioning(true)
     try {
-      const inst = await api.createInstance({ templateRef: 'cubepilot', selectedModel: cfg.selectedModel || undefined, userInstructions: cfg.userInstructions || undefined })
-      showToast(inst.metadata?.name ? 'Instance created - the controller is starting the Pod' : 'Instance created - the controller is starting the Pod')
+      await api.createInstance({ templateRef: 'cubepilot', selectedModel: cfg.selectedModel || undefined, userInstructions: cfg.userInstructions || undefined })
+      showToast('Instance created - the first start takes about a minute')
       await loadAgentView()
     } catch (e) {
       showToast('Provisioning failed: ' + e)
@@ -637,14 +637,22 @@ export default function AgentView() {
                 </div>
               </div>
               {!status?.exists && (
-                <button
-                  className="btn primary"
-                  style={{ marginTop: 12, width: '100%' }}
-                  disabled={provisioning}
-                  onClick={provisionInstance}
-                >
-                  {provisioning ? 'Provisioning...' : 'Provision My Instance'}
-                </button>
+                <>
+                  <button
+                    className="btn primary"
+                    style={{ marginTop: 12, width: '100%' }}
+                    disabled={provisioning}
+                    onClick={provisionInstance}
+                  >
+                    {provisioning ? 'Provisioning...' : 'Provision My Instance'}
+                  </button>
+                  {/* The identity is minted first (the API server fills the
+                      ServiceAccount token asynchronously) and only then does the
+                      Pod come up, so the first start is not instant. */}
+                  <div className="card-hint" style={{ marginTop: 8 }}>
+                    The first start takes about a minute - your credentials are minted, then the Pod comes up
+                  </div>
+                </>
               )}
             </div>
           </div>

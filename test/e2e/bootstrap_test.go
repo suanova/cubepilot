@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -93,6 +94,14 @@ var _ = Describe("Builtin bootstrap", func() {
 		// surfaces downstream as a Forbidden that someone will notice, while a
 		// widened one -- secrets above all -- is silent.
 		for _, user := range fw.Users {
+			// The identity exists once the user has an instance; the platform
+			// creates none of its own.
+			Expect(ensureAgentInstance(ctx, user)).To(Succeed())
+			Eventually(func() error {
+				_, err := fw.KubeClient.CoreV1().Secrets(fw.Namespace).Get(ctx, k8s.UserKubeconfigSecretFor(user), metav1.GetOptions{})
+				return err
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "the instance's owner should get their credentials")
+
 			subject := "system:serviceaccount:" + fw.Namespace + ":" + k8s.UserServiceAccountName(user)
 
 			for _, allow := range []struct{ resource, verb string }{
@@ -122,17 +131,26 @@ var _ = Describe("Builtin bootstrap", func() {
 		}
 	})
 
-	It("instantiates one agent per configured user", func() {
-		for _, user := range fw.Users {
-			name := controller.InstanceNameFor(user, controller.BuiltinAgentName)
-			inst := &v1alpha1.AgentInstance{}
-			Eventually(func() error {
-				return fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: name}, inst)
-			}).Should(Succeed(), "builtin instance %s for user %s should exist", name, user)
-			Expect(inst.Spec.TemplateRef).To(Equal(controller.BuiltinAgentName))
-			Expect(inst.Spec.Owner).To(Equal(user))
-			Expect(inst.Labels).To(HaveKeyWithValue("cubepilot/builtin", "true"))
-		}
+	It("mints credentials for the owner of an instance, and only for them", func() {
+		// The platform creates no instance (the Portal asks for one) and mints
+		// the identity behind it; "no instance, no credentials" is asserted in
+		// the unit tests, where the absence is deterministic.
+		user := fw.Users[0]
+		Expect(ensureAgentInstance(ctx, user)).To(Succeed())
+		name := k8s.InstanceName(user, controller.BuiltinAgentName)
+		Eventually(func() error {
+			var inst v1alpha1.AgentInstance
+			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: name}, &inst); err != nil {
+				return err
+			}
+			if inst.Spec.Owner != user || inst.Spec.TemplateRef != controller.BuiltinAgentName {
+				return fmt.Errorf("instance %s = owner %q template %q", name, inst.Spec.Owner, inst.Spec.TemplateRef)
+			}
+			// The framework's cached client has no core types registered; the
+			// typed one is what the rest of the suite reads Secrets with.
+			_, err := fw.KubeClient.CoreV1().Secrets(fw.Namespace).Get(ctx, k8s.UserKubeconfigSecretFor(user), metav1.GetOptions{})
+			return err
+		}).Should(Succeed(), "the instance's owner should get their credentials")
 	})
 })
 

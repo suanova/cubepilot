@@ -79,6 +79,9 @@ var _ = Describe("Gateway config", func() {
 
 	It("serves the internal per-user config endpoints", func() {
 		user := fw.Users[0]
+		// The user endpoint reads the AgentInstance, so the spec asks for one:
+		// the platform creates none of its own.
+		Expect(ensureAgentInstance(ctx, user)).To(Succeed())
 
 		By("GET /internal/gateway/config/{user}")
 		Eventually(func() error {

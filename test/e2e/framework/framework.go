@@ -30,8 +30,9 @@ type Framework struct {
 	CtrlClient    crclient.Client
 	DynamicClient dynamic.Interface
 
-	// Namespace / Users / DefaultUser mirror internal/config.Load() defaults so
-	// the expectations match the deployed operator's config.
+	// Namespace / DefaultUser mirror internal/config.Load() defaults so the
+	// expectations match the deployed operator's config; Users belongs to the
+	// suite, which creates the instances it needs.
 	Namespace   string
 	Users       []string
 	DefaultUser string
@@ -68,8 +69,9 @@ func New(kubeconfig string) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client: %w", err)
 	}
-	// Validate the users list: a value such as "," trims to zero users, and the
-	// specs index Users[0] -- fail with a config error instead of panicking.
+	// The suite's own users, not a platform setting -- the platform keeps none.
+	// Validate so a value like "," fails with a config error instead of
+	// panicking on Users[0].
 	users := splitUsers(getenv("CUBEPILOT_USERS", "admin"))
 	if len(users) == 0 {
 		return nil, fmt.Errorf("CUBEPILOT_USERS must contain at least one user")

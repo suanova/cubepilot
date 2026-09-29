@@ -4,7 +4,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -61,11 +60,6 @@ type Config struct {
 	// GCWatermark is the PVC usage ratio that triggers an aggressive GC + log
 	// warning (design doc §10: watermark >70% triggers cleanup/alert).
 	GCWatermark float64
-
-	// Users is the set of operator identities, one independent instance each.
-	// Defaults to a single 'admin' (per-user SA + kubeconfig identity is minted
-	// for each at deploy time; new users cannot be added from the Portal).
-	Users []string
 
 	// DefaultUser is used when a request carries no explicit operator identity.
 	DefaultUser string
@@ -130,12 +124,6 @@ func Load() Config {
 		SkillsDir:     getenv("CUBEPILOT_SKILLS_DIR", "/var/lib/cubepilot/skills"),
 		LogLevel:      getInt("CUBEPILOT_LOG_LEVEL", 0),
 		AgentLogLevel: getInt("CUBEPILOT_AGENT_LOG_LEVEL", 0),
-	}
-	users := getenv("CUBEPILOT_USERS", "admin")
-	for _, u := range strings.Split(users, ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			cfg.Users = append(cfg.Users, u)
-		}
 	}
 	return cfg
 }

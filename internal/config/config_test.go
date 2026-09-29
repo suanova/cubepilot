@@ -19,14 +19,10 @@ func TestLoadSkillsDirDefault(t *testing.T) {
 }
 
 func TestLoadDefaultsSingleAdmin(t *testing.T) {
-	t.Setenv("CUBEPILOT_USERS", "")
 	t.Setenv("CUBEPILOT_DEFAULT_USER", "")
 	t.Setenv("CUBEPILOT_LLM_ENDPOINT", "")
 	t.Setenv("CUBEPILOT_LLM_MODEL", "")
 	cfg := Load()
-	if len(cfg.Users) != 1 || cfg.Users[0] != "admin" {
-		t.Fatalf("Users = %v, want [admin]", cfg.Users)
-	}
 	if cfg.DefaultUser != "admin" {
 		t.Fatalf("DefaultUser = %q, want admin", cfg.DefaultUser)
 	}

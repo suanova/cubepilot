@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -138,10 +139,43 @@ func (m *Manager) Ensure(ctx context.Context, user string) error {
 // for the gateway to become ready.
 func (m *Manager) EnsureFor(ctx context.Context, k AgentKey) error {
 	m.TouchFor(k)
+	if err := m.ensureInstance(ctx, k); err != nil {
+		return err
+	}
 	if err := m.waitCRWarm(ctx, k.InstanceName()); err != nil {
 		return err
 	}
 	return m.waitReachableFor(ctx, k8s.GeneratedServiceName("agent", k.InstanceName()))
+}
+
+// ensureInstance creates the caller's AgentInstance if it does not exist: asking
+// for the assistant is asking for its instance. An instance owned by someone
+// else is refused, as the API refuses a name it cannot hand out.
+func (m *Manager) ensureInstance(ctx context.Context, k AgentKey) error {
+	var inst v1alpha1.AgentInstance
+	err := m.cr.Get(ctx, types.NamespacedName{Namespace: m.ns, Name: k.InstanceName()}, &inst)
+	if err == nil {
+		if inst.Spec.Owner != k.User {
+			return fmt.Errorf("instance %s belongs to %s", k.InstanceName(), inst.Spec.Owner)
+		}
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	agent := k.Agent
+	if agent == "" {
+		agent = v1alpha1.DefaultAgentName
+	}
+	created := &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: k.InstanceName(), Namespace: m.ns},
+		Spec:       v1alpha1.AgentInstanceSpec{TemplateRef: agent, Owner: k.User},
+	}
+	if err := m.cr.Create(ctx, created); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create instance %s: %w", k.InstanceName(), err)
+	}
+	log.Printf("instances: provisioned %s for %s on first use", k.InstanceName(), k.User)
+	return nil
 }
 
 // waitCRWarm waits until the AgentInstance CR reaches the Ready phase (or the

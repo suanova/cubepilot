@@ -245,9 +245,61 @@ selectable -- no hand-edited Secret. When no model is configured, the
 `AgentInstance` status shows `ModelConfigured=False` and the Portal nudges you
 to Agent Config.
 
-The first message cold-starts the `agent-admin` Pod (the Portal shows the
-assistant as thinking while it waits for the gateway to become ready), then
-streams tool calls and the answer back.
+The first message provisions the instance if the user has none yet -- the Portal
+shows the assistant as thinking while the identity is minted and the gateway
+becomes ready -- then streams tool calls and the answer back.
+
+## Uninstall
+
+`make undeploy` is two commands:
+
+```bash
+kubectl -n cubepilot delete agentinstance --all --wait=true --ignore-not-found
+helm uninstall cubepilot -n cubepilot --ignore-not-found
+```
+
+The first one is the revocation. An `AgentInstance` carries a finalizer that
+revokes its owner's identity when their last live instance goes, so the delete
+returns only once the ServiceAccount, its Secrets and the bindings are gone.
+That is what makes the second command safe: the identity is minted by the
+operator, so `helm uninstall` alone leaves it behind -- and a leftover binding is
+worse than clutter, because its subject is namespace-qualified and the next
+install finds it under the name it computes and trusts a binding that grants its
+assistant nothing. Deleting the ServiceAccount is also what revokes the token:
+the API server authenticates a service-account token by looking the
+ServiceAccount up.
+
+Two consequences worth knowing. The finalizer needs the operator: with it not
+running, deleting an instance (or its namespace) waits, and the way out is to
+start the operator or clear the finalizer by hand. And the instances take their
+Pods and workspace PVCs with them, so this removes the assistant's data too.
+
+The platform creates no instance of its own. A user gets an assistant when the
+Portal (Agent Config) or the API creates one -- the first message does that too,
+and that first start takes about a minute, most of it the API server filling in
+the credential. Credentials exist only while the user has an instance: the
+operator mints them for the owner of an instance and revokes them when that
+user's last instance is gone, which is what the delete above does to every user
+at once.
+
+Deleting an AgentInstance is enough to be rid of that assistant's own objects --
+its Pod, Service and workspace PVC hang off it by owner reference, so the
+garbage collector reclaims them. That is also how you remove one user's
+workspace: delete their instance.
+
+`helm uninstall` on its own (without the steps above) is not a teardown: it
+removes the chart's objects and nothing more. If that happens, the next install
+revokes whatever bindings belong to another namespace, and the per-user
+ServiceAccount it cannot see -- its own namespace's leftovers -- is cleaned by
+the next `make undeploy` or by `kubectl delete namespace`.
+
+## Configuration the platform owns
+
+The operator keeps one object in its namespace that an admin edits directly,
+because the chart cannot own it without reverting the edit on the next upgrade:
+
+- the builtin `AgentTemplate` -- the platform default LLM endpoints and models
+  the Portal writes to.
 
 ## End-to-end tests & CI
 
@@ -284,7 +336,7 @@ Publishing the images/chart to the registry is handled separately by the
 | Conversational loop | Ask "which Pods are abnormal?" | SSE emits `message_start -> agent_thinking -> tool_call(exec kubectl) -> message_delta -> message_done`, ending with a natural-language summary of real kind Pod state |
 | Cold start | First message | `kubectl -n cubepilot get pods` shows `agent-admin` |
 | Resident self-heal / memory | Delete the Pod manually, send a message | The controller rebuilds the Pod; session and memory persist (PVC) |
-| User isolation | Deploy a second user (`--set 'agents.users=admin\,li.ming'`), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
+| User isolation | Create an instance for a second user (`kubectl apply` an `AgentInstance` with `spec.owner: li.ming`, or the Portal), then request with `X-CubePilot-User: li.ming` | Separate Pod/PVC per user |
 | Inspection | Portal -> scheduled tasks -> run now | Severity-graded node/Pod report (the TaskRun's report) |
 
 ## Current simplifications

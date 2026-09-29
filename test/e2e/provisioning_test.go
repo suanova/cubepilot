@@ -63,8 +63,9 @@ var _ = Describe("Instance provisioning", func() {
 			k8s.UserKubeconfigSecretFor("e2e.user"), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			Expect(err).NotTo(HaveOccurred())
 		}
-		// The ai.cubestack.io/agentinstance finalizer removes the PVC, Pod and
-		// Service; wait until everything is gone.
+		// The PVC, Pod and Service are reclaimed by the garbage collector
+		// through the owner references they carry; the delete itself also waits
+		// on the finalizer, which revokes this user's identity.
 		Eventually(func() error {
 			if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Namespace: fw.Namespace, Name: instName}, &v1alpha1.AgentInstance{}); err == nil {
 				return fmt.Errorf("agentinstance %s not gone yet", instName)
