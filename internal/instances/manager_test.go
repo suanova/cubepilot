@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -186,6 +187,26 @@ func TestEnsureWarmFastPath(t *testing.T) {
 	}
 	if d := time.Since(start); d >= time.Second {
 		t.Errorf("warm EnsureFor took %v; want the fast path (Ready + reachable) without ticker delay", d)
+	}
+}
+
+// TestEnsureForCreatesTheInstance: nothing else creates one, so a first request
+// has to -- otherwise it waits out the ready timeout for a CR nobody wrote.
+func TestEnsureForCreatesTheInstance(t *testing.T) {
+	shortenTicks(t)
+	m := testManager(t)
+	m.probe = okProbe
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = m.EnsureFor(ctx, AgentKey{User: "li.ming", Agent: v1alpha1.DefaultAgentName})
+
+	var got v1alpha1.AgentInstance
+	if err := m.cr.Get(context.Background(), types.NamespacedName{Name: k8s.InstanceName("li.ming", v1alpha1.DefaultAgentName)}, &got); err != nil {
+		t.Fatalf("the first request did not provision an instance: %v", err)
+	}
+	if got.Spec.Owner != "li.ming" || got.Spec.TemplateRef != v1alpha1.DefaultAgentName {
+		t.Errorf("instance = owner %q template %q, want li.ming/%s", got.Spec.Owner, got.Spec.TemplateRef, v1alpha1.DefaultAgentName)
 	}
 }
 
