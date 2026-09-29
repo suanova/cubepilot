@@ -6,12 +6,32 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/k8s"
 )
+
+// ensureAgentInstance creates the user's instance the way the Portal does: the
+// platform creates none of its own, so a spec that needs an assistant asks for
+// one. Idempotent, so it is safe inside an Eventually.
+func ensureAgentInstance(ctx context.Context, user string) error {
+	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
+	var inst v1alpha1.AgentInstance
+	err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: name, Namespace: fw.Namespace}, &inst)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	return fw.CtrlClient.Create(ctx, &v1alpha1.AgentInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: fw.Namespace},
+		Spec:       v1alpha1.AgentInstanceSpec{TemplateRef: v1alpha1.DefaultAgentName, Owner: user},
+	})
+}
 
 // stableAgentPodAge is how long the agent pod must have been up before a chat
 // turn may start. Fresh provisioning used to delete and recreate the pod once
@@ -26,6 +46,9 @@ const stableAgentPodAge = 15 * time.Second
 // stableAgentPodAge (i.e. the initial provisioning recreate has already
 // happened). Callers wrap it in an Eventually.
 func agentStabilityErr(ctx context.Context, user string) error {
+	if err := ensureAgentInstance(ctx, user); err != nil {
+		return err
+	}
 	name := k8s.InstanceName(user, v1alpha1.DefaultAgentName)
 	var inst v1alpha1.AgentInstance
 	if err := fw.CtrlClient.Get(ctx, types.NamespacedName{Name: name, Namespace: fw.Namespace}, &inst); err != nil {

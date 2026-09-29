@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/suanova/cubepilot/internal/controller"
+	"github.com/suanova/cubepilot/internal/k8s"
 )
 
 // nestedString walks a decoded JSON object through the given keys, returning ""
@@ -72,6 +73,9 @@ var _ = Describe("Public API", func() {
 		// bootstrap (which publishes skills first), so wait until the caller's
 		// own instance appears rather than asserting on the first 200.
 		Eventually(func() error {
+			if err := ensureAgentInstance(ctx, fw.DefaultUser); err != nil {
+				return err
+			}
 			data, code, err := fw.GetJSON(ctx, fw.APIBase+"/api/v1/instances",
 				map[string]string{"X-CubePilot-User": fw.DefaultUser})
 			if err != nil {
@@ -85,11 +89,11 @@ var _ = Describe("Public API", func() {
 				return fmt.Errorf("instances key missing: %v", data)
 			}
 			for _, it := range items {
-				if nestedString(it.(map[string]any), "metadata", "name") == controller.InstanceNameFor(fw.DefaultUser, controller.BuiltinAgentName) {
+				if nestedString(it.(map[string]any), "metadata", "name") == k8s.InstanceName(fw.DefaultUser, controller.BuiltinAgentName) {
 					return nil
 				}
 			}
-			return fmt.Errorf("own instance %q not present in %v", controller.InstanceNameFor(fw.DefaultUser, controller.BuiltinAgentName), items)
+			return fmt.Errorf("own instance %q not present in %v", k8s.InstanceName(fw.DefaultUser, controller.BuiltinAgentName), items)
 		}).Should(Succeed())
 	})
 

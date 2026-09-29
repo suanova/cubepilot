@@ -2,18 +2,22 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/suanova/cubepilot/internal/api/v1alpha1"
@@ -72,7 +76,11 @@ var userClusterRoles = []string{
 // userCRBName builds the per-user ClusterRoleBinding name. The role segment is
 // shortened where the full name is redundant next to the "cubepilot-user-"
 // prefix, so binding names stay readable.
-func userCRBName(user, role string) string {
+//
+// The namespace is in the name because a binding grants nothing outside the
+// subject's namespace; an owner reference cannot do the job, since a
+// cluster-scoped dependent needs a cluster-scoped owner.
+func userCRBName(namespace, user, role string) string {
 	short := role
 	switch role {
 	case UserCRDsClusterRole:
@@ -80,7 +88,7 @@ func userCRBName(user, role string) string {
 	case UserClusterReadClusterRole:
 		short = "cluster-read"
 	}
-	return "cubepilot-user-" + short + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
+	return "cubepilot-user-" + short + "-" + k8s.Sanitize(namespace) + "-" + k8s.Sanitize(user) + "-" + k8s.UserIdentityHash(user)
 }
 
 // BuiltinSkills are the preset domain skills the builtin agent references
@@ -115,7 +123,7 @@ func BuiltinAgentTemplate(endpoint, modelName string) *v1alpha1.AgentTemplate {
 			Name: BuiltinAgentName,
 			Labels: map[string]string{
 				"app.kubernetes.io/part-of": "cubepilot",
-				"cubepilot/builtin":         "true",
+				builtinLabel:                builtinLabelValue,
 			},
 		},
 		Spec: v1alpha1.AgentTemplateSpec{
@@ -201,60 +209,160 @@ func (r *BuiltinBootstrapReconciler) ensureBuiltin(ctx context.Context) error {
 			return err
 		}
 	}
-	// 3. Per-user builtin agent instances (auto-instantiated per user;
-	// resident). Reject identities that would collide on the derived per-user
-	// name before provisioning (e.g. "zhang.wei" vs "Zhang Wei").
-	seenIdentity := map[string]string{}
-	for _, user := range r.Cfg.Users {
-		saName := k8s.UserServiceAccountName(user)
-		if prev, dup := seenIdentity[saName]; dup {
-			return fmt.Errorf("users %q and %q collide on identity %s", prev, user, saName)
-		}
-		seenIdentity[saName] = user
+	// 3. Per-user identity, for the owners of the instances that exist. An
+	// instance is the whole authorization: whoever can create one gets their
+	// assistant an identity, and privileges do not outlive the last one.
+	users, err := r.usersWithInstances(ctx)
+	if err != nil {
+		return err
 	}
-	for _, user := range r.Cfg.Users {
-		// Platform-generated per-user identity first: SA + view/CRD ClusterRole
-		// bindings + a kubeconfig Secret the agent mounts as its default
-		// credentials (issue #19). Zero operator/admin-supplied kubeconfig. The
-		// identity must exist before the AgentInstance is created: the
-		// AgentInstance controller requires the per-user kubeconfig Secret
-		// before it creates the Pod (issue #100 -- no placeholder-identity Pod),
-		// so creating the instance first would leave it waiting on an identity
-		// this pass only mints afterwards.
-		if err := r.ensurePerUserKubeconfigAccess(ctx, user); err != nil {
-			return err
+	var minted error
+	for _, user := range users {
+		// One user's failure must not hold back step 4: revocation is the half
+		// that cannot wait for the next pass.
+		minted = errors.Join(minted, r.ensurePerUserKubeconfigAccess(ctx, user))
+	}
+	// 4. Revoke what no instance speaks for any more, so a removed user or a
+	// deleted last instance takes the identity with it.
+	return errors.Join(minted, r.prunePerUserIdentity(ctx, users))
+}
+
+// userIdentityObjects names the per-user identity: what
+// ensurePerUserKubeconfigAccess mints and what revoking it deletes. One list, so
+// an object cannot be minted without also being revoked.
+func userIdentityObjects(namespace, user string) []client.Object {
+	saName := k8s.UserServiceAccountName(user)
+	objs := []client.Object{
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: saName + "-token", Namespace: namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: namespace}},
+	}
+	for _, role := range userClusterRoles {
+		objs = append(objs, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(namespace, user, role)},
+		})
+	}
+	return objs
+}
+
+// usersWithInstances returns the owners of the existing instances, sorted. The
+// instance is the authorization: the platform creates none, so a user has
+// credentials exactly while someone has asked for their assistant.
+func (r *BuiltinBootstrapReconciler) usersWithInstances(ctx context.Context) ([]string, error) {
+	var instances v1alpha1.AgentInstanceList
+	if err := r.List(ctx, &instances, client.InNamespace(r.Cfg.Namespace)); err != nil {
+		return nil, fmt.Errorf("list agent instances: %w", err)
+	}
+	owners := map[string]bool{}
+	for i := range instances.Items {
+		inst := &instances.Items[i]
+		// A terminating instance does not speak for its owner any more: its
+		// finalizer is revoking the identity, and minting it here would undo
+		// exactly what a teardown waits for.
+		if !inst.DeletionTimestamp.IsZero() {
+			continue
 		}
-		inst := &v1alpha1.AgentInstance{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      InstanceNameFor(user, BuiltinAgentName),
-				Namespace: r.Cfg.Namespace,
-				Labels:    map[string]string{"cubepilot/builtin": "true"},
-			},
-			Spec: v1alpha1.AgentInstanceSpec{
-				TemplateRef: BuiltinAgentName,
-				Owner:       user,
-			},
+		if inst.Spec.Owner != "" {
+			owners[inst.Spec.Owner] = true
 		}
-		if err := r.createIfMissing(ctx, inst); err != nil {
-			return err
+	}
+	out := make([]string, 0, len(owners))
+	for owner := range owners {
+		out = append(out, owner)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// prunePerUserIdentity removes the identity objects whose names the desired set
+// no longer computes -- matched by name, since the names are hashed. Instances
+// and their data PVCs are left alone: dropping data is an explicit step.
+func (r *BuiltinBootstrapReconciler) prunePerUserIdentity(ctx context.Context, users []string) error {
+	wantSA := map[string]bool{}
+	wantSecret := map[string]bool{}
+	wantCRB := map[string]bool{}
+	for _, user := range users {
+		for _, obj := range userIdentityObjects(r.Cfg.Namespace, user) {
+			switch obj.(type) {
+			case *corev1.ServiceAccount:
+				wantSA[obj.GetName()] = true
+			case *corev1.Secret:
+				wantSecret[obj.GetName()] = true
+			default:
+				wantCRB[obj.GetName()] = true
+			}
+		}
+	}
+
+	var sas corev1.ServiceAccountList
+	if err := r.List(ctx, &sas, client.InNamespace(r.Cfg.Namespace), client.MatchingLabels{builtinLabel: builtinLabelValue}); err != nil {
+		return fmt.Errorf("list per-user serviceaccounts: %w", err)
+	}
+	for i := range sas.Items {
+		if !wantSA[sas.Items[i].Name] {
+			if err := r.deleteAndLog(ctx, &sas.Items[i], "ServiceAccount"); err != nil {
+				return err
+			}
+		}
+	}
+
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(r.Cfg.Namespace), client.MatchingLabels{builtinLabel: builtinLabelValue}); err != nil {
+		return fmt.Errorf("list per-user secrets: %w", err)
+	}
+	for i := range secrets.Items {
+		if !wantSecret[secrets.Items[i].Name] {
+			if err := r.deleteAndLog(ctx, &secrets.Items[i], "Secret"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Cluster-scoped, so the label is the only thing that ties a binding to this
+	// platform; a binding whose name is not in the desired set is either a
+	// leftover from another namespace or from a previous user list.
+	var crbs rbacv1.ClusterRoleBindingList
+	if err := r.List(ctx, &crbs, client.MatchingLabels{builtinLabel: builtinLabelValue}); err != nil {
+		return fmt.Errorf("list per-user clusterrolebindings: %w", err)
+	}
+	for i := range crbs.Items {
+		if !wantCRB[crbs.Items[i].Name] {
+			if err := r.deleteAndLog(ctx, &crbs.Items[i], "ClusterRoleBinding"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// ensurePerUserKubeconfigAccess mints the per-user identity (issue #19): a
-// namespaced ServiceAccount, ClusterRoleBindings to `view` and
-// `cubepilot-user-crds`, and a kubeconfig Secret (SA token inlined) under
-// k8s.UserKubeconfigSecretFor so the AgentInstance controller's existing
-// dual-kubeconfig mount picks it up unchanged. Idempotent; when the token
-// Secret's token is not yet populated (API server fills it asynchronously) it
-// returns an error so the reconcile requeues rather than writing a broken
-// kubeconfig.
+func (r *BuiltinBootstrapReconciler) deleteAndLog(ctx context.Context, obj client.Object, kind string) error {
+	if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete %s %s: %w", kind, obj.GetName(), err)
+	}
+	log.Printf("bootstrap: revoked %s/%s (no longer in the desired user set)", kind, obj.GetName())
+	return nil
+}
+
+// builtinLabel marks every object the platform mints at runtime, so a
+// reconciler can tell its own from an admin's (the prune selects on it).
+const (
+	builtinLabel      = "cubepilot/builtin"
+	builtinLabelValue = "true"
+)
+
+// builtinLabels returns a fresh label set: the objects travel into the API
+// client, and one shared map is a mutation away from a surprising bug.
+func builtinLabels() map[string]string {
+	return map[string]string{builtinLabel: builtinLabelValue}
+}
+
+// ensurePerUserKubeconfigAccess mints the per-user identity (issue #19): SA,
+// bindings and kubeconfig Secret. A token the API server has not filled in yet
+// returns an error, so the reconcile requeues rather than write nonsense.
 func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.Context, user string) error {
 	saName := k8s.UserServiceAccountName(user)
-	builtinLabels := map[string]string{"cubepilot/builtin": "true"}
 	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: r.Cfg.Namespace, Labels: builtinLabels},
+		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: r.Cfg.Namespace, Labels: builtinLabels()},
 	}
 	if err := r.createIfMissing(ctx, sa); err != nil {
 		return err
@@ -262,7 +370,7 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 
 	for _, role := range userClusterRoles {
 		crb := &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(user, role), Labels: builtinLabels},
+			ObjectMeta: metav1.ObjectMeta{Name: userCRBName(r.Cfg.Namespace, user, role), Labels: builtinLabels()},
 			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role},
 			Subjects: []rbacv1.Subject{{
 				Kind:      "ServiceAccount",
@@ -270,7 +378,7 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 				Namespace: r.Cfg.Namespace,
 			}},
 		}
-		if err := r.createIfMissing(ctx, crb); err != nil {
+		if err := r.reconcilePerUserCRB(ctx, crb); err != nil {
 			return err
 		}
 	}
@@ -282,7 +390,7 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        tokenSecretName,
 			Namespace:   r.Cfg.Namespace,
-			Labels:      builtinLabels,
+			Labels:      builtinLabels(),
 			Annotations: map[string]string{corev1.ServiceAccountNameKey: saName},
 		},
 		Type: corev1.SecretTypeServiceAccountToken,
@@ -303,13 +411,71 @@ func (r *BuiltinBootstrapReconciler) ensurePerUserKubeconfigAccess(ctx context.C
 	// rewritten when the token it was minted from changed, so a recreated token
 	// Secret refreshes the kubeconfig instead of leaving a stale one behind.
 	kc := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels},
+		ObjectMeta: metav1.ObjectMeta{Name: k8s.UserKubeconfigSecretFor(user), Namespace: r.Cfg.Namespace, Labels: builtinLabels()},
 		Data:       map[string][]byte{"config": k8s.PerUserKubeconfigYAML(token)},
 	}
 	if err := ensureSecretData(ctx, r.Client, r.APIReader, kc); err != nil {
 		return err
 	}
 	return nil
+}
+
+// reconcilePerUserCRB creates the per-user binding, or brings roleRef and
+// subjects back in line: trusting one that exists would make a wrong binding
+// permanent. A wrong roleRef is replaced, not updated -- roleRef is immutable.
+func (r *BuiltinBootstrapReconciler) reconcilePerUserCRB(ctx context.Context, want *rbacv1.ClusterRoleBinding) error {
+	var have rbacv1.ClusterRoleBinding
+	err := r.Get(ctx, client.ObjectKeyFromObject(want), &have)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, want); err != nil && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		log.Printf("bootstrap: created ClusterRoleBinding/%s", want.Name)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !equality.Semantic.DeepEqual(have.RoleRef, want.RoleRef) {
+		replacement := want.DeepCopy()
+		replacement.Labels = mergeLabels(have.Labels, want.Labels)
+		replacement.Annotations = have.Annotations
+		if err := r.Delete(ctx, &have, deletePrecondition(&have)); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err := r.Create(ctx, replacement); err != nil {
+			// Our own delete may not have completed: requeue rather than log a
+			// replacement that is not there.
+			return err
+		}
+		log.Printf("bootstrap: replaced ClusterRoleBinding/%s: roleRef %s -> %s (roleRef is immutable)",
+			want.Name, have.RoleRef.Name, want.RoleRef.Name)
+		return nil
+	}
+	if equality.Semantic.DeepEqual(have.Subjects, want.Subjects) {
+		return nil
+	}
+	have.Subjects = want.Subjects
+	if err := r.Update(ctx, &have); err != nil {
+		return err
+	}
+	log.Printf("bootstrap: repaired ClusterRoleBinding/%s: subject %s/%s",
+		have.Name, want.Subjects[0].Namespace, want.Subjects[0].Name)
+	return nil
+}
+
+// mergeLabels returns existing with ours overlaid, so an object we replace
+// keeps whatever a cluster admin put on it and still carries the labels the
+// platform selects it by.
+func mergeLabels(existing, ours map[string]string) map[string]string {
+	out := make(map[string]string, len(existing)+len(ours))
+	for k, v := range existing {
+		out[k] = v
+	}
+	for k, v := range ours {
+		out[k] = v
+	}
+	return out
 }
 
 func (r *BuiltinBootstrapReconciler) createIfMissing(ctx context.Context, obj client.Object) error {
@@ -345,17 +511,29 @@ func (r *BuiltinBootstrapReconciler) kindOf(obj client.Object) string {
 	return "unknown"
 }
 
-// InstanceNameFor builds the AgentInstance name for (user, agent) -- the
-// instance key is user + agent (design §3.2). Both segments are DNS-1123
-// sanitized (consistent with the k8s package resource naming).
-func InstanceNameFor(user, agent string) string {
-	return k8s.Sanitize(user) + "-" + k8s.Sanitize(agent)
-}
-
 // SetupWithManager registers the bootstrap reconciler.
 func (r *BuiltinBootstrapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("builtin-bootstrap").
 		For(&v1alpha1.AgentTemplate{}).
+		// An instance appearing or going is what mints or revokes its owner's
+		// identity, so neither may wait for the periodic requeue.
+		Watches(&v1alpha1.AgentInstance{}, handler.EnqueueRequestsFromMapFunc(r.mapToBootstrap)).
 		Complete(r)
+}
+
+// mapToBootstrap wakes the singleton for any instance in its namespace: the set
+// of owners is an input to it.
+func (r *BuiltinBootstrapReconciler) mapToBootstrap(_ context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetNamespace() != r.Cfg.Namespace {
+		return nil
+	}
+	return r.bootstrapRequest()
+}
+
+func (r *BuiltinBootstrapReconciler) bootstrapRequest() []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: r.Cfg.Namespace,
+		Name:      BuiltinAgentName,
+	}}}
 }
