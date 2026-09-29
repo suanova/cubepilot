@@ -73,13 +73,9 @@ var userClusterRoles = []string{
 	UserCRDsClusterRole,
 }
 
-// userCRBName builds the per-user ClusterRoleBinding name. The role segment is
-// shortened where the full name is redundant next to the "cubepilot-user-"
-// prefix, so binding names stay readable.
-//
-// The namespace is in the name because a binding grants nothing outside the
-// subject's namespace; an owner reference cannot do the job, since a
-// cluster-scoped dependent needs a cluster-scoped owner.
+// userCRBName builds the per-user ClusterRoleBinding name, which carries the
+// namespace: an owner reference cannot tie a cluster-scoped object to a
+// namespaced one, and the binding grants nothing outside the subject's namespace.
 func userCRBName(namespace, user, role string) string {
 	short := role
 	switch role {

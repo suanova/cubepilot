@@ -139,9 +139,8 @@ func reconcileInstance(r *AgentInstanceReconciler, t *testing.T) {
 	}
 }
 
-// provisionInstance reconciles twice: the first pass only adds the
-// AgentInstance finalizer (early return), the second actually provisions.
-
+// provisionInstance reconciles twice: the first pass adds the finalizer and
+// returns, the second provisions.
 func provisionInstance(r *AgentInstanceReconciler, t *testing.T) {
 	t.Helper()
 	reconcileInstance(r, t)
@@ -542,96 +541,158 @@ func TestAgentInstanceReconcileSelfHeals(t *testing.T) {
 	}
 }
 
-// TestAgentInstanceReconcileRemovesDataPVCOnDelete verifies the finalizer
-// drops the data PVC (and the pod/service) when the instance is deleted
-// (design §3.2 data-directory GC / reclaim).
-func TestAgentInstanceReconcileRemovesDataPVCOnDelete(t *testing.T) {
-	now := metav1.Now()
+// seededIdentityObjects is userIdentityObjects without the kubeconfig Secret: the
+// shared test client already seeds that one for the test user.
+func seededIdentityObjects(namespace, user string) []client.Object {
+	var out []client.Object
+	for _, obj := range userIdentityObjects(namespace, user) {
+		if obj.GetName() != k8s.UserKubeconfigSecretFor(user) {
+			out = append(out, obj)
+		}
+	}
+	return out
+}
+
+// TestAgentInstanceFinalizeRevokesTheLastIdentity is what makes the teardown's
+// first command the revocation: deleting the user's last instance does not
+// return until the identity behind it is gone, so the release can be removed
+// next without leaving a credential nothing would revoke.
+func TestAgentInstanceFinalizeRevokesTheLastIdentity(t *testing.T) {
+	ctx := context.Background()
 	inst := testInstance()
-	inst.DeletionTimestamp = &now
 	inst.Finalizers = []string{finalizerName}
+	objs := []client.Object{testTemplate(), inst}
+	objs = append(objs, seededIdentityObjects(testNamespace, inst.Spec.Owner)...)
+	r, cl := newTestReconciler(t, objs...)
 
-	spec := agentSpec()
-	pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
-	pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
-	svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
-	ownByTestInstance(t, testScheme(t), pvc, pod, svc)
-
-	r, cl := newTestReconciler(t, inst, pvc, pod, svc)
+	if err := cl.Delete(ctx, inst); err != nil {
+		t.Fatalf("delete instance: %v", err)
+	}
 	reconcileInstance(r, t)
 
-	var gotPVC corev1.PersistentVolumeClaim
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &gotPVC); !apierrors.IsNotFound(err) {
-		t.Errorf("data pvc not reclaimed (err=%v)", err)
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &v1alpha1.AgentInstance{}); !apierrors.IsNotFound(err) {
+		t.Errorf("instance not released by its finalizer (err=%v)", err)
 	}
-	var gotPod corev1.Pod
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &gotPod); !apierrors.IsNotFound(err) {
-		t.Errorf("agent pod not removed (err=%v)", err)
-	}
-	var gotSvc corev1.Service
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPodName}, &gotSvc); !apierrors.IsNotFound(err) {
-		t.Errorf("agent service not removed (err=%v)", err)
-	}
-
-	// Once the last finalizer is removed the object is deleted (the API server
-	// reclaims it); the fake client emulates this.
-	var gotInst v1alpha1.AgentInstance
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &gotInst); !apierrors.IsNotFound(err) {
-		t.Errorf("instance not reclaimed after finalize (err=%v)", err)
+	for _, obj := range userIdentityObjects(testNamespace, "zhang.wei") {
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
+			t.Errorf("%T %s outlived the last instance (err=%v)", obj, obj.GetName(), err)
+		}
 	}
 }
 
-// TestAgentInstanceFinalizeTouchesOnlyItsOwnObjects verifies the finalizer's
-// ownership rule: the generated names come from metadata.name, which the
-// writer of the AgentInstance picks, so a name-identical object that is not
-// this instance's must be left alone -- and must not fail the delete either
-// (an erroring finalizer would pin the instance in deletion forever). The
-// instance's own objects are still reclaimed.
-func TestAgentInstanceFinalizeTouchesOnlyItsOwnObjects(t *testing.T) {
+// TestAgentInstanceFinalizeKeepsTheIdentityAnotherInstanceUses: one of a user's
+// two instances going must not revoke what the other one runs as.
+func TestAgentInstanceFinalizeKeepsTheIdentityAnotherInstanceLives(t *testing.T) {
+	ctx := context.Background()
+	inst := testInstance()
+	inst.Finalizers = []string{finalizerName}
+	second := testInstance()
+	second.Name = "zhang-wei-second"
+	second.UID = types.UID("11111111-1111-1111-1111-111111111111")
+	second.Namespace = testNamespace
+	objs := []client.Object{testTemplate(), inst, second}
+	objs = append(objs, seededIdentityObjects(testNamespace, inst.Spec.Owner)...)
+	r, cl := newTestReconciler(t, objs...)
+
+	if err := cl.Delete(ctx, inst); err != nil {
+		t.Fatalf("delete instance: %v", err)
+	}
+	reconcileInstance(r, t)
+
+	for _, obj := range userIdentityObjects(testNamespace, "zhang.wei") {
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			t.Errorf("%T %s was revoked while another instance still uses it: %v", obj, obj.GetName(), err)
+		}
+	}
+}
+
+// TestAgentInstanceFinalizeToleratesAMissingIdentity: a finalizer that fails on
+// nothing-to-delete would pin the instance (and its namespace) forever.
+func TestAgentInstanceFinalizeToleratesAMissingIdentity(t *testing.T) {
+	ctx := context.Background()
+	inst := testInstance()
+	inst.Finalizers = []string{finalizerName}
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+
+	if err := cl.Delete(ctx, inst); err != nil {
+		t.Fatalf("delete instance: %v", err)
+	}
+	reconcileInstance(r, t)
+
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &v1alpha1.AgentInstance{}); !apierrors.IsNotFound(err) {
+		t.Errorf("instance not released when there was no identity to revoke (err=%v)", err)
+	}
+}
+
+// TestAgentInstanceOwnsItsGeneratedObjects pins the two guarantees the teardown
+// rests on: the Pod, PVC and Service carry the controller owner reference the
+// collector follows, and the instance carries the finalizer that holds the
+// deletion until its owner's identity is revoked.
+func TestAgentInstanceOwnsItsGeneratedObjects(t *testing.T) {
+	ctx := context.Background()
+	r, cl := newTestReconciler(t, testTemplate(), testInstance())
+	provisionInstance(r, t)
+
+	var live v1alpha1.AgentInstance
+	if err := cl.Get(ctx, types.NamespacedName{Name: testInstanceName}, &live); err != nil {
+		t.Fatalf("instance: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&live, finalizerName) {
+		t.Errorf("instance finalizers = %v, want %s: without it a delete returns before the identity is revoked", live.Finalizers, finalizerName)
+	}
+
 	for _, tc := range []struct {
-		name  string
-		owned bool
+		kind string
+		name string
+		new  func() client.Object
 	}{
-		{"leaves foreign objects alone", false},
-		{"reclaims its own objects", true},
+		{"data pvc", testPVCName, func() client.Object { return &corev1.PersistentVolumeClaim{} }},
+		{"agent pod", testPodName, func() client.Object { return &corev1.Pod{} }},
+		{"gateway service", testPodName, func() client.Object { return &corev1.Service{} }},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			now := metav1.Now()
-			inst := testInstance()
-			inst.DeletionTimestamp = &now
-			inst.Finalizers = []string{finalizerName}
+		obj := tc.new()
+		if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: tc.name}, obj); err != nil {
+			t.Fatalf("%s not created: %v", tc.kind, err)
+		}
+		ref := metav1.GetControllerOf(obj)
+		if ref == nil {
+			t.Errorf("%s %s has no controller owner reference: nothing would reclaim it when the instance is deleted", tc.kind, tc.name)
+			continue
+		}
+		if ref.UID != live.UID {
+			t.Errorf("%s %s owner uid = %q, want the instance's %q", tc.kind, tc.name, ref.UID, live.UID)
+		}
+		if ref.BlockOwnerDeletion != nil && *ref.BlockOwnerDeletion {
+			t.Errorf("%s %s sets blockOwnerDeletion: deleting the instance would wait on this object", tc.kind, tc.name)
+		}
+	}
+}
 
-			spec := agentSpec()
-			pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
-			pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
-			svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
-			if tc.owned {
-				ownByTestInstance(t, testScheme(t), pvc, pod, svc)
-			}
+// TestAgentInstanceTerminatingIsNotProvisioned verifies a terminating instance
+// is left alone. The finalizer below belongs to the test: the API server
+// rejects a deleting object with none.
+func TestAgentInstanceTerminatingIsNotProvisioned(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+	inst := testInstance()
+	inst.DeletionTimestamp = &now
+	inst.Finalizers = []string{"test/dummy"}
 
-			r, cl := newTestReconciler(t, inst, pvc, pod, svc)
-			reconcileInstance(r, t)
+	r, cl := newTestReconciler(t, testTemplate(), inst)
+	reconcileInstance(r, t)
 
-			for _, obj := range []struct {
-				name string
-				obj  client.Object
-			}{
-				{testPVCName, &corev1.PersistentVolumeClaim{}},
-				{testPodName, &corev1.Pod{}},
-				{testPodName, &corev1.Service{}},
-			} {
-				err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: obj.name}, obj.obj)
-				if missing := apierrors.IsNotFound(err); missing != tc.owned {
-					t.Errorf("%T %s: missing = %v, want %v (err=%v)", obj.obj, obj.name, missing, tc.owned, err)
-				}
-			}
-
-			// Released either way: a foreign object is not ours to delete, and
-			// skipping it is not a reason to block the instance's deletion.
-			if err := cl.Get(context.Background(), types.NamespacedName{Name: testInstanceName}, &v1alpha1.AgentInstance{}); !apierrors.IsNotFound(err) {
-				t.Errorf("instance not reclaimed after finalize (err=%v)", err)
-			}
-		})
+	for _, tc := range []struct {
+		kind string
+		name string
+		obj  client.Object
+	}{
+		{"data pvc", testPVCName, &corev1.PersistentVolumeClaim{}},
+		{"agent pod", testPodName, &corev1.Pod{}},
+		{"gateway service", testPodName, &corev1.Service{}},
+	} {
+		if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: tc.name}, tc.obj); !apierrors.IsNotFound(err) {
+			t.Errorf("%s created for a terminating instance (err=%v)", tc.kind, err)
+		}
 	}
 }
 
@@ -962,36 +1023,6 @@ func TestSecurityFingerprintKubeconfigRevision(t *testing.T) {
 	}
 }
 
-// TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly verifies the finalizer
-// reclaims exactly the platform-generated data-<instance> PVC and nothing else:
-// an unrelated PVC in the same namespace survives, and carrying a dataVolume in
-// the spec does not change which PVC is removed. The name is generated from the
-// instance name, so no spec value can select it.
-func TestAgentInstanceFinalizeReclaimsGeneratedPVCOnly(t *testing.T) {
-	now := metav1.Now()
-	inst := testInstance()
-	inst.DeletionTimestamp = &now
-	inst.Finalizers = []string{finalizerName}
-	inst.Spec.DataVolume = &v1alpha1.DataVolumeSpec{Size: "2Gi"}
-
-	spec := agentSpec()
-	generated := spec.DataPVCFor(testPVCName, testInstanceName, "2Gi")
-	other := spec.DataPVCFor("data-somebody-else", "somebody-else", "1Gi")
-	ownByTestInstance(t, testScheme(t), generated)
-
-	r, cl := newTestReconciler(t, inst, generated, other)
-	reconcileInstance(r, t)
-
-	var gotGenerated corev1.PersistentVolumeClaim
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &gotGenerated); !apierrors.IsNotFound(err) {
-		t.Errorf("generated data pvc not reclaimed (err=%v)", err)
-	}
-	var gotOther corev1.PersistentVolumeClaim
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "data-somebody-else"}, &gotOther); err != nil {
-		t.Errorf("unrelated pvc was deleted or unreadable (err=%v)", err)
-	}
-}
-
 // TestAgentInstanceDataVolumeSizeReachesPVC verifies a configured
 // dataVolume.size is applied to the data PVC (the default is 1Gi).
 func TestAgentInstanceDataVolumeSizeReachesPVC(t *testing.T) {
@@ -1052,12 +1083,11 @@ func TestGeneratedNameBoundedAndDeterministic(t *testing.T) {
 	}
 }
 
-// TestAgentInstanceLongNameProvisionsAndReclaims runs the whole lifecycle for a
+// TestAgentInstanceLongNameProvisions runs the whole lifecycle for a
 // 253-character instance name -- the longest the API server accepts -- and
-// asserts that the create path and the finalizer agree on the bounded names:
-// the finalizer reclaims the very PVC/Service the reconcile created. If the two
-// derived the name differently, the instance would leak its data PVC.
-func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
+// asserts the platform bounds every generated name and binds each object to the
+// instance, which is what reclaims them later.
+func TestAgentInstanceLongNameProvisions(t *testing.T) {
 	ctx := context.Background()
 	longName := strings.Repeat("a", 253)
 	inst := testInstance()
@@ -1083,21 +1113,24 @@ func TestAgentInstanceLongNameProvisionsAndReclaims(t *testing.T) {
 	if len(svcName) > k8s.MaxServiceNameLen {
 		t.Fatalf("generated service name is unbounded: %d > %d", len(svcName), k8s.MaxServiceNameLen)
 	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); err != nil {
+	var pvc corev1.PersistentVolumeClaim
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &pvc); err != nil {
 		t.Fatalf("data pvc not created under the bounded name %s: %v", pvcName, err)
 	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); err != nil {
+	var svc corev1.Service
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &svc); err != nil {
 		t.Fatalf("gateway service not created under the bounded name %s: %v", svcName, err)
 	}
-
-	if err := r.finalize(ctx, inst); err != nil {
-		t.Fatalf("finalize: %v", err)
-	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: pvcName}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
-		t.Errorf("finalize did not reclaim the data pvc the reconcile created (err=%v)", err)
-	}
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: svcName}, &corev1.Service{}); !apierrors.IsNotFound(err) {
-		t.Errorf("finalize did not reclaim the service the reconcile created (err=%v)", err)
+	// The bounded names are only useful if the objects carry them *and* are the
+	// instance's: a name the platform truncates must still be bound to the
+	// instance, or the truncated PVC would outlive it.
+	for _, obj := range []struct {
+		kind string
+		obj  metav1.Object
+	}{{"data pvc", &pvc}, {"gateway service", &svc}} {
+		if ref := metav1.GetControllerOf(obj.obj); ref == nil || ref.UID != inst.UID {
+			t.Errorf("%s is not owned by the instance (ref=%v)", obj.kind, ref)
+		}
 	}
 }
 
@@ -1197,14 +1230,9 @@ func (ro *replacedObject) swap(ctx context.Context, c client.WithWatch, key clie
 	ro.swaps++
 }
 
-// TestDeleteRefusesAReplacedObject pins the check-then-use race shared by the
-// three paths that verify a generated object's owner and then delete it by
-// name: deleteOwned (the finalizer), the drift deletion inside ensurePod, and
-// deletePod (the failed-Pod heal). In each, the object that was checked is
-// replaced -- same name, different UID -- before the delete reaches the API
-// server. The delete is bound to the UID that was checked (see
-// deletePrecondition), so it fails with a Conflict, the replacement survives,
-// and the caller re-reads rather than destroying an object it never vetted.
+// TestDeleteRefusesAReplacedObject pins the check-then-use race in the two
+// paths that verify an object's owner and delete it by name: bound to the
+// checked UID, the delete spares a replacement and the caller re-reads.
 func TestDeleteRefusesAReplacedObject(t *testing.T) {
 	const checkedUID = types.UID("checked-object-uid")
 
@@ -1220,28 +1248,6 @@ func TestDeleteRefusesAReplacedObject(t *testing.T) {
 		// call runs the path under test.
 		call func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error
 	}{
-		{
-			name:   "finalizer deleteOwned",
-			target: types.NamespacedName{Namespace: testNamespace, Name: testPVCName},
-			empty:  func() client.Object { return &corev1.PersistentVolumeClaim{} },
-			seed: func(t *testing.T, scheme *runtime.Scheme) []client.Object {
-				now := metav1.Now()
-				inst := testInstance()
-				inst.DeletionTimestamp = &now
-				inst.Finalizers = []string{finalizerName}
-				spec := agentSpec()
-				pvc := spec.DataPVCFor(testPVCName, testInstanceName, "1Gi")
-				pvc.UID = checkedUID
-				pod := spec.PodFor(testPodName, testInstanceName, testPVCName, testPodName)
-				svc := spec.ServiceFor(testPodName, testInstanceName, testPodName)
-				ownByTestInstance(t, scheme, pvc, pod, svc)
-				return []client.Object{inst, pvc, pod, svc}
-			},
-			call: func(t *testing.T, ctx context.Context, r *AgentInstanceReconciler) error {
-				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testInstanceName}})
-				return err
-			},
-		},
 		{
 			name:   "ensurePod drift deletion",
 			target: types.NamespacedName{Namespace: testNamespace, Name: testPodName},

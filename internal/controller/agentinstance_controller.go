@@ -32,8 +32,9 @@ import (
 	"github.com/suanova/cubepilot/internal/k8s"
 )
 
-// finalizerName protects the instance's data directory PVC until the
-// AgentInstance is fully removed (design §3.2 data-directory GC / reclaim).
+// finalizerName holds an AgentInstance until the identity it justified is
+// revoked: a teardown that removes the operator can otherwise lose that race
+// silently, leaving a credential nothing will revoke.
 const finalizerName = "ai.cubestack.io/agentinstance"
 
 // modelConfiguredCondition reports whether the instance's AgentTemplate offers
@@ -74,10 +75,12 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		return ctrl.Result{}, err
 	}
 
-	// Deletion: run the finalizer (drop the data PVC) then release.
+	// Termination: revoke the owner's identity if this was their last live
+	// instance, then release. The Pod, PVC and Service are the garbage
+	// collector's, by owner reference, once the finalizer lets go.
 	if !inst.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&inst, finalizerName) {
-			if err := r.finalize(ctx, &inst); err != nil {
+			if err := r.revokeLastIdentity(ctx, &inst); err != nil {
 				return ctrl.Result{}, err
 			}
 			controllerutil.RemoveFinalizer(&inst, finalizerName)
@@ -150,12 +153,9 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	}
 	kubeconfigRev := userSecretName + "@" + userSecret.ResourceVersion + "|" + k8s.KubeconfigSecretName + "@" + platformSecret.ResourceVersion
 
-	// The PVC/Pod/Service names are a pure function of the instance name (they
-	// are bounded so a 253-character instance name cannot produce an invalid
-	// name); both this path and the finalizer derive them through the same
-	// helpers. The bound differs per kind: a PVC/Pod name is a DNS-1123
-	// subdomain (253), while a Service name is a DNS-1035 label (63), so the
-	// Service gets its own call.
+	// The PVC/Pod/Service names are a pure function of the instance name,
+	// truncated so a long instance name cannot produce an invalid one -- a
+	// Service name is a DNS-1035 label (63), the others a subdomain (253).
 	pvcName := k8s.GeneratedName("data", inst.Name)
 	size := inst.EffectiveDataVolumeSize()
 	podName := k8s.GeneratedName("agent", inst.Name)
@@ -181,7 +181,7 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	// controls, not evidence of ownership: without the binding, a writer could
 	// point a hand-written instance at a name whose PVC/Pod/Service already
 	// exist and have the controller adopt (ensurePVC), replace (ensurePod, on a
-	// security-fingerprint mismatch) or delete (finalize) someone else's object.
+	// security-fingerprint mismatch) or delete someone else's object.
 	// The controller owner reference is the binding, and every ownership check
 	// below compares it by UID -- the instance's UID is not writable, while its
 	// name is.
@@ -434,67 +434,6 @@ func referencesCredential(t v1alpha1.AgentTemplate, name string) bool {
 	return false
 }
 
-// finalize removes the instance's data directory PVC (the data directory is
-// reclaimed when the instance is deleted), its Pod and its Service.
-//
-// The names are derived from the instance name, which the CR's writer chooses,
-// so an object sitting under one of them is only removed when it is actually
-// this instance's (see ownedByInstance). A name-identical object that is not
-// ours is left alone and logged rather than reported as an error: a finalizer
-// that returns an error blocks instance deletion forever, and a foreign object
-// is not ours to delete.
-func (r *AgentInstanceReconciler) finalize(ctx context.Context, inst *v1alpha1.AgentInstance) error {
-	pvcName := k8s.GeneratedName("data", inst.Name)
-	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: r.Cfg.Namespace}}
-	if err := r.deleteOwned(ctx, inst, "data pvc", pvc); err != nil {
-		return fmt.Errorf("delete data pvc: %w", err)
-	}
-	podName := k8s.GeneratedName("agent", inst.Name)
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: r.Cfg.Namespace}}
-	if err := r.deleteOwned(ctx, inst, "agent pod", pod); err != nil {
-		return fmt.Errorf("delete agent pod: %w", err)
-	}
-	// The Service is bounded to the (tighter) DNS-1035 label limit, so it is
-	// not necessarily the pod name -- derive it exactly as the create path does.
-	svcName := k8s.GeneratedServiceName("agent", inst.Name)
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: r.Cfg.Namespace}}
-	if err := r.deleteOwned(ctx, inst, "agent service", svc); err != nil {
-		return fmt.Errorf("delete agent service: %w", err)
-	}
-	log.Printf("controller: finalized instance %s (data pvc %s removed)", inst.Name, pvcName)
-	return nil
-}
-
-// deleteOwned deletes obj -- identified by name/namespace -- only when it
-// exists and is owned by inst. A missing object is a no-op; a name-identical
-// object owned by someone else is skipped and logged (never an error: the
-// caller is a finalizer, and failing on a foreign object would pin the
-// instance in deletion forever).
-//
-// An object that was ours when it was read but changed before the delete landed
-// is a different case and is NOT skipped: nothing has been verified about the
-// object now at that name, so the delete is refused by the precondition (see
-// deletePrecondition) and the error is returned. The caller then re-reads and
-// re-vets it, which converges -- unlike the foreign case, this is not a
-// permanent condition, so failing here cannot pin the instance.
-func (r *AgentInstanceReconciler) deleteOwned(ctx context.Context, inst *v1alpha1.AgentInstance, kind string, obj client.Object) error {
-	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-	if !ownedByInstance(obj, inst) {
-		log.Printf("controller: %s: leaving %s %s alone: it is not owned by this instance (owner uid %q, instance uid %q)",
-			inst.Name, kind, obj.GetName(), controllerOwnerUID(obj), inst.UID)
-		return nil
-	}
-	if err := r.Delete(ctx, obj, deletePrecondition(obj)); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	return nil
-}
-
 // deletePrecondition binds a Delete to the exact object a preceding Get
 // returned, by passing that object's UID as a delete precondition. The API
 // server answers 409 Conflict when the UID of the object it is about to delete
@@ -526,14 +465,13 @@ func deletePrecondition(obj metav1.Object) client.DeleteOption {
 // run before the object is created: an object born unowned can never be
 // adopted later (ensurePVC/ensurePod/ensureService refuse a foreign object).
 //
-// BlockOwnerDeletion is deliberately false. Setting it requires the operator to
-// have `update` on the owner's `agentinstances/finalizers` subresource -- the
-// OwnerReferencesPermissionEnforcement admission plugin rejects the create with
-// "cannot set blockOwnerDeletion if an ownerReference refers to a resource you
-// can't set finalizers on" (422) on clusters that enable it, and the chart's
-// operator Role does not grant it. Nothing here needs it: blockOwnerDeletion
-// only orders *foreground* deletion, while the instance's own finalizer already
-// deletes these objects before it lets go of the CR.
+// That reference is also what reclaims them: when the instance goes, the
+// collector deletes the Pod, PVC and Service. No finalizer asks for the same
+// thing -- one would need a running controller to release it.
+//
+// BlockOwnerDeletion stays false: setting it needs `update` on the owner's
+// finalizers subresource, which the chart does not grant and background
+// collection does not need (it only orders *foreground* deletion).
 func (r *AgentInstanceReconciler) setInstanceOwner(inst *v1alpha1.AgentInstance, objs ...client.Object) error {
 	for _, obj := range objs {
 		opts := []controllerutil.OwnerReferenceOption{controllerutil.WithBlockOwnerDeletion(false)}
@@ -564,11 +502,6 @@ func ownedBy(uid types.UID, obj metav1.Object) bool {
 	return uid != "" && controllerOwnerUID(obj) == uid
 }
 
-// ownedByInstance reports whether obj was created by this AgentInstance.
-func ownedByInstance(obj metav1.Object, inst *v1alpha1.AgentInstance) bool {
-	return ownedBy(inst.UID, obj)
-}
-
 func (r *AgentInstanceReconciler) patchStatus(ctx context.Context, inst *v1alpha1.AgentInstance, phase v1alpha1.InstancePhase, podName, message string) error {
 	inst.Status.Phase = phase
 	inst.Status.Message = message
@@ -577,13 +510,36 @@ func (r *AgentInstanceReconciler) patchStatus(ctx context.Context, inst *v1alpha
 	return r.Status().Update(ctx, inst)
 }
 
+// revokeLastIdentity deletes the per-user identity when no other live instance
+// claims it; one that is itself terminating does not count, or a multi-instance
+// delete would revoke nothing. Missing objects are fine -- the prune may win.
+func (r *AgentInstanceReconciler) revokeLastIdentity(ctx context.Context, inst *v1alpha1.AgentInstance) error {
+	var instances v1alpha1.AgentInstanceList
+	if err := r.List(ctx, &instances, client.InNamespace(r.Cfg.Namespace)); err != nil {
+		return fmt.Errorf("list instances: %w", err)
+	}
+	for i := range instances.Items {
+		other := &instances.Items[i]
+		if other.UID != inst.UID && other.Spec.Owner == inst.Spec.Owner && other.DeletionTimestamp.IsZero() {
+			return nil // another live instance still speaks for this identity
+		}
+	}
+	user := inst.Spec.Owner
+	for _, obj := range userIdentityObjects(r.Cfg.Namespace, user) {
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("revoke %T %s: %w", obj, obj.GetName(), err)
+		}
+	}
+	log.Printf("controller: revoked the identity of %s (last instance %s)", user, inst.Name)
+	return nil
+}
+
 // ---- resource helpers (thin wrappers over k8s builders) ----
 
 // ensurePVC creates the data PVC, and adopts an existing one only when it is
 // this instance's. A same-named PVC belonging to someone else is not adopted
-// (that would hand its contents to the instance, and later to finalize's
-// delete): the reconcile fails closed instead, which surfaces as the instance
-// going Failed with the reason.
+// (that would hand its contents to the instance): the reconcile fails closed
+// instead, which surfaces as the instance going Failed with the reason.
 func (r *AgentInstanceReconciler) ensurePVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) error {
 	var existing corev1.PersistentVolumeClaim
 	err := r.Get(ctx, types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}, &existing)

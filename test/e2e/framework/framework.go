@@ -69,10 +69,9 @@ func New(kubeconfig string) (*Framework, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client: %w", err)
 	}
-	// The suite's own list of users, not a platform setting: the platform has
-	// none -- it mints an identity for whoever owns an instance -- and the specs
-	// create the instances they need. Validate it so a value like "," fails with
-	// a config error instead of panicking on Users[0].
+	// The suite's own users, not a platform setting -- the platform keeps none.
+	// Validate so a value like "," fails with a config error instead of
+	// panicking on Users[0].
 	users := splitUsers(getenv("CUBEPILOT_USERS", "admin"))
 	if len(users) == 0 {
 		return nil, fmt.Errorf("CUBEPILOT_USERS must contain at least one user")

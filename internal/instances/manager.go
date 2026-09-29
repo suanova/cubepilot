@@ -149,9 +149,8 @@ func (m *Manager) EnsureFor(ctx context.Context, k AgentKey) error {
 }
 
 // ensureInstance creates the caller's AgentInstance if it does not exist: asking
-// for the assistant is asking for its instance, and nothing else creates one --
-// the platform pre-creates none. An instance that exists but belongs to someone
-// else is refused, the same way the API refuses a name it cannot hand out.
+// for the assistant is asking for its instance. An instance owned by someone
+// else is refused, as the API refuses a name it cannot hand out.
 func (m *Manager) ensureInstance(ctx context.Context, k AgentKey) error {
 	var inst v1alpha1.AgentInstance
 	err := m.cr.Get(ctx, types.NamespacedName{Namespace: m.ns, Name: k.InstanceName()}, &inst)
