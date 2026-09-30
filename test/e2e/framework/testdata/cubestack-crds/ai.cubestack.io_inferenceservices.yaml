@@ -71,25 +71,38 @@ spec:
               route:
                 description: Route defines the public gateway route of the service.
                 properties:
+                  idleTimeoutSeconds:
+                    default: 300
+                    description: |-
+                      IdleTimeoutSeconds cuts a request whose upstream sent no bytes for this
+                      long; defaults to 300. Non-streaming generations send nothing until the
+                      response completes, so this bounds them too.
+                    format: int64
+                    maximum: 86400
+                    minimum: 1
+                    type: integer
                   modelName:
                     description: |-
-                      ModelName is the public model alias, used to generate the hostname
-                      <modelName>.<platform-domain>. It must be a single RFC1123 label.
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      ModelName is the catalog model name: what clients send as the request
+                      body's "model" field. It is the platform-wide identity of a published
+                      service and must be unique among published services.
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$
                     type: string
                   publish:
                     default: false
                     description: |-
-                      Publish exposes the service through the gateway; defaults to false.
-                      Unpublished services only provide a ClusterIP internal endpoint.
+                      Publish exposes the service through the platform model catalog;
+                      defaults to false. Unpublished services only provide a ClusterIP
+                      internal endpoint.
                     type: boolean
                   timeoutSeconds:
-                    default: 60
-                    description: TimeoutSeconds is the gateway request timeout; defaults
-                      to 60.
+                    default: 0
+                    description: |-
+                      TimeoutSeconds caps the total duration of a request at the gateway,
+                      including every streamed chunk. 0 (the default) disables the cap.
                     format: int64
                     maximum: 86400
-                    minimum: 1
+                    minimum: 0
                     type: integer
                 type: object
             required:

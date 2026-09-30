@@ -37,7 +37,8 @@ func TestRenderDevEnvironmentEssentials(t *testing.T) {
 		"- `spec.image` — string · required",
 		"- `spec.resources` — object · required",
 		"- `spec.resources.cpu` — string",
-		"- `spec.resources.gpuCount` — integer (int32) · default: 1 · min 0",
+		"- `spec.resources.gpu` — object",
+		"- `spec.ssh.authorizedKeysSecret` — object",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("render should contain %q", want)

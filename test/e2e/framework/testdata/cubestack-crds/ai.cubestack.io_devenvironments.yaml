@@ -11,6 +11,8 @@ spec:
     kind: DevEnvironment
     listKind: DevEnvironmentList
     plural: devenvironments
+    shortNames:
+    - devenv
     singular: devenvironment
   scope: Namespaced
   versions:
@@ -22,10 +24,10 @@ spec:
 
           An environment with spec.storage starts from an init container that takes
           ownership of its workspace claim, running as root with every capability
-          dropped and CAP_CHOWN, CAP_FOWNER and CAP_FSETID added back, so the namespace
-          hosting it has to be at the Baseline Pod Security Standard rather than
-          Restricted: root and any capability beyond NET_BIND_SERVICE are rejected
-          there, and Pod Security Admission has no per-container exemption.
+          dropped and CAP_CHOWN, CAP_FOWNER and CAP_FSETID added back, so a namespace
+          hosting it has to be at the Baseline Pod Security Standard: root and any
+          capability beyond NET_BIND_SERVICE are rejected at Restricted, and Pod
+          Security Admission has no per-container exemption.
         properties:
           apiVersion:
             description: |-
@@ -58,8 +60,19 @@ spec:
                 properties:
                   idleTimeout:
                     default: 0
-                    description: IdleTimeout is the idle auto-shutdown timeout in
-                      seconds; 0 disables it.
+                    description: |-
+                      IdleTimeout is the idle auto-shutdown timeout in seconds; 0 disables it.
+
+                      An environment idle for this long is stopped without its spec being
+                      touched: the workload is scaled to zero and status.phase reports Stopped
+                      with reason IdleTimeout, while spec.running stays as the user left it. The
+                      stop is marked with the annotation ai.cubestack.io/auto-stopped on the
+                      DevEnvironment, and that mark — not spec.running — is what says the
+                      environment is stopped.
+
+                      A client starting an environment must therefore clear that annotation.
+                      With spec.running already true a start changes nothing this platform can
+                      observe, so an environment left marked stays stopped.
                     format: int32
                     minimum: 0
                     type: integer
@@ -69,13 +82,28 @@ spec:
                 properties:
                   rdmaEnabled:
                     default: false
-                    description: RDMAEnabled enables the RDMA network (Multus).
+                    description: |-
+                      RDMAEnabled gives the environment access to an RDMA device on the node it
+                      runs on.
+
+                      The device is advertised by the cluster, so which one an environment
+                      requests is cluster configuration rather than a field here; an
+                      environment whose requested device no node advertises stays Pending.
+
+                      Registering a memory region locks pages, and the capability that permits
+                      it is outside the set the Baseline Pod Security Standard allows, so the
+                      namespace has to admit the privileged standard. That holds whichever
+                      fabric is selected.
                     type: boolean
                   rdmaType:
                     default: roce
                     description: |-
-                      RDMAType is the RDMA network type: infiniband (requires IB switches) /
-                      roce (RoCEv2, reuses lossless ethernet); effective when rdmaEnabled=true.
+                      RDMAType names the fabric the environment joins; effective when
+                      rdmaEnabled=true.
+
+                      The fabric is what addresses the peers: an InfiniBand fabric assigns the
+                      addresses a device uses, a RoCE fabric derives them from the host's own
+                      networking, so an environment is reachable only on the fabric it names.
                     enum:
                     - infiniband
                     - roce
@@ -100,8 +128,32 @@ spec:
                     type:
                       default: http
                       description: |-
-                        Type is the exposure form: http (web over sub path) / tcp (port range +
-                        TCPRoute) / udp (UDPRoute).
+                        Type is the exposure form.
+
+                        http publishes the port as a sub path of the Gateway's HTTP listener —
+                        /dev/<namespace>/<name>/port/<this port's name>/ — and the request
+                        reaches the container in cleartext. It is not a way to expose a port that
+                        serves TLS: the container would receive a plain HTTP request where it
+                        expects a TLS handshake, and the Gateway does not re-encrypt to it.
+
+                        tcp publishes the port over L4 instead — a listener of the environment's
+                        own, on a port from the platform's L4 range, plus a TCPRoute — with
+                        nothing above it interpreting the stream.
+
+                        A port that serves TLS is exposed as tcp, and as tcp only: the handshake
+                        crosses the Gateway untouched and the client validates the certificate
+                        the container itself presents, so the address in status.endpoints is
+                        reached by prefixing the scheme — an app terminating TLS on 8443 is
+                        published with type tcp and containerPort 8443, and reached at
+                        https://<address>. The platform neither terminates nor re-originates TLS,
+                        and what it publishes is an address, not a hostname: matching an endpoint
+                        by SNI (a TLSRoute on a shared TLS listener) is not implemented, so the
+                        certificate has to cover the address the client dials.
+
+                        udp publishes the port over L4 the same way, as a listener and a UDPRoute
+                        of its own, and the address in status.endpoints is reached by prefixing
+                        udp://. tcp and udp draw on the same pool, and a number is held by one
+                        protocol only: the two cannot be published on the same port number.
                       enum:
                       - http
                       - tcp
@@ -118,24 +170,33 @@ spec:
                   cpu:
                     description: CPU is the CPU limit in cores.
                     type: string
-                  gpuCount:
-                    default: 1
+                  gpu:
                     description: |-
-                      GPUCount is the number of GPU cards. 0 requests no accelerator: the pod
-                      carries no vendor GPU resource and the image brand is not checked. Omit
-                      it for the default of 1.
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  gpuType:
-                    default: nvidia
-                    description: |-
-                      GPUType is the GPU vendor: nvidia / metax. It decides the GPU extended
-                      resource (nvidia.com/gpu / metax-tech.com/gpu) and image brand matching.
-                    enum:
-                    - nvidia
-                    - metax
-                    type: string
+                      GPU requests accelerators. Absent asks for none: no vendor is named, no
+                      vendor GPU resource goes into the pod, and the image brand is not checked,
+                      which is what makes the CPU images usable. It is deliberately not defaulted
+                      into existence — defaulting it would put an accelerator on every
+                      environment and leave "no accelerator" with no way to be expressed.
+                    properties:
+                      count:
+                        default: 1
+                        description: |-
+                          Count is the number of GPU cards to request. Omit it for the default of 1.
+                          There is no zero: omitting the whole gpu block is how an environment asks
+                          for no accelerator.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      vendor:
+                        default: nvidia
+                        description: |-
+                          Vendor is the GPU vendor: nvidia / metax. It decides the GPU extended
+                          resource (nvidia.com/gpu / metax-tech.com/gpu) and image brand matching.
+                        enum:
+                        - metax
+                        - nvidia
+                        type: string
+                    type: object
                   memory:
                     description: Memory is the memory limit.
                     type: string
@@ -159,8 +220,33 @@ spec:
                       type: string
                     type: array
                   env:
-                    description: 'Env is the environment variables (name/value or
-                      valueFrom: secretKeyRef).'
+                    description: |-
+                      Env is the environment variables (name/value or valueFrom: secretKeyRef).
+                      HOME is also an input to where the workspace mounts: an absolute path named
+                      outright precedes the home the runtime identity implies, so it decides both
+                      the mount path (spec.storage.mountPath) and what the container is told its
+                      home is. A valueFrom HOME and a $(VAR) HOME are not inputs — neither is
+                      resolvable when the workload is rendered — so the mount follows the identity
+                      instead and the entry is reported on the Accepted condition.
+
+                      An environment with a workspace claim is told where it is: the controller
+                      states the mount path as HOME on the main container, whatever type and
+                      whichever account the image runs, so a launcher that serves HOME serves the
+                      workspace without having to know what its own image bakes. It states it
+                      ahead of the entries here, so one of them may name it — `PROJECT=$(HOME)/project`
+                      resolves rather than naming that text. An environment without a claim is
+                      told no home of the controller's: a HOME declared here stands as written,
+                      and the image's home applies only where this list declares none.
+
+                      Some values are the controller's rather than the spec's on a jupyter
+                      environment, and an entry declaring one is dropped and replaced: JUPYTER_TOKEN;
+                      any --ServerApp.base_url inside NOTEBOOK_ARGS, which has to name the prefix
+                      the route publishes; and — when securityContext.runAsUser is 0 — the launcher
+                      settings a root container needs (NB_USER, NB_UID, NB_GID, and --allow-root
+                      inside NOTEBOOK_ARGS). A root environment therefore declares nothing for any
+                      of them. Each substitution is reported on the Accepted condition, which names
+                      the value the controller applied instead; the one entry it cannot substitute
+                      is a NOTEBOOK_ARGS fed by valueFrom, which refuses the environment instead.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -335,7 +421,9 @@ spec:
                       runAsUser:
                         description: |-
                           RunAsUser is the user ID to run the container as. Non-root by default;
-                          set 0 to run as root.
+                          set 0 to run as root. Running as root is the whole of the request: the
+                          controller supplies whatever the image needs to start as root, so nothing
+                          has to be declared for it in spec.runtime.env.
                         format: int64
                         type: integer
                     type: object
@@ -346,7 +434,11 @@ spec:
                       defaults to the platform's conventional account "user"; set it when the
                       image runs as something else (e.g. "jovyan" for a docker-stacks image),
                       since a non-root sshd can only serve the uid it runs as, and
-                      securityContext.runAsUser has to name that same account.
+                      securityContext.runAsUser has to name that same account. An environment
+                      running as root is advertised as "root" whatever this field says: that is
+                      the account its sshd runs as, where which family account a root sshd admits
+                      beside it is the image's to decide. Such an environment has its Accepted
+                      condition report this field as ignored.
                     maxLength: 32
                     pattern: ^[a-z_][a-z0-9_-]*$
                     type: string
@@ -354,19 +446,16 @@ spec:
               ssh:
                 description: SSH configures SSH access.
                 properties:
-                  enabled:
-                    default: false
+                  authorizedKeysSecret:
                     description: |-
-                      Enabled exposes SSH access to the environment: the controller opens the
-                      SSH endpoint. It does not start an sshd server — SSH only works if the
-                      image itself runs one. The ssh container type always has SSH exposed.
-                    type: boolean
-                  keysSecret:
-                    description: |-
-                      KeysSecret is the SSH public key Secret reference. If specified, the
-                      controller uses the provided Secret (Secret.data[key] holds multi-line
-                      public keys, i.e. authorized_keys content); otherwise the controller
-                      generates and manages one. The plaintext is never stored in spec.
+                      AuthorizedKeysSecret is the SSH public key Secret reference. If specified,
+                      the controller generates the environment's host identity alone and mounts
+                      this Secret's data[key] as the container's authorized_keys, so the Secret
+                      must carry the label ai.cubestack.io/ssh-keys-delegated: "true"
+                      — only a Secret that names itself for this use is mounted into a workload.
+                      Otherwise the controller generates the host identity and a client keypair,
+                      and status.sshClientKeySecret names the Secret holding the latter. The
+                      plaintext is never stored in spec.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -389,6 +478,16 @@ spec:
                     - key
                     type: object
                     x-kubernetes-map-type: atomic
+                    x-kubernetes-validations:
+                    - message: key must name the Secret data entry the container mounts
+                      rule: self.key != ''
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled exposes SSH access to the environment: the controller opens the
+                      SSH endpoint. It does not start an sshd server — SSH only works if the
+                      image itself runs one. The ssh container type always has SSH exposed.
+                    type: boolean
                 type: object
               storage:
                 description: |-
@@ -403,13 +502,18 @@ spec:
                 properties:
                   mountPath:
                     description: |-
-                      MountPath is the path where the workspace PVC is mounted. Leave it unset
-                      to derive the path from spec.runtime: /root when the container runs as
-                      root, /home/<user> when spec.runtime.user names an account, and /workspace
-                      otherwise. Set it to pin a different path — e.g. for a bring-your-own
-                      image whose home is somewhere else. It should be the directory the
-                      container's home points at, otherwise the workspace does not follow the
-                      user's home.
+                      MountPath is the path where the workspace PVC is mounted, and the HOME the
+                      container is stated: the controller sets the path it mounts at as HOME on the
+                      main container, so where the workspace is and where the container's home is
+                      are one decision rather than two. Leave it unset to derive the path from
+                      spec.runtime: HOME from spec.runtime.env when it names an absolute path
+                      outright, else /root when the container runs as root, else /home/<user> when
+                      spec.runtime.user names an account, and /workspace otherwise. Set it to pin a
+                      different path — e.g. for a bring-your-own image whose home is somewhere else:
+                      the image is told which path that is, so a launcher that serves the home it is
+                      handed serves the workspace. Stating HOME says nothing about the working
+                      directory, which stays the image's. A declared HOME that this outranks is
+                      reported on the Accepted condition.
                     type: string
                   pvcRetention:
                     default: delete
@@ -495,8 +599,8 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions: PodScheduled / RouteReady / BrandMatchValid / Ready (type
-                  constants below).
+                  Conditions: Accepted / PodScheduled / RouteReady / Ready (type constants
+                  below).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -567,9 +671,24 @@ spec:
                     address:
                       description: |-
                         Address is the access address: a URL for web (e.g.
-                        http://<gw-ip>:80/dev/<ns>/<env>/), or a host:port for SSH and tcp/udp
-                        ports (e.g. ssh://user@<gw-ip>:<port>).
+                        http://<gw-ip>:<port>/dev/<ns>/<env>/), or a host:port for SSH and tcp/udp
+                        ports (e.g. ssh://user@<gw-ip>:<port>). The port is the one the address is
+                        reachable on, which is not ListenerPort when the Gateway's dataplane
+                        Service is a NodePort Service.
                       type: string
+                    listenerPort:
+                      description: |-
+                        ListenerPort is the Gateway listener port the endpoint is published on: the
+                        port the environment's ListenerSet declares, or the Gateway's HTTP listener
+                        port for the web endpoint. The controller reuses it across reconciles, so
+                        the environment's listener allocation is stable for as long as the exposure
+                        exists. It is not necessarily the port in Address: a NodePort dataplane
+                        renumbers each listener onto a port from the cluster's node-port range, and
+                        that renumbering is not part of the allocation — a dataplane Service
+                        recreated with different nodePorts changes Address while this does not.
+                        Address says where the endpoint is reachable now, not where it will stay.
+                      format: int32
+                      type: integer
                     name:
                       description: |-
                         Name identifies the endpoint: "jupyter", "ssh", or the spec.ports[].name
@@ -580,10 +699,33 @@ spec:
                   - name
                   type: object
                 type: array
+              jupyterTokenSecret:
+                description: |-
+                  JupyterTokenSecret is the Secret the environment's Jupyter token comes from,
+                  for a jupyter environment: the managed <env>-jupyter-token Secret the controller
+                  generates, holding the token under the data key "token". It is recorded in
+                  status so the user can retrieve the token, which the web route requires.
+                  Absent for every other environment type, which serves no authenticated web
+                  path.
+                properties:
+                  name:
+                    description: name is unique within a namespace to reference a
+                      secret resource.
+                    type: string
+                  namespace:
+                    description: namespace defines the space within which the secret
+                      name must be unique.
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               lastActivityTime:
                 description: |-
-                  LastActivityTime is the last activity time, used for idle timeout
-                  determination.
+                  LastActivityTime is when the environment was last seen active, which is
+                  what the idle timeout is measured against. It is reported by the
+                  environment's own activity agent, which writes the pod annotation
+                  ai.cubestack.io/last-activity while it sees activity — so the value
+                  standing still is the signal, and it is absent until the environment has
+                  been active at least once.
                 format: date-time
                 type: string
               observedGeneration:
@@ -617,30 +759,26 @@ spec:
                 required:
                 - name
                 type: object
-              sshKeysSecret:
+              sshClientKeySecret:
                 description: |-
-                  SSHKeysSecret is the Secret holding the SSH keys in use: the user-provided
-                  one from spec.ssh.keysSecret, or a controller-generated one. It is
-                  recorded in status so the user can retrieve generated keys.
+                  SSHClientKeySecret is the client keypair the controller minted, recorded so
+                  the environment's owner can retrieve the private half and log in. It holds
+                  id_ed25519, the private half, and id_ed25519.pub, which is what the container
+                  mounts as authorized_keys.
+
+                  Absent when spec.ssh.authorizedKeysSecret names the user's own Secret. That
+                  Secret holds public keys rather than a client key, and its name is already in
+                  the spec, so there is nothing generated to point at. The environment's host
+                  key is not here either: it lives in the separate <env>-ssh-host-key Secret.
                 properties:
-                  key:
-                    description: The key of the secret to select from.  Must be a
-                      valid secret key.
-                    type: string
                   name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    description: name is unique within a namespace to reference a
+                      secret resource.
                     type: string
-                  optional:
-                    description: Specify whether the Secret or its key must be defined
-                    type: boolean
-                required:
-                - key
+                  namespace:
+                    description: namespace defines the space within which the secret
+                      name must be unique.
+                    type: string
                 type: object
                 x-kubernetes-map-type: atomic
             type: object

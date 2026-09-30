@@ -21,8 +21,7 @@ stale.
 - `spec.ports[].type` — string · enum: http, tcp, udp · default: http
 - `spec.resources` — object · required
 - `spec.resources.cpu` — string
-- `spec.resources.gpuCount` — integer (int32) · default: 1 · min 0
-- `spec.resources.gpuType` — string · enum: nvidia, metax · default: nvidia
+- `spec.resources.gpu` — object
 - `spec.resources.memory` — string
 - `spec.running` — boolean · default: false
 - `spec.runtime` — object
@@ -32,8 +31,8 @@ stale.
 - `spec.runtime.securityContext` — object
 - `spec.runtime.user` — string
 - `spec.ssh` — object
+- `spec.ssh.authorizedKeysSecret` — object
 - `spec.ssh.enabled` — boolean · default: false
-- `spec.ssh.keysSecret` — object
 - `spec.storage` — object
 - `spec.storage.mountPath` — string
 - `spec.storage.pvcRetention` — string · enum: retain, delete · default: delete
@@ -95,9 +94,10 @@ stale.
 - `spec.overrides` — object
 - `spec.profileRef` — string · required
 - `spec.route` — object
+- `spec.route.idleTimeoutSeconds` — integer (int64) · default: 300 · min 1
 - `spec.route.modelName` — string
 - `spec.route.publish` — boolean · default: false
-- `spec.route.timeoutSeconds` — integer (int64) · default: 60 · min 1
+- `spec.route.timeoutSeconds` — integer (int64) · default: 0 · min 0
 
 ## ModelVersion
 - resource `modelversions.ai.cubestack.io`, apiVersion `ai.cubestack.io/v1alpha1`, scope Cluster
