@@ -14,9 +14,13 @@ spec:
     5. Data path: for S3 storage the referenced endpoint and credential Secret are present; for HostPath the path exists on the target nodes
     6. Quota: the namespace's ResourceQuota and LimitRange admit the resources the profile declares
     Report pass / fail / unknown per check with the evidence, and for each failure state exactly what has to change for it to pass. No write operations allowed.
+    Report language: {{language}} -- write the whole report in it.
   paramsSchema:
     - name: model
       default: all
+    - name: language
+      default: 简体中文
+      enum: [简体中文, 繁體中文, English]
   requiredPermissions:
     level: cluster-read
     note: ModelVersion and InferenceRuntimeProfile are cluster-scoped; the namespace's quota and storage also have to be readable
