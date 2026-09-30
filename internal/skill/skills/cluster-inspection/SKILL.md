@@ -21,8 +21,9 @@ kubectl get events -A --sort-by=.lastTimestamp | tail -50    # recent events
 - **P1 Important**: Pod stuck in Pending (insufficient GPU), OOMKilled, storage near capacity, GPU node degraded.
 - **P2 Minor**: occasional restarts, non-critical component issues, high resource usage, certificates nearing expiry.
 
-## Report Format (Simplified Chinese)
+## Report Format
 
+- Language: write the report in the language the user asked in, and in Simplified Chinese when nobody is asking (a scheduled run).
 - Overview: node count / abnormal Pod count / classification counts.
 - Itemized: severity + symptom + evidence (command output excerpt) + recommendation.
 - Attach an evidence chain to each item (command and key output) so the user can review it.
