@@ -23,7 +23,7 @@ kubectl get events -A --sort-by=.lastTimestamp | tail -50    # recent events
 
 ## Report Format
 
-- Language: write the report in the language the user asked in, and in Simplified Chinese when nobody is asking (a scheduled run).
+- Language: write the report in the language the user asked in; a scheduled run (nobody asking) takes its language from its task template, not from a platform default.
 - Overview: node count / abnormal Pod count / classification counts.
 - Itemized: severity + symptom + evidence (command output excerpt) + recommendation.
 - Attach an evidence chain to each item (command and key output) so the user can review it.

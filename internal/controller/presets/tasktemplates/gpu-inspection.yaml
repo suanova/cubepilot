@@ -22,10 +22,14 @@ spec:
     5. Stuck allocations: Pods Pending on insufficient GPU, and Pods holding a GPU while not Running
     6. Hardware errors: GPU errors reported as node events, or by a node problem detector / DCGM exporter if the cluster runs one. If neither is present this check cannot be made -- say so instead of inferring hardware health from Pods being Running
     Vendor: {{vendor}}. Report per node, with the command output behind each figure, classify by P0/P1/P2, and flag every GPU that is allocated but not usable. State plainly which checks could not be made from this identity. No write operations allowed.
+    Report language: {{language}} -- write the whole report in it.
   paramsSchema:
     - name: vendor
       default: all
       enum: [all, nvidia, metax]
+    - name: language
+      default: zh-Hans
+      enum: [zh-Hans, zh-Hant, en]
   requiredPermissions:
     level: cluster-read
     note: Node status and Pods in every namespace must be readable; the device plugin runs in a platform namespace

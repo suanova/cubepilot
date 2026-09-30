@@ -16,12 +16,16 @@ spec:
     5. Check platform component health (Harbor / Keycloak / Prometheus)
     Attach an evidence chain to any finding, classify by P0/P1/P2; no write operations allowed.
     Inspection scope: {{scope}} within {{target}} -- all covers every node and namespace, node-pool covers one node pool, project covers one project namespace; target names that pool or namespace, or is all to cover every one of them.
+    Report language: {{language}} -- write the whole report in it.
   paramsSchema:
     - name: scope
       default: all
       enum: [all, node-pool, project]
     - name: target
       default: all
+    - name: language
+      default: zh-Hans
+      enum: [zh-Hans, zh-Hant, en]
   requiredPermissions:
     level: cluster-read
     note: Full-cluster inspection requires the creator to have cluster-level read permission

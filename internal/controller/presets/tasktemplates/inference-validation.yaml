@@ -20,9 +20,13 @@ spec:
 
     Reaching the endpoint takes an address published by route.publish, or the Service DNS name if you are inside the cluster, or -- failing both -- running a Pod. That last one is a write: state the command and its blast radius and wait for approval. If it is not approved, report the functional check as not performed, never as a pass.
     Namespace: {{namespace}}. Report per service: pass, or the first failing step with the output that shows it. A service that is Running but answers nothing is a failure, not a pass.
+    Report language: {{language}} -- write the whole report in it.
   paramsSchema:
     - name: namespace
       default: all
+    - name: language
+      default: zh-Hans
+      enum: [zh-Hans, zh-Hant, en]
   requiredPermissions:
     level: cluster-read
     note: Reading model and profile CRs plus the workload in the service's namespace requires read permission there
