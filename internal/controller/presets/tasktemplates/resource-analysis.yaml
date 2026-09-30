@@ -20,8 +20,8 @@ spec:
       default: 7d
       enum: [24h, 7d, 30d]
     - name: language
-      default: zh-Hans
-      enum: [zh-Hans, zh-Hant, en]
+      default: 简体中文
+      enum: [简体中文, 繁體中文, English]
   requiredPermissions:
     level: cluster-read
     note: Node capacity and every namespace's Pods must be readable; the trend part additionally needs Prometheus access

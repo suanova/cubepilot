@@ -24,8 +24,8 @@ spec:
     - name: target
       default: all
     - name: language
-      default: zh-Hans
-      enum: [zh-Hans, zh-Hant, en]
+      default: 简体中文
+      enum: [简体中文, 繁體中文, English]
   requiredPermissions:
     level: cluster-read
     note: Full-cluster inspection requires the creator to have cluster-level read permission
