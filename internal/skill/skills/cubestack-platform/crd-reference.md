@@ -79,6 +79,7 @@ stale.
 - `spec.readinessPolicy` — object
 - `spec.readinessPolicy.requireAllRoles` — boolean · required · default: true
 - `spec.roles` — array · required
+- `spec.roles[].accelerator` — object
 - `spec.roles[].dependsOn` — array
 - `spec.roles[].name` — string · required
 - `spec.roles[].podTemplate` — object · required

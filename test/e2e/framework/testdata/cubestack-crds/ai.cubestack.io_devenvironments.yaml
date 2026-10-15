@@ -16,7 +16,20 @@ spec:
     singular: devenvironment
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase.name
+      name: Phase
+      type: string
+    - jsonPath: .status.phase.reason
+      name: Reason
+      type: string
+    - jsonPath: .status.lastActivityTime
+      name: Last activity
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
@@ -28,6 +41,21 @@ spec:
           hosting it has to be at the Baseline Pod Security Standard: root and any
           capability beyond NET_BIND_SERVICE are rejected at Restricted, and Pod
           Security Admission has no per-container exemption.
+
+          The platform never writes spec.running. An environment stopped by its idle
+          timeout (spec.lifecycle.idleTimeout) is marked with the
+          ai.cubestack.io/auto-stopped annotation instead, and both the workload's
+          replicas and the reported phase follow from that mark — so starting one is
+          clearing the annotation rather than setting a field. The phase's reason is
+          what tells that stop apart from one the user made, and it is a column of the
+          default kubectl output for that purpose.
+
+          Its companion, ai.cubestack.io/auto-stopped-at, is the platform's own record
+          of when it stopped the environment, and it floors the idle clock that judged
+          it idle: clearing the mark while the just-ended session's pod is still
+          standing must not let that pod's stale activity stop the environment again.
+          The platform writes it alone, and clearing the mark does not require touching
+          it.
         properties:
           apiVersion:
             description: |-
@@ -187,6 +215,28 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      model:
+                        description: |-
+                          Model restricts the environment to a single GPU model the vendor offers,
+                          e.g. MXC550. It has to name a model of the declared vendor
+                          (spec.resources.gpu.vendor), and is matched against the model the cluster
+                          advertises for that vendor, so it is written as that vendor reports the
+                          model rather than in any platform's own spelling. Omit it to take any node
+                          offering the vendor's accelerator.
+
+                          The advertised model is a node label's value, and the field is held to that
+                          shape — a vendor that names a card "MXC 550" advertises it as "MXC-550".
+                          The shape is enforced rather than left to select nothing, because no
+                          cluster could ever satisfy the other one; a model that is valid but absent
+                          is a different matter, and is handled below.
+
+                          A model no node offers is a matter of what the cluster has rather than of
+                          what the spec asks for, so the environment stays Pending with the
+                          scheduling failure reported against it — the spec is applied as written.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$
+                        type: string
                       vendor:
                         default: nvidia
                         description: |-
@@ -450,12 +500,13 @@ spec:
                     description: |-
                       AuthorizedKeysSecret is the SSH public key Secret reference. If specified,
                       the controller generates the environment's host identity alone and mounts
-                      this Secret's data[key] as the container's authorized_keys, so the Secret
-                      must carry the label ai.cubestack.io/ssh-keys-delegated: "true"
-                      — only a Secret that names itself for this use is mounted into a workload.
-                      Otherwise the controller generates the host identity and a client keypair,
-                      and status.sshClientKeySecret names the Secret holding the latter. The
-                      plaintext is never stored in spec.
+                      this Secret's data[key] as the container's authorized_keys — the Secret
+                      holds public keys, and its selected data entry is the file the container
+                      reads, so it must exist at the named key. Otherwise the controller
+                      generates the host identity and a client keypair, and
+                      status.sshClientKeySecret names the Secret holding the latter, whose
+                      private half the environment's owner retrieves to log in. The plaintext
+                      is never stored in spec.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -662,7 +713,13 @@ spec:
               endpoints:
                 description: |-
                   Endpoints are the access addresses of the environment: the web (Jupyter)
-                  URL, the SSH address, and any extra application port exposures.
+                  URL, the SSH address, and any extra application port exposures. The list is
+                  withheld while the environment is stopped: nothing is listening behind the
+                  routes, so an address published then would lead nowhere. It is restored when
+                  the environment starts again, each exposure back on the listener port it
+                  held — the endpoint's own ListenerPort, which is the allocation. The port
+                  inside Address is not the same one under every dataplane: a Service
+                  recreated with different nodePorts renumbers it.
                 items:
                   description: |-
                     Endpoint describes an access address of the environment: the web (Jupyter)
