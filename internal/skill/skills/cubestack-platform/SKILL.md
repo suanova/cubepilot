@@ -28,6 +28,12 @@ A `DevEnvironment` is a containerized dev machine ("开发机"). Key semantics:
   (`nvidia` default / `metax`) and `resources.gpu.count` (default 1). Ask for no
   accelerator by omitting the whole `gpu` block — the pod then carries no vendor
   GPU resource and the image brand is not checked. There is no `count: 0`.
+  `resources.gpu.model` optionally pins one model of that vendor (e.g. `MXC550`),
+  written as the vendor spells it — the field is held to the advertised model's
+  label shape, so a card the vendor calls "MXC 550" is written `MXC-550`. It is
+  matched against the model the cluster advertises, so one no node offers leaves
+  the environment Pending on the scheduling failure rather than falling back;
+  omit it to take any node with the vendor's accelerator.
 - `spec.runtime.user` is the container account the environment runs as (default
   `user`); set it for a bring-your-own image that runs as something else (e.g.
   `jovyan`), and keep `spec.runtime.securityContext.runAsUser` on that account.
@@ -46,15 +52,20 @@ A `DevEnvironment` is a containerized dev machine ("开发机"). Key semantics:
 - `spec.ssh.enabled` exposes the SSH endpoint (the `ssh` type does that for you);
   it does not start an sshd — the image has to run one. The controller generates
   the keypair by default and records the private half in
-  `status.sshClientKeySecret`; to use your own public keys, point
-  `spec.ssh.authorizedKeysSecret` at a Secret labelled
-  `ai.cubestack.io/ssh-keys-delegated: "true"` — only a Secret that names itself
-  for this use is mounted into a workload.
+  `status.sshClientKeySecret`, which the owner retrieves to log in; to use your
+  own public keys instead, point `spec.ssh.authorizedKeysSecret` at a Secret —
+  the controller mounts its selected `data[key]` as the container's
+  `authorized_keys`, so that entry has to exist (it is read before anything is
+  created, so a bad reference leaves no half-provisioned environment).
 - `spec.lifecycle.idleTimeout` (seconds; 0 disables) stops an idle environment
   without touching `spec.running`: it marks the environment with the annotation
   `ai.cubestack.io/auto-stopped`, and that mark — not `spec.running` — is what
   says the environment is stopped. Start one by clearing the annotation; with
-  `running` already true, a start changes nothing the platform can observe.
+  `running` already true, a start changes nothing the platform can observe. The
+  platform also writes `ai.cubestack.io/auto-stopped-at` — when it stopped the
+  environment — and floors the idle clock with it, so clearing the mark while the
+  just-ended session's pod is still standing cannot let that pod's stale activity
+  stop the environment again; clearing the mark does not require touching it.
 - `spec.ports[].type` picks the exposure form: `http` publishes the port as a
   cleartext sub path of the Gateway (`/dev/<ns>/<env>/port/<name>/`), `tcp`/`udp`
   give it a listener of its own over L4. A port serving TLS is exposed as `tcp`
@@ -87,7 +98,11 @@ A DevEnvironment may exist while still Stopped/Pending. Read `status` to know
 what to hand the user:
 
 - `status.phase.name`: `Pending` / `Running` / `Stopped` / `Failed` /
-  `Terminating`. `status.conditions` (`Accepted`, `PodScheduled`, `RouteReady`,
+  `Terminating`, and `status.phase.reason` says why it is there — which is how a
+  platform auto-stop is told from a stop the user made. Both, plus
+  `status.lastActivityTime` and the creation timestamp, are columns of the
+  default `kubectl get` output (Phase / Reason / Last activity / Age).
+  `status.conditions` (`Accepted`, `PodScheduled`, `RouteReady`,
   `Ready`) explains why; `Accepted` is where the controller reports what it
   substituted or ignored — an overridden `HOME`, a dropped env entry, a
   `runtime.user` it did not use.
@@ -96,7 +111,10 @@ what to hand the user:
   `listenerPort` it was published on. Report these to the user rather than
   inventing URLs; `listenerPort` is the stable allocation, while the port inside
   `Address` is only where the endpoint is reachable now (a NodePort dataplane
-  renumbers it).
+  renumbers it). The list is withheld while the environment is stopped —
+  nothing is listening behind the routes, so a published address would lead
+  nowhere — and comes back on start, each exposure on the `listenerPort` it
+  held.
 - A jupyter environment's token lives in the Secret named by
   `status.jupyterTokenSecret` (data key `token`), not in the spec.
 - SSH access only works if the image runs an sshd and the environment exposes
@@ -106,7 +124,13 @@ what to hand the user:
 
 - `InferenceRuntimeProfile` — a serving profile: an `engine`, the `roles`
   workloads, `endpoint` selection, `modelRequirements`, and any
-  user-adjustable `overrides`. Usually created by an admin first.
+  user-adjustable `overrides`. Usually created by an admin first. A role may
+  carry its own `accelerator` (`vendor` + `models`) — a complete replacement of
+  the profile-level one, not a merge, which is how a heterogeneous profile puts
+  different cards behind different roles — and a role that declares one has to
+  declare `podTemplate.resources.gpuPerPod` beside it. `gpuPerPod` accepts a
+  template referencing an `overrides` value (its resolved value has to be a
+  positive integer), so a count the user picks can reach the pod.
 - `ModelVersion` — a model artifact: `model` + `version` identify it;
   `storage` says where it lives (`strategy` picks one of `HostPath` / `Dynamic`
   / `Static` / `S3`, and exactly one matching sub-object must accompany it);
@@ -139,8 +163,12 @@ Required fields and defaults for each kind are in `crd-reference.md`.
   stopped — that stop is marked with the annotation `ai.cubestack.io/auto-stopped`,
   which says the environment is stopped while `running` still reads `true`;
   clear the annotation to start it.
-- Pointing `spec.ssh.authorizedKeysSecret` at a Secret that lacks the label
-  `ai.cubestack.io/ssh-keys-delegated: "true"` — it is not mounted.
+- Pointing `spec.ssh.authorizedKeysSecret` at a Secret that does not carry the
+  key it names (`data[key]`) — that entry is the file the container mounts as
+  `authorized_keys`, and the reference is checked before anything is created.
+- Reading a `gpu.model` the cluster does not offer as an error to fix in the
+  spec — the environment stays Pending with the scheduling failure; omit the
+  field to take any node with the vendor's accelerator.
 - Expecting `spec.storage` to work in a namespace pinned to the Restricted Pod
   Security Standard — the workspace-claim init container runs as root with
   `CAP_CHOWN`/`CAP_FOWNER`/`CAP_FSETID`, so the namespace has to be at Baseline.
