@@ -45,6 +45,7 @@ func TestLoadLLMDefaultsFromEnv(t *testing.T) {
 	}
 }
 
+// TestLoadAgentImagePullPolicy verifies the env override reaches the config.
 func TestLoadAgentImagePullPolicy(t *testing.T) {
 	t.Setenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "Always")
 	cfg := Load()
@@ -53,6 +54,7 @@ func TestLoadAgentImagePullPolicy(t *testing.T) {
 	}
 }
 
+// TestLoadAgentDataStorageClass verifies the env override reaches the config.
 func TestLoadAgentDataStorageClass(t *testing.T) {
 	t.Setenv("CUBEPILOT_AGENT_DATA_STORAGE_CLASS", "ceph-rbd-ephemeral")
 	cfg := Load()

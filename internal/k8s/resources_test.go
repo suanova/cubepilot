@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// testAgentSpec returns the shared AgentSpec the resource builders are tested
+// with.
 func testAgentSpec() AgentSpec {
 	return AgentSpec{
 		Namespace:            "cubepilot",
