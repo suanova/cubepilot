@@ -56,6 +56,9 @@ jobs:
     name: Build & push images and chart
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      image_pushed: ${{ steps.image.outputs.pushed }}
     steps:
       - uses: actions/checkout@v7
 
@@ -136,7 +139,10 @@ jobs:
         run: make images IMAGE_TAG=${{ steps.tag.outputs.tag }}
 
       - name: Push images
-        run: make push IMAGE_TAG=${{ steps.tag.outputs.tag }}
+        id: image
+        run: |
+          make push IMAGE_TAG=${{ steps.tag.outputs.tag }}
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Package Helm chart
         run: |
@@ -163,3 +169,39 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
+
+      # Refresh the four cubepilot latest tars in the installer's MinIO offline
+      # assets. Runs even if the chart push failed: the images are already in
+      # Harbor. Chart updates reach the offline package through the operator
+      # image (vendor-chart PR + operator publish), so nothing else is needed.
+      - name: Create an installation token for cubestack-installer
+        id: app-token
+        if: always() && github.ref_type == 'branch' && steps.tag.outputs.tag == 'latest' && steps.image.outputs.pushed == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SUANOVA_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SUANOVA_BOT_APP_PRIVATE_KEY }}
+          owner: suanova
+          repositories: cubestack-installer
+          permission-contents: write
+      - name: Dispatch refresh-latest-offline
+        if: always() && github.ref_type == 'branch' && steps.tag.outputs.tag == 'latest' && steps.image.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: suanova/cubepilot
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg r "${SOURCE_REPO}" \
+            --arg s "${GITHUB_SHA}" \
+            --arg u "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{event_type:"refresh-latest-offline",client_payload:{source_repo:$r,sha:$s,run_url:$u}}')"
+          for i in 1 2 3; do
+            if printf '%s' "${payload}" | gh api --method POST \
+                repos/suanova/cubestack-installer/dispatches --input -; then
+              exit 0
+            fi
+            sleep $((i * 5))
+          done
+          echo "::error::repository_dispatch failed after 3 attempts"
+          exit 1
