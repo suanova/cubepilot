@@ -24,7 +24,7 @@ agents:
     repository: harbor.isuanova.com/suanova/cubepilot-openclaw
     tag: ""    # empty -> .Chart.AppVersion
   # StorageClass of each per-user workspace PVC (data-<user>). Empty follows the
-  # cluster default (kind/local-path in tests). A CubeStack box sets
+  # cluster default (kind/local-path in tests). Production sets
   # ceph-rbd-ephemeral so the claim is an explicit block volume and does not
   # inherit a shared-filesystem (RWX) default -- the workspace holds a live
   # SQLite database.

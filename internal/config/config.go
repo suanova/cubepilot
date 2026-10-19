@@ -34,9 +34,9 @@ type Config struct {
 	AgentImagePullPolicy string
 
 	// AgentDataStorageClass pins the per-user data PVC to a StorageClass. Empty
-	// follows the cluster default (kind/local-path in tests); a CubeStack box
-	// sets ceph-rbd-ephemeral so the claim does not inherit a shared
-	// filesystem (RWX) default.
+	// follows the cluster default (kind/local-path in tests); production sets
+	// ceph-rbd-ephemeral so the claim does not inherit a shared filesystem
+	// (RWX) default.
 	AgentDataStorageClass string
 
 	// GatewayToken is the bearer token used to authenticate against each agent
