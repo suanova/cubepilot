@@ -32,7 +32,7 @@ config.Load() (internal/config), so they receive the same environment.
 - name: CUBEPILOT_AGENT_IMAGE_PULL_POLICY
   value: {{ .Values.imagePullPolicy | quote }}
 - name: CUBEPILOT_AGENT_DATA_STORAGE_CLASS
-  value: {{ .Values.agents.dataStorageClassName | quote }}
+  value: {{ .Values.agents.storageClassName | quote }}
 - name: CUBEPILOT_GC_WINDOW
   value: {{ .Values.agents.gcWindow | quote }}
 - name: CUBEPILOT_GC_WATERMARK
