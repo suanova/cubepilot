@@ -39,6 +39,9 @@ type AgentSpec struct {
 	// LogLevel is the supervisor's CUBEPILOT_LOG_LEVEL inside the Pod. It
 	// comes from the operator's AgentLogLevel, not its own LogLevel.
 	LogLevel int
+	// DataStorageClassName pins the per-user data PVC to a StorageClass. Empty
+	// follows the cluster default.
+	DataStorageClassName string
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -68,7 +71,8 @@ func (s AgentSpec) DataPVCFor(name, instance string, size string) *corev1.Persis
 			Labels:    labels,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			StorageClassName: strPtrOrNil(s.DataStorageClassName),
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceStorage: resource.MustParse(size),
@@ -76,6 +80,15 @@ func (s AgentSpec) DataPVCFor(name, instance string, size string) *corev1.Persis
 			},
 		},
 	}
+}
+
+// strPtrOrNil returns nil for an empty string so the PVC follows the cluster
+// default StorageClass instead of requesting one named "".
+func strPtrOrNil(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // Service returns the ClusterIP service exposing the agent gateway on s.Port.

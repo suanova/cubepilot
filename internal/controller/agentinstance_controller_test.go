@@ -1042,6 +1042,23 @@ func TestAgentInstanceDataVolumeSizeReachesPVC(t *testing.T) {
 	}
 }
 
+// TestAgentInstanceDataStorageClassReachesPVC verifies the operator's
+// configured agent StorageClass is applied to the data PVC.
+func TestAgentInstanceDataStorageClassReachesPVC(t *testing.T) {
+	r, cl := newTestReconciler(t, testTemplate(), testInstance())
+	r.Cfg.AgentDataStorageClass = "ceph-rbd-ephemeral"
+	reconcileInstance(r, t)
+	reconcileInstance(r, t)
+
+	var pvc corev1.PersistentVolumeClaim
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: testPVCName}, &pvc); err != nil {
+		t.Fatalf("data pvc not created: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "ceph-rbd-ephemeral" {
+		t.Errorf("pvc storageClassName = %v, want ceph-rbd-ephemeral", pvc.Spec.StorageClassName)
+	}
+}
+
 // TestGeneratedNameBoundedAndDeterministic pins the name bound. AgentInstance
 // metadata.name is accepted up to 253 characters, so "data-<name>" can be 258
 // -- a name the API server rejects, and which the finalizer then tries to

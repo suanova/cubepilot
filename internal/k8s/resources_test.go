@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// testAgentSpec returns the shared AgentSpec the resource builders are tested
+// with.
 func testAgentSpec() AgentSpec {
 	return AgentSpec{
 		Namespace:            "cubepilot",
@@ -17,6 +19,26 @@ func testAgentSpec() AgentSpec {
 		Port:                 8080,
 		AgentUser:            "alice",
 		UserKubeconfigSecret: UserKubeconfigSecretFor("alice"),
+	}
+}
+
+// TestDataPVCStorageClass pins the per-instance claim: empty follows the
+// cluster default, a configured class is written through, and the access mode
+// stays ReadWriteOnce (one Pod per instance, with a live SQLite database).
+func TestDataPVCStorageClass(t *testing.T) {
+	spec := testAgentSpec()
+	pvc := spec.DataPVCFor("data-alice", "alice", "")
+	if pvc.Spec.StorageClassName != nil {
+		t.Errorf("storageClassName = %q, want nil (cluster default)", *pvc.Spec.StorageClassName)
+	}
+
+	spec.DataStorageClassName = "ceph-rbd-ephemeral"
+	pvc = spec.DataPVCFor("data-alice", "alice", "")
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "ceph-rbd-ephemeral" {
+		t.Errorf("storageClassName = %v, want ceph-rbd-ephemeral", pvc.Spec.StorageClassName)
+	}
+	if got := pvc.Spec.AccessModes; len(got) != 1 || got[0] != corev1.ReadWriteOnce {
+		t.Errorf("accessModes = %v, want [ReadWriteOnce]", got)
 	}
 }
 
