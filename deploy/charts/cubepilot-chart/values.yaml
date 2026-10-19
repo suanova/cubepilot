@@ -23,6 +23,12 @@ agents:
   image:
     repository: harbor.isuanova.com/suanova/cubepilot-openclaw
     tag: ""    # empty -> .Chart.AppVersion
+  # StorageClass of each per-user workspace PVC (data-<user>). Empty follows the
+  # cluster default (kind/local-path in tests). A CubeStack box sets
+  # ceph-rbd-ephemeral so the claim is an explicit block volume and does not
+  # inherit a shared-filesystem (RWX) default -- the workspace holds a live
+  # SQLite database.
+  dataStorageClassName: ""
   # Platform default LLM (optional). Both are empty by default: the builtin
   # cubepilot template is created with no provider and LLMs are
   # added from the Portal (Agent Config -> LLM Config). Set an endpoint AND a

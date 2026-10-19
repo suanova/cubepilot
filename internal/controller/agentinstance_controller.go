@@ -117,13 +117,14 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 	// Ensure PVC / Service / Pod exist (provision + self-heal; the resident
 	// policy is declared by the spec).
 	spec := k8s.AgentSpec{
-		Namespace:    r.Cfg.Namespace,
-		Image:        r.Cfg.AgentImage,
-		PullPolicy:   corev1.PullPolicy(r.Cfg.AgentImagePullPolicy),
-		GatewayToken: r.Cfg.GatewayToken,
-		Port:         int32(r.Cfg.AgentPort),
-		AgentUser:    inst.Spec.Owner,
-		LogLevel:     r.Cfg.AgentLogLevel,
+		Namespace:            r.Cfg.Namespace,
+		Image:                r.Cfg.AgentImage,
+		PullPolicy:           corev1.PullPolicy(r.Cfg.AgentImagePullPolicy),
+		GatewayToken:         r.Cfg.GatewayToken,
+		Port:                 int32(r.Cfg.AgentPort),
+		AgentUser:            inst.Spec.Owner,
+		LogLevel:             r.Cfg.AgentLogLevel,
+		DataStorageClassName: r.Cfg.AgentDataStorageClass,
 	}
 	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
 	// kubectl must run with the USER's own credentials, so the per-user

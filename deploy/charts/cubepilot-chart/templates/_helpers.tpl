@@ -31,6 +31,8 @@ config.Load() (internal/config), so they receive the same environment.
   value: {{ include "cubepilot.image" (dict "image" .Values.agents.image "root" .) | quote }}
 - name: CUBEPILOT_AGENT_IMAGE_PULL_POLICY
   value: {{ .Values.imagePullPolicy | quote }}
+- name: CUBEPILOT_AGENT_DATA_STORAGE_CLASS
+  value: {{ .Values.agents.dataStorageClassName | quote }}
 - name: CUBEPILOT_GC_WINDOW
   value: {{ .Values.agents.gcWindow | quote }}
 - name: CUBEPILOT_GC_WATERMARK

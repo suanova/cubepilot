@@ -33,6 +33,12 @@ type Config struct {
 	// CUBEPILOT_AGENT_IMAGE_PULL_POLICY=Always.
 	AgentImagePullPolicy string
 
+	// AgentDataStorageClass pins the per-user data PVC to a StorageClass. Empty
+	// follows the cluster default (kind/local-path in tests); a CubeStack box
+	// sets ceph-rbd-ephemeral so the claim does not inherit a shared
+	// filesystem (RWX) default.
+	AgentDataStorageClass string
+
 	// GatewayToken is the bearer token used to authenticate against each agent
 	// gateway (mirrors gateway.auth.token in the injected openclaw.json).
 	GatewayToken string
@@ -106,8 +112,9 @@ func Load() Config {
 		// IfNotPresent by default: the agent image tag is :latest on a chart
 		// install, and Kubernetes would otherwise default an unset policy to
 		// Always -- pulling over an image that kind just side-loaded.
-		AgentImagePullPolicy: getenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "IfNotPresent"),
-		GatewayToken:         os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
+		AgentImagePullPolicy:  getenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "IfNotPresent"),
+		AgentDataStorageClass: getenv("CUBEPILOT_AGENT_DATA_STORAGE_CLASS", ""),
+		GatewayToken:          os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
 		// Empty by default: no platform default model is seeded unless an
 		// endpoint + model are configured (the builtin template is then created
 		// model-less and LLMs are added from the Portal).

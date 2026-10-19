@@ -53,6 +53,14 @@ func TestLoadAgentImagePullPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadAgentDataStorageClass(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_DATA_STORAGE_CLASS", "ceph-rbd-ephemeral")
+	cfg := Load()
+	if cfg.AgentDataStorageClass != "ceph-rbd-ephemeral" {
+		t.Fatalf("AgentDataStorageClass = %q, want ceph-rbd-ephemeral", cfg.AgentDataStorageClass)
+	}
+}
+
 // TestLoadAgentImagePullPolicyDefault pins the kind-friendly default: local
 // builds are side-loaded into the cluster, so an agent Pod must not go to the
 // registry for the image.
