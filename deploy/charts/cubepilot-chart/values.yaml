@@ -24,10 +24,8 @@ agents:
     repository: harbor.isuanova.com/suanova/cubepilot-openclaw
     tag: ""    # empty -> .Chart.AppVersion
   # StorageClass of each per-user workspace PVC (data-<user>). Empty follows the
-  # cluster default (kind/local-path in tests). Production sets
-  # ceph-rbd-ephemeral so the claim is an explicit block volume and does not
-  # inherit a shared-filesystem (RWX) default -- the workspace holds a live
-  # SQLite database.
+  # cluster default; production sets ceph-rbd-ephemeral so the claim stays a
+  # block volume (the workspace holds a live SQLite database).
   dataStorageClassName: ""
   # Platform default LLM (optional). Both are empty by default: the builtin
   # cubepilot template is created with no provider and LLMs are

@@ -33,10 +33,9 @@ type Config struct {
 	// CUBEPILOT_AGENT_IMAGE_PULL_POLICY=Always.
 	AgentImagePullPolicy string
 
-	// AgentDataStorageClass pins the per-user data PVC to a StorageClass. Empty
-	// follows the cluster default (kind/local-path in tests); production sets
-	// ceph-rbd-ephemeral so the claim does not inherit a shared filesystem
-	// (RWX) default.
+	// AgentDataStorageClass pins the per-user data PVC; empty follows the
+	// cluster default (kind/local-path in tests). Production sets
+	// ceph-rbd-ephemeral: the workspace must stay a block volume.
 	AgentDataStorageClass string
 
 	// GatewayToken is the bearer token used to authenticate against each agent
