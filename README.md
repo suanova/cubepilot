@@ -13,6 +13,13 @@ the two core capabilities described in the module design document:
    `kubectl` against the same cluster, and streams results back to the Portal
    over SSE.
 
+## Documentation
+
+- [User guide (中文)](docs/cubepilot/user-guide.md) -- using the assistant in the
+  CubeStack console: chat, approvals, scheduled tasks, model and policy configuration.
+- [API reference (中文)](docs/cubepilot/api.md) -- the REST/SSE contract for client
+  developers.
+
 ## Architecture
 
 ```
