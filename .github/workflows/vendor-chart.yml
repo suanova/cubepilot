@@ -339,6 +339,10 @@ jobs:
           # Only the paths this workflow owns: a stray file elsewhere in the
           # checkout is not something to commit.
           git add --all -- assets README.md
+          # An older target branch may not carry the preload list.
+          if [ -e test/e2e/images.txt ]; then
+            git add --all -- test/e2e/images.txt
+          fi
           # Nothing staged means the archive and its pins already agree. Read the
           # index rather than `git status`: the one state that leaves no tracked
           # change is a version whose pin was bumped by hand while its archive went
