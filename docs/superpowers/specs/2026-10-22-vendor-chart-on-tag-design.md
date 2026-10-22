@@ -48,10 +48,11 @@ The job gate becomes: run for a push to `main`, a push to `release-*`, or a push
 | push `main` or `release-X.Y` | `--version <Chart.yaml version>-latest --app-version latest` | `cubepilot-<Chart.yaml version>-latest.tgz` |
 | push tag `vX.Y.Z` (or `-<prerelease>`) | `--version X.Y.Z --app-version X.Y.Z` | `cubepilot-X.Y.Z.tgz` |
 
-The tag path validates the tag with the same SemVer regex `release.yaml` uses
-before building. Duplicating the regex is deliberate: the two workflows run
-concurrently on a tag push, and vendor-chart must reject a malformed tag even if
-`release.yaml` fails before its own validation reports it.
+The tag path strips the leading `v` before validation and packaging: `v2.0.0`
+is validated and built as `2.0.0`. It uses the same SemVer regex `release.yaml`
+uses. Duplicating the regex is deliberate: the two workflows run concurrently on
+a tag push, and vendor-chart must reject a malformed tag even if `release.yaml`
+fails before its own validation reports it.
 
 The existing `cubepilot-[0-9]*.tgz` cleanup, catalog `oci.version` rewrite, and the
 two README table rewrites are reused unchanged. Only one `cubepilot-*.tgz` ever
@@ -97,6 +98,12 @@ Runs across `main`, `release-*`, and tags therefore serialize, and the most rece
 generated artifact is the one left pinned. Without this, a tag run and a main run
 that both fall back to `main` would race the same automation branch and one would be
 rejected by the `force-with-lease` push.
+
+GitHub keeps at most one *pending* run per group: an in-progress run is never
+cancelled, but a newer queued run replaces an older pending one. A tag release run
+that is still pending when a newer chart-changing run queues is therefore dropped,
+and the newer artifact wins. That is the intended "last generated wins" invariant,
+not a lost release: the tag can be re-pushed to regenerate its artifact.
 
 The PR title stays `chore(charts): vendor cubepilot <version>`, so PRs against
 `main` are still auto-merged by the operator's `auto-merge-bot-pr.yml`. That workflow
