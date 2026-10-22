@@ -117,6 +117,10 @@ both artifacts are valid charts of this repo, and re-pushing the newer tag (or
 re-running the workflow) re-asserts it. A cross-repo freshness marker would add
 state to the operator for a race that self-corrects.
 
+Update (2026-10-22): the group now also sets `queue: max`. Pending runs are
+retained (up to 100) and executed FIFO, so a release tag queued behind a rolling
+run is not dropped and an older run cannot finish after a newer one.
+
 The PR title stays `chore(charts): vendor cubepilot <version>`, so PRs against
 `main` are still auto-merged by the operator's `auto-merge-bot-pr.yml`. That workflow
 hard-codes `BASE_BRANCH: main`; PRs against `release-*` are merged by a maintainer.

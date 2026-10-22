@@ -35,6 +35,9 @@ concurrency:
   # Never cancelled for a newer run: a run killed between pushing the branch and
   # opening the PR leaves a branch no later run would necessarily return for.
   cancel-in-progress: false
+  # FIFO and up to 100 pending, so a release tag queued behind a rolling run is
+  # not dropped.
+  queue: max
 
 env:
   TARGET_REPO: suanova/cubestack-operator
