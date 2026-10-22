@@ -74,8 +74,7 @@ jobs:
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: go test $(go list ./... | grep -v /test/)
 
-      # Shell tests for the workflow tooling in scripts/. make test runs the
-      # same script for local runs; this step keeps it in CI.
+      # The same shell test make test runs, kept in CI.
       - name: shell tests
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: bash scripts/vendor-chart-target-test.sh

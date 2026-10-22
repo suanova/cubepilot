@@ -8,45 +8,32 @@ name: vendor-chart
 # its copy in the operator still carried a templates/hpa.yaml this repo had
 # deleted.
 #
-# This workflow closes that loop. On a merge to main or a release branch that
-# touches the chart it packages the rolling `-latest` chart; on a vX.Y.Z tag it
-# packages the released chart with the tag as both version and appVersion. It
-# then opens -- or refreshes -- a pull request in the operator that re-vendors
-# the archive and its pins, so whatever this repo generated last is what the
-# operator pins. That PR is checked by the operator's own PR workflow, which runs
-# TestCatalogChartsAreVendored, so the guard is not duplicated here.
-#
-# A tag does not record the branch it was cut from, so the operator target is
-# derived from the version (vX.Y.Z -> release-X.Y). A branch maps to the same
-# branch. A target the operator does not have falls back to main.
-#
-# The archive is packaged here rather than pulled back from Harbor: the pull would
-# have to wait on release.yaml's push to land, and a plain `on: push` races it.
+# This workflow closes that loop: a branch push packages the rolling `-latest`
+# chart, a vX.Y.Z tag packages the release. A tag maps to release-X.Y (it does
+# not record its branch), a branch maps to itself, and a missing operator branch
+# falls back to main. The archive is packaged here rather than pulled from
+# Harbor, because a tag push starts release.yaml and this workflow together.
 on:
   push:
     branches: [main, 'release-*']
     tags: ['v*']
-    # Paths are not evaluated for tag pushes, so a release always vendors;
-    # branch pushes vendor only when the chart (or this file) changed.
+    # Tag pushes ignore paths; branch pushes vendor only when the chart changed.
     paths:
       - 'deploy/charts/cubepilot-chart/**'
       # Included so a fix to this workflow re-runs it on the merge that carries it.
       - '.github/workflows/vendor-chart.yml'
-  # Not path-filtered, so a dispatch is always answered -- this is how the
-  # workflow is exercised on demand. It only becomes dispatchable once it is on
-  # the default branch, and the job itself refuses any ref but main.
+  # Not path-filtered, so a dispatch is always answered. The job gate below
+  # still refuses any ref but main.
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
   # One group across every ref: runs that both fall back to main must not race
-  # the same automation branch. Serializing also leaves the most recently
-  # generated artifact pinned.
+  # the automation branch, and the latest generated artifact is left pinned.
   group: vendor-chart
-  # Not cancelled in favour of a newer run: this workflow pushes a branch and
-  # then opens a pull request for it, and a run killed between those two leaves
-  # a branch no later run would necessarily come back for.
+  # Never cancelled for a newer run: a run killed between pushing the branch and
+  # opening the PR leaves a branch no later run would necessarily return for.
   cancel-in-progress: false
 
 env:
@@ -58,10 +45,8 @@ jobs:
   vendor:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # `workflow_dispatch` can be pointed at any ref; the push filters already
-    # restrict pushes, so only a dispatch needs the ref gate. A dispatch on a
-    # release branch or tag would package that ref's chart over the rolling
-    # branch, which is not what a manual re-run is for.
+    # Push triggers are already filtered; only a dispatch needs the ref gate, so
+    # a manual run cannot package a feature branch or tag over the rolling chart.
     if: >-
       (github.event_name == 'push' &&
        (github.ref == 'refs/heads/main' ||
@@ -81,9 +66,8 @@ jobs:
       # the vendored archive is built by the same tool that publishes it.
       - name: Install helm
         uses: azure/setup-helm@v5
-      # A branch packages the rolling chart exactly as release.yaml does on a
-      # branch push; a tag packages the release exactly as release.yaml does on a
-      # tag push, so the vendored content matches the published artifact.
+      # Branch: the rolling chart. Tag: the release, version and appVersion from
+      # the tag, exactly as release.yaml packages it.
       - name: Package the chart
         id: package
         run: |
@@ -131,8 +115,7 @@ jobs:
           set -euo pipefail
           candidate="$(scripts/vendor-chart-target.sh "${GITHUB_REF_TYPE}" "${GITHUB_REF_NAME}")"
           if [ "$candidate" != "main" ]; then
-            # --include so a transient API failure is not mistaken for a missing
-            # branch and silently redirected to main.
+            # --include so a transient API failure is not read as a missing branch.
             status="$(gh api --include "repos/${TARGET_REPO}/branches/${candidate}" 2>/dev/null \
               | awk 'NR==1{print $2}')" || true
             case "$status" in
@@ -148,8 +131,7 @@ jobs:
             esac
           fi
           echo "branch=${candidate}" >> "${GITHUB_OUTPUT}"
-          # main keeps its existing automation branch so an already-open PR is
-          # refreshed instead of orphaned; every other target gets its own.
+          # main keeps its automation branch so an open PR is refreshed, not orphaned.
           if [ "$candidate" = "main" ]; then
             echo "automation-branch=automation/vendor-cubepilot-chart" >> "${GITHUB_OUTPUT}"
           else

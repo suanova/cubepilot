@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Print the cubestack-operator branch a cubepilot ref vendors into.
-# A tag does not record its source branch, so derive release-X.Y from the
-# version; a branch maps to the same branch.
+# Print the cubestack-operator branch a cubepilot ref vendors into. A tag does
+# not record its source branch, so derive release-X.Y from its version.
 set -euo pipefail
 
 ref_type=$1
@@ -13,8 +12,7 @@ case "$ref_type" in
     ;;
   tag)
     tag=${ref_name#v}
-    # Same SemVer rule as release.yaml: vendor-chart starts alongside release.yaml,
-    # so it must reject a malformed tag on its own.
+    # Same SemVer rule as release.yaml; reject a malformed tag here too.
     SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
     if ! printf '%s' "$tag" | grep -Eq "$SEMVER"; then
       printf '%s is not a release tag\n' "$ref_name" >&2
