@@ -70,6 +70,7 @@ build:
 test:
 	$(GO) vet ./...
 	$(GO) test $(GO_TEST_PACKAGES)
+	bash scripts/vendor-chart-target-test.sh
 
 ## End-to-end: bring up the stack via scripts/setup.sh, then run the compiled
 ## Ginkgo suite (test/e2e) against it. CUBEPILOT_LLM_APIKEY is required (use
