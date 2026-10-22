@@ -74,11 +74,6 @@ jobs:
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: go test $(go list ./... | grep -v /test/)
 
-      # The same shell test make test runs, kept in CI.
-      - name: shell tests
-        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: bash scripts/vendor-chart-target-test.sh
-
       - name: go mod verify
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: go mod verify
