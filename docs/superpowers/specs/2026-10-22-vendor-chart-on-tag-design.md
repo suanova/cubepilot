@@ -59,6 +59,12 @@ two README table rewrites are reused unchanged. Only one `cubepilot-*.tgz` ever
 remains in `assets/charts`, so a release replaces the previous `-latest` archive
 rather than sitting beside it.
 
+The operator's `test/e2e/images.txt` moves with the pin. Its
+`TestOwnImagesArePreloaded` asserts that the list names exactly the images the
+chart renders, and an empty image tag resolves to the chart's appVersion, so a
+release rewrites the cubepilot tags from `:latest` to `:X.Y.Z` and the next branch
+build rewrites them back.
+
 The chart is packaged locally rather than pulled from Harbor. A tag push starts
 `release.yaml` and this workflow at the same time; pulling would race the chart push.
 `helm package --version X --app-version X` is exactly how `release.yaml` builds the
