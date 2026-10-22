@@ -105,6 +105,12 @@ that is still pending when a newer chart-changing run queues is therefore droppe
 and the newer artifact wins. That is the intended "last generated wins" invariant,
 not a lost release: the tag can be re-pushed to regenerate its artifact.
 
+GitHub does not guarantee FIFO order among queued runs, so a run that started
+earlier could execute after a newer one and win. That residual race is accepted:
+both artifacts are valid charts of this repo, and re-pushing the newer tag (or
+re-running the workflow) re-asserts it. A cross-repo freshness marker would add
+state to the operator for a race that self-corrects.
+
 The PR title stays `chore(charts): vendor cubepilot <version>`, so PRs against
 `main` are still auto-merged by the operator's `auto-merge-bot-pr.yml`. That workflow
 hard-codes `BASE_BRANCH: main`; PRs against `release-*` are merged by a maintainer.
