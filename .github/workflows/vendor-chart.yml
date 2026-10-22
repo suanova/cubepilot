@@ -95,6 +95,7 @@ jobs:
           packaged_version="$(helm show chart "${ARCHIVE}" | awk '/^version:/{print $2}')"
           test "${packaged_version}" = "${CATALOG_VERSION}"
           echo "catalog-version=${CATALOG_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "app-version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "archive=${ARCHIVE}" >> "${GITHUB_OUTPUT}"
       # Scoped to the one repository the token has to write: the operator. The App
       # is installed org-wide, but a token minted for everything it can see would
@@ -170,6 +171,7 @@ jobs:
         working-directory: target
         env:
           CATALOG_VERSION: ${{ steps.package.outputs.catalog-version }}
+          APP_VERSION: ${{ steps.package.outputs.app-version }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
         run: |
           set -euo pipefail
@@ -288,6 +290,32 @@ jobs:
           rewrite_row(charts_readme, charts_row)
           rewrite_row(root_readme, root_row)
           PY
+
+          # The operator's preload list must name the images the chart renders;
+          # TestOwnImagesArePreloaded checks both directions, so a new appVersion
+          # has to move these tags with it.
+          preload="test/e2e/images.txt"
+          if [ -f "$preload" ]; then
+            python3 - "${COMPONENT}" "${APP_VERSION}" "$preload" <<'PY'
+          import re
+          import sys
+
+          component, app_version, path = sys.argv[1:]
+          own = re.compile(rf"^(\S*/{re.escape(component)}-[^:\s]+):[^\s]+$")
+          changed = 0
+          with open(path) as handle:
+              lines = handle.readlines()
+          for i, line in enumerate(lines):
+              match = own.match(line.strip())
+              if match:
+                  lines[i] = f"{match.group(1)}:{app_version}\n"
+                  changed += 1
+          if app_version != "latest" and changed == 0:
+              sys.exit(f"no {component} images found in {path}")
+          with open(path, "w") as handle:
+              handle.writelines(lines)
+          PY
+          fi
       - name: Commit and push the branch
         id: commit
         working-directory: target
@@ -358,7 +386,7 @@ jobs:
               printf 'The chart changed on `%s@%s`, so re-vendor it.\n\n' \
                 "$GITHUB_REPOSITORY" "${GITHUB_SHA:0:7}"
             fi
-            printf -- '- `assets/charts/%s-%s.tgz` -- the archive, packaged from the chart at that commit\n- `assets/components/%s-%s.yaml` -- the `oci.version` pin, which is the file name the operator resolves\n- `assets/charts/README.md` and `README.md` -- the vendored-archive tables\n\nOpened by the `suanova-bot` App from [`.github/workflows/vendor-chart.yml`](https://github.com/%s/blob/main/.github/workflows/vendor-chart.yml). The archive is `//go:embed`ed into the operator binary, so it is committed here rather than pulled at reconcile time; merging this fires `publish.yml`, which is what actually puts the new chart in front of clusters.\n' \
+            printf -- '- `assets/charts/%s-%s.tgz` -- the archive, packaged from the chart at that commit\n- `assets/components/%s-%s.yaml` -- the `oci.version` pin, which is the file name the operator resolves\n- `assets/charts/README.md` and `README.md` -- the vendored-archive tables\n- `test/e2e/images.txt` -- the own-image preload tags, which follow the chart appVersion\n\nOpened by the `suanova-bot` App from [`.github/workflows/vendor-chart.yml`](https://github.com/%s/blob/main/.github/workflows/vendor-chart.yml). The archive is `//go:embed`ed into the operator binary, so it is committed here rather than pulled at reconcile time; merging this fires `publish.yml`, which is what actually puts the new chart in front of clusters.\n' \
               "$COMPONENT" "$CATALOG_VERSION" "$ORDER" "$COMPONENT" "$GITHUB_REPOSITORY"
           } > "$body"
 
