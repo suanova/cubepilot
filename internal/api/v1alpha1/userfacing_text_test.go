@@ -22,6 +22,7 @@ import (
 //     description and instruction are what the Portal's Templates tab shows and
 //     what every run of the task is prompted with;
 //   - README.md is the repository's public front page;
+//   - user-guide.md is the page a product user reads to operate the assistant;
 //   - api.md and api-conventions.md are the contract for anyone integrating
 //     against the API, and the bruno collection is the walkthrough they follow.
 //
@@ -51,6 +52,7 @@ var shippedText = []struct {
 	{"embedded-skills", "internal/skill/skills/*/SKILL.md", false},
 	{"preset-task-templates", "internal/controller/presets/tasktemplates/*.yaml", false},
 	{"readme", "README.md", false},
+	{"user-guide", "docs/cubepilot/user-guide.md", false},
 	{"api-doc", "docs/cubepilot/api.md", false},
 	{"api-conventions", "docs/cubepilot/api-conventions.md", false},
 	{"bruno-collection", "bruno", true},
