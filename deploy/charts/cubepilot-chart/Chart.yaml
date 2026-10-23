@@ -3,7 +3,7 @@ name: cubepilot-chart
 description: CubeStack intelligent assistant -- operator (platform controllers), API (REST/SSE), and web portal (React SPA), with per-user OpenClaw agent instances.
 type: application
 version: 2.0.0
-appVersion: "2.0.0"
+appVersion: "v2.0.0"
 keywords:
   - cubestack
   - cubepilot

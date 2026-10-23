@@ -73,16 +73,29 @@ jobs:
           set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
             workflow_dispatch)
-              TAG="$INPUT_TAG"                          # explicit semver input
+              VERSION="${INPUT_TAG#v}"                  # accept 2.0.0 or v2.0.0
               ;;
             push)
               if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-                TAG="${GITHUB_REF_NAME#v}"            # v0.1.0 -> 0.1.0
+                VERSION="${GITHUB_REF_NAME#v}"          # v0.1.0 -> 0.1.0
               else
-                TAG="latest"                          # push to main
+                VERSION="latest"                        # push to main
               fi ;;
             *) echo "::error::unsupported trigger: $GITHUB_EVENT_NAME"; exit 1 ;;
           esac
+
+          # The chart version is bare SemVer; the image tag and chart appVersion
+          # keep the Git tag's v, so both stay in step. `latest` is the rolling
+          # main path only -- a release input or a vlatest tag must not take it.
+          if [ "$VERSION" = "latest" ] && ! { [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "branch" ]; }; then
+            echo "::error::release inputs cannot use latest"
+            exit 1
+          fi
+          if [ "$VERSION" = "latest" ]; then
+            APP_VERSION=latest
+          else
+            APP_VERSION="v${VERSION}"
+          fi
 
           # Fail here, before anything is built or pushed. `latest` is the
           # rolling artifact published from main and is exempt; a tag pushed as
@@ -104,12 +117,13 @@ jobs:
           #     inside `make images` with "invalid reference format".
           SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
 
-          if [ "$TAG" != "latest" ] && ! printf '%s' "$TAG" | grep -Eq "$SEMVER"; then
-            echo "::error::'$TAG' is not a release tag; expected X.Y.Z or X.Y.Z-<prerelease>"
+          if [ "$VERSION" != "latest" ] && ! printf '%s' "$VERSION" | grep -Eq "$SEMVER"; then
+            echo "::error::'$VERSION' is not a release version; expected X.Y.Z or X.Y.Z-<prerelease>"
             exit 1
           fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "app-version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install helm
         uses: azure/setup-helm@v5
@@ -136,32 +150,32 @@ jobs:
           docker pull harbor.isuanova.com/library/nginx:1.27-alpine
 
       - name: Build images
-        run: make images IMAGE_TAG=${{ steps.tag.outputs.tag }}
+        run: make images IMAGE_TAG=${{ steps.tag.outputs.app-version }}
 
       - name: Push images
         id: image
         run: |
-          make push IMAGE_TAG=${{ steps.tag.outputs.tag }}
+          make push IMAGE_TAG=${{ steps.tag.outputs.app-version }}
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Package Helm chart
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
+          APP_VERSION="${{ steps.tag.outputs.app-version }}"
           if [ "$TAG" = "latest" ]; then
             # Rolling dev artifact: chart version <chartVersion>-latest is a
             # distinct OCI tag, so a later main push never clobbers a released
             # <chartVersion> chart.
             BASE_VERSION="$(grep '^version:' deploy/charts/cubepilot-chart/Chart.yaml | awk '{print $2}')"
             helm package deploy/charts/cubepilot-chart \
-              --version "$BASE_VERSION-latest" --app-version latest -d .chart
+              --version "$BASE_VERSION-latest" --app-version "$APP_VERSION" -d .chart
           else
-            # A release. The tag becomes the chart version, its appVersion, and
-            # -- through the appVersion default in templates/_helpers.tpl -- the
-            # images the chart resolves to, so installing this chart pulls the
-            # images released with it with no --set at all.
+            # A release. The chart version is bare SemVer; the tag's v becomes
+            # the appVersion and -- through the appVersion default in
+            # templates/_helpers.tpl -- the images the chart resolves to.
             helm package deploy/charts/cubepilot-chart \
-              --version "$TAG" --app-version "$TAG" -d .chart
+              --version "$TAG" --app-version "$APP_VERSION" -d .chart
           fi
 
       # The OCI repository the chart lands in is `<CHART_OCI>/<Chart.yaml name>`
