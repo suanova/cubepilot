@@ -350,8 +350,12 @@ jobs:
               printf 'The chart changed on `%s@%s`, so re-vendor it.\n\n' \
                 "$GITHUB_REPOSITORY" "${GITHUB_SHA:0:7}"
             fi
-            printf -- '- `assets/charts/%s-%s.tgz` -- the archive, packaged from the chart at that commit\n- `assets/components/%s-%s.yaml` -- the `oci.version` pin, which is the file name the operator resolves\n- `test/e2e/images.txt` -- the own-image preload tags, which follow the chart appVersion\n\nOpened by the `suanova-bot` App from [`.github/workflows/vendor-chart.yml`](https://github.com/%s/blob/main/.github/workflows/vendor-chart.yml). The archive is `//go:embed`ed into the operator binary, so it is committed here rather than pulled at reconcile time; merging this fires `publish.yml`, which is what actually puts the new chart in front of clusters.\n' \
-              "$COMPONENT" "$CATALOG_VERSION" "$ORDER" "$COMPONENT" "$GITHUB_REPOSITORY"
+            preload_entry=''
+            if [ -e test/e2e/images.txt ]; then
+              preload_entry='- `test/e2e/images.txt` -- the own-image preload tags, which follow the chart appVersion'
+            fi
+            printf -- '- `assets/charts/%s-%s.tgz` -- the archive, packaged from the chart at that commit\n- `assets/components/%s-%s.yaml` -- the `oci.version` pin, which is the file name the operator resolves\n%s\n\nOpened by the `suanova-bot` App from [`.github/workflows/vendor-chart.yml`](https://github.com/%s/blob/main/.github/workflows/vendor-chart.yml). The archive is `//go:embed`ed into the operator binary, so it is committed here rather than pulled at reconcile time; merging this fires `publish.yml`, which is what actually puts the new chart in front of clusters.\n' \
+              "$COMPONENT" "$CATALOG_VERSION" "$ORDER" "$preload_entry" "$COMPONENT" "$GITHUB_REPOSITORY"
           } > "$body"
 
           # Helm repacks identical content into different bytes, so a changed
