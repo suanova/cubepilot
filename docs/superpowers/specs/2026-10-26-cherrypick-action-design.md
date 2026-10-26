@@ -56,7 +56,7 @@ gets one explanatory comment; no cherry-pick job runs.
   There is no `release-*` naming requirement: any existing branch other than
   main is a valid target.
 - If one target is invalid the whole command is rejected; no partial run.
-- The comment body is passed to the script through `env`, never interpolated
+- The comment body is passed to the shell through `env`, never interpolated
   into a `run:` block, so its content cannot execute as shell.
 
 ## Workflow structure

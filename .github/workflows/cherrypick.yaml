@@ -65,10 +65,26 @@ jobs:
             *) exit 0 ;;   # silent for arbitrary commenters
           esac
 
-          # The parser reads only the first line and rejects an invalid target.
-          if ! targets=$(printf '%s' "$COMMENT_BODY" | scripts/cherrypick-targets.sh 2>&1); then
-            reject "$targets"
+          # Only the first line is read. Glob characters are invalid in refs, so
+          # disable pathname expansion and keep a target like 'release-*' literal.
+          set -f
+          first_line=${COMMENT_BODY%%$'\n'*}
+          first_line=${first_line%$'\r'}
+          read -r command rest <<<"$first_line" || true
+          if [ "$command" != /cherrypick ] || [ -z "${rest//[[:space:]]/}" ]; then
+            reject "expected '/cherrypick <target-branch>...' on the first line"
           fi
+          targets=()
+          for branch in $rest; do
+            if [ "$branch" = main ]; then
+              reject 'cannot cherry-pick into main'
+            fi
+            if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+              reject "'$branch' is not a valid branch name"
+            fi
+            targets+=("$branch")
+          done
+          targets="${targets[*]}"
 
           info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName)
           if [ "$(jq -r 'if .mergedAt then "true" else "false" end' <<<"$info")" != true ]; then

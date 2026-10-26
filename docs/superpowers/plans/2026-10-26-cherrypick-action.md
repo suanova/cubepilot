@@ -22,194 +22,23 @@
 
 ---
 
-### Task 1: Target-branch parser and its tests
+### Task 1: Parser logic (developed, then inlined)
 
-**Files:**
-- Create: `scripts/cherrypick-targets.sh`
-- Create: `scripts/cherrypick-targets_test.sh`
-- Modify: `.github/workflows/ci.yaml` (append a step to the `test` job)
+The parser reads only the first line of the comment body. The command must be
+exactly `/cherrypick`, followed by one or more whitespace-separated target
+branches. Each target must be a syntactically valid git branch name
+(`git check-ref-format --branch`) and must not be `main`. Pathname expansion is
+disabled, so a target such as `release-*` is kept literal and rejected as an
+invalid ref; one invalid target rejects the whole command.
 
-**Interfaces:**
-- Consumes: nothing.
-- Produces: `scripts/cherrypick-targets.sh` reads a comment body on stdin and prints target branches space-separated on one line. Exit 0 on success; exit 1 with a user-facing reason on stderr when the command is malformed, targets `main`, or names an invalid ref. The workflow in Task 2 calls it as `printf '%s' "$COMMENT_BODY" | scripts/cherrypick-targets.sh`.
+Eighteen local cases validated these rules: single and multiple targets, a
+first-line-only comment, CRLF, extra whitespace, branch names with slashes,
+wrong/missing command, missing argument, `main`, invalid and option-like refs, a
+bad target among several, glob targets, empty input, duplicates, tab
+separation, and a real glob-expansion check.
 
-- [ ] **Step 1: Write the failing test**
-
-Create `scripts/cherrypick-targets_test.sh`:
-
-```bash
-#!/usr/bin/env bash
-# Cases for the /cherrypick comment parser. Run directly; aggregates every
-# case failure and exits non-zero at the end so it can gate CI.
-set -euo pipefail
-
-script="$(cd "$(dirname "$0")" && pwd)/cherrypick-targets.sh"
-failures=0
-
-check() { # check <name> <want-exit> <want-output> <comment-body>
-  local name=$1 want_code=$2 want_out=$3 body=$4 got_code=0 got_out
-  got_out=$(printf '%s' "$body" | "$script" 2>&1) || got_code=$?
-  if [ "$got_code" != "$want_code" ] || [ "$got_out" != "$want_out" ]; then
-    printf 'FAIL %s\n  want exit %s, output: %s\n  got  exit %s, output: %s\n' \
-      "$name" "$want_code" "$want_out" "$got_code" "$got_out"
-    failures=$((failures + 1))
-  else
-    printf 'ok   %s\n' "$name"
-  fi
-}
-
-usage="expected '/cherrypick <target-branch>...' on the first line"
-
-check single            0 'release-2.0'                '/cherrypick release-2.0'
-check multiple          0 'release-2.0 release-2.1'    '/cherrypick release-2.0 release-2.1'
-check first-line-only   0 'release-2.0'                $'/cherrypick release-2.0\nanything below is ignored'
-check crlf              0 'release-2.0'                $'/cherrypick release-2.0\r'
-check extra-spaces      0 'release-2.0'                '/cherrypick     release-2.0'
-check any-branch-name   0 'hotfix/payments'            '/cherrypick hotfix/payments'
-check other-command     1 "$usage"                     '/cherrypickx release-2.0'
-check no-argument       1 "$usage"                     '/cherrypick'
-check no-command        1 "$usage"                     'please /cherrypick release-2.0'
-check main              1 'cannot cherry-pick into main' '/cherrypick main'
-check invalid-ref       1 "'bad..name' is not a valid branch name" '/cherrypick bad..name'
-check option-like-ref   1 "'-x' is not a valid branch name"        '/cherrypick -x'
-check one-bad-of-two    1 "'bad..name' is not a valid branch name" '/cherrypick release-2.0 bad..name'
-check glob-target       1 "'release-*' is not a valid branch name" '/cherrypick release-*'
-check empty-stdin       1 "$usage"                                ''
-check duplicate-target  0 'release-2.0 release-2.0'               '/cherrypick release-2.0 release-2.0'
-check tab-separated     0 'release-2.0 release-2.1'               $'/cherrypick\trelease-2.0\trelease-2.1'
-
-# A real glob-expansion check: run from a directory where release-* matches.
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-touch "$tmpdir/release-2.0"
-glob_code=0
-glob_out=$(cd "$tmpdir" && printf '%s' '/cherrypick release-*' | "$script" 2>&1) || glob_code=$?
-if [ "$glob_code" != 1 ] || [ "$glob_out" != "'release-*' is not a valid branch name" ]; then
-  printf 'FAIL glob-not-expanded\n  want exit 1, output: %s\n  got  exit %s, output: %s\n' \
-    "'release-*' is not a valid branch name" "$glob_code" "$glob_out"
-  failures=$((failures + 1))
-else
-  printf 'ok   glob-not-expanded\n'
-fi
-
-if [ "$failures" -ne 0 ]; then
-  printf '%s case(s) failed\n' "$failures" >&2
-  exit 1
-fi
-echo 'all cherrypick-targets cases passed'
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run:
-
-```bash
-chmod +x scripts/cherrypick-targets_test.sh
-scripts/cherrypick-targets_test.sh
-```
-
-Expected: every case prints `FAIL` and the run exits 1 with `<n> case(s) failed`, because `scripts/cherrypick-targets.sh` does not exist yet.
-
-- [ ] **Step 3: Write the parser**
-
-Create `scripts/cherrypick-targets.sh`:
-
-```bash
-#!/usr/bin/env bash
-# Parse the target branches from a /cherrypick comment. Only the first line is
-# read; branches are whitespace-separated. Prints them space-separated so the
-# caller can pass the result straight to backport-action's target_branches.
-set -euo pipefail
-
-# Glob metacharacters are invalid in refs, so never expand a target like release-*.
-set -f
-
-first_line=$(head -n1)
-first_line=${first_line%$'\r'}   # a browser may submit CRLF
-
-read -r command rest <<<"$first_line" || true
-if [ "$command" != /cherrypick ] || [ -z "${rest//[[:space:]]/}" ]; then
-  echo "expected '/cherrypick <target-branch>...' on the first line" >&2
-  exit 1
-fi
-
-targets=()
-for branch in $rest; do
-  if [ "$branch" = main ]; then
-    echo 'cannot cherry-pick into main' >&2
-    exit 1
-  fi
-  if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-    echo "'$branch' is not a valid branch name" >&2
-    exit 1
-  fi
-  targets+=("$branch")
-done
-
-printf '%s' "${targets[*]}"
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run:
-
-```bash
-chmod +x scripts/cherrypick-targets.sh
-scripts/cherrypick-targets_test.sh
-```
-
-Expected:
-
-```text
-ok   single
-ok   multiple
-ok   first-line-only
-ok   crlf
-ok   extra-spaces
-ok   any-branch-name
-ok   other-command
-ok   no-argument
-ok   no-command
-ok   main
-ok   invalid-ref
-ok   option-like-ref
-ok   one-bad-of-two
-ok   glob-target
-ok   empty-stdin
-ok   duplicate-target
-ok   tab-separated
-ok   glob-not-expanded
-all cherrypick-targets cases passed
-```
-
-- [ ] **Step 5: Wire the test into CI**
-
-In `.github/workflows/ci.yaml`, inside the `test` job, insert this step after the `go mod verify` step and before the `golangci-lint` step:
-
-```yaml
-      - name: cherrypick target parser test
-        if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: scripts/cherrypick-targets_test.sh
-```
-
-- [ ] **Step 6: Validate the edited workflow**
-
-Run:
-
-```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/ci.yaml
-```
-
-Expected: no output, exit status 0.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add scripts/cherrypick-targets.sh scripts/cherrypick-targets_test.sh .github/workflows/ci.yaml
-git commit -s -m "ci: parse /cherrypick targets in a tested script
-
-Assisted-by: Claude Code"
-```
+The final code lives inline in `.github/workflows/cherrypick.yaml` (the
+"Validate comment" step); no parser script or separate test file remains.
 
 ---
 
@@ -219,7 +48,7 @@ Assisted-by: Claude Code"
 - Create: `.github/workflows/cherrypick.yaml`
 
 **Interfaces:**
-- Consumes: `scripts/cherrypick-targets.sh` from Task 1.
+- Consumes: nothing (the parser is inline).
 - Produces: `prepare` job output `targets` (space-separated branches, empty when the command is rejected); the `cherrypick` job consumes it as `needs.prepare.outputs.targets`.
 
 - [ ] **Step 1: Write the workflow**
@@ -294,10 +123,26 @@ jobs:
             *) exit 0 ;;   # silent for arbitrary commenters
           esac
 
-          # The parser reads only the first line and rejects an invalid target.
-          if ! targets=$(printf '%s' "$COMMENT_BODY" | scripts/cherrypick-targets.sh 2>&1); then
-            reject "$targets"
+          # Only the first line is read. Glob characters are invalid in refs, so
+          # disable pathname expansion and keep a target like 'release-*' literal.
+          set -f
+          first_line=${COMMENT_BODY%%$'\n'*}
+          first_line=${first_line%$'\r'}
+          read -r command rest <<<"$first_line" || true
+          if [ "$command" != /cherrypick ] || [ -z "${rest//[[:space:]]/}" ]; then
+            reject "expected '/cherrypick <target-branch>...' on the first line"
           fi
+          targets=()
+          for branch in $rest; do
+            if [ "$branch" = main ]; then
+              reject 'cannot cherry-pick into main'
+            fi
+            if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+              reject "'$branch' is not a valid branch name"
+            fi
+            targets+=("$branch")
+          done
+          targets="${targets[*]}"
 
           info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName)
           if [ "$(jq -r 'if .mergedAt then "true" else "false" end' <<<"$info")" != true ]; then
@@ -379,17 +224,7 @@ grep -n "issue_comment\|startsWith\|author_association\|collaborators" .github/w
 
 Expected: the event is `issue_comment` with `types: [created]`; there is no `author_association` check; the permission API call is present.
 
-- [ ] **Step 4: Run the parser tests again**
-
-Run:
-
-```bash
-scripts/cherrypick-targets_test.sh
-```
-
-Expected: `all cherrypick-targets cases passed`.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add .github/workflows/cherrypick.yaml
