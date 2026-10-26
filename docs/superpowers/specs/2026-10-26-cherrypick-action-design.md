@@ -31,7 +31,7 @@ does not re-trigger, so a command runs at most once per comment.
 The run proceeds only when all of the following hold:
 
 1. The comment is on a pull request (not a plain issue).
-2. The PR is closed and merged.
+2. The PR is merged (a closed-but-unmerged PR gets an explanatory reply).
 3. The first line of the comment is `/cherrypick <branch>...`.
 4. The commenter has `admin`, `maintain`, or `write` permission on the
    repository, checked with the REST API
@@ -51,7 +51,8 @@ gets one explanatory comment; no cherry-pick job runs.
   `/cherrypick release-2.0 release-2.1` is valid.
 - Each target must be a syntactically valid git branch name
   (`git check-ref-format --branch`), must exist on the remote
-  (`GET /repos/{owner}/{repo}/branches/{branch}`), and must not be `main`.
+  (`git ls-remote --exit-code --heads origin refs/heads/<branch>`), and must
+  not be `main`.
   There is no `release-*` naming requirement: any existing branch other than
   main is a valid target.
 - If one target is invalid the whole command is rejected; no partial run.
@@ -63,23 +64,24 @@ gets one explanatory comment; no cherry-pick job runs.
 Two jobs in `.github/workflows/cherrypick.yaml`:
 
 ```
-prepare (GITHUB_TOKEN: contents/pull-requests read, issues write)
+prepare (job-scoped GITHUB_TOKEN: contents read, pull-requests write, issues write)
   - verify commenter permission
   - load the PR, require merged and base = main
   - parse and validate target branches
   - output target_branches (empty when anything is rejected)
 cherrypick (needs: prepare, skipped when target_branches is empty)
   - actions/create-github-app-token -> SUANOVA_BOT, scoped to cubepilot,
-    permissions contents:write, pull-requests:write, issues:write
+    permissions contents:write, pull-requests:write
   - actions/checkout with the App token (git push authenticates with it)
-  - korthout/backport-action@v4
+  - korthout/backport-action@v4 (SHA-pinned)
 ```
 
 The App token is required rather than the default `GITHUB_TOKEN`: events caused
 by `GITHUB_TOKEN` do not start workflows, so a PR created with it would never
 run CI. The App token is only minted for the cherry-pick job; the prepare job
-never checks out or executes PR code. The `prepare` job uses the default
-read-only (plus `issues: write` for the rejection comment) token.
+never checks out or executes PR code. The `prepare` job gets job-scoped
+`contents: read`, `pull-requests: write`, and `issues: write` permissions; a PR
+conversation comment accepts either of the last two.
 
 Reuses the existing `SUANOVA_BOT` GitHub App
 (`vars.SUANOVA_BOT_CLIENT_ID`, `secrets.SUANOVA_BOT_APP_PRIVATE_KEY`); no new
@@ -106,8 +108,9 @@ Consequences:
   cherry-pick preserves; the DCO check passes on the generated PR.
 - On conflict the action stops, pushes nothing, and comments the conflicting
   files on the original PR.
-- Re-running the same command reuses and updates the existing
-  `cherrypick-<n>-to-<branch>` branch/PR instead of opening a duplicate.
+- Re-running the same command recovers the existing
+  `cherrypick-<n>-to-<branch>` branch and skips PR creation; it does not update
+  the branch, and no duplicate PR is opened.
 - The generated PR runs the normal `ci` / `e2e` workflows and is left for human
   review and merge. Mergify's rules match `base = main` only, so it will not
   merge release-branch PRs.
@@ -124,7 +127,8 @@ Consequences:
 | Commenter lacks write access | Silent skip |
 | Comment on a non-PR issue | Jobs do not run |
 | Cherry-pick conflict | Action comments conflict details; no branch pushed |
-| Repeated command | Existing cherry-pick PR is updated |
+| Repeated command | Existing branch is recovered and PR creation is skipped (no duplicate) |
+| Cherry-pick touches `.github/workflows/**` | The App must hold the Workflows permission; otherwise the push is rejected |
 
 ## Files
 
@@ -136,7 +140,10 @@ Consequences:
 ## Testing
 
 - Validate the workflow locally with `actionlint` (not installed in the repo;
-  run via `npx actionlint` or a temporary binary).
+  run via `npx actionlint` or a temporary binary). actionlint v1.7.12 predates
+  GitHub's `queue` concurrency key and reports `unexpected key "queue"`; pass
+  `-ignore 'unexpected key "queue"'` (this repo's `vendor-chart.yml` needs the
+  same ignore).
 - End-to-end only after the workflow lands on `main` (issue_comment runs the
   workflow from the default branch): comment `/cherrypick release-2.0` on a
   merged main PR and verify the branch, PR, CI, and comment reply.

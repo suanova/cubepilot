@@ -4,6 +4,9 @@
 # caller can pass the result straight to backport-action's target_branches.
 set -euo pipefail
 
+# Glob metacharacters are invalid in refs, so never expand a target like release-*.
+set -f
+
 first_line=$(head -n1)
 first_line=${first_line%$'\r'}   # a browser may submit CRLF
 

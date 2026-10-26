@@ -4,9 +4,9 @@
 
 **Goal:** Let a maintainer comment `/cherrypick <branch>` on a merged `main` PR and get a reviewable PR carrying the same change on each named branch.
 
-**Architecture:** An `issue_comment`-triggered workflow with two jobs. `prepare` validates the commenter's repository permission, the source PR, and every target branch with the read-only `GITHUB_TOKEN`. `cherrypick` mints the existing `SUANOVA_BOT` App token, checks out with it (git push uses these credentials), and delegates the cherry-pick and PR creation to `korthout/backport-action@v4`.
+**Architecture:** An `issue_comment`-triggered workflow with two jobs. `prepare` validates the commenter's repository permission, the source PR, and every target branch under job-scoped `GITHUB_TOKEN` permissions (`contents: read`, `pull-requests: write`, `issues: write`). `cherrypick` runs with no `GITHUB_TOKEN` permissions (`permissions: {}`) and mints the existing `SUANOVA_BOT` App token, checks out with it (git push uses these credentials), and delegates the cherry-pick and PR creation to `korthout/backport-action` (pinned to a v4 SHA).
 
-**Tech Stack:** GitHub Actions (YAML), bash, `gh`, `korthout/backport-action@v4`, `actions/create-github-app-token`, `actionlint`.
+**Tech Stack:** GitHub Actions (YAML), bash, `gh`, `korthout/backport-action` (SHA-pinned), `actions/create-github-app-token`, `actionlint`.
 
 ## Global Constraints
 
@@ -39,8 +39,8 @@ Create `scripts/cherrypick-targets_test.sh`:
 
 ```bash
 #!/usr/bin/env bash
-# Cases for the /cherrypick comment parser. Run directly; exits non-zero on
-# the first aggregate failure so it can gate CI.
+# Cases for the /cherrypick comment parser. Run directly; aggregates every
+# case failure and exits non-zero at the end so it can gate CI.
 set -euo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/cherrypick-targets.sh"
@@ -73,6 +73,24 @@ check main              1 'cannot cherry-pick into main' '/cherrypick main'
 check invalid-ref       1 "'bad..name' is not a valid branch name" '/cherrypick bad..name'
 check option-like-ref   1 "'-x' is not a valid branch name"        '/cherrypick -x'
 check one-bad-of-two    1 "'bad..name' is not a valid branch name" '/cherrypick release-2.0 bad..name'
+check glob-target       1 "'release-*' is not a valid branch name" '/cherrypick release-*'
+check empty-stdin       1 "$usage"                                ''
+check duplicate-target  0 'release-2.0 release-2.0'               '/cherrypick release-2.0 release-2.0'
+check tab-separated     0 'release-2.0 release-2.1'               $'/cherrypick\trelease-2.0\trelease-2.1'
+
+# A real glob-expansion check: run from a directory where release-* matches.
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+touch "$tmpdir/release-2.0"
+glob_code=0
+glob_out=$(cd "$tmpdir" && printf '%s' '/cherrypick release-*' | "$script" 2>&1) || glob_code=$?
+if [ "$glob_code" != 1 ] || [ "$glob_out" != "'release-*' is not a valid branch name" ]; then
+  printf 'FAIL glob-not-expanded\n  want exit 1, output: %s\n  got  exit %s, output: %s\n' \
+    "'release-*' is not a valid branch name" "$glob_code" "$glob_out"
+  failures=$((failures + 1))
+else
+  printf 'ok   glob-not-expanded\n'
+fi
 
 if [ "$failures" -ne 0 ]; then
   printf '%s case(s) failed\n' "$failures" >&2
@@ -102,6 +120,9 @@ Create `scripts/cherrypick-targets.sh`:
 # read; branches are whitespace-separated. Prints them space-separated so the
 # caller can pass the result straight to backport-action's target_branches.
 set -euo pipefail
+
+# Glob metacharacters are invalid in refs, so never expand a target like release-*.
+set -f
 
 first_line=$(head -n1)
 first_line=${first_line%$'\r'}   # a browser may submit CRLF
@@ -153,6 +174,11 @@ ok   main
 ok   invalid-ref
 ok   option-like-ref
 ok   one-bad-of-two
+ok   glob-target
+ok   empty-stdin
+ok   duplicate-target
+ok   tab-separated
+ok   glob-not-expanded
 all cherrypick-targets cases passed
 ```
 
@@ -217,18 +243,27 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  contents: read         # actions/checkout + git ls-remote
-  pull-requests: read    # gh pr view on the source PR
-  issues: write          # rejection comment on the source PR
+permissions: {}
+
+concurrency:
+  group: cherrypick-${{ github.event.issue.number }}
+  cancel-in-progress: false
+  # Workflow-level concurrency also sees ordinary comments (including the bot's
+  # own summary); the default single pending slot would let a later one cancel a queued run.
+  queue: max
 
 jobs:
   prepare:
     name: Validate command
+    # PR conversation comments (gh pr comment) need pull-requests:write, not
+    # only issues:write.
+    permissions:
+      contents: read
+      pull-requests: write   # gh pr comment on the source PR
+      issues: write          # PR conversation comments also accept the issues scope
     # The body is parsed again below; this only skips unrelated comments.
     if: >
       github.event.issue.pull_request &&
-      github.event.issue.state == 'closed' &&
       startsWith(github.event.comment.body, '/cherrypick ')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -286,14 +321,16 @@ jobs:
     name: Cherry-pick to ${{ needs.prepare.outputs.targets }}
     needs: prepare
     if: needs.prepare.outputs.targets != ''
+    permissions: {}   # writes only through the App token
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       # A PR opened with GITHUB_TOKEN triggers no workflows, so its CI would
-      # never run. Use the bot App token; issues:write lets the action comment.
+      # never run. contents:write lets the push through; pull-requests:write
+      # lets the action create PRs and comment on the source PR.
       - name: Mint SUANOVA_BOT token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.SUANOVA_BOT_CLIENT_ID }}
           private-key: ${{ secrets.SUANOVA_BOT_APP_PRIVATE_KEY }}
@@ -301,7 +338,6 @@ jobs:
           repositories: cubepilot
           permission-contents: write
           permission-pull-requests: write
-          permission-issues: write
 
       # git push authenticates through the checkout credentials, not the
       # action's github_token, so the App token has to go here too.
@@ -310,7 +346,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Create cherry-pick PRs
-        uses: korthout/backport-action@v4
+        uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           source_pr_number: ${{ github.event.issue.number }}
@@ -326,10 +362,12 @@ jobs:
 Run:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/cherrypick.yaml
+go run github.com/rhysd/actionlint/cmd/actionlint@latest -ignore 'unexpected key "queue"' .github/workflows/cherrypick.yaml
 ```
 
-Expected: no output, exit status 0.
+Expected: no output, exit status 0. The only raw diagnostic is the known
+`queue` false positive from the older actionlint; this repo's
+`vendor-chart.yml` needs the same ignore.
 
 - [ ] **Step 3: Check the comment gating expression by hand**
 
@@ -387,11 +425,14 @@ another branch by commenting on the merged PR:
 
 The `cherrypick` workflow checks that the commenter has write access, then
 cherry-picks the change with `-x` and opens a PR against each target branch
-(separate several targets with spaces on the same line). A target must already
-exist and must not be `main`. The generated PR runs the normal checks and is
-merged by hand — nothing is merged automatically. Repeating the command updates
-the existing PR, and a conflict is reported on the original PR instead of
-opening a half-applied PR.
+(separate several targets with spaces on the same line). The command must be a
+conversation comment on the PR; a comment on a review does not trigger the
+workflow. A target must already exist and must not be `main`. The generated PR
+runs the normal checks and is merged by hand — nothing is merged automatically.
+Repeating the command does not open a duplicate PR, and a conflict is reported
+on the original PR instead of opening a half-applied PR. If a cherry-pick
+touches files under `.github/workflows/`, the bot App needs the Workflows
+permission, otherwise the push is rejected.
 ```
 
 - [ ] **Step 2: Check the section renders in the right place**
@@ -424,7 +465,7 @@ workflows are loaded from the default branch.
 
 - [ ] **Step 1: Confirm the App installation**
 
-In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write`, `pull-requests: write`, and `issues: write`. Without these the token mint or PR creation fails.
+In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write` and `pull-requests: write`. Without these the token mint or PR creation fails. Cherry-picking a change under `.github/workflows/**` additionally needs the App's Workflows permission.
 
 - [ ] **Step 2: Happy path**
 
@@ -435,7 +476,7 @@ Pick a recent PR merged into `main`, comment `/cherrypick release-2.0`, and veri
 - the new PR is `cherrypick-<number>-to-release-2.0` against `release-2.0`, titled `[cherrypick release-2.0] <original title>`;
 - the new PR's commits contain the original commit reference (`git log -1` shows a `(cherry picked from commit ...)` line);
 - the new PR runs `ci` and `e2e` (not stuck at "Expected");
-- repeating the comment updates the existing PR rather than opening a second one.
+- repeating the comment recovers the existing branch and skips PR creation rather than opening a second one.
 
 - [ ] **Step 3: Negative paths**
 

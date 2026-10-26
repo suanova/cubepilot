@@ -14,18 +14,27 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  contents: read         # actions/checkout + git ls-remote
-  pull-requests: read    # gh pr view on the source PR
-  issues: write          # rejection comment on the source PR
+permissions: {}
+
+concurrency:
+  group: cherrypick-${{ github.event.issue.number }}
+  cancel-in-progress: false
+  # Workflow-level concurrency also sees ordinary comments (including the bot's
+  # own summary); the default single pending slot would let a later one cancel a queued run.
+  queue: max
 
 jobs:
   prepare:
     name: Validate command
+    # PR conversation comments (gh pr comment) need pull-requests:write, not
+    # only issues:write.
+    permissions:
+      contents: read
+      pull-requests: write   # gh pr comment on the source PR
+      issues: write          # PR conversation comments also accept the issues scope
     # The body is parsed again below; this only skips unrelated comments.
     if: >
       github.event.issue.pull_request &&
-      github.event.issue.state == 'closed' &&
       startsWith(github.event.comment.body, '/cherrypick ')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -83,11 +92,13 @@ jobs:
     name: Cherry-pick to ${{ needs.prepare.outputs.targets }}
     needs: prepare
     if: needs.prepare.outputs.targets != ''
+    permissions: {}   # writes only through the App token
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       # A PR opened with GITHUB_TOKEN triggers no workflows, so its CI would
-      # never run. Use the bot App token; issues:write lets the action comment.
+      # never run. contents:write lets the push through; pull-requests:write
+      # lets the action create PRs and comment on the source PR.
       - name: Mint SUANOVA_BOT token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -98,7 +109,6 @@ jobs:
           repositories: cubepilot
           permission-contents: write
           permission-pull-requests: write
-          permission-issues: write
 
       # git push authenticates through the checkout credentials, not the
       # action's github_token, so the App token has to go here too.
@@ -107,7 +117,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Create cherry-pick PRs
-        uses: korthout/backport-action@v4
+        uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           source_pr_number: ${{ github.event.issue.number }}
