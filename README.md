@@ -117,6 +117,23 @@ with push rights on the `suanova` project.
 The Harbor `suanova` project must allow tag overwrites so the rolling
 `latest` / `-latest` artifacts can be re-pushed on every main push.
 
+### Cherry-picking to a release branch
+
+After a PR is merged into `main`, a maintainer can ask for the same change on
+another branch by commenting on the merged PR:
+
+```
+/cherrypick release-2.0
+```
+
+The `cherrypick` workflow checks that the commenter has write access, then
+cherry-picks the change with `-x` and opens a PR against each target branch
+(separate several targets with spaces on the same line). A target must already
+exist and must not be `main`. The generated PR runs the normal checks and is
+merged by hand — nothing is merged automatically. Repeating the command does
+not open a duplicate PR, and a conflict is reported on the original PR instead
+of opening a half-applied PR.
+
 ## Run
 
 ```bash
