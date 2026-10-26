@@ -93,7 +93,7 @@ jobs:
     # The body is parsed again below; this only skips unrelated comments.
     if: >
       github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/cherrypick ')
+      startsWith(github.event.comment.body, '/cherrypick')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -200,6 +200,9 @@ jobs:
           branch_name: 'cherrypick-${pull_number}-to-${target_branch}'
           pull_title: '[cherrypick ${target_branch}] ${pull_title}'
           comment_style: summary
+          # Only the validated command targets: label-derived targets would
+          # bypass the prepare job (e.g. a "backport main" label).
+          label_pattern: ''
 ```
 
 - [ ] **Step 2: Lint the workflow**

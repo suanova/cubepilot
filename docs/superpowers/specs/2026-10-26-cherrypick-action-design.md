@@ -32,7 +32,9 @@ The run proceeds only when all of the following hold:
 
 1. The comment is on a pull request (not a plain issue).
 2. The PR is merged (a closed-but-unmerged PR gets an explanatory reply).
-3. The first line of the comment is `/cherrypick <branch>...`.
+3. The first line of the comment starts with `/cherrypick`. The parser then
+   checks that the first token is exactly `/cherrypick` and treats the rest of
+   the line as target branches separated by spaces or tabs.
 4. The commenter has `admin`, `maintain`, or `write` permission on the
    repository, checked with the REST API
    (`GET /repos/{owner}/{repo}/collaborators/{user}/permission`). The
@@ -47,7 +49,7 @@ gets one explanatory comment; no cherry-pick job runs.
 ## Command parsing
 
 - Only the first line is read. `release-2.0` and any text after it on the same
-  line are treated as whitespace-separated target branches, so
+  line are treated as whitespace-separated (spaces or tabs) target branches, so
   `/cherrypick release-2.0 release-2.1` is valid.
 - Each target must be a syntactically valid git branch name
   (`git check-ref-format --branch`), must exist on the remote
@@ -95,11 +97,17 @@ secret.
 |---|---|
 | `source_pr_number` | `${{ github.event.issue.number }}` |
 | `target_branches` | from `prepare` |
+| `label_pattern` | `''` (disable label-derived targets; only the validated command targets are used) |
 | `cherry_picking` | `auto` (squash commit for squash merges, PR commits for merge/rebase merges) |
 | `branch_name` | `cherrypick-${pull_number}-to-${target_branch}` |
 | `pull_title` | `[cherrypick ${target_branch}] ${pull_title}` |
 | `comment_style` | `summary` |
 | `experimental` | `{"conflict_resolution": "fail"}` (default) |
+
+Label-derived targets are disabled. Otherwise the action unions `target_branches`
+with branches derived from labels matching its default `label_pattern`, so a
+label such as `backport main` could add an unvalidated branch and bypass the
+`prepare` job. With `label_pattern: ''` the action matches no labels.
 
 Consequences:
 
