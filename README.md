@@ -133,9 +133,10 @@ conversation comment on the PR; a comment on a review does not trigger the
 workflow. A target must already exist and must not be `main`. The generated PR
 runs the normal checks and is merged by hand — nothing is merged automatically.
 Repeating the command does not open a duplicate PR, and a conflict is reported
-on the original PR instead of opening a half-applied PR. If a cherry-pick
-touches files under `.github/workflows/`, the bot App needs the Workflows
-permission, otherwise the push is rejected.
+on the original PR instead of opening a half-applied PR. A cherry-pick that
+adds a new file under `.github/workflows/` works with the bot's current App
+permissions; modifying an existing workflow file may still be rejected unless
+the App holds the Workflows permission.
 
 ## Run
 

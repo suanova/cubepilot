@@ -144,13 +144,24 @@ jobs:
           done
           targets="${targets[*]}"
 
-          info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName)
+          info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName,headRefName,isCrossRepository)
           if [ "$(jq -r 'if .mergedAt then "true" else "false" end' <<<"$info")" != true ]; then
             reject "PR #$PR_NUMBER is not merged."
           fi
           base=$(jq -r .baseRefName <<<"$info")
           if [ "$base" != main ]; then
             reject "only PRs merged into main can be cherry-picked (this one targets '$base')."
+          fi
+
+          # The action drops any target equal to the head branch name, even when
+          # a fork's head branch only shares that name.
+          if [ "$(jq -r .isCrossRepository <<<"$info")" = true ]; then
+            head=$(jq -r .headRefName <<<"$info")
+            for branch in $targets; do
+              if [ "$branch" = "$head" ]; then
+                reject "'$branch' matches the head branch of this fork PR; the cherry-pick action would skip it."
+              fi
+            done
           fi
 
           # ls-remote avoids URL-encoding a branch name with slashes in an API path.
@@ -268,9 +279,10 @@ conversation comment on the PR; a comment on a review does not trigger the
 workflow. A target must already exist and must not be `main`. The generated PR
 runs the normal checks and is merged by hand — nothing is merged automatically.
 Repeating the command does not open a duplicate PR, and a conflict is reported
-on the original PR instead of opening a half-applied PR. If a cherry-pick
-touches files under `.github/workflows/`, the bot App needs the Workflows
-permission, otherwise the push is rejected.
+on the original PR instead of opening a half-applied PR. A cherry-pick that
+adds a new file under `.github/workflows/` works with the bot's current App
+permissions; modifying an existing workflow file may still be rejected unless
+the App holds the Workflows permission.
 ```
 
 - [ ] **Step 2: Check the section renders in the right place**
@@ -303,7 +315,7 @@ workflows are loaded from the default branch.
 
 - [ ] **Step 1: Confirm the App installation**
 
-In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write` and `pull-requests: write`. Without these the token mint or PR creation fails. Cherry-picking a change under `.github/workflows/**` additionally needs the App's Workflows permission.
+In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write` and `pull-requests: write`. Without these the token mint or PR creation fails. Adding a new workflow file works with these permissions; modifying an existing workflow file may need the App's Workflows permission.
 
 - [ ] **Step 2: Happy path**
 
