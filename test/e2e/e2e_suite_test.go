@@ -44,6 +44,19 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// AfterEach never runs when setup fails, and Ginkgo reports an INVALID spec
+	// state in AfterSuite then; catch the setup failure here to keep the evidence.
+	defer func() {
+		if r := recover(); r != nil {
+			if fw != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				framework.DumpDiagnostics(ctx, fw, GinkgoWriter)
+			}
+			panic(r)
+		}
+	}()
+
 	path, err := filepath.Abs(e2eKubeconfig)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -74,4 +87,16 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	fw.PortalBase = portalURL
 	DeferCleanup(func() { stopAPI(); stopPortal() })
+})
+
+// A failed spec leaves the deployment behind on the runner; dump it so the log
+// carries the pod-side cause instead of only the assertion. The pause lets a
+// crashed child process log its exit before the snapshot is taken.
+var _ = AfterEach(func() {
+	if fw != nil && CurrentSpecReport().Failed() {
+		time.Sleep(5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		framework.DumpDiagnostics(ctx, fw, GinkgoWriter)
+	}
 })
