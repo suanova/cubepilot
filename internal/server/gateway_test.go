@@ -88,6 +88,10 @@ type fakeGatewayClient struct {
 	// chat.abort / chat.history (issue #166)
 	aborts   []string // "sessionKey|runID"; empty runID means the session-scoped form
 	abortErr error
+	// abortRecorded, when set, is signalled once an abort has been recorded. A
+	// test that parks sessions.send uses it to release the send only after the
+	// Stop reached the gateway, the order in which 2026.10.7 cancels admission.
+	abortRecorded chan struct{}
 	// abortAborted is what chat.abort's success payload reports: false is a
 	// successful RPC that stopped nothing (the run id matched no abortable run).
 	// Zero value is true, so a fixture that does not set it keeps meaning "the
@@ -344,8 +348,17 @@ func (f *fakeGatewayClient) ListQuestions(ctx context.Context) ([]ws.QuestionRec
 }
 func (f *fakeGatewayClient) AbortChat(ctx context.Context, key, runID string) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.aborts = append(f.aborts, key+"|"+runID)
+	recorded := f.abortRecorded
+	f.mu.Unlock()
+	if recorded != nil {
+		select {
+		case recorded <- struct{}{}:
+		default:
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	// A failed RPC carries no payload, so there is no abort to report -- the real
 	// client answers (false, err) there. A fixture that does not set abortAborted
 	// means "the RPC aborted the run", so the existing callers keep exercising

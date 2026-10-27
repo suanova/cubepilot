@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suanova/cubepilot/internal/api/v1alpha1"
 	"github.com/suanova/cubepilot/internal/config"
+	"github.com/suanova/cubepilot/internal/openclaw"
 	"github.com/suanova/cubepilot/internal/openclaw/ws"
 	agentruntime "github.com/suanova/cubepilot/internal/runtime"
 )
@@ -1152,5 +1154,67 @@ func newAbortTestServer(h *Hub, m *gatewayConns) *Server {
 		gatewayConns: m,
 		approvals:    NewApprovalService(h, nil, func(string, ...any) {}),
 		qroutes:      newQuestionRoutes(),
+	}
+}
+
+// 2026.10.7 fails the pending sessions.send ("Chat admission ended or was
+// cancelled") when a Stop lands before the send ACK, instead of emitting an
+// aborted terminal. The turn must still be reported as the stop the user asked
+// for, not as a failed turn.
+func TestAbortBeforeSendACKEndsAsStopped(t *testing.T) {
+	gw := &fakeGatewayClient{
+		sendBlock:     make(chan struct{}),
+		sendRecorded:  make(chan struct{}, 1),
+		abortRecorded: make(chan struct{}, 1),
+		sendErr:       errors.New("Chat admission ended or was cancelled; submit a new turn."),
+	}
+	m := newTestGatewayConns(v1alpha1.ApprovalPolicyAllowlist, "rev-1", gw)
+	s := newAbortTestServer(NewHub(), m)
+
+	type result struct {
+		out agentruntime.TurnOutcome
+		err error
+	}
+	done := make(chan result, 1)
+	runner := &openClawLiveRunner{manager: m, user: "admin"}
+	go func() {
+		out, err := runner.RunLiveTurn(context.Background(), abortTestKey, agentruntime.LiveTurnParams{
+			Message: "hi",
+			Model:   "provider/model",
+		}, func(openclaw.Event) error { return nil })
+		done <- result{out: out, err: err}
+	}()
+
+	select {
+	case <-gw.sendRecorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sessions.send was never called")
+	}
+	// Release the parked send once the abort reaches the gateway: that is the
+	// order in which the gateway cancels admission.
+	go func() {
+		select {
+		case <-gw.abortRecorded:
+			close(gw.sendBlock)
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	rec := httptest.NewRecorder()
+	s.handleAbort(rec, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+abortTestKey+"/abort", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abort code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("RunLiveTurn error = %v, want a stopped outcome", got.err)
+		}
+		if !got.out.Stopped {
+			t.Fatalf("outcome = %+v, want Stopped", got.out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLiveTurn did not return after the send failed")
 	}
 }

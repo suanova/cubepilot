@@ -22,9 +22,11 @@ type responseFrame struct {
 }
 
 type frameError struct {
-	Code    string          `json:"code"`
-	Message string          `json:"message"`
-	Details json.RawMessage `json:"details"`
+	Code         string          `json:"code"`
+	Message      string          `json:"message"`
+	Details      json.RawMessage `json:"details"`
+	Retryable    bool            `json:"retryable"`
+	RetryAfterMs int             `json:"retryAfterMs"`
 }
 
 type eventFrame struct {
@@ -63,6 +65,11 @@ type RPCError struct {
 	Code    string
 	Message string
 	Reason  string
+	// Retryable/RetryAfterMs come from the gateway's error frame: transient
+	// states (storage warming up, admission in flight) that the same request may
+	// resend after the delay.
+	Retryable    bool
+	RetryAfterMs int
 }
 
 func (e *RPCError) Error() string {
