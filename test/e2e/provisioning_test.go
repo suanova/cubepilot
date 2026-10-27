@@ -132,6 +132,6 @@ var _ = Describe("Instance provisioning", func() {
 		}
 		Expect(supervisor).NotTo(BeNil(), "pod %s should carry the supervisor container", podName)
 		Expect(supervisor.ReadinessProbe).NotTo(BeNil())
-		Expect(supervisor.ReadinessProbe.ProbeHandler.HTTPGet.Path).To(Equal("/healthz"))
+		Expect(supervisor.ReadinessProbe.ProbeHandler.HTTPGet.Path).To(Equal("/readyz"))
 	})
 })

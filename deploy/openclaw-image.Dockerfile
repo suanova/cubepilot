@@ -6,10 +6,10 @@
 # Pin the openclaw base to a release tag (never :latest). If a newer tag is
 # wanted, mirror it from ghcr.io/openclaw/openclaw into
 # harbor.isuanova.com/library (scripts/mirror-base-images.sh).
-ARG OPENCLAW_IMAGE_TAG=2026.8.2
+ARG OPENCLAW_IMAGE_TAG=2026.10.7
 
 FROM harbor.isuanova.com/library/golang:1.26-bookworm AS supervisor-build
-# Pin a patched Go patch release without re-mirroring the toolchain image.
+# Pin the patched toolchain from go.mod without re-mirroring this image.
 ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./

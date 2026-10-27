@@ -58,7 +58,7 @@ jobs:
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.27.3'
 
       - name: go vet
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
@@ -82,9 +82,8 @@ jobs:
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
-          # .golangci.yaml targets the module's Go 1.26; the v2 prebuilt binary
-          # is built with a newer Go, so the default binary install works.
+          version: v2.14.0
+          # The prebuilt binary is built with Go 1.27, matching the module's toolchain.
 
       # Fast chart sanity (the e2e job does a real helm upgrade --install, which
       # also renders the chart; lint catches malformed charts before that).
