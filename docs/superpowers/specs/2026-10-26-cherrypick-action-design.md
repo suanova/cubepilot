@@ -114,8 +114,8 @@ Consequences:
 - Cherry-picks carry `-x`, so the new commit references the original.
 - The squash commit on main keeps the PR's `Signed-off-by` trailers, which the
   cherry-pick preserves; the DCO check passes on the generated PR.
-- On conflict the action stops, pushes nothing, and comments the conflicting
-  files on the original PR.
+- On conflict the action stops and pushes nothing; a follow-up step replays the
+  cherry-pick and comments the conflicting files on the original PR.
 - Re-running the same command recovers the existing
   `cherrypick-<n>-to-<branch>` branch and skips PR creation; it does not update
   the branch, and no duplicate PR is opened.
@@ -136,7 +136,7 @@ Consequences:
 | Target invalid or missing | Reply with the offending target and the accepted form |
 | Commenter lacks write access | Silent skip |
 | Comment on a non-PR issue | Jobs do not run |
-| Cherry-pick conflict | Action comments conflict details; no branch pushed |
+| Cherry-pick conflict | Action comments conflict details and the workflow lists the conflicting files; no branch pushed |
 | Repeated command | Existing branch is recovered and PR creation is skipped (no duplicate) |
 | Fork head branch matches a target | Reply rejecting the command; the action would silently skip that target |
 | Cherry-pick adds a new `.github/workflows/**` file | Works with the current App permissions (verified) |
