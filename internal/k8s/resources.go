@@ -228,8 +228,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						corev1.ResourceMemory: resource.MustParse("512Mi"),
 					},
 					Limits: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("1"),
-						corev1.ResourceMemory: resource.MustParse("2Gi"),
+						corev1.ResourceCPU: resource.MustParse("1"),
+						// The 2026.10.7 gateway sits near 1.2 GiB at idle and a turn
+						// pushes past 2 GiB, which OOM-killed the pod mid-turn.
+						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
 				Env: []corev1.EnvVar{

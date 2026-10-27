@@ -165,7 +165,7 @@ func TestPodForResourceLimits(t *testing.T) {
 		{
 			name:     "supervisor",
 			requests: map[corev1.ResourceName]string{corev1.ResourceCPU: "100m", corev1.ResourceMemory: "512Mi"},
-			limits:   map[corev1.ResourceName]string{corev1.ResourceCPU: "1", corev1.ResourceMemory: "2Gi"},
+			limits:   map[corev1.ResourceName]string{corev1.ResourceCPU: "1", corev1.ResourceMemory: "4Gi"},
 		},
 	}
 
