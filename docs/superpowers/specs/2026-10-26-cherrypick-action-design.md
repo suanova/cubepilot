@@ -114,16 +114,19 @@ Consequences:
 - Cherry-picks carry `-x`, so the new commit references the original.
 - The squash commit on main keeps the PR's `Signed-off-by` trailers, which the
   cherry-pick preserves; the DCO check passes on the generated PR.
-- On conflict the action stops, pushes nothing, and comments the conflicting
-  files on the original PR.
+- On conflict the action stops and pushes nothing; a follow-up step replays the
+  cherry-pick and comments the conflicting files on the original PR.
 - Re-running the same command recovers the existing
   `cherrypick-<n>-to-<branch>` branch and skips PR creation; it does not update
   the branch, and no duplicate PR is opened.
 - The generated PR runs the normal `ci` / `e2e` workflows and is left for human
   review and merge. Mergify's rules match `base = main` only, so it will not
   merge release-branch PRs.
-- The PR's base branch (`main`) is not a valid target, so the action's own
-  head-ref exclusion is not relied upon.
+- The PR's base branch (`main`) is not a valid target.
+- The action excludes the source PR's head branch by name, regardless of which
+  repository the head branch lives in. A PR whose head branch shares a target
+  name is rejected in `prepare` instead of letting the action skip that target
+  silently.
 
 ## Edge cases
 
@@ -134,9 +137,11 @@ Consequences:
 | Target invalid or missing | Reply with the offending target and the accepted form |
 | Commenter lacks write access | Silent skip |
 | Comment on a non-PR issue | Jobs do not run |
-| Cherry-pick conflict | Action comments conflict details; no branch pushed |
+| Cherry-pick conflict | Action comments conflict details and the workflow lists the conflicting files; no branch pushed |
 | Repeated command | Existing branch is recovered and PR creation is skipped (no duplicate) |
-| Cherry-pick touches `.github/workflows/**` | The App must hold the Workflows permission; otherwise the push is rejected |
+| PR head branch matches a target | Reply rejecting the command; the action would silently skip that target |
+| Cherry-pick adds a new `.github/workflows/**` file | Works with the current App permissions (verified) |
+| Cherry-pick modifies an existing workflow file | May be rejected unless the App holds the Workflows permission |
 
 ## Files
 
