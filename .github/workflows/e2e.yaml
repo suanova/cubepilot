@@ -94,7 +94,7 @@ jobs:
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: '1.26.10'
 
       - name: Pre-pull base images (de-risk BuildKit metadata pulls)
         if: steps.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'

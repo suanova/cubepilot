@@ -9,6 +9,8 @@
 ARG OPENCLAW_IMAGE_TAG=2026.8.2
 
 FROM harbor.isuanova.com/library/golang:1.26-bookworm AS supervisor-build
+# Pin a patched Go patch release without re-mirroring the toolchain image.
+ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -21,9 +23,11 @@ ARG KUBECTL_VERSION=v1.36.1
 
 USER root
 # curl/ca-certificates ship in the openclaw runtime image; this only guards
-# against base drift and downloads kubectl.
+# against base drift and downloads kubectl. The upgrade applies bookworm
+# security updates the published base image has not picked up.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
     && rm -rf /var/lib/apt/lists/*
