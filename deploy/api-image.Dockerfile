@@ -2,7 +2,7 @@
 # Self-contained multi-stage build: the Go binary compiles inside Docker, so no
 # host Go toolchain or host-built bin/ artifact is required (CI-friendly).
 FROM harbor.isuanova.com/library/golang:1.26-bookworm AS build
-# Pin a patched Go patch release without re-mirroring the toolchain image.
+# Pin the patched toolchain from go.mod without re-mirroring this image.
 ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./

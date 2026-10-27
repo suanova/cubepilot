@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -366,7 +367,13 @@ func frameErrorOf(res responseFrame) error {
 	if res.Error == nil {
 		return fmt.Errorf("ws rpc failed")
 	}
-	return &RPCError{Code: res.Error.Code, Message: res.Error.Message, Reason: res.Error.reason()}
+	return &RPCError{
+		Code:         res.Error.Code,
+		Message:      res.Error.Message,
+		Reason:       res.Error.reason(),
+		Retryable:    res.Error.Retryable,
+		RetryAfterMs: res.Error.RetryAfterMs,
+	}
 }
 
 // writeReq sends one request frame over the given connection.
@@ -499,8 +506,33 @@ func (c *Client) dispatchEvent(ev eventFrame) {
 	}
 }
 
-// Call invokes a gateway method and returns its response payload.
+// rpcRetryLimit bounds how many times a frame marked retryable is resent. The
+// gateway marks only states it expects to clear (storage warming up, an
+// admission still in flight) and tells the caller how long to wait.
+const rpcRetryLimit = 3
+
+// Call invokes a gateway method and returns its response payload, resending a
+// request the gateway explicitly reports as retryable.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	for attempt := 0; ; attempt++ {
+		raw, err := c.callOnce(ctx, method, params)
+		var rpcErr *RPCError
+		if err == nil || attempt >= rpcRetryLimit || !errors.As(err, &rpcErr) || !rpcErr.Retryable {
+			return raw, err
+		}
+		wait := time.Duration(rpcErr.RetryAfterMs) * time.Millisecond
+		if wait <= 0 {
+			wait = 100 * time.Millisecond
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+func (c *Client) callOnce(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.callFn != nil {
 		return c.callFn(ctx, method, params)
 	}

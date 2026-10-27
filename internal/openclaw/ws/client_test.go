@@ -586,3 +586,66 @@ func bufferedFailedFrame(msg string) <-chan responseFrame {
 	}
 	return ch
 }
+
+// A frame the gateway marks retryable is resent after the delay it names; the
+// 2026.10.7 gateway uses this for storage that is still warming up.
+func TestCallRetriesRetryableRPCError(t *testing.T) {
+	var calls int
+	c := &Client{callFn: func(context.Context, string, any) (json.RawMessage, error) {
+		calls++
+		if calls == 1 {
+			return nil, &RPCError{Code: "UNAVAILABLE", Message: "warming up", Retryable: true, RetryAfterMs: 1}
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}}
+
+	raw, err := c.Call(context.Background(), "sessions.list", nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if string(raw) != `{"ok":true}` {
+		t.Fatalf("payload = %s", raw)
+	}
+}
+
+// An error not marked retryable is terminal: resending it would repeat an
+// operation the gateway did not say was safe to repeat.
+func TestCallDoesNotRetryPlainRPCError(t *testing.T) {
+	var calls int
+	c := &Client{callFn: func(context.Context, string, any) (json.RawMessage, error) {
+		calls++
+		return nil, &RPCError{Code: "UNAVAILABLE", Message: "not retryable"}
+	}}
+
+	if _, err := c.Call(context.Background(), "sessions.create", nil); err == nil {
+		t.Fatal("Call: want an error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+// The caller's deadline bounds the retries.
+func TestCallRetryStopsAtContextDeadline(t *testing.T) {
+	var calls int
+	c := &Client{callFn: func(context.Context, string, any) (json.RawMessage, error) {
+		calls++
+		return nil, &RPCError{Code: "UNAVAILABLE", Message: "busy", Retryable: true, RetryAfterMs: 60_000}
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.Call(ctx, "models.list", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Call ignored the deadline: %s", elapsed)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want the single attempt that hit the deadline", calls)
+	}
+}

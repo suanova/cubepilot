@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -371,7 +372,6 @@ func TestRenderWorkshop(t *testing.T) {
 				Autonomous struct {
 					Mode string `json:"mode"`
 				} `json:"autonomous"`
-				ApprovalPolicy string `json:"approvalPolicy"`
 			} `json:"workshop"`
 		} `json:"skills"`
 	}
@@ -379,14 +379,13 @@ func TestRenderWorkshop(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	// "off" removes the runtime's autonomous path (capture and repair), so a skill
-	// only lands when the user asks for it. "auto" keeps the explicit
-	// create-then-apply flow working: there is no proposal-review surface in this
-	// product, so a "pending" policy would leave every apply waiting for an
-	// approval nobody can give.
+	// only lands when the user asks for it.
 	if got := cfg.Skills.Workshop.Autonomous.Mode; got != "off" {
 		t.Errorf("skills.workshop.autonomous.mode = %q, want off", got)
 	}
-	if got := cfg.Skills.Workshop.ApprovalPolicy; got != "auto" {
-		t.Errorf("skills.workshop.approvalPolicy = %q, want auto", got)
+	// approvalPolicy is gone: OpenClaw 2026.10.7 removed it with Skill Workshop
+	// proposals and rejects the whole config when the key is present.
+	if strings.Contains(string(b), "approvalPolicy") {
+		t.Error("openclaw.json still contains skills.workshop.approvalPolicy")
 	}
 }

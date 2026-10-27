@@ -228,8 +228,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 						corev1.ResourceMemory: resource.MustParse("512Mi"),
 					},
 					Limits: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("1"),
-						corev1.ResourceMemory: resource.MustParse("2Gi"),
+						corev1.ResourceCPU: resource.MustParse("1"),
+						// The 2026.10.7 gateway sits near 1.2 GiB at idle and a turn
+						// pushes past 2 GiB, which OOM-killed the pod mid-turn.
+						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
 				Env: []corev1.EnvVar{
@@ -293,8 +295,10 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 					{Name: "cubepilot-keys", MountPath: CredentialsDir},
 				},
 				ReadinessProbe: &corev1.Probe{
+					// /healthz only proves the listener is bound; /readyz also requires
+					// the agent databases to admit session writes.
 					ProbeHandler: corev1.ProbeHandler{
-						HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt(int(port))},
+						HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt(int(port))},
 					},
 					InitialDelaySeconds: 5,
 					PeriodSeconds:       5,

@@ -146,6 +146,9 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	idle := false
 	if id, ok := s.gatewayConns.LiveRunID(user, sessionKey); ok {
 		runID = id
+		// Marked before the RPC: 2026.10.7 can fail the in-flight sessions.send
+		// the moment the abort lands, so the flag must already be visible.
+		s.gatewayConns.SetStopRequested(user, sessionKey, true)
 	} else {
 		// No local turn to read one from: this is the reload-takeover path,
 		// where the gateway is the only source of the id.
@@ -216,6 +219,7 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		// delete a live, answerable card for a run that never stopped, which is
 		// worse than a stale one. Both keep the records pending and answer 502.
 		if !s.abortLanded(reconcileCtx, user, sessionKey) {
+			s.gatewayConns.SetStopRequested(user, sessionKey, false)
 			s.logf("abort %s/%s: %v", user, sessionKey, abortErr)
 			writeJSON(w, http.StatusBadGateway, map[string]any{"error": abortErr.Error()})
 			return
@@ -238,12 +242,16 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 		// a stream that is gone, so a card can linger on screen until a reload. A
 		// stale card is strictly better than a card deleted for a live run.
 		if !s.abortLanded(reconcileCtx, user, sessionKey) {
+			s.gatewayConns.SetStopRequested(user, sessionKey, false)
 			s.logf("abort %s/%s: chat.abort stopped nothing and the session is not provably idle: not settling", user, sessionKey)
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": "the gateway did not stop a run for this session; it is still in flight",
 			})
 			return
 		}
+		// The RPC stopped nothing and no run is in flight: nothing cancelled the
+		// send, so a later failure is not this stop's.
+		s.gatewayConns.SetStopRequested(user, sessionKey, false)
 		s.logf("abort %s/%s: chat.abort stopped nothing, but no run is in flight: the session is idle", user, sessionKey)
 	}
 

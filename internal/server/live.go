@@ -25,6 +25,11 @@ type liveTurn struct {
 
 	runMu sync.Mutex
 	runID string // runId of the turn's run; set from the send ACK, filters events
+	// stopRequested records that the user asked to stop this turn. 2026.10.7
+	// cancels an in-flight admission instead of emitting an aborted terminal,
+	// so the send/wait error is the only evidence the stop landed; see
+	// stopWasRequested.
+	stopRequested bool
 
 	done chan struct{}
 	once sync.Once
@@ -55,6 +60,13 @@ func (t *liveTurn) acceptRun(id string) bool {
 	// produced yet); afterwards only that run's frames project -- a missing or
 	// foreign runId on run-scoped content is dropped.
 	return t.runID == "" || (id != "" && t.runID == id)
+}
+
+// stopWasRequested reports whether the user asked to stop this turn.
+func (t *liveTurn) stopWasRequested() bool {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	return t.stopRequested
 }
 
 // finish marks the turn terminal as neither stopped nor failed (idempotent).
@@ -109,6 +121,23 @@ func (m *gatewayConns) LiveRunID(user, sessionKey string) (string, bool) {
 	t.runMu.Lock()
 	defer t.runMu.Unlock()
 	return t.runID, t.runID != ""
+}
+
+// SetStopRequested records (or clears) that the user asked to stop the
+// session's live turn. 2026.10.7 fails the pending sessions.send with "Chat
+// admission ended or was cancelled" when Stop lands first, and sends no aborted
+// terminal; RunLiveTurn uses this flag to report that failure as the stop.
+func (m *gatewayConns) SetStopRequested(user, sessionKey string, requested bool) bool {
+	m.liveMu.Lock()
+	t := m.live[sessionKey]
+	m.liveMu.Unlock()
+	if t == nil || t.user != user {
+		return false
+	}
+	t.runMu.Lock()
+	t.stopRequested = requested
+	t.runMu.Unlock()
+	return true
 }
 
 // registerLive registers the live turn for a session so connection events route
@@ -203,6 +232,9 @@ func (m *gatewayConns) RunLiveTurn(ctx context.Context, user, sessionKey, messag
 	}
 	runID, err := gw.SendSessionMessage(ctx, sessionKey, message, idem)
 	if err != nil {
+		if t.stopWasRequested() {
+			return agentruntime.TurnOutcome{Stopped: true}, nil
+		}
 		return agentruntime.TurnOutcome{}, err
 	}
 	if runID != "" && runID != idem {
@@ -227,6 +259,9 @@ func (m *gatewayConns) RunLiveTurn(ctx context.Context, user, sessionKey, messag
 		return t.outcome()
 	case err := <-waitDone:
 		if err != nil {
+			if t.stopWasRequested() {
+				return agentruntime.TurnOutcome{Stopped: true}, nil
+			}
 			m.sayf("chat %s: %s: agent.wait %s: %v", user, sessionKey, runID, err)
 			return agentruntime.TurnOutcome{}, err
 		}

@@ -132,12 +132,10 @@ func Render(token, primary string, providers []Provider) ([]byte, error) {
 			"sessions": map[string]any{"visibility": "all"},
 		},
 		// Skill authoring is user-requested only: the runtime default lets the agent capture
-		// and repair its own skills unasked, which the platform never sees. approvalPolicy stays
-		// "auto" -- there is no proposal-review surface for a "pending" to reach.
+		// and repair its own skills unasked, which the platform never sees.
 		"skills": map[string]any{
 			"workshop": map[string]any{
-				"autonomous":     map[string]any{"mode": "off"},
-				"approvalPolicy": "auto",
+				"autonomous": map[string]any{"mode": "off"},
 			},
 		},
 		// Memory runs FTS5 keyword search only (issue #163): with no embedding
