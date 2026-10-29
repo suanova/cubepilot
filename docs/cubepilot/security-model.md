@@ -47,7 +47,7 @@
 | ClusterRole | 权限范围 |
 |---|---|
 | `view`（Kubernetes 内置） | 命名空间级只读，不含 secrets |
-| `cubepilot-cluster-read` | 集群级只读；排除 secrets、`nodes/proxy`、`pods/proxy`、`pods/exec`、`pods/attach` |
+| `cubepilot-cluster-read` | 集群级只读（含 `apiextensions.k8s.io/*`，即可读 CRD 定义）；排除 secrets、`nodes/proxy`、`pods/proxy`、`pods/exec`、`pods/attach` |
 | `cubepilot-user-crds` | `ai.cubestack.io` 全量 CRUD，集群范围 |
 
 因此用户身份可以读取集群内原生 API 组与 `ai.cubestack.io` 的资源状态（含 pods/log），
@@ -69,10 +69,11 @@ agent Pod 挂两个 kubeconfig：
 | `~/.kube/config`（默认） | 用户身份 | 所有业务操作 |
 | `$CUBEPILOT_PLATFORM_KUBECONFIG` | agent Pod 身份 | CRD / kind schema 发现 |
 
-schema 发现需要读 CRD 定义，而用户身份没有集群级 CRD 读权限，所以单独挂一份平台
-kubeconfig。默认约定是它只用于 `kubectl get crd` / `explain`；这是 skill 和提示词层面的
-约定，不是 RBAC 约束。agent Pod 身份当前按平台运行需要配置权限，尚未收窄到 schema
-发现所需的最小集合。
+设计上 schema 发现单独使用这份 kubeconfig。不过 `cubepilot-cluster-read` 已经包含
+`apiextensions.k8s.io/*` 的 `get/list/watch`，而 CRD 是集群级对象，所以用户身份本身就能
+读取 CRD 定义；这份平台 kubeconfig 在权限上并不是 schema 发现所必需。默认约定是它只用于
+`kubectl get crd` / `explain`，但这是 skill 和提示词层面的约定，不是 RBAC 约束。agent Pod
+身份当前按平台运行需要配置权限，尚未收窄到最小集合。
 
 ## 3. 执行与写操作确认
 
