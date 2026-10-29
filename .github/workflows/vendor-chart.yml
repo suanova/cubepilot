@@ -318,9 +318,15 @@ jobs:
             fi
           fi
 
-          [ -f test/e2e/images.txt ] || { echo "no preload list"; exit 0; }
+          if [ ! -f test/e2e/images.txt ]; then
+            echo "::error::test/e2e/images.txt is missing; cannot verify the chart images"
+            exit 1
+          fi
           images=$(grep -E "/${COMPONENT}-[^:[:space:]]+:${APP_VERSION}$" test/e2e/images.txt || true)
-          [ -n "$images" ] || { echo "no own images to wait for"; exit 0; }
+          if [ -z "$images" ]; then
+            echo "::error::no own images found in test/e2e/images.txt"
+            exit 1
+          fi
           echo "Waiting for:"; echo "$images"
           for image in $images; do
             path=${image#*/}
