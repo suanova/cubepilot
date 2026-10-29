@@ -50,7 +50,8 @@
 | `cubepilot-cluster-read` | 集群级只读；排除 secrets、`nodes/proxy`、`pods/proxy`、`pods/exec`、`pods/attach` |
 | `cubepilot-user-crds` | `ai.cubestack.io` 全量 CRUD，集群范围 |
 
-因此用户身份可以读取整个集群的资源状态（含 pods/log），并创建、修改平台 CR；
+因此用户身份可以读取集群内原生 API 组与 `ai.cubestack.io` 的资源状态（含 pods/log），
+并创建、修改平台 CR；未列出的第三方 API 组不在读取范围内。
 **不能写工作负载，也不能读任何 Secret**。
 
 `ai.cubestack.io` 的写权限包含控制面对象（AgentTemplate、Skill、Task 等）。API 路径上有
@@ -120,7 +121,8 @@ Portal 交互回合
 
 ## 4. 隔离与凭据
 
-每个用户独占一个 Pod 和一个 PVC。Pod 的安全基线（`internal/k8s/resources.go`）：
+每个 AgentInstance 独占一个 Pod 和一个 PVC。一个用户可以拥有多个实例，不同实例之间
+不共享 Pod 或 PVC。Pod 的安全基线（`internal/k8s/resources.go`）：
 
 | 项 | 值 |
 |---|---|
