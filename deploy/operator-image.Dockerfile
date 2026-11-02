@@ -11,11 +11,10 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cubepilot-operator ./cmd/cubepilot-operator
 
-FROM harbor.isuanova.com/library/debian:bookworm-slim
-# Apply bookworm security updates; the mirrored base image lags Debian point releases.
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/*
+FROM scratch
+# The binary is static, so there is no OS userland to patch; keep the CA bundle
+# for outbound TLS.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/cubepilot-operator /usr/local/bin/cubepilot-operator
 USER 1000:1000
 ENTRYPOINT ["cubepilot-operator"]
