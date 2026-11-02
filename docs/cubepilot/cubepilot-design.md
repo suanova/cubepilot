@@ -415,6 +415,8 @@ schema 发现：runtime Pod 挂**两个 kubeconfig**——用户 kubeconfig（�
 - 模型 provider 的端点与凭据内联在 AgentTemplate 的 `providers` 里（每条含 endpoint；credentialRef 可选，不需要凭据的 provider 没有），凭据引用 Secret、不落明文。用户自带模型凭据属于扩展项。
 - 每实例独占 Pod 和 PVC，使用非 root、`readOnlyRootFilesystem`、`seccomp RuntimeDefault`、`drop ALL capabilities`、资源限制；egress 白名单延后（依赖 CNI 网络策略，模型端点需按实例动态放行）。
 
+当前实现的信任边界、授权路径与未落地能力见 [security-model.md](./security-model.md)。
+
 ---
 
 # 7. 定时任务与报告
