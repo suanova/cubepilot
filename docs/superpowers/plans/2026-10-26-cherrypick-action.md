@@ -144,7 +144,7 @@ jobs:
           done
           targets="${targets[*]}"
 
-          info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName)
+          info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergedAt,baseRefName,headRefName)
           if [ "$(jq -r 'if .mergedAt then "true" else "false" end' <<<"$info")" != true ]; then
             reject "PR #$PR_NUMBER is not merged."
           fi
@@ -152,6 +152,15 @@ jobs:
           if [ "$base" != main ]; then
             reject "only PRs merged into main can be cherry-picked (this one targets '$base')."
           fi
+
+          # The action drops any target equal to the head branch name,
+          # regardless of which repository the head branch lives in.
+          head=$(jq -r .headRefName <<<"$info")
+          for branch in $targets; do
+            if [ "$branch" = "$head" ]; then
+              reject "'$branch' matches this PR's head branch; the cherry-pick action would skip it."
+            fi
+          done
 
           # ls-remote avoids URL-encoding a branch name with slashes in an API path.
           for branch in $targets; do
@@ -191,6 +200,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Create cherry-pick PRs
+        id: backport
         uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         with:
           github_token: ${{ steps.app-token.outputs.token }}
@@ -203,6 +213,81 @@ jobs:
           # Only the validated command targets: label-derived targets would
           # bypass the prepare job (e.g. a "backport main" label).
           label_pattern: ''
+
+      # backport-action reports the failure but not the conflicting files (they
+      # are only in its log). Replay the cherry-pick it tried and post them.
+      - name: Report conflicting files
+        if: steps.backport.outputs.was_successful == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          TARGETS: ${{ steps.backport.outputs.was_successful_by_target }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # The action's failure comment carries the exact commits it tried.
+          # Comments come back oldest first; keep the summary for this run.
+          shas=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --slurp \
+            | jq -r --arg run_url "$RUN_URL" \
+              '[.[][] | select(.user.login == "suanova-bot[bot]" and (.body | contains($run_url)))] | last | .body // empty' \
+            | grep -oE 'git cherry-pick -x [0-9a-f ]+' | head -1 \
+            | sed 's/^git cherry-pick -x //') || true
+          if [ -z "$shas" ]; then
+            echo "No cherry-pick command in the action comment; nothing to replay."
+            exit 0
+          fi
+
+          # A shallow checkout cannot resolve the merged commits; deepen it once.
+          git fetch --quiet --unshallow origin 2>/dev/null || git fetch --quiet origin
+
+          while IFS= read -r record; do
+            case "$record" in
+              *"=false") target=${record%"=false"} ;;
+              *) continue ;;
+            esac
+            [ -n "$target" ] || continue
+
+            if ! git fetch --quiet origin "refs/heads/$target"; then
+              echo "Could not fetch $target; skipping"
+              continue
+            fi
+            wt=$(mktemp -d)
+            rmdir "$wt"
+            git worktree add --detach "$wt" FETCH_HEAD >/dev/null
+
+            git_id=(-c user.name='github-actions[bot]' -c user.email='github-actions[bot]@users.noreply.github.com')
+            files=""
+            for sha in $shas; do
+              if git -C "$wt" "${git_id[@]}" cherry-pick -x "$sha" >/dev/null 2>&1; then
+                continue
+              fi
+              files=$(git -C "$wt" diff --name-only --diff-filter=U)
+              if [ -n "$files" ]; then
+                break
+              fi
+              # Already-applied commits leave nothing to pick; skip and continue,
+              # as the backport action does.
+              git -C "$wt" cherry-pick --skip >/dev/null 2>&1 || \
+                git -C "$wt" cherry-pick --abort >/dev/null 2>&1 || true
+            done
+            git -C "$wt" cherry-pick --abort >/dev/null 2>&1 || true
+            if [ -n "$files" ]; then
+              body=$(mktemp)
+              {
+                echo "Cherry-pick to \`$target\` failed; conflicting files:"
+                echo
+                printf '%s\n' "$files" | sed 's/^/- `/; s/$/`/'
+                echo
+                echo "Run: $RUN_URL"
+              } > "$body"
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$body"
+              rm -f "$body"
+            fi
+            git worktree remove --force "$wt" >/dev/null 2>&1 || true
+          done <<<"$TARGETS"
 ```
 
 - [ ] **Step 2: Lint the workflow**
@@ -268,9 +353,11 @@ conversation comment on the PR; a comment on a review does not trigger the
 workflow. A target must already exist and must not be `main`. The generated PR
 runs the normal checks and is merged by hand — nothing is merged automatically.
 Repeating the command does not open a duplicate PR, and a conflict is reported
-on the original PR instead of opening a half-applied PR. If a cherry-pick
-touches files under `.github/workflows/`, the bot App needs the Workflows
-permission, otherwise the push is rejected.
+on the original PR with the conflicting files instead of opening a half-applied
+PR. A cherry-pick that
+adds a new file under `.github/workflows/` works with the bot's current App
+permissions; modifying an existing workflow file may still be rejected unless
+the App holds the Workflows permission.
 ```
 
 - [ ] **Step 2: Check the section renders in the right place**
@@ -303,7 +390,7 @@ workflows are loaded from the default branch.
 
 - [ ] **Step 1: Confirm the App installation**
 
-In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write` and `pull-requests: write`. Without these the token mint or PR creation fails. Cherry-picking a change under `.github/workflows/**` additionally needs the App's Workflows permission.
+In the `suanova` organization's GitHub App settings, confirm `SUANOVA_BOT` is installed on `cubepilot` with `contents: write` and `pull-requests: write`. Without these the token mint or PR creation fails. Adding a new workflow file works with these permissions; modifying an existing workflow file may need the App's Workflows permission.
 
 - [ ] **Step 2: Happy path**
 
