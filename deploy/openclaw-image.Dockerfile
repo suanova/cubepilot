@@ -19,7 +19,10 @@ COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cubepilot-supervisor ./cmd/cubepilot-supervisor
 
 FROM harbor.isuanova.com/library/openclaw:${OPENCLAW_IMAGE_TAG}
-ARG KUBECTL_VERSION=v1.36.1
+# Built with Go 1.26.10, which carries the stdlib security fixes; earlier
+# releases ship a vulnerable Go runtime. Stay on 1.36: platform clusters run
+# 1.35, and kubectl supports one minor of skew.
+ARG KUBECTL_VERSION=v1.36.6
 
 USER root
 # curl/ca-certificates ship in the openclaw runtime image; this only guards
