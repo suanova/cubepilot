@@ -101,11 +101,20 @@ created by hand from the UI, which is also where the tag gets cut.
 
 Every image in the chart is a repository + tag pair, and an empty `tag` resolves
 to the chart's `appVersion`. Installing a published release therefore pulls the
-images released with it, with no overrides:
+images released with it, with no overrides. The GitHub Release for a tag also
+carries a `public-release.yaml` asset with the chart/image digests:
 
 ```bash
-helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --version 1.0.0
+export CUBEPILOT_VERSION=2.0.0
+helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart \
+  --version "$CUBEPILOT_VERSION" -n cubepilot --create-namespace
 ```
+
+The chart installs its CRDs on first install. `helm upgrade` does not reapply
+them, so apply `deploy/charts/cubepilot-chart/crds/` by hand before upgrades
+(see the upgrade notes below). A plain install assumes no platform default LLM;
+add providers from the Portal, or seed the `cubepilot-llm` Secret as described
+below.
 
 The rolling chart published from `main` resolves to `:latest` the same way (it
 is packaged with `appVersion: latest`). Point any component elsewhere by
