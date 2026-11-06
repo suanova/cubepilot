@@ -41,23 +41,28 @@
 
 ```mermaid
 flowchart TB
-    U["用户 / Portal / API"] --> S["CubePilot Service\n路由 · SSE · 配置 · 技能发布"]
-    S --> IM["Instance Manager\n生命周期 · PVC"]
+    U["用户 / Portal / API"] --> S["CubePilot Service\n路由 · SSE · 配置 resolve 与下发 · 技能发布"]
+    S --> IM["Instance Manager\n实例就绪等待 · 状态查询"]
     S --> DB["平台元数据（CRD）"]
     SCH["Scheduler\nTaskTemplate → Task → TaskRun"] --> DB
 
+    OP["operator\nPod / Service / PVC · 每用户身份 · 渲染共享网关配置 Secret"]
+    OP -- 创建 / 自愈 --> RT
+    OP -- 渲染 --> S
+
     subgraph RT["AgentInstance Runtime Pod"]
-      INJ["injector sidecar\n配置注入 · skill 读取/解压"]
-      OC["OpenClaw\n对话 · 规划 · 汇总\n扫目录加载 skill · exec kubectl"]
-      PVC["PVC\n会话 · 记忆 · 配置"]
-      INJ -- 写配置 / 解压 skill --> PVC
+      SUP["supervisor（pid 1）\n拉取配置与 skill tar · 渲染 · 解压 · 守护网关"]
+      OC["OpenClaw 网关（子进程）\n对话 · 规划 · 汇总\n扫目录加载 skill · exec kubectl"]
+      PVC["PVC\n会话 · 记忆 · 渲染结果"]
+      SUP -- 写 openclaw.json / AGENTS.md / 解压 skill --> PVC
+      SUP -- 启动并守护 --> OC
       OC <--> PVC
     end
 
     SK["技能仓库\n共享文件卷（CephFS RWX）"]
     S -- 发布：写 skill tar --> SK
-    SK -- 安装：读 skill tar（只读挂载）--> INJ
-    INJ -- watch AgentInstance / Skill --> DB
+    SK -- 读取 tar --> S
+    S -- internal API：配置 + skill tar --> SUP
 
     S -- chat/runTask --> OC
     SCH -- runTask --> OC
@@ -70,9 +75,10 @@ flowchart TB
 | 组件 | 职责 | 不负责什么 |
 |---|---|---|
 | Portal/API | 认证、对话入口（浮窗 + 独立 tab）、配置、任务与报告查询 | 不持有 Agent 会话状态 |
-| CubePilot Service | Agent 路由、SSE 转发、chat/runTask 转发（OpenClaw 客户端）、实例查找、技能发布（写技能仓库 + Skill CRD） | 不执行 LLM 编排或 kubectl |
-| Instance Manager | 创建、停止、自愈 Pod；挂载 PVC 和凭据 | 不理解用户自然语言 |
-| injector sidecar | 配置注入、skill 读取：watch CRD → 从技能仓库读取 + 渲染配置 + 解压 skill 写 PVC | 不做 Agent 规划 |
+| CubePilot Service | Agent 路由、SSE 转发、chat/runTask 转发（OpenClaw 客户端）、实例查找、配置 resolve 并经 internal API 下发、技能发布（写技能仓库 + Skill CRD） | 不执行 LLM 编排或 kubectl |
+| Instance Manager | 实例就绪等待与状态查询（等 CR Ready、Service 可达） | 不创建 Pod |
+| operator | 创建、更新、自愈 Pod / Service / PVC 与每用户身份（SA + kubeconfig Secret）；从 AgentTemplate 渲染共享的网关配置 Secret | 不参与配置 resolve |
+| supervisor（pod 内 pid 1） | 经 internal API 拉取配置与 skill tar；写 openclaw.json 与 AGENTS.md 托管段、解压 skill 到 workspace/skills；每个 poll 校验并收敛（§3.7）；启动并守护 OpenClaw 网关 | 不持有 CRD 读权限、不做 Agent 规划 |
 | OpenClaw 进程 | 对话/规划/汇总；扫目录加载 skill；exec kubectl（简单 HITL） | 不决定 RBAC 或管理 Pod |
 | Scheduler | 触发任务、调用实例、写入 TaskRun | 不持有用户资源权限 |
 
@@ -221,9 +227,9 @@ status:
 ### 发布与安装
 
 - **发布（模块/管理员）**：Portal「技能管理」页拖拽上传 skill 目录 → 后端打包写入技能仓库共享文件卷（先写临时文件再原子 rename）+ 建 `Skill` CRD。
-- **安装（用户）**：Portal「技能市场」浏览搜索 → 点「安装」→ 后端把技能名加入该实例 `enabledSkills` → injector 从共享文件卷（只读挂载）读取 tar 解压到 workspace/skills → OpenClaw 文件监听热加载。
+- **安装（用户）**：Portal「技能市场」浏览搜索 → 点「安装」→ 后端把技能名加入该实例 `enabledSkills` → supervisor 经 internal API 拉取 tar 解压到 workspace/skills → OpenClaw 文件监听热加载。
 
-技能仓库后端（共享文件卷 ↔ 对象存储）对 `Skill` CRD 与加载流程透明，差异仅在 `source` 的寻址方式与 injector 取包方式（挂载点读取 vs 网络拉取）：切对象存储时改 `source.type` 为 `S3` 并填 `source.s3`，其余不变。阶段二放开用户私有技能、需要对象级 ACL 时可切回对象存储，不影响 CRD 与热重载。
+技能仓库后端（共享文件卷 ↔ 对象存储）对 `Skill` CRD 与 pod 都透明：supervisor 一律经 internal API 取 tar，换后端只改 Service 侧的读取实现（切 `source.type` 为 `S3` 并填 `source.s3`），CRD、下发与热重载都不变。阶段二放开用户私有技能、需要对象级 ACL 时可切回对象存储，不影响 CRD 与热重载。
 
 AgentTemplate 用 `skills: [...]` 声明默认启用，实例 `enabledSkills` 是用户启用的子集。阶段一只有平台级技能；用户私有技能（`visibility: User`）阶段二放开。
 
@@ -367,10 +373,14 @@ interface AgentRuntime {
 
 Go 实现中的完整 `AgentRuntime` 组合 `LiveTurnRunner`、`OneShotRunner` 与 `SessionReader` 三个语义面；新增 runtime 只需实现该完整契约，不依赖 OpenClaw 协议。传输按交互语义而非“形式统一”选择：Portal 交互聊天由 OpenClaw adapter 通过 gateway protocol WebSocket 发起并订阅，文本、工具事件、确认和终态共用同一有序实时通道；定时任务是只需要最终结果的 one-shot 调用，保留 OpenAI-compatible HTTP/SSE；session 列表与历史是无状态只读查询，保留 HTTP。生命周期由 operator/K8s 负责；OpenClaw 进程负责对话/规划/汇总、加载 skill、exec kubectl（§5）。
 
-**配置注入**：injector 负责把配置 + skill 内容落到 Pod 的 workspace——渲染系统提示词写 OpenClaw 配置、从技能仓库共享文件卷（只读挂载）读取启用 skill 的 tar 解压到 workspace/skills。OpenClaw 扫目录加载、文件监听热重载。
+**配置注入**：resolve 在服务侧，落盘在 Pod 侧，两端只有一个契约——`ResolvedAgentConfig`。
 
-- **主方案**：injector 以**原生 sidecar** 部署（`initContainers` + `restartPolicy: Always`，先于 OpenClaw 主容器启动并常驻），watch 本实例 AgentInstance 及引用的 AgentTemplate/Skill，合并出 `ResolvedAgentConfig`，渲染系统提示词写配置、从技能仓库读取启用 skill 解压到 workspace/skills。skill 变更经 OpenClaw 文件监听热重载；模型/提示词变更退化为重启 OpenClaw（会话/记忆在 PVC，不丢失）。operator 只负责 Pod 生命周期，不参与 resolve。
-- **备选方案**：若不希望 sidecar 持有 CRD 读权限（或避免每 Pod 一个 watcher），改为 operator watch + resolve，经 HTTP API / gRPC 下发配置，sidecar 只拉取写文件。
+- **operator**：创建、更新、自愈 Pod / Service / PVC 与每用户身份，并从 AgentTemplate 渲染共享的网关配置 Secret（providers、模型白名单、网关 token）。
+- **CubePilot Service**：`Instance Manager → resolver` 把 AgentTemplate + AgentInstance + Skill 合并成不可变 `ResolvedAgentConfig`，连同渲染好的网关配置与 skill tar 一起挂在 internal API 上（`/internal/agents/{user}/config`、`/internal/gateway/config/{user}`、`/internal/skills/{name}/tar`），仅集群内可达。
+- **Pod（supervisor，pid 1）**：轮询 internal API 拿配置，写 `openclaw.json` 与 `AGENTS.md` 托管段、把 skill tar 解压到 `workspace/skills`，每个 poll 校验并收敛（§3.7），并启动、守护 OpenClaw 网关子进程。
+- **变更生效**：网关自己 watch `openclaw.json` 并重扫 workspace 的 skill 目录，所以配置与 skill 变更由网关热重载——supervisor 不因配置变更重启它，只在网关子进程崩溃时重新拉起（会话/内存在 PVC，不受影响）。
+
+supervisor 不是 sidecar：它就是 Pod 的主进程，因此不必把 CRD 读权限发给每个 Pod，也没有每 Pod 一个 watcher——resolve 由 Service 一处负责。曾考虑的备选形态是"sidecar watch CRD 自解析"，它需要给每个 Pod CRD 读权限和一个 watcher，且与 Service 的实例视图重复，未采用。
 
 ---
 
