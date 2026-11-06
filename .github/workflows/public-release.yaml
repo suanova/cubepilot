@@ -1,0 +1,52 @@
+name: public-release
+
+# Attach public-release.yaml (chart/image refs + Harbor digests) to a published
+# GitHub Release. The release workflow publishes the artifacts on the tag; this
+# workflow waits for them and records what the tag actually resolved to.
+#
+# Creating the GitHub Release remains a human step.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo jq
+
+      - name: Generate public-release.yaml
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          COMMIT: ${{ github.sha }}
+          RELEASED_AT: ${{ github.event.release.published_at }}
+        run: |
+          set -euo pipefail
+          bash scripts/public-release.sh \
+            --tag "${TAG}" --commit "${COMMIT}" --released-at "${RELEASED_AT}" \
+            --output public-release.yaml
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" public-release.yaml --clobber
