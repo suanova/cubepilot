@@ -36,6 +36,14 @@ agents:
   # passes are examples, not chart defaults).
   llmEndpoint: ""
   llmModel: ""
+  # Scheduling for the per-user agent Pods. The chart renders no agent
+  # workload -- the operator creates those Pods at runtime -- so these are
+  # passed to it as CUBEPILOT_AGENT_NODE_SELECTOR / CUBEPILOT_AGENT_TOLERATIONS
+  # (JSON) and applied to every agent Pod. Kept separate from the operator's own
+  # scheduling values: a cluster that taints the control-plane nodes can place
+  # the agents there without moving the operator.
+  nodeSelector: {}
+  tolerations: []
   # Resident lifecycle: started instances stay up; no idle reclaim.
   gcWindow: 72h
   gcWatermark: "0.7"

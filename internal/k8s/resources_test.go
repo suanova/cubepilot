@@ -42,6 +42,37 @@ func TestDataPVCStorageClass(t *testing.T) {
 	}
 }
 
+// TestAgentPodScheduling verifies the deployment-wide nodeSelector/tolerations
+// reach the Pod the operator creates -- the chart renders no agent workload, so
+// it cannot schedule them itself.
+func TestAgentPodScheduling(t *testing.T) {
+	spec := testAgentSpec()
+	spec.NodeSelector = map[string]string{"node-role.kubernetes.io/control-plane": ""}
+	spec.Tolerations = []corev1.Toleration{{
+		Key:      "node-role.kubernetes.io/control-plane",
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	}}
+	pod := spec.Pod("alice")
+	if got, ok := pod.Spec.NodeSelector["node-role.kubernetes.io/control-plane"]; !ok || got != "" {
+		t.Errorf("nodeSelector = %v, want the control-plane selector", pod.Spec.NodeSelector)
+	}
+	if len(pod.Spec.Tolerations) != 1 ||
+		pod.Spec.Tolerations[0].Key != "node-role.kubernetes.io/control-plane" ||
+		pod.Spec.Tolerations[0].Effect != corev1.TaintEffectNoSchedule {
+		t.Errorf("tolerations = %v, want the control-plane NoSchedule toleration", pod.Spec.Tolerations)
+	}
+}
+
+// TestAgentPodSchedulingDefault verifies an unconfigured spec leaves the Pod
+// on the cluster scheduler (empty is not the same as a zero-value selector).
+func TestAgentPodSchedulingDefault(t *testing.T) {
+	pod := testAgentSpec().Pod("alice")
+	if pod.Spec.NodeSelector != nil || pod.Spec.Tolerations != nil {
+		t.Errorf("scheduling should be empty, got %v / %v", pod.Spec.NodeSelector, pod.Spec.Tolerations)
+	}
+}
+
 // containerByName returns the named container from the rendered pod.
 func containerByName(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
 	t.Helper()

@@ -2,9 +2,12 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // DefaultLLMEndpoint is the default OpenAI-compatible base URL of the platform
@@ -37,6 +40,13 @@ type Config struct {
 	// cluster default (kind/local-path in tests). Production sets
 	// ceph-rbd-ephemeral: the workspace must stay a block volume.
 	AgentDataStorageClass string
+
+	// AgentNodeSelector and AgentTolerations schedule the per-user agent Pods.
+	// They arrive as JSON from the chart's agents.nodeSelector /
+	// agents.tolerations values -- the chart renders no agent workload, so this
+	// is the only way to place the Pods the operator creates at runtime.
+	AgentNodeSelector map[string]string
+	AgentTolerations  []corev1.Toleration
 
 	// GatewayToken is the bearer token used to authenticate against each agent
 	// gateway (mirrors gateway.auth.token in the injected openclaw.json).
@@ -113,6 +123,8 @@ func Load() Config {
 		// Always -- pulling over an image that kind just side-loaded.
 		AgentImagePullPolicy:  getenv("CUBEPILOT_AGENT_IMAGE_PULL_POLICY", "IfNotPresent"),
 		AgentDataStorageClass: getenv("CUBEPILOT_AGENT_DATA_STORAGE_CLASS", ""),
+		AgentNodeSelector:     getStringMap("CUBEPILOT_AGENT_NODE_SELECTOR"),
+		AgentTolerations:      getTolerations("CUBEPILOT_AGENT_TOLERATIONS"),
 		GatewayToken:          os.Getenv("CUBEPILOT_GATEWAY_TOKEN"),
 		// Empty by default: no platform default model is seeded unless an
 		// endpoint + model are configured (the builtin template is then created
@@ -175,4 +187,32 @@ func getFloat(key string, def float64) float64 {
 		return def
 	}
 	return n
+}
+
+// getStringMap parses a JSON-encoded map env var. Invalid JSON is ignored, as
+// with the numeric helpers: a bad value must not keep the operator from
+// starting, and the Pod keeps the chart's default scheduling.
+func getStringMap(key string) map[string]string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	m := map[string]string{}
+	if err := json.Unmarshal([]byte(v), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+// getTolerations parses a JSON-encoded tolerations list env var.
+func getTolerations(key string) []corev1.Toleration {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var t []corev1.Toleration
+	if err := json.Unmarshal([]byte(v), &t); err != nil {
+		return nil
+	}
+	return t
 }
