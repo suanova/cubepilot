@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 func TestLoadSkillsDir(t *testing.T) {
 	t.Setenv("CUBEPILOT_SKILLS_DIR", "/mnt/skills")
@@ -71,5 +75,46 @@ func TestLoadAgentImagePullPolicyDefault(t *testing.T) {
 	cfg := Load()
 	if cfg.AgentImagePullPolicy != "IfNotPresent" {
 		t.Fatalf("AgentImagePullPolicy = %q, want IfNotPresent", cfg.AgentImagePullPolicy)
+	}
+}
+
+// TestLoadAgentScheduling verifies the JSON values the chart passes reach the
+// config that schedules the agent Pods.
+func TestLoadAgentScheduling(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_NODE_SELECTOR", `{"kubernetes.io/os":"linux"}`)
+	t.Setenv("CUBEPILOT_AGENT_TOLERATIONS",
+		`[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]`)
+	cfg := Load()
+	if len(cfg.AgentNodeSelector) != 1 || cfg.AgentNodeSelector["kubernetes.io/os"] != "linux" {
+		t.Fatalf("AgentNodeSelector = %v, want kubernetes.io/os=linux", cfg.AgentNodeSelector)
+	}
+	if len(cfg.AgentTolerations) != 1 ||
+		cfg.AgentTolerations[0].Key != "node-role.kubernetes.io/control-plane" ||
+		cfg.AgentTolerations[0].Effect != corev1.TaintEffectNoSchedule {
+		t.Fatalf("AgentTolerations = %v, want the control-plane NoSchedule toleration", cfg.AgentTolerations)
+	}
+}
+
+// TestLoadAgentSchedulingMalformed pins the fallback: a bad env value leaves
+// the Pods on the cluster scheduler instead of failing operator startup.
+func TestLoadAgentSchedulingMalformed(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_NODE_SELECTOR", "not-json")
+	t.Setenv("CUBEPILOT_AGENT_TOLERATIONS", "not-json")
+	cfg := Load()
+	if cfg.AgentNodeSelector != nil {
+		t.Fatalf("AgentNodeSelector = %v, want nil", cfg.AgentNodeSelector)
+	}
+	if cfg.AgentTolerations != nil {
+		t.Fatalf("AgentTolerations = %v, want nil", cfg.AgentTolerations)
+	}
+}
+
+// TestLoadAgentSchedulingDefault verifies an unset env leaves both empty.
+func TestLoadAgentSchedulingDefault(t *testing.T) {
+	t.Setenv("CUBEPILOT_AGENT_NODE_SELECTOR", "")
+	t.Setenv("CUBEPILOT_AGENT_TOLERATIONS", "")
+	cfg := Load()
+	if cfg.AgentNodeSelector != nil || cfg.AgentTolerations != nil {
+		t.Fatalf("scheduling should be empty, got %v / %v", cfg.AgentNodeSelector, cfg.AgentTolerations)
 	}
 }

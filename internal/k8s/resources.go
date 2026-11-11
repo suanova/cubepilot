@@ -42,6 +42,11 @@ type AgentSpec struct {
 	// DataStorageClassName pins the per-user data PVC to a StorageClass. Empty
 	// follows the cluster default.
 	DataStorageClassName string
+	// NodeSelector and Tolerations place the per-user Pods. Empty follows the
+	// cluster scheduler; the chart passes them through, since it renders no
+	// agent workload itself.
+	NodeSelector map[string]string
+	Tolerations  []corev1.Toleration
 }
 
 func (s AgentSpec) pvcName(user string) string { return ResourceName("data", user) }
@@ -155,6 +160,8 @@ func (s AgentSpec) PodFor(name, instance, pvcName, svcName string) *corev1.Pod {
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: ServiceAccountName,
+			NodeSelector:       s.NodeSelector,
+			Tolerations:        s.Tolerations,
 			// Instance minimum privilege (design §6): non-root, seccomp
 			// RuntimeDefault, drop ALL capabilities. The image runs as the
 			// `node` user (uid/gid 1000); FSGroup makes the mounted PVC

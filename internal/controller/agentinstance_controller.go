@@ -125,6 +125,8 @@ func (r *AgentInstanceReconciler) Reconcile(ctx context.Context, req reconcile.R
 		AgentUser:            inst.Spec.Owner,
 		LogLevel:             r.Cfg.AgentLogLevel,
 		DataStorageClassName: r.Cfg.AgentDataStorageClass,
+		NodeSelector:         r.Cfg.AgentNodeSelector,
+		Tolerations:          r.Cfg.AgentTolerations,
 	}
 	// Dual-kubeconfig (design §5.3 / issue #19 Option B): the agent's default
 	// kubectl must run with the USER's own credentials, so the per-user
