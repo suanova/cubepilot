@@ -2,13 +2,16 @@
 # harbor.isuanova.com. Tracks suanova/cubepilot#35.
 #
 # Triggers and published tags:
-#   - push to main       images pushed as `latest`; chart pushed as
-#                        oci://.../suanova/cubepilot-chart:<chartVersion>-latest
-#                        (rolling dev artifact -- the `-latest` suffix keeps it
-#                        from colliding with a real <chartVersion> release)
-#   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
-#                        pinned to X.Y.Z regardless of Chart.yaml)
-#   - workflow_dispatch  publish under the semver tag supplied in the input
+#   - push to main       images `sha-<7>` plus `latest` (only main moves
+#                        `latest`); chart `<Chart.yaml version>-sha<7>` (the
+#                        release lock's pin) and `<Chart.yaml version>-latest`
+#                        (the rolling open-source channel), both appVersion
+#                        `latest`
+#   - push to release-*  images `sha-<7>`; chart `<Chart.yaml version>-sha<7>`,
+#                        appVersion `latest`; never moves `latest`
+#   - push tag vX.Y.Z    images `vX.Y.Z`; chart version `X.Y.Z`, appVersion
+#                        `vX.Y.Z`
+#   - workflow_dispatch  images `v<tag>`, chart `<tag>` with appVersion `v<tag>`
 #                        (re-publishing, and exercising the workflow without
 #                        cutting a tag)
 #
@@ -24,7 +27,7 @@
 #
 # Bumping Chart.yaml's version/appVersion is not required for a release -- both
 # are overridden at package time -- but Chart.yaml's version prefixes the two
-# names main publishes (`<version>-sha<commit>` and `<version>-latest`). Its
+# names main publishes (`<version>-sha<7>` and `<version>-latest`). Its
 # appVersion reaches nothing on main or on a release branch: both package with
 # `latest`, and a tag names itself (see the "Package Helm chart" step below).
 #
@@ -57,6 +60,13 @@ env:
 jobs:
   publish:
     name: Build & push images and chart
+    env:
+      # One list for the four images this component publishes: the Makefile
+      # builds them, `Push images` retags them as `latest`, and `Resolve image
+      # digests` reads their digests. A name added to only one place would
+      # leave `latest` behind for it, and the rolling chart would then mix
+      # commits.
+      IMAGES: cubepilot-api cubepilot-openclaw cubepilot-operator cubepilot-web
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -185,7 +195,8 @@ jobs:
           # `latest`, so an open-source install resolves to it; a release branch
           # re-pointing it would hand that install the branch instead of main.
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            for repo in cubepilot-openclaw cubepilot-operator cubepilot-api cubepilot-web; do
+            for name in ${IMAGES}; do
+              repo="${name}"
               docker tag "harbor.isuanova.com/suanova/${repo}:${IMAGE_TAG}" \
                          "harbor.isuanova.com/suanova/${repo}:latest"
               docker push "harbor.isuanova.com/suanova/${repo}:latest"
@@ -284,7 +295,6 @@ jobs:
         id: images
         if: github.ref_type == 'branch' && steps.tag.outputs.tag == 'latest' && steps.image.outputs.pushed == 'true'
         env:
-          IMAGES: cubepilot-api cubepilot-openclaw cubepilot-operator cubepilot-web
           IMAGE_TAG: ${{ steps.chart-version.outputs.image-tag }}
         run: |
           set -euo pipefail
@@ -325,9 +335,24 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${CHART_VERSION}-dev.${COMMIT:0:7}"
+          # The line this tree belongs to. Without it the release receiver falls
+          # back to its `CUBESTACK_CURRENT_LINE`, so a release-2.1 merge would pin
+          # whatever line is current then -- a downgrade once 2.2 opens.
+          line="$(tr -d '[:space:]' < VERSION_LINE)"
+          # An empty or malformed line would send nothing and let the receiver
+          # fall back to its current line, which is the mis-pin this fixes.
+          [[ "${line}" =~ ^[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::invalid VERSION_LINE: '${line}'"; exit 1; }
+          # A release branch must agree with the line it claims to be: a stale
+          # VERSION_LINE there would pin that branch's builds to another line.
+          if [[ "${GITHUB_REF_NAME}" == release-* && "${GITHUB_REF_NAME}" != "release-${line}" ]]; then
+            echo "::error::VERSION_LINE=${line} does not match ${GITHUB_REF_NAME}"
+            exit 1
+          fi
           payload="$(jq -nc \
             --arg repo "${REPO}" \
             --arg commit "${COMMIT}" \
+            --arg line "${line}" \
             --arg tag "${tag}" \
             --arg component_version "${CHART_VERSION}" \
             --arg chart_oci "oci://${CHART_REPO}" \
@@ -335,7 +360,7 @@ jobs:
             --arg chart_digest "${CHART_TGZ_DIGEST}" \
             --arg chart_manifest_digest "${CHART_MANIFEST_DIGEST}" \
             --argjson images "${IMAGES_JSON}" \
-            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,component_version:$component_version,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
+            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,line:$line,component_version:$component_version,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
           for i in 1 2 3; do
             if printf '%s' "${payload}" | gh api --method POST \
                 repos/suanova/cubestack-release/dispatches --input -; then

@@ -88,7 +88,7 @@ the four images plus the Helm chart (as an OCI artifact) into
 
 | Trigger | Images | Helm chart (OCI) |
 |---|---|---|
-| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:sha-<commit>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:sha-<commit>`, versioned `<chartVersion>`, appVersion `sha-<commit>` |
+| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:sha-<7>`, plus `latest` pointing at it | two tags: `<chartVersion>-sha<7>` (what the release lock pins) and `<chartVersion>-latest` (what an open-source install uses), both appVersion `latest` |
 | tag `vX.Y.Z` | `...:vX.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z`, appVersion `vX.Y.Z` |
 | `workflow_dispatch` (input `tag`) | `...:v<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>`, appVersion `v<tag>` |
 
@@ -108,16 +108,16 @@ helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --versi
 ```
 
 The rolling chart published from `main` works the same way: it is packaged with
-`appVersion: sha-<commit>`, the tag that same push gave the images. Point any
-component elsewhere by overriding either half, e.g.
+`appVersion: latest`, and every main push moves `latest` to the images it built.
+Point any component elsewhere by overriding either half, e.g.
 `--set operator.image.tag=v1.2.3`.
 
 The workflow needs the GitHub variable `CI_BOT_NAME` (Harbor username) and
 secret `CI_BOT_PASSWORD` (Harbor password/token), ideally a Harbor bot account
 with push rights on the `suanova` project.
 The Harbor `suanova` project must allow tag overwrites: a re-run of the same
-commit re-pushes its `sha-<commit>` tag, and the 2.0 line still moves the
-rolling `latest` / `-latest` artifacts on every push.
+commit re-pushes its `sha-<7>` tag, and main (like the 2.0 line) keeps moving
+the rolling `latest` / `<version>-latest` artifacts on every push.
 
 ### Cherry-picking to a release branch
 

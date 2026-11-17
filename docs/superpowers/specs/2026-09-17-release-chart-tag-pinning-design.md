@@ -72,7 +72,7 @@ This needs no special-casing at package time, because the two packaging paths al
 
 | Chart packaged by | `--app-version` | `.Chart.AppVersion` | default image tag |
 |---|---|---|---|
-| push to `main` | `sha-<7>` | `sha-<7>` | `sha-<7>` |
+| push to `main` | `latest` | `latest` | `latest` |
 | tag `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` |
 | `workflow_dispatch` | `v<input>` | `v<input>` | `v<input>` |
 
@@ -149,8 +149,8 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
   `appVersion`:
   - `helm package --version 9.9.9 --app-version 9.9.9 -d /tmp <chart>` then
     `helm template t /tmp/cubepilot-chart-9.9.9.tgz` → all four images end in `:9.9.9`
-  - same with `--app-version sha-8d62252` (what a main build packages) → all four end in
-    `:sha-8d62252`
+  - same with `--app-version latest` (what a main build packages) → all four end in
+    `:latest`
   - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`,
     which is the precedence a release relies on: the injected tag wins over `appVersion`
 - The tag regex, against a white list of `0.1.0`, `1.0.0`, `0.0.0`, `10.20.30`, `1.0.0-rc1`,
@@ -171,8 +171,8 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
 ## Out of scope
 
 - **Making the on-disk `Chart.yaml` agree with the tag.** The disk values are overridden at
-  package time, and the disk `version` is used only as main's chart `version` -- the chart
-  lands under the commit tag (`sha-<commit>`), not under `<version>`. Enforcing
+  package time, and the disk `version` is only a prefix: main publishes `<version>-sha<7>`
+  and `<version>-latest`, a release publishes the tag itself. Enforcing
   `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release, contradicting
   the one-version-per-release design. The disk values are instead kept aligned with the next
   release by hand, and nothing depends on them being right.
