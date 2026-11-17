@@ -145,6 +145,20 @@ jobs:
           esac
 
           echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          # The line this tree belongs to, read before anything is built or
+          # pushed: a bad file must fail here rather than leave artifacts
+          # published with no dispatch to announce them. Without it the release
+          # receiver falls back to its `CUBESTACK_CURRENT_LINE`, so a release
+          # branch merge would pin whatever line is current then.
+          line="$(tr -d '[:space:]' < VERSION_LINE)"
+          [[ "${line}" =~ ^[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::invalid VERSION_LINE: '${line}'"; exit 1; }
+          if [[ "${GITHUB_REF_NAME}" == release-* && "${GITHUB_REF_NAME}" != "release-${line}" ]]; then
+            echo "::error::VERSION_LINE=${line} does not match ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+
           echo "app-version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve chart version and image tag
@@ -266,7 +280,11 @@ jobs:
           EXTRA_TGZ: ${{ steps.chart.outputs.extra-tgz }}
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet pyyaml
+          # A Debian-packaged python refuses a system-wide install (PEP 668);
+          # hosted runners pre-install PyYAML and never reach the install.
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet pyyaml \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
           chart_repo="${CHART_OCI#oci://}/cubepilot-chart"
           # The OCI config is the chart's metadata, so it comes out of the
           # package being pushed: the source Chart.yaml still carries the file's
@@ -344,24 +362,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${CHART_VERSION}-dev.${COMMIT:0:7}"
-          # The line this tree belongs to. Without it the release receiver falls
-          # back to its `CUBESTACK_CURRENT_LINE`, so a release-2.1 merge would pin
-          # whatever line is current then -- a downgrade once 2.2 opens.
-          line="$(tr -d '[:space:]' < VERSION_LINE)"
-          # An empty or malformed line would send nothing and let the receiver
-          # fall back to its current line, which is the mis-pin this fixes.
-          [[ "${line}" =~ ^[0-9]+\.[0-9]+$ ]] \
-            || { echo "::error::invalid VERSION_LINE: '${line}'"; exit 1; }
-          # A release branch must agree with the line it claims to be: a stale
-          # VERSION_LINE there would pin that branch's builds to another line.
-          if [[ "${GITHUB_REF_NAME}" == release-* && "${GITHUB_REF_NAME}" != "release-${line}" ]]; then
-            echo "::error::VERSION_LINE=${line} does not match ${GITHUB_REF_NAME}"
-            exit 1
-          fi
           payload="$(jq -nc \
             --arg repo "${REPO}" \
             --arg commit "${COMMIT}" \
-            --arg line "${line}" \
+            --arg line "${{ steps.tag.outputs.line }}" \
             --arg tag "${tag}" \
             --arg component_version "${CHART_VERSION}" \
             --arg chart_oci "oci://${CHART_REPO}" \
