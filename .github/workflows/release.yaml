@@ -23,9 +23,10 @@
 # or an unbootable image reference -- into the registry.
 #
 # Bumping Chart.yaml's version/appVersion is not required for a release -- both
-# are overridden at package time -- but keeping them in step with the next
-# release is what names the rolling chart on main (see the "Package Helm chart"
-# step below).
+# are overridden at package time -- but Chart.yaml's version is what names the
+# rolling chart on main (`<version>`, tagged `sha-<commit>`). Its appVersion
+# does not reach a published chart: main's names the commit, a release names the
+# tag (see the "Package Helm chart" step below).
 #
 # Required GitHub variable + secret (a Harbor bot account with push rights on
 # the `suanova` project):

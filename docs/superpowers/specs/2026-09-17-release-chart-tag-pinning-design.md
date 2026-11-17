@@ -175,8 +175,8 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
   The disk values are instead kept aligned with the next release by hand -- this change bumps
   both to `1.0.0` -- and nothing depends on them being right. One visible consequence: main's
   rolling chart becomes `1.0.0-latest` (it was `0.1.0-latest`), leaving the old tag orphaned
-  in Harbor. Images are unaffected, since the `main` path still packages with
-  `--app-version latest`.
+  in Harbor. Images are unaffected: the `main` path packages with the commit
+  tag, which is what it pushes.
 - **Atomic publish.** Images and the chart are pushed in separate steps, so a mid-job failure
   still leaves one without the other. Every tag the job pushes is deterministic, so re-running
   it converges; no rollback machinery.
