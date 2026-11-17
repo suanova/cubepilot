@@ -72,12 +72,12 @@ This needs no special-casing at package time, because the two packaging paths al
 
 | Chart packaged by | `--app-version` | `.Chart.AppVersion` | default image tag |
 |---|---|---|---|
-| push to `main` | `latest` | `latest` | `latest` (unchanged) |
-| tag `vX.Y.Z` | `X.Y.Z` | `X.Y.Z` | `X.Y.Z` |
-| `workflow_dispatch` | `<input>` | `<input>` | `<input>` |
+| push to `main` | `sha-<7>` | `sha-<7>` | `sha-<7>` |
+| tag `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` |
+| `workflow_dispatch` | `v<input>` | `v<input>` | `v<input>` |
 
-So main's rolling chart behaves exactly as before, and a release chart pins the released
-images with no `--set` at all.
+Each row names a tag the same workflow pushes, so a bare `helm install` of either chart
+finds its images. A release chart pins the released images with no `--set` at all.
 
 **Behavior change to note.** Installing from a source checkout
 (`helm install ./deploy/charts/cubepilot-chart`) now resolves to the on-disk

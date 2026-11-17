@@ -185,10 +185,12 @@ jobs:
           APP_VERSION="${{ steps.tag.outputs.app-version }}"
           BASE_VERSION="${{ steps.chart-version.outputs.version }}"
           if [ "$TAG" = "latest" ]; then
-            # Dev and GA share the chart bytes: the version and appVersion are
-            # the component version, not a rolling suffix.
             VERSION="$BASE_VERSION"
-            APP_VERSION="v${BASE_VERSION}"
+            # appVersion is the default image tag: the chart's four image
+            # values leave the tag empty, so a plain `helm install` pulls
+            # whatever this names. A main build publishes sha-<7>, not
+            # v<version>, so name that.
+            APP_VERSION="${{ steps.chart-version.outputs.image-tag }}"
           else
             VERSION="$TAG"
           fi
