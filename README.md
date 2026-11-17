@@ -88,13 +88,18 @@ the four images plus the Helm chart (as an OCI artifact) into
 
 | Trigger | Images | Helm chart (OCI) |
 |---|---|---|
-| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:latest` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<chartVersion>-latest` (rolling dev artifact) |
-| tag `vX.Y.Z` | `...:X.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z` |
-| `workflow_dispatch` (input `tag`) | `...:<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>` |
+| push to `main` | `.../cubepilot-{openclaw,operator,api,web}:sha-<7>`, plus `latest` pointing at it | two tags: `<chartVersion>-sha<7>` (what the release lock pins) and `<chartVersion>-latest` (what an open-source install uses), both appVersion `latest` |
+| push to `release-*` | `...:sha-<7>`, never moves `latest` | `<chartVersion>-sha<7>`, appVersion `latest` (what a point release is built from) |
+| tag `vX.Y.Z` | `...:vX.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z`, appVersion `vX.Y.Z` |
+| `workflow_dispatch` (input `tag`) | `...:v<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>`, appVersion `v<tag>` |
 
 A tag push must be `vX.Y.Z` or `vX.Y.Z-<prerelease>`: the workflow triggers on
 `v*` tags, so a tag pushed without the prefix starts no run at all. The version
 is validated as semver before the build, so a malformed tag publishes nothing.
+
+Two shapes are refused on purpose, though both are valid semver: `*-latest`
+and `*-sha<7hex>`. Those are the chart tags main publishes, so a release named
+like one of them would push over that channel.
 
 Publishing artifacts is all the workflow does. The GitHub Release itself is
 created by hand from the UI, which is also where the tag gets cut.
@@ -104,18 +109,20 @@ to the chart's `appVersion`. Installing a published release therefore pulls the
 images released with it, with no overrides:
 
 ```bash
-helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --version 1.0.0
+helm install cubepilot oci://harbor.isuanova.com/suanova/cubepilot-chart --version <version>
 ```
 
-The rolling chart published from `main` resolves to `:latest` the same way (it
-is packaged with `appVersion: latest`). Point any component elsewhere by
-overriding either half, e.g. `--set operator.image.tag=v1.2.3`.
+The rolling chart published from `main` works the same way: it is packaged with
+`appVersion: latest`, and every main push moves `latest` to the images it built.
+Point any component elsewhere by overriding either half, e.g.
+`--set operator.image.tag=v1.2.3`.
 
 The workflow needs the GitHub variable `CI_BOT_NAME` (Harbor username) and
 secret `CI_BOT_PASSWORD` (Harbor password/token), ideally a Harbor bot account
 with push rights on the `suanova` project.
-The Harbor `suanova` project must allow tag overwrites so the rolling
-`latest` / `-latest` artifacts can be re-pushed on every main push.
+The Harbor `suanova` project must allow tag overwrites: a re-run of the same
+commit re-pushes its `sha-<7>` tag, and main (like the 2.0 line) keeps moving
+the rolling `latest` / `<version>-latest` artifacts on every push.
 
 ### Cherry-picking to a release branch
 
@@ -174,9 +181,10 @@ gated by `web.enabled` (default true); install with `--set web.enabled=false`
 to run operator + api without the Portal (e.g. when another UI, such as the
 CubeStack unified UI, talks to the cubepilot API). One `imagePullPolicy` value
 covers every image, agent Pods included: it defaults to `IfNotPresent` (the
-kind flow side-loads the images it builds rather than pushing them), and an
-install that tracks the rolling `:latest` builds published from main sets
-`--set imagePullPolicy=Always` so nodes pick up each new build.
+kind flow side-loads the images it builds rather than pushing them). A main
+build is immutable per commit, so the default is enough: picking up a newer one
+means changing the tag. Only an install that tracks a moving tag -- `latest`, or
+a release tag being re-pushed -- needs `--set imagePullPolicy=Always`.
 
 > Upgrading an install that predates the chart-rendered Secret: older
 > `scripts/setup.sh` runs created `agent-kubeconfig` out-of-band, so Helm does

@@ -2,13 +2,16 @@
 # harbor.isuanova.com. Tracks suanova/cubepilot#35.
 #
 # Triggers and published tags:
-#   - push to main       images pushed as `latest`; chart pushed as
-#                        oci://.../suanova/cubepilot-chart:<chartVersion>-latest
-#                        (rolling dev artifact -- the `-latest` suffix keeps it
-#                        from colliding with a real <chartVersion> release)
-#   - push tag vX.Y.Z    images + chart published as X.Y.Z (chart version is
-#                        pinned to X.Y.Z regardless of Chart.yaml)
-#   - workflow_dispatch  publish under the semver tag supplied in the input
+#   - push to main       images `sha-<7>` plus `latest` (only main moves
+#                        `latest`); chart `<Chart.yaml version>-sha<7>` (the
+#                        release lock's pin) and `<Chart.yaml version>-latest`
+#                        (the rolling open-source channel), both appVersion
+#                        `latest`
+#   - push to release-*  images `sha-<7>`; chart `<Chart.yaml version>-sha<7>`,
+#                        appVersion `latest`; never moves `latest`
+#   - push tag vX.Y.Z    images `vX.Y.Z`; chart version `X.Y.Z`, appVersion
+#                        `vX.Y.Z`
+#   - workflow_dispatch  images `v<tag>`, chart `<tag>` with appVersion `v<tag>`
 #                        (re-publishing, and exercising the workflow without
 #                        cutting a tag)
 #
@@ -23,9 +26,10 @@
 # or an unbootable image reference -- into the registry.
 #
 # Bumping Chart.yaml's version/appVersion is not required for a release -- both
-# are overridden at package time -- but keeping them in step with the next
-# release is what names the rolling chart on main (see the "Package Helm chart"
-# step below).
+# are overridden at package time -- but Chart.yaml's version prefixes the two
+# names main publishes (`<version>-sha<7>` and `<version>-latest`). Its
+# appVersion reaches nothing on main or on a release branch: both package with
+# `latest`, and a tag names itself (see the "Package Helm chart" step below).
 #
 # Required GitHub variable + secret (a Harbor bot account with push rights on
 # the `suanova` project):
@@ -36,7 +40,9 @@ name: release
 
 on:
   push:
-    branches: [main]
+    # A release branch keeps shipping point releases, so a merge there still has
+    # to produce the commit-addressed artifacts offline packaging pins.
+    branches: [main, 'release-*']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -54,6 +60,13 @@ env:
 jobs:
   publish:
     name: Build & push images and chart
+    env:
+      # One list for the four images this component publishes: the Makefile
+      # builds them, `Push images` retags them as `latest`, and `Resolve image
+      # digests` reads their digests. A name added to only one place would
+      # leave `latest` behind for it, and the rolling chart would then mix
+      # commits.
+      IMAGES: cubepilot-api cubepilot-openclaw cubepilot-operator cubepilot-web
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -79,7 +92,7 @@ jobs:
               if [ "$GITHUB_REF_TYPE" = "tag" ]; then
                 VERSION="${GITHUB_REF_NAME#v}"          # v0.1.0 -> 0.1.0
               else
-                VERSION="latest"                        # push to main
+                VERSION="latest"                        # push to a branch
               fi ;;
             *) echo "::error::unsupported trigger: $GITHUB_EVENT_NAME"; exit 1 ;;
           esac
@@ -122,7 +135,30 @@ jobs:
             exit 1
           fi
 
+          # `<version>-latest` and `<version>-sha<7>` are the chart tags main
+          # publishes. A release tag shaped like either is valid semver but
+          # would push the chart over that channel, replacing what main put
+          # there.
+          case "$VERSION" in
+            *-latest|*-sha[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+              echo "::error::'$VERSION' collides with a main chart tag"; exit 1 ;;
+          esac
+
           echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          # The line this tree belongs to, read before anything is built or
+          # pushed: a bad file must fail here rather than leave artifacts
+          # published with no dispatch to announce them. Without it the release
+          # receiver falls back to its `CUBESTACK_CURRENT_LINE`, so a release
+          # branch merge would pin whatever line is current then.
+          line="$(tr -d '[:space:]' < VERSION_LINE)"
+          [[ "${line}" =~ ^[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::invalid VERSION_LINE: '${line}'"; exit 1; }
+          if [[ "${GITHUB_REF_NAME}" == release-* && "${GITHUB_REF_NAME}" != "release-${line}" ]]; then
+            echo "::error::VERSION_LINE=${line} does not match ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+
           echo "app-version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve chart version and image tag
@@ -174,7 +210,25 @@ jobs:
       - name: Push images
         id: image
         run: |
-          make push IMAGE_TAG=${{ steps.chart-version.outputs.image-tag }}
+          set -euo pipefail
+          IMAGE_TAG="${{ steps.chart-version.outputs.image-tag }}"
+          make push IMAGE_TAG="${IMAGE_TAG}"
+
+          # The rolling tag, main only. The chart's appVersion default is
+          # `latest`, so an open-source install resolves to it; a release branch
+          # re-pointing it would hand that install the branch instead of main.
+          #
+          # `push` too: a workflow_dispatch for an old version also runs on
+          # refs/heads/main, and it must not move `latest` back to that version
+          # (the chart side does not move `<version>-latest` for it either).
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            for name in ${IMAGES}; do
+              repo="${name}"
+              docker tag "harbor.isuanova.com/suanova/${repo}:${IMAGE_TAG}" \
+                         "harbor.isuanova.com/suanova/${repo}:latest"
+              docker push "harbor.isuanova.com/suanova/${repo}:latest"
+            done
+          fi
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Package Helm chart
@@ -185,15 +239,37 @@ jobs:
           APP_VERSION="${{ steps.tag.outputs.app-version }}"
           BASE_VERSION="${{ steps.chart-version.outputs.version }}"
           if [ "$TAG" = "latest" ]; then
-            # Dev and GA share the chart bytes: the version and appVersion are
-            # the component version, not a rolling suffix.
-            VERSION="$BASE_VERSION"
-            APP_VERSION="v${BASE_VERSION}"
+            # One chart per commit, and the commit is in the version: the
+            # release lock records this version, the installer pushes the chart
+            # into the cluster registry under it, and the CR names it back.
+            VERSION="${BASE_VERSION}-sha${GITHUB_SHA::7}"
+            # appVersion is the default image tag. `latest` rather than the
+            # commit: not every image is rebuilt on every merge, so a
+            # commit-addressed tag may not exist while `latest` always does.
+            # Commercial installs never read appVersion.
+            APP_VERSION="latest"
+            # Main also publishes the rolling name an open-source install uses,
+            # but only from the newest commit that decides this chart: a re-run
+            # of an older run must not roll `<version>-latest` back.
+            if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              git fetch --no-tags --depth=1 origin main
+              if git diff --quiet "${GITHUB_SHA}" FETCH_HEAD -- deploy/charts/cubepilot-chart .github/workflows/release.yaml; then
+                EXTRA_VERSION="${BASE_VERSION}-latest"
+              else
+                echo "Skipping '${BASE_VERSION}-latest': a later commit changed this chart"
+              fi
+            fi
           else
             VERSION="$TAG"
           fi
           helm package deploy/charts/cubepilot-chart \
             --version "$VERSION" --app-version "$APP_VERSION" -d .chart
+          if [ -n "${EXTRA_VERSION:-}" ]; then
+            helm package deploy/charts/cubepilot-chart \
+              --version "${EXTRA_VERSION}" --app-version "$APP_VERSION" -d .chart
+            echo "extra-version=${EXTRA_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "extra-tgz=.chart/cubepilot-chart-${EXTRA_VERSION}.tgz" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tgz=$(ls .chart/cubepilot-chart-${VERSION}.tgz)" >> "$GITHUB_OUTPUT"
 
@@ -202,7 +278,7 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         if: steps.tag.outputs.tag != 'latest'
-        run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
+        run: helm push "${{ steps.chart.outputs.tgz }}" "${{ env.CHART_OCI }}"
 
       - name: Push dev chart with channel tag
         id: devchart
@@ -211,32 +287,52 @@ jobs:
           CHART_OCI: ${{ env.CHART_OCI }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
           CHART_TGZ: ${{ steps.chart.outputs.tgz }}
+          EXTRA_VERSION: ${{ steps.chart.outputs.extra-version }}
+          EXTRA_TGZ: ${{ steps.chart.outputs.extra-tgz }}
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet pyyaml
-          python3 - <<'PY'
-          import json, os, yaml
-          meta = yaml.safe_load(open("deploy/charts/cubepilot-chart/Chart.yaml"))
-          json.dump(meta, open(os.path.join(os.environ["RUNNER_TEMP"], "helm-config.json"), "w"), separators=(",", ":"))
-          PY
+          # A Debian-packaged python refuses a system-wide install (PEP 668);
+          # hosted runners pre-install PyYAML and never reach the install.
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet pyyaml \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
           chart_repo="${CHART_OCI#oci://}/cubepilot-chart"
-          chart_channel="sha-${GITHUB_SHA::7}"
-          out="$(oras push "${chart_repo}:${chart_channel}" \
-            "${CHART_TGZ}:application/vnd.cncf.helm.chart.content.v1.tar+gzip" \
-            --config "${RUNNER_TEMP}/helm-config.json:application/vnd.cncf.helm.config.v1+json")"
+          # The OCI config is the chart's metadata, so it comes out of the
+          # package being pushed: the source Chart.yaml still carries the file's
+          # own version and appVersion, which `helm package` overrode without
+          # rewriting it. Built per package, so each tag's config names its own
+          # version.
+          push_chart() {
+            local tag="$1" pkg="$2"
+            python3 - "$pkg" "${RUNNER_TEMP}/helm-config.json" <<'PY'
+          import json, sys, tarfile, yaml
+          with tarfile.open(sys.argv[1]) as tf:
+              top = tf.getnames()[0].split("/")[0]
+              meta = yaml.safe_load(tf.extractfile(f"{top}/Chart.yaml"))
+          json.dump(meta, open(sys.argv[2], "w"), separators=(",", ":"))
+          PY
+            oras push "${chart_repo}:${tag}" \
+              "${pkg}:application/vnd.cncf.helm.chart.content.v1.tar+gzip" \
+              --config "${RUNNER_TEMP}/helm-config.json:application/vnd.cncf.helm.config.v1+json"
+          }
+          # The commit-addressed tag the release lock records, plus the rolling
+          # name an open-source install uses (main only).
+          out="$(push_chart "${CHART_VERSION}" "${CHART_TGZ}")"
+          if [ -n "${EXTRA_VERSION}" ]; then
+            push_chart "${EXTRA_VERSION}" "${EXTRA_TGZ}" >/dev/null
+          fi
           manifest_digest="$(printf '%s' "$out" | sed -n 's/^Digest: //p' | tail -1)"
           [ -n "$manifest_digest" ] || { echo "::error::cannot resolve chart manifest digest"; exit 1; }
           tgz_digest="sha256:$(sha256sum "$CHART_TGZ" | awk '{print $1}')"
           echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
           echo "tgz_digest=$tgz_digest" >> "$GITHUB_OUTPUT"
           echo "chart_repo=$chart_repo" >> "$GITHUB_OUTPUT"
-          echo "chart_channel=$chart_channel" >> "$GITHUB_OUTPUT"
+          echo "chart_channel=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve image digests
         id: images
         if: github.ref_type == 'branch' && steps.tag.outputs.tag == 'latest' && steps.image.outputs.pushed == 'true'
         env:
-          IMAGES: cubepilot-api cubepilot-openclaw cubepilot-operator cubepilot-web
           IMAGE_TAG: ${{ steps.chart-version.outputs.image-tag }}
         run: |
           set -euo pipefail
@@ -280,14 +376,14 @@ jobs:
           payload="$(jq -nc \
             --arg repo "${REPO}" \
             --arg commit "${COMMIT}" \
+            --arg line "${{ steps.tag.outputs.line }}" \
             --arg tag "${tag}" \
-            --arg component_version "${CHART_VERSION}" \
             --arg chart_oci "oci://${CHART_REPO}" \
             --arg chart_version "${CHART_VERSION}" \
             --arg chart_digest "${CHART_TGZ_DIGEST}" \
             --arg chart_manifest_digest "${CHART_MANIFEST_DIGEST}" \
             --argjson images "${IMAGES_JSON}" \
-            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,component_version:$component_version,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
+            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,line:$line,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
           for i in 1 2 3; do
             if printf '%s' "${payload}" | gh api --method POST \
                 repos/suanova/cubestack-release/dispatches --input -; then

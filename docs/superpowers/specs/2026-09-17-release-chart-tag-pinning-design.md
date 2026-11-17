@@ -72,16 +72,16 @@ This needs no special-casing at package time, because the two packaging paths al
 
 | Chart packaged by | `--app-version` | `.Chart.AppVersion` | default image tag |
 |---|---|---|---|
-| push to `main` | `latest` | `latest` | `latest` (unchanged) |
-| tag `vX.Y.Z` | `X.Y.Z` | `X.Y.Z` | `X.Y.Z` |
-| `workflow_dispatch` | `<input>` | `<input>` | `<input>` |
+| push to `main` | `latest` | `latest` | `latest` |
+| tag `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` | `vX.Y.Z` |
+| `workflow_dispatch` | `v<input>` | `v<input>` | `v<input>` |
 
-So main's rolling chart behaves exactly as before, and a release chart pins the released
-images with no `--set` at all.
+Each row names a tag the same workflow pushes, so a bare `helm install` of either chart
+finds its images. A release chart pins the released images with no `--set` at all.
 
 **Behavior change to note.** Installing from a source checkout
-(`helm install ./deploy/charts/cubepilot-chart`) now resolves to the on-disk
-`appVersion` (`0.1.0`) instead of `:latest`. That flow is already unsupported — `make images`
+(`helm install ./deploy/charts/cubepilot-chart`) now resolves to whatever the
+on-disk `appVersion` names, not to `:latest`. That flow is already unsupported — `make images`
 tags local builds `:local`, so a bare install never matched the local images either —
 `scripts/setup.sh` is the supported path and always passes explicit refs, as does
 `scripts/redeploy.sh`. Both move to the new field names:
@@ -94,9 +94,14 @@ tags local builds `:local`, so a bare install never matched the local images eit
 
 The first step of the `publish` job resolves the tag; it also validates it there, so the tag is
 checked while nothing has been built or pushed and the failure message can name the expected
-form. Only the tag-push and `workflow_dispatch` paths are validated — `latest` (push to main)
-bypasses it, as does a `workflow_dispatch` input of `latest`, which re-publishes the rolling
-artifact.
+form. Only the tag-push and `workflow_dispatch` paths are validated — a push to a branch
+bypasses it, because it publishes the rolling channels rather than a release version. A
+`workflow_dispatch` input of `latest` is rejected: it would re-publish those same channels
+under a name a release cannot own.
+
+Two further shapes are refused: `*-latest` and `*-sha<7hex>`. Both are valid semver
+prereleases, so the shape check alone lets them through, but they are the chart tags main
+publishes — a release named like one would push over that channel.
 
 Accepted form: SemVer — `X.Y.Z` or `X.Y.Z-<prerelease>`, where each dotted number is `0` or has no
 leading zero, and each dot-separated prerelease identifier is either numeric with no leading zero
@@ -149,8 +154,10 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
   `appVersion`:
   - `helm package --version 9.9.9 --app-version 9.9.9 -d /tmp <chart>` then
     `helm template t /tmp/cubepilot-chart-9.9.9.tgz` → all four images end in `:9.9.9`
-  - same with `--app-version latest` → all four end in `:latest`
-  - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`
+  - same with `--app-version latest` (what a main build packages) → all four end in
+    `:latest`
+  - same with `--set operator.image.tag=v9` → that image ends in `:v9`, the others `:9.9.9`,
+    which is the precedence a release relies on: the injected tag wins over `appVersion`
 - The tag regex, against a white list of `0.1.0`, `1.0.0`, `0.0.0`, `10.20.30`, `1.0.0-rc1`,
   `1.0.0-alpha`, `1.0.0-alpha.1`, `1.0.0-0.3.7`, `1.0.0-x.7.z.92`, `1.0.0-0`, `1.0.0-0a`,
   `1.0.0-alpha-1`, `1.0.0-a-b`, `latest` and a black list of `1.0`, `1`, `v1`, `01.0.0`,
@@ -169,14 +176,11 @@ compatibility shim is kept and no fallback branch reads the old `image` key.
 ## Out of scope
 
 - **Making the on-disk `Chart.yaml` agree with the tag.** The disk values are overridden at
-  package time, and the disk `version` is used only for main's `<version>-latest` chart tag.
-  Enforcing `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release,
-  contradicting the one-version-per-release design, and buys only a tidier rolling tag name.
-  The disk values are instead kept aligned with the next release by hand -- this change bumps
-  both to `1.0.0` -- and nothing depends on them being right. One visible consequence: main's
-  rolling chart becomes `1.0.0-latest` (it was `0.1.0-latest`), leaving the old tag orphaned
-  in Harbor. Images are unaffected, since the `main` path still packages with
-  `--app-version latest`.
+  package time, and the disk `version` is only a prefix: main publishes `<version>-sha<7>`
+  and `<version>-latest`, a release publishes the tag itself. Enforcing
+  `Chart.yaml version == tag` would force a `Chart.yaml` edit on every release, contradicting
+  the one-version-per-release design. The disk values are instead kept aligned with the next
+  release by hand, and nothing depends on them being right.
 - **Atomic publish.** Images and the chart are pushed in separate steps, so a mid-job failure
   still leaves one without the other. Every tag the job pushes is deterministic, so re-running
   it converges; no rollback machinery.
