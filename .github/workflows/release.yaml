@@ -92,7 +92,7 @@ jobs:
               if [ "$GITHUB_REF_TYPE" = "tag" ]; then
                 VERSION="${GITHUB_REF_NAME#v}"          # v0.1.0 -> 0.1.0
               else
-                VERSION="latest"                        # push to main
+                VERSION="latest"                        # push to a branch
               fi ;;
             *) echo "::error::unsupported trigger: $GITHUB_EVENT_NAME"; exit 1 ;;
           esac
@@ -217,7 +217,11 @@ jobs:
           # The rolling tag, main only. The chart's appVersion default is
           # `latest`, so an open-source install resolves to it; a release branch
           # re-pointing it would hand that install the branch instead of main.
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+          #
+          # `push` too: a workflow_dispatch for an old version also runs on
+          # refs/heads/main, and it must not move `latest` back to that version
+          # (the chart side does not move `<version>-latest` for it either).
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             for name in ${IMAGES}; do
               repo="${name}"
               docker tag "harbor.isuanova.com/suanova/${repo}:${IMAGE_TAG}" \
@@ -367,13 +371,12 @@ jobs:
             --arg commit "${COMMIT}" \
             --arg line "${{ steps.tag.outputs.line }}" \
             --arg tag "${tag}" \
-            --arg component_version "${CHART_VERSION}" \
             --arg chart_oci "oci://${CHART_REPO}" \
             --arg chart_version "${CHART_VERSION}" \
             --arg chart_digest "${CHART_TGZ_DIGEST}" \
             --arg chart_manifest_digest "${CHART_MANIFEST_DIGEST}" \
             --argjson images "${IMAGES_JSON}" \
-            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,line:$line,component_version:$component_version,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
+            '{event_type:"component-built",client_payload:{repo:$repo,commit:$commit,tag:$tag,line:$line,chart:{oci:$chart_oci,version:$chart_version,digest:$chart_digest,manifest_digest:$chart_manifest_digest},images:$images}}')"
           for i in 1 2 3; do
             if printf '%s' "${payload}" | gh api --method POST \
                 repos/suanova/cubestack-release/dispatches --input -; then

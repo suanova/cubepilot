@@ -89,6 +89,7 @@ the four images plus the Helm chart (as an OCI artifact) into
 | Trigger | Images | Helm chart (OCI) |
 |---|---|---|
 | push to `main` | `.../cubepilot-{openclaw,operator,api,web}:sha-<7>`, plus `latest` pointing at it | two tags: `<chartVersion>-sha<7>` (what the release lock pins) and `<chartVersion>-latest` (what an open-source install uses), both appVersion `latest` |
+| push to `release-*` | `...:sha-<7>`, never moves `latest` | `<chartVersion>-sha<7>`, appVersion `latest` (what a point release is built from) |
 | tag `vX.Y.Z` | `...:vX.Y.Z` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:X.Y.Z`, appVersion `vX.Y.Z` |
 | `workflow_dispatch` (input `tag`) | `...:v<tag>` | `oci://harbor.isuanova.com/suanova/cubepilot-chart:<tag>`, appVersion `v<tag>` |
 

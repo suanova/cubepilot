@@ -1,5 +1,11 @@
 # Vendor the generated chart into cubestack-operator, whatever generated it
 
+> **Scope: the 2.0 line.** 2.1 removed the embedded charts from the operator
+> image (cubestack-operator#289), so this repo's `main` no longer vendors at all:
+> `vendor-chart.yml` triggers only from `release-2.0`, and the chart travels to
+> the cluster through the release tree and the installer instead. Everything
+> below still describes what the 2.0 branch's own copy of that workflow does.
+
 ## Problem
 
 `cubestack-operator` vendors this repo's chart as `assets/charts/cubepilot-<pin>.tgz`

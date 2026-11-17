@@ -3,7 +3,10 @@ name: cubepilot-chart
 description: CubeStack intelligent assistant -- operator (platform controllers), API (REST/SSE), and web portal (React SPA), with per-user OpenClaw agent instances.
 type: application
 version: 2.1.0
-appVersion: "v2.1.0"
+# The tag a bare `helm install ./deploy/charts/cubepilot-chart` resolves to.
+# `latest` is what main publishes and always exists; CI overrides this at
+# package time (a release uses the Git tag), so this only affects local installs.
+appVersion: "latest"
 keywords:
   - cubestack
   - cubepilot
