@@ -97,6 +97,10 @@ A tag push must be `vX.Y.Z` or `vX.Y.Z-<prerelease>`: the workflow triggers on
 `v*` tags, so a tag pushed without the prefix starts no run at all. The version
 is validated as semver before the build, so a malformed tag publishes nothing.
 
+Two shapes are refused on purpose, though both are valid semver: `*-latest`
+and `*-sha<7hex>`. Those are the chart tags main publishes, so a release named
+like one of them would push over that channel.
+
 Publishing artifacts is all the workflow does. The GitHub Release itself is
 created by hand from the UI, which is also where the tag gets cut.
 

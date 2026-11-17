@@ -94,9 +94,14 @@ tags local builds `:local`, so a bare install never matched the local images eit
 
 The first step of the `publish` job resolves the tag; it also validates it there, so the tag is
 checked while nothing has been built or pushed and the failure message can name the expected
-form. Only the tag-push and `workflow_dispatch` paths are validated — `latest` (push to main)
-bypasses it, as does a `workflow_dispatch` input of `latest`, which re-publishes the rolling
-artifact.
+form. Only the tag-push and `workflow_dispatch` paths are validated — a push to a branch
+bypasses it, because it publishes the rolling channels rather than a release version. A
+`workflow_dispatch` input of `latest` is rejected: it would re-publish those same channels
+under a name a release cannot own.
+
+Two further shapes are refused: `*-latest` and `*-sha<7hex>`. Both are valid semver
+prereleases, so the shape check alone lets them through, but they are the chart tags main
+publishes — a release named like one would push over that channel.
 
 Accepted form: SemVer — `X.Y.Z` or `X.Y.Z-<prerelease>`, where each dotted number is `0` or has no
 leading zero, and each dot-separated prerelease identifier is either numeric with no leading zero

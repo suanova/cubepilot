@@ -248,9 +248,16 @@ jobs:
             # commit-addressed tag may not exist while `latest` always does.
             # Commercial installs never read appVersion.
             APP_VERSION="latest"
-            # Main also publishes the rolling name an open-source install uses.
-            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-              EXTRA_VERSION="${BASE_VERSION}-latest"
+            # Main also publishes the rolling name an open-source install uses,
+            # but only from the newest commit that decides this chart: a re-run
+            # of an older run must not roll `<version>-latest` back.
+            if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              git fetch --no-tags --depth=1 origin main
+              if git diff --quiet "${GITHUB_SHA}" FETCH_HEAD -- deploy/charts/cubepilot-chart .github/workflows/release.yaml; then
+                EXTRA_VERSION="${BASE_VERSION}-latest"
+              else
+                echo "Skipping '${BASE_VERSION}-latest': a later commit changed this chart"
+              fi
             fi
           else
             VERSION="$TAG"
@@ -271,7 +278,7 @@ jobs:
       # the package directory, so renaming the chart renames the Harbor repo.
       - name: Push Helm chart (OCI)
         if: steps.tag.outputs.tag != 'latest'
-        run: helm push .chart/cubepilot-chart-*.tgz "${{ env.CHART_OCI }}"
+        run: helm push "${{ steps.chart.outputs.tgz }}" "${{ env.CHART_OCI }}"
 
       - name: Push dev chart with channel tag
         id: devchart
