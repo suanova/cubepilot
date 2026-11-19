@@ -115,11 +115,6 @@ type gatewayConns struct {
 	// ApprovalService (which resolves Portal decisions and injects SSE).
 	bridge func(user string, ev ws.ApprovalRequested)
 
-	// onTurnEnd is set by the server so ending a live turn drops any turn-scoped
-	// approval armed for it. Approvals approved "for this turn" are bound to the
-	// live turn, not the session, so the next turn must ask again.
-	onTurnEnd func(user, sessionKey string)
-
 	// approvalResolved is set by the server so an approval the gateway ends by
 	// itself -- expiry, or a run aborted or lost gateway-side -- drops the
 	// platform's record of it. Without it the record outlives the approval and

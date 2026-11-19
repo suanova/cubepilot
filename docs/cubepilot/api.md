@@ -499,6 +499,8 @@ body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-
 
 `allow-turn` 只覆盖点击**之后**新出现的审批：点的时候已经压着的其他卡片仍需人工处理
 （一个会话的未决集合可能跨多个 run，且审批记录不带平台侧 run id，无法安全归属）。
+被自动放行的审批**不会**再发 `approval_pending` 卡片，只会发 `approval_resolved`；
+如果自动放行失败，平台会补发 `approval_pending`，让人仍能处理这条被卡住的命令。
 放行状态只存在于服务端进程内存中，不落库、不改 CRD；服务重启或没有活跃轮次时，
 退化为「本次放行」，由 `turnAllowed` 告知客户端。
 
