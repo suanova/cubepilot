@@ -839,6 +839,15 @@ func TestAllowTurnApprovesTheRestOfTheTurn(t *testing.T) {
 		}
 		return false
 	})
+	// The automatic resolution runs on its own goroutine. Wait for its audit row
+	// before reading the stream recorder: the ledger write happens after the
+	// SSE publish, so a row means the publish (and the goroutine's last write)
+	// is done, and reading the recorder before that would race it.
+	waitFor(t, "the automatic decision in the ledger", func() bool {
+		audit, _ := st.ListAudit("alice", 0)
+		return len(audit) == 2
+	})
+
 	body := rec.Body.String()
 	for _, want := range []string{
 		"event: approval_pending",
@@ -851,10 +860,6 @@ func TestAllowTurnApprovesTheRestOfTheTurn(t *testing.T) {
 		}
 	}
 
-	waitFor(t, "the automatic decision in the ledger", func() bool {
-		audit, _ := st.ListAudit("alice", 0)
-		return len(audit) == 2
-	})
 	audit, err := st.ListAudit("alice", 0)
 	if err != nil {
 		t.Fatal(err)
