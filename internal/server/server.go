@@ -123,6 +123,11 @@ func (s *Server) StartGatewayChannel() error {
 	}
 	s.gatewayConns = m
 	s.approvals.SetGateway(m)
+	// Turn-scoped approval ("allow-turn") is bound to the live turn: arming and
+	// auto-resolution check that the turn is still live, and every live turn
+	// release disarms it.
+	s.approvals.SetLiveTurnLookup(m.HasLiveTurn)
+	m.onTurnEnd = s.approvals.Disarm
 	m.bridge = func(user string, ev ws.ApprovalRequested) {
 		s.approvals.RelayRequested(user, ev)
 	}

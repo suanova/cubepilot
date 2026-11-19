@@ -91,6 +91,19 @@ func (t *liveTurn) outcome() (agentruntime.TurnOutcome, error) {
 // already resolved and returns immediately.
 const wsRunTail = 500 * time.Millisecond
 
+// HasLiveTurn reports whether the user currently has a live turn registered on
+// the session. It is the gate for turn-scoped approval: an approval is
+// auto-resolved only while the turn it was armed in is still live, so a stale
+// arm cannot run commands in a later turn. The user is checked for the same
+// reason LiveRunID checks it -- the session key is client-supplied and the map
+// is indexed by it alone.
+func (m *gatewayConns) HasLiveTurn(user, sessionKey string) bool {
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	t := m.live[sessionKey]
+	return t != nil && t.user == user
+}
+
 // LiveRunID returns the run id of the user's active live turn on this session.
 // The browser never learns the run id; the server does, and passing it scopes an
 // abort so it cannot kill a run promoted after this one settles.
@@ -132,6 +145,13 @@ func (m *gatewayConns) releaseLive(user, sessionKey string, gw gatewayClient) {
 		delete(m.live, sessionKey)
 	}
 	m.liveMu.Unlock()
+	// Any live turn ending ends the turn-scoped approval armed for this session,
+	// whatever its outcome (completion, abort, or the turn's request context
+	// ending). Disarming on every release is the conservative direction: the
+	// worst case is that the rest of the turn asks again.
+	if m.onTurnEnd != nil {
+		m.onTurnEnd(user, sessionKey)
+	}
 	// Best-effort unsubscribe on a short deadline: the conn may already be gone,
 	// and Call blocks until the pump exits if it is.
 	uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

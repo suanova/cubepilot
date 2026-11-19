@@ -16,7 +16,7 @@ export function ApprovalCard({
 }: {
   confirm: BubbleConfirm
   allowAlwaysOk: boolean
-  onDecide: (confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always') => void
+  onDecide: (confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always' | 'allow-turn') => void
 }) {
   return (
     <div className="tool-card" style={{ borderColor: 'rgba(245,158,11,.45)' }}>
@@ -62,6 +62,14 @@ export function ApprovalCard({
           </button>
           <button className="btn sm primary" onClick={() => onDecide(confirm, 'approve')} disabled={!!confirm.busy}>
             {confirm.busy ? 'Sending…' : 'Approve'}
+          </button>
+          <button
+            className="btn sm"
+            onClick={() => onDecide(confirm, 'allow-turn')}
+            disabled={!!confirm.busy}
+            title="Approve this command and every command that asks again in this turn; the next turn asks again"
+          >
+            Allow all this turn
           </button>
           {allowAlwaysOk && (
             <button

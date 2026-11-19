@@ -45,7 +45,26 @@ type ApprovalService struct {
 	// take it; it is bounded by the number of concurrent Resolve calls, so the map
 	// is empty whenever no decision is being written.
 	inflight map[string]*approvalDecision
+
+	// armed marks the sessions whose current live turn was approved for the whole
+	// turn ("allow-turn"), so approvals raised later in that turn resolve without
+	// asking. It is keyed by user and session together: the session key can be
+	// client-supplied, so a key alone could collide across users.
+	//
+	// This is ephemeral, process-local state, not desired state. It is dropped
+	// when the live turn ends (and with the process), and an approval that finds
+	// no live turn simply asks. Nothing is persisted: a turn-scoped approval that
+	// survived a restart would auto-run commands in a turn nobody approved.
+	armed map[armKey]struct{}
+	// liveTurn reports whether the user currently has a live turn on the session.
+	// It gates both arming and auto-resolution: without a live turn the platform
+	// cannot bound the approval to one turn, so it falls back to asking.
+	liveTurn func(user, sessionKey string) bool
 }
+
+// armKey names one session's turn-scoped approval slot. The user is part of the
+// key because the session key is client-supplied.
+type armKey struct{ user, session string }
 
 // approvalDecision is one decision's reservation of an approval id. done is closed
 // when the decision that holds it ends, whatever the outcome: a waiter takes the
@@ -99,6 +118,7 @@ func NewApprovalService(hub *Hub, st *store.Store, logf func(format string, args
 		store:    st,
 		logf:     logf,
 		inflight: map[string]*approvalDecision{},
+		armed:    map[armKey]struct{}{},
 	}
 }
 
@@ -107,6 +127,66 @@ func (s *ApprovalService) SetGateway(g ApprovalGateway) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gateway = g
+}
+
+// SetLiveTurnLookup wires the live-turn check that turn-scoped approval is bound
+// to. The lookup must be cheap and ownership-checked; gatewayConns.HasLiveTurn is
+// both. With no lookup set, "allow-turn" degrades to approving one command.
+func (s *ApprovalService) SetLiveTurnLookup(f func(user, sessionKey string) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveTurn = f
+}
+
+// hasLiveTurn reports whether the user currently has a live turn on the session.
+func (s *ApprovalService) hasLiveTurn(user, sessionKey string) bool {
+	s.mu.Lock()
+	f := s.liveTurn
+	s.mu.Unlock()
+	return f != nil && f(user, sessionKey)
+}
+
+// armedFor reports whether the session's current live turn was approved for the
+// whole turn. The live-turn check is repeated here rather than trusted from arm
+// time: the arm is only meaningful while the turn it was made in is still
+// running, and a stale arm must not leak into a later turn.
+//
+// The lifetime is bound by construction, not just by this check: a session
+// admits one SSE stream at a time, and releaseLive (which disarms) runs before
+// that stream's handler returns, so the next turn cannot open its stream while
+// an arm from the previous one is still set. The check here is the backstop.
+func (s *ApprovalService) armedFor(user, sessionKey string) bool {
+	s.mu.Lock()
+	_, ok := s.armed[armKey{user: user, session: sessionKey}]
+	f := s.liveTurn
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return f != nil && f(user, sessionKey)
+}
+
+// armTurn marks the session's current live turn as approved for the whole turn,
+// reporting whether it was already armed.
+func (s *ApprovalService) armTurn(user, sessionKey string) (wasArmed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.armed == nil {
+		s.armed = map[armKey]struct{}{}
+	}
+	key := armKey{user: user, session: sessionKey}
+	_, wasArmed = s.armed[key]
+	s.armed[key] = struct{}{}
+	return wasArmed
+}
+
+// Disarm drops a session's turn-scoped approval. It is called when the live turn
+// ends -- completion, abort, or the turn's request context ending -- so the next
+// turn asks again. It is a no-op for a session that was never armed.
+func (s *ApprovalService) Disarm(user, sessionKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.armed, armKey{user: user, session: sessionKey})
 }
 
 // list reads the pending approvals the user's gateway connection can see. There
@@ -152,6 +232,28 @@ func (s *ApprovalService) RelayRequested(user string, ev ws.ApprovalRequested) {
 	}) {
 		s.logf("approval %s: no open stream for session %s; push dropped", p.ApprovalID, p.SessionKey)
 	}
+	// A session approved for the whole turn resolves the approval as it is
+	// raised. The card above is still published: the resolution is addressed by
+	// the same id, and if the resolve fails the card stays answerable rather than
+	// the command running ungated.
+	//
+	// This must run on another goroutine. RelayRequested is called from the
+	// gateway WS read loop, and resolving is a Call that waits for a reply the
+	// same loop delivers -- doing it inline would deadlock the connection.
+	if s.armedFor(user, p.SessionKey) {
+		go s.autoResolve(user, p)
+	}
+}
+
+// autoResolve approves one approval under a turn-wide approval. A failure is
+// reported and leaves the published card answerable: the failure direction is
+// "ask again", never "run ungated".
+func (s *ApprovalService) autoResolve(user string, p pendingApproval) {
+	ctx, cancel := context.WithTimeout(context.Background(), approvalGatewayTimeout)
+	defer cancel()
+	if _, _, err := s.resolve(ctx, user, p.SessionKey, p.ApprovalID, "approve", true); err != nil {
+		s.logf("approval %s: auto-approve for %s/%s: %v", p.ApprovalID, user, p.SessionKey, err)
+	}
 }
 
 // Pending returns the approvals the gateway holds for a session, oldest first.
@@ -190,8 +292,9 @@ func (s *ApprovalService) Pending(ctx context.Context, user, sessionKey string) 
 }
 
 // Resolve applies the Portal decision to the named approval. decision is
-// "approve", "reject" or "allow-always" (approve this once; issue #116 appends
-// the durable grant separately).
+// "approve", "reject", "allow-always" or "allow-turn" (approve this once; issue
+// #116 appends the durable grant separately, and "allow-turn" additionally
+// approves the rest of the current live turn).
 //
 // The approval is named by id, and that is the point of the signature: a session
 // can hold several pending approvals at once, so a decision addressed by session
@@ -206,37 +309,65 @@ func (s *ApprovalService) Pending(ctx context.Context, user, sessionKey string) 
 // context, and the API server sets no write timeout, so a connection that is open
 // but wedged would otherwise park the request (and its goroutine) for good.
 func (s *ApprovalService) Resolve(ctx context.Context, user, sessionKey, approvalID, decision string) (pendingApproval, error) {
-	if decision != "approve" && decision != "reject" && decision != "allow-always" {
-		return pendingApproval{}, fmt.Errorf("decision must be approve, reject or allow-always")
+	p, _, err := s.resolve(ctx, user, sessionKey, approvalID, decision, false)
+	return p, err
+}
+
+// resolve is Resolve plus the outcome the HTTP handler needs: whether this
+// decision left the session's current turn approved for the whole turn. auto
+// marks a resolution the platform took on the human's behalf, which the audit
+// detail records so the ledger shows why no click exists for that command.
+func (s *ApprovalService) resolve(ctx context.Context, user, sessionKey, approvalID, decision string, auto bool) (pendingApproval, bool, error) {
+	if decision != "approve" && decision != "reject" && decision != "allow-always" && decision != "allow-turn" {
+		return pendingApproval{}, false, fmt.Errorf("decision must be approve, reject, allow-always or allow-turn")
 	}
 	ctx, cancel := context.WithTimeout(ctx, approvalGatewayTimeout)
 	defer cancel()
 	// Reserve first: a second decision on one id -- a double click, two tabs --
 	// waits here for the first to finish instead of racing it into the gateway.
 	if err := s.reserve(ctx, approvalID); err != nil {
-		return pendingApproval{}, err
+		return pendingApproval{}, false, err
 	}
 	defer s.release(approvalID)
 
 	list, err := s.Pending(ctx, user, sessionKey)
 	if err != nil {
-		return pendingApproval{}, err
+		return pendingApproval{}, false, err
 	}
 	p, ok := findApproval(list, approvalID)
 	if !ok {
-		return pendingApproval{}, errNoPending
+		return pendingApproval{}, false, errNoPending
 	}
-	approved := decision == "approve" || decision == "allow-always"
+
+	// Arm before the gateway write: the command this approval unblocks can ask
+	// again immediately, and a card raised in the gap would otherwise miss the
+	// turn-wide approval. A failed write rolls a newly taken arm back, so a click
+	// that errored never leaves the turn auto-approved.
+	armed := false
+	wasArmed := false
+	if decision == "allow-turn" && s.hasLiveTurn(user, sessionKey) {
+		wasArmed = s.armTurn(user, sessionKey)
+		armed = true
+	}
+
+	approved := decision != "reject"
 	gatewayDecision := "reject"
 	if approved {
 		gatewayDecision = "approve"
 	}
 	if err := s.gateway.ResolveApproval(ctx, user, approvalID, gatewayDecision); err != nil {
-		return pendingApproval{}, fmt.Errorf("resolve approval %s: %w", approvalID, err)
+		if armed && !wasArmed {
+			s.Disarm(user, sessionKey)
+		}
+		return pendingApproval{}, false, fmt.Errorf("resolve approval %s: %w", approvalID, err)
 	}
 	s.publishResolved(p, &approved)
-	s.recordDecision(user, p, approved)
-	return p, nil
+	detail := ""
+	if auto {
+		detail = "auto-approved for this turn"
+	}
+	s.recordDecision(user, p, approved, detail)
+	return p, armed, nil
 }
 
 // findApproval returns the named approval from the session's pending set. The id
@@ -329,8 +460,9 @@ func (s *ApprovalService) publishResolved(p pendingApproval, approved *bool) {
 // id is part of the entry: without it a ledger with two approvals and one
 // decision cannot say which of them was answered, and the question "what did
 // this decision apply to" has no answer that does not come from the gateway's
-// logs.
-func (s *ApprovalService) recordDecision(user string, p pendingApproval, approved bool) {
+// logs. detail distinguishes a resolution the platform took under a turn-wide
+// approval from one a human clicked.
+func (s *ApprovalService) recordDecision(user string, p pendingApproval, approved bool, detail string) {
 	if s.store == nil {
 		return
 	}
@@ -346,6 +478,7 @@ func (s *ApprovalService) recordDecision(user string, p pendingApproval, approve
 		Command:    p.Command,
 		Level:      "L1", // a gated command is a write
 		Status:     status,
+		Detail:     detail,
 		TS:         time.Now(),
 	})
 }
@@ -408,11 +541,11 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "approvalId required"})
 		return
 	}
-	if body.Decision != "approve" && body.Decision != "reject" && body.Decision != "allow-always" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve, reject or allow-always"})
+	if body.Decision != "approve" && body.Decision != "reject" && body.Decision != "allow-always" && body.Decision != "allow-turn" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve, reject, allow-always or allow-turn"})
 		return
 	}
-	p, err := s.approvals.Resolve(r.Context(), user, sessionKey, body.ApprovalID, body.Decision)
+	p, turnAllowed, err := s.approvals.resolve(r.Context(), user, sessionKey, body.ApprovalID, body.Decision, false)
 	switch {
 	case errors.Is(err, errNoPending):
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such pending approval for this session"})
@@ -423,6 +556,11 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	default:
 		approved := body.Decision != "reject"
 		resp := map[string]any{"approved": approved, "decision": body.Decision, "approvalId": p.ApprovalID}
+		if body.Decision == "allow-turn" {
+			// False when the session has no live turn to bound the approval to:
+			// the named command was still approved once, and the next one asks.
+			resp["turnAllowed"] = turnAllowed
+		}
 		if body.Decision == "allow-always" {
 			// Durable grant (issue #116): approve-once happened above; now record
 			// the command in the user's grants ConfigMap (grants.Store, via

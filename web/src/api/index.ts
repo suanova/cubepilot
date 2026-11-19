@@ -55,9 +55,15 @@ export const api = {
   postApproval: (
     sessionKey: string,
     approvalId: string,
-    decision: 'approve' | 'reject' | 'allow-always',
+    decision: 'approve' | 'reject' | 'allow-always' | 'allow-turn',
   ) =>
-    apiFetch<{ approved: boolean; decision: string; approvalId?: string; allowlisted?: boolean }>(
+    apiFetch<{
+      approved: boolean
+      decision: string
+      approvalId?: string
+      allowlisted?: boolean
+      turnAllowed?: boolean
+    }>(
       sessionPath(sessionKey, '/approvals/decision'),
       {
         method: 'POST',

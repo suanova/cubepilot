@@ -48,7 +48,7 @@ export interface ChatThreadApi {
   stopElsewhere(): Promise<void>
   retryTurnCheck(): void
   dismissTurnCheck(): void
-  decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always'): Promise<void>
+  decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always' | 'allow-turn'): Promise<void>
   pick(q: BubbleQuestion, item: QuestionItem, label: string): void
   typeAnswer(q: BubbleQuestion, item: QuestionItem, text: string): void
   submitQuestion(q: BubbleQuestion): Promise<void>
@@ -1358,13 +1358,18 @@ export function useChatThread({
   // decide sends the human's answer for one pending write confirmation
   // (issue #20 / #116 / #226). "allow-always" approves this once and records the
   // command as a learned grant for the user, so it auto-passes from then on;
-  // the instance allowlist is not touched. POSTing resolves the gateway
-  // approval; the SSE stream then carries the resumed turn.
+  // "allow-turn" approves this once and lets the platform resolve the rest of
+  // the current turn without asking. Neither touches the instance allowlist.
+  // POSTing resolves the gateway approval; the SSE stream then carries the
+  // resumed turn.
   //
   // The request names the card it came from. A session can hold several pending
   // approvals, so an answer addressed by session alone settles whichever one the
   // platform looks up rather than the one the human clicked.
-  async function decide(confirm: BubbleConfirm, decision: 'approve' | 'reject' | 'allow-always') {
+  async function decide(
+    confirm: BubbleConfirm,
+    decision: 'approve' | 'reject' | 'allow-always' | 'allow-turn',
+  ) {
     const session = confirm.sessionId || currentSessionId
     if (!session) {
       confirm.error = 'no session'
@@ -1397,6 +1402,13 @@ export function useChatThread({
       // user is relying on would be a lie (issue #185).
       if (decision === 'allow-always' && res.allowlisted === false) {
         showToast('Approved, but the command was not added to your allowlist -- it will ask again.')
+      }
+      // The approval went through, but the platform could not bind it to a live
+      // turn (for example after a restart), so only this command ran and the
+      // rest of the turn will ask. Saying nothing would promise more than the
+      // platform can deliver.
+      if (decision === 'allow-turn' && res.turnAllowed === false) {
+        showToast('Approved this command only; this turn cannot be auto-approved.')
       }
     } catch (e) {
       // 404 and 409 are the card having been settled underneath the click: the
