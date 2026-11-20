@@ -26,6 +26,14 @@ type liveTurn struct {
 	runMu sync.Mutex
 	runID string // runId of the turn's run; set from the send ACK, filters events
 
+	// autoApprove marks the turn as approved for the whole turn ("allow-turn"):
+	// approvals raised later in this turn are resolved without asking. It is
+	// guarded by the owning gatewayConns.liveMu, NOT by runMu, because it is
+	// read and written on the approval path while the turn runs. The mark lives
+	// on the turn object so it dies with the turn: releaseLive deletes the
+	// object, and the next turn's object starts unmarked.
+	autoApprove bool
+
 	done chan struct{}
 	once sync.Once
 	// doneErr and doneStopped are written together inside once.Do and read only
@@ -91,6 +99,33 @@ func (t *liveTurn) outcome() (agentruntime.TurnOutcome, error) {
 // already resolved and returns immediately.
 const wsRunTail = 500 * time.Millisecond
 
+// ArmTurn marks the user's current live turn as approved for the whole turn. It
+// reports false when no live turn exists, which is what bounds the approval to
+// one turn: the mark is a field of that turn object and cannot outlive it.
+//
+// Checking liveness and taking the mark happen under one lock, so a turn ending
+// concurrently cannot leave a mark behind for the next turn to inherit.
+func (m *gatewayConns) ArmTurn(user, sessionKey string) bool {
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	t := m.live[sessionKey]
+	if t == nil || t.user != user {
+		return false
+	}
+	t.autoApprove = true
+	return true
+}
+
+// TurnArmed reports whether the user's current live turn is approved for the
+// whole turn. A fresh read each time: a turn that has ended has no object in the
+// map, so its mark is gone with it.
+func (m *gatewayConns) TurnArmed(user, sessionKey string) bool {
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	t := m.live[sessionKey]
+	return t != nil && t.user == user && t.autoApprove
+}
+
 // LiveRunID returns the run id of the user's active live turn on this session.
 // The browser never learns the run id; the server does, and passing it scopes an
 // abort so it cannot kill a run promoted after this one settles.
@@ -132,6 +167,9 @@ func (m *gatewayConns) releaseLive(user, sessionKey string, gw gatewayClient) {
 		delete(m.live, sessionKey)
 	}
 	m.liveMu.Unlock()
+	// The turn object is gone, and with it any turn-scoped approval mark: the
+	// next turn registers a new object that starts unmarked. There is no separate
+	// disarm step to miss.
 	// Best-effort unsubscribe on a short deadline: the conn may already be gone,
 	// and Call blocks until the pump exits if it is.
 	uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

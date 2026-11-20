@@ -484,7 +484,7 @@ data: {"type":"approval_pending","sessionId":"...","callId":"<approval id>",
 
 ```ts
 POST /api/v1/sessions/{key}/approvals/decision
-body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-always"}
+body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-always" | "allow-turn"}
 ```
 
 `approvalId` 必填：一个会话可能同时有多条未决审批，不指名就没法知道要结算哪一条，
@@ -495,9 +495,19 @@ body: {"approvalId": "<approval id>", "decision": "approve" | "reject" | "allow-
 | `approve` | 本次放行，回合继续 |
 | `reject` | 拒绝，写操作不执行 |
 | `allow-always` | 本次放行，**并把该命令记为当前用户的 learned 授权**（进 grants store，**不写实例 spec**），此后自动通过 |
+| `allow-turn` | 本次放行，并在**当前这一轮**内自动放行后续新出现的审批；本轮结束（正常结束、中止，或回合请求的上下文结束）后失效，下一轮重新询问 |
 
-响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool}` ——
+`allow-turn` 只覆盖点击**之后**新出现的审批：点的时候已经压着的其他卡片仍需人工处理
+（一个会话的未决集合可能跨多个 run，且审批记录不带平台侧 run id，无法安全归属）。
+被自动放行的审批**不会**再发 `approval_pending` 卡片，只会发 `approval_resolved`；
+如果自动放行失败，平台会补发 `approval_pending`，让人仍能处理这条被卡住的命令。
+放行状态只存在于服务端进程内存中，不落库、不改 CRD；服务重启或没有活跃轮次时，
+退化为「本次放行」，由 `turnAllowed` 告知客户端。
+
+响应：`{"approved":bool,"decision":"...","approvalId":"...","allowlisted"?:bool,"turnAllowed"?:bool}` ——
 回带的 `approvalId` 就是被结算的那条，客户端据此核对「点的那张卡确实被结算了」。
+`turnAllowed` 只对 `allow-turn` 出现：`true` 表示本轮后续审批会被自动放行；`false` 表示
+本轮无法绑定（例如没有活跃轮次），本次命令已放行，但后续审批仍会询问。
 
 `404` 表示该审批已不在网关（过期、被别处结算、或不属于这个会话）；
 `409` 表示已被别处结算（两条决定的竞态）—— 两者都意味着卡片可以关掉，不是请求失败。
@@ -616,7 +626,7 @@ GET /api/v1/sessions/{key}/questions
 | GET | `/api/v1/sessions` | — | `{"sessions":[{"sessionKey","title"}]}` | 是 |
 | GET | `/api/v1/sessions/{key}/messages` | — | 原始历史 JSON（`{"items":[...]}`） | 是 |
 | POST | `/api/v1/sessions/{key}/messages` | `{"content"}` | **SSE 流** | 是 |
-| POST | `/api/v1/sessions/{key}/approvals/decision` | `{"approvalId","decision"}` | `{"approved","decision","approvalId","allowlisted"?}` | 否 |
+| POST | `/api/v1/sessions/{key}/approvals/decision` | `{"approvalId","decision"}` | `{"approved","decision","approvalId","allowlisted"?,"turnAllowed"?}` | 否 |
 | GET | `/api/v1/sessions/{key}/approvals` | — | `{"approvals":[{...}]}`，空集合是 `[]` | 否 |
 | POST | `/api/v1/sessions/{key}/questions/answer` | `{"id","answers":{qid:[label\|text]}}` | `{"questionId","cancelled":false}` | 否 |
 | POST | `/api/v1/sessions/{key}/questions/cancel` | `{"id"}` | `{"questionId","cancelled":true}` | 否 |

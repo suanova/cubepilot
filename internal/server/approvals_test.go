@@ -793,3 +793,352 @@ func TestRelayApprovalResolvedWithoutADecisionIsNeutral(t *testing.T) {
 		t.Errorf("an unanswered approval carries a decision: %q", rec.Body.String())
 	}
 }
+
+// --- turn-scoped approval ("allow-turn") -------------------------------------
+
+// turnApprovalsStub is the live-turn half of turn-scoped approval. live models
+// whether a turn is registered; armed is the mark, which endTurn drops exactly
+// as releaseLive drops the live turn object.
+type turnApprovalsStub struct {
+	mu    sync.Mutex
+	live  bool
+	armed bool
+}
+
+func (s *turnApprovalsStub) ArmTurn(string, string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.live {
+		return false
+	}
+	s.armed = true
+	return true
+}
+
+func (s *turnApprovalsStub) TurnArmed(string, string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live && s.armed
+}
+
+// endTurn models releaseLive: the turn object is gone, and its mark with it.
+func (s *turnApprovalsStub) endTurn() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.live, s.armed = false, false
+}
+
+func (s *turnApprovalsStub) isArmed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.armed
+}
+
+// syncRecorder serializes the SSE writer against the test's reads. Automatic
+// resolutions run on their own goroutine, and a bare httptest.ResponseRecorder
+// would race an assertion that reads it while that goroutine writes.
+type syncRecorder struct {
+	mu  sync.Mutex
+	rec *httptest.ResponseRecorder
+}
+
+func newSyncRecorder() *syncRecorder {
+	return &syncRecorder{rec: httptest.NewRecorder()}
+}
+
+func (r *syncRecorder) Header() http.Header {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rec.Header()
+}
+
+func (r *syncRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rec.Write(p)
+}
+
+func (r *syncRecorder) WriteHeader(code int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rec.WriteHeader(code)
+}
+
+func (r *syncRecorder) Flush() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rec.Flush()
+}
+
+func (r *syncRecorder) Body() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rec.Body.String()
+}
+
+// openSyncStream is openStream for tests whose assertions race an asynchronous
+// publisher.
+func openSyncStream(t *testing.T, hub *Hub, sessionKey string) *syncRecorder {
+	t.Helper()
+	rec := newSyncRecorder()
+	if _, err := hub.Open(sessionKey, rec, rec); err != nil {
+		t.Fatalf("open stream %s: %v", sessionKey, err)
+	}
+	return rec
+}
+
+// TestAllowTurnApprovesTheRestOfTheTurn pins the feature: the clicked approval
+// is approved once, and an approval raised later in the same live turn is
+// resolved without the human. The automatic decision is audited, and it is not
+// published as a card -- a card at that point would be one the human could try
+// to answer while the platform is already answering it.
+func TestAllowTurnApprovesTheRestOfTheTurn(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "kubectl delete pod a", 1000))
+	hub, svc := serviceWithGateway(t, gw, st)
+	turns := &turnApprovalsStub{live: true}
+	svc.SetTurnApprovals(turns)
+	rec := openSyncStream(t, hub, "agent:main:conv-1")
+
+	p, turnAllowed, err := svc.resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "allow-turn", false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !turnAllowed || !turns.isArmed() {
+		t.Error("the click did not arm the live turn")
+	}
+	if p.ApprovalID != "appr-1" {
+		t.Errorf("resolved = %+v, want appr-1", p)
+	}
+
+	next := approvalRecord("appr-2", "agent:main:conv-1", "kubectl delete pod b", 2000)
+	gw.set("alice", next)
+	svc.RelayRequested("alice", next)
+
+	// The automatic decision is audited after the resolution is published, so a
+	// row in the ledger means the goroutine has finished its stream write.
+	waitFor(t, "the automatic decision in the ledger", func() bool {
+		audit, _ := st.ListAudit("alice", 0)
+		return len(audit) == 2
+	})
+
+	body := rec.Body()
+	if strings.Contains(body, "approval_pending") {
+		t.Errorf("an automatically approved command was published as a card: %q", body)
+	}
+	// The resolved event still goes out, so a card restored by a reload read is
+	// closed rather than left offering a decision that is already settled.
+	for _, want := range []string{"event: approval_resolved", `"callId":"appr-2"`, `"approved":true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream is missing %s; got %q", want, body)
+		}
+	}
+
+	audit, err := st.ListAudit("alice", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Newest first: appr-2 is the automatic one and must say so.
+	if audit[0].ApprovalID != "appr-2" || audit[0].Status != "approved" || audit[0].Detail != "auto-approved for this turn" {
+		t.Errorf("auto audit row = %+v, want appr-2 approved as an automatic decision", audit[0])
+	}
+}
+
+// TestAllowTurnWithoutALiveTurnApprovesOnce pins the fallback: with no live turn
+// to bind the approval to, the click still settles the card once, the next
+// approval is published as a normal card, and nothing is auto-resolved.
+func TestAllowTurnWithoutALiveTurnApprovesOnce(t *testing.T) {
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd a", 1000))
+	hub, svc := serviceWithGateway(t, gw, nil)
+	svc.SetTurnApprovals(&turnApprovalsStub{live: false})
+	rec := openSyncStream(t, hub, "agent:main:conv-1")
+
+	_, turnAllowed, err := svc.resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "allow-turn", false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if turnAllowed {
+		t.Error("turnAllowed = true, want false without a live turn")
+	}
+	if got := gw.decisions(); len(got) != 1 || got[0] != "alice|appr-1|approve" {
+		t.Fatalf("gateway decisions = %v, want the clicked approval once", got)
+	}
+
+	next := approvalRecord("appr-2", "agent:main:conv-1", "cmd b", 2000)
+	gw.set("alice", next)
+	svc.RelayRequested("alice", next)
+	// Unarmed, RelayRequested publishes the card on this goroutine and starts no
+	// resolution at all, so these reads are not races.
+	if got := gw.decisions(); len(got) != 1 {
+		t.Errorf("an unarmed turn resolved a later approval: %v", got)
+	}
+	if body := rec.Body(); !strings.Contains(body, "approval_pending") || !strings.Contains(body, `"callId":"appr-2"`) {
+		t.Errorf("the fallback did not publish the card: %q", body)
+	}
+}
+
+// TestAllowTurnEndsWithTheLiveTurn pins the lifetime: the mark lives on the turn
+// object, so ending the turn drops it and the next turn asks. Arming again
+// without a live turn is refused.
+func TestAllowTurnEndsWithTheLiveTurn(t *testing.T) {
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd a", 1000))
+	hub, svc := serviceWithGateway(t, gw, nil)
+	turns := &turnApprovalsStub{live: true}
+	svc.SetTurnApprovals(turns)
+	rec := openSyncStream(t, hub, "agent:main:conv-1")
+
+	if _, turnAllowed, err := svc.resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "allow-turn", false); err != nil || !turnAllowed {
+		t.Fatalf("resolve = %v, turnAllowed %v", err, turnAllowed)
+	}
+	turns.endTurn() // what releaseLive does when the turn object goes away
+	if turns.isArmed() {
+		t.Fatal("the mark survived the turn")
+	}
+	if turns.ArmTurn("alice", "agent:main:conv-1") {
+		t.Error("ArmTurn reported success without a live turn")
+	}
+
+	next := approvalRecord("appr-2", "agent:main:conv-1", "cmd b", 2000)
+	gw.set("alice", next)
+	svc.RelayRequested("alice", next)
+	if got := gw.decisions(); len(got) != 1 {
+		t.Errorf("the ended turn resolved a later approval: %v", got)
+	}
+	if body := rec.Body(); !strings.Contains(body, "approval_pending") || !strings.Contains(body, `"callId":"appr-2"`) {
+		t.Errorf("the ended turn did not publish the card: %q", body)
+	}
+}
+
+// TestAllowTurnDoesNotArmWhenTheDecisionFails pins the ordering: the mark is
+// taken only after the gateway accepted the click, so a failed click cannot let
+// later commands run on the strength of a decision that never took.
+func TestAllowTurnDoesNotArmWhenTheDecisionFails(t *testing.T) {
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd a", 1000))
+	_, svc := serviceWithGateway(t, gw, nil)
+	turns := &turnApprovalsStub{live: true}
+	svc.SetTurnApprovals(turns)
+
+	gw.resolveErr = errors.New("gateway down")
+	if _, _, err := svc.resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "allow-turn", false); err == nil {
+		t.Fatal("resolve succeeded with a failing gateway")
+	}
+	if turns.isArmed() {
+		t.Error("a failed click armed the turn")
+	}
+
+	gw.resolveErr = nil
+	next := approvalRecord("appr-2", "agent:main:conv-1", "cmd b", 2000)
+	gw.set("alice", next)
+	svc.RelayRequested("alice", next)
+	if got := gw.decisions(); len(got) != 0 {
+		t.Errorf("a failed click resolved a later approval: %v", got)
+	}
+}
+
+// TestHandleAllowTurnReportsTurnCoverage pins the response contract: a live turn
+// reports turnAllowed true, and the no-live-turn fallback reports false while
+// still settling the named approval.
+func TestHandleAllowTurnReportsTurnCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		live bool
+		want bool
+	}{
+		{"live turn", true, true},
+		{"no live turn", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw := &gatewayStub{}
+			gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd", 1000))
+			srv, _ := newApprovalServer(t, gw)
+			srv.approvals.SetTurnApprovals(&turnApprovalsStub{live: tc.live})
+
+			rec := doReq(t, srv.Handler(), http.MethodPost, "/api/v1/sessions/conv-1/approvals/decision", "alice",
+				map[string]any{"approvalId": "appr-1", "decision": "allow-turn"})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Approved    bool   `json:"approved"`
+				Decision    string `json:"decision"`
+				TurnAllowed bool   `json:"turnAllowed"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if !body.Approved || body.Decision != "allow-turn" || body.TurnAllowed != tc.want {
+				t.Errorf("body = %+v, want an approved allow-turn with turnAllowed=%v", body, tc.want)
+			}
+			if got := gw.decisions(); len(got) != 1 || got[0] != "alice|appr-1|approve" {
+				t.Errorf("gateway decisions = %v, want the clicked approval once", got)
+			}
+		})
+	}
+}
+
+// TestAutoApproveFailureLeavesTheCardAnswerable pins the failure direction: when
+// the automatic gateway write fails, the command is still parked, so the card is
+// published for a human instead of staying invisible -- and no resolution is
+// published for a command that did not run.
+func TestAutoApproveFailureLeavesTheCardAnswerable(t *testing.T) {
+	gw := &gatewayStub{}
+	gw.set("alice", approvalRecord("appr-1", "agent:main:conv-1", "cmd a", 1000))
+	hub, svc := serviceWithGateway(t, gw, nil)
+	turns := &turnApprovalsStub{live: true}
+	svc.SetTurnApprovals(turns)
+	rec := openSyncStream(t, hub, "agent:main:conv-1")
+
+	if _, _, err := svc.resolve(context.Background(), "alice", "agent:main:conv-1", "appr-1", "allow-turn", false); err != nil {
+		t.Fatalf("arm the turn: %v", err)
+	}
+
+	gw.resolveErr = errors.New("gateway down")
+	next := approvalRecord("appr-2", "agent:main:conv-1", "cmd b", 2000)
+	gw.set("alice", next)
+	svc.RelayRequested("alice", next)
+
+	waitFor(t, "the answerable card after a failed automatic approval", func() bool {
+		body := rec.Body()
+		return strings.Contains(body, "approval_pending") && strings.Contains(body, `"callId":"appr-2"`)
+	})
+	// One occurrence is the pending card; a second would be a resolution for a
+	// command the gateway refused to approve.
+	if n := strings.Count(rec.Body(), `"callId":"appr-2"`); n != 1 {
+		t.Errorf("appr-2 appears %d times, want only the pending card: %q", n, rec.Body())
+	}
+	if got := gw.decisions(); len(got) != 1 || got[0] != "alice|appr-1|approve" {
+		t.Errorf("gateway decisions = %v, want only the clicked approval", got)
+	}
+}
+
+// TestTurnApprovalDiesWithTheLiveTurn pins the wiring the service tests stub:
+// ArmTurn checks liveness and takes the mark under one lock, and the mark lives
+// on the turn object, so releaseLive drops it without a separate disarm step.
+func TestTurnApprovalDiesWithTheLiveTurn(t *testing.T) {
+	const user, session = "alice", "agent:main:conv-1"
+	m := &gatewayConns{live: map[string]*liveTurn{}}
+	if m.ArmTurn(user, session) {
+		t.Fatal("ArmTurn reported success with no live turn")
+	}
+	m.registerLive(user, session, nil)
+	if !m.ArmTurn(user, session) {
+		t.Fatal("ArmTurn could not arm a live turn")
+	}
+	if !m.TurnArmed(user, session) {
+		t.Fatal("the live turn is not armed")
+	}
+	if m.TurnArmed("bob", session) || m.TurnArmed(user, "agent:main:conv-2") {
+		t.Error("the mark leaked to another user or session")
+	}
+	m.releaseLive(user, session, &fakeGatewayClient{})
+	if m.TurnArmed(user, session) {
+		t.Error("the mark survived the turn")
+	}
+}
