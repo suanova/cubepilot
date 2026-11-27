@@ -193,6 +193,22 @@ describe('ChatView write confirmation', () => {
     })
   })
 
+  it('posts a turn-scoped approval when the user allows the whole turn', async () => {
+    gateway!.setTurn(APPROVAL)
+
+    render(<ChatView />)
+    await send('create a dev environment')
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Allow all this turn' }))
+
+    expect(gateway!.decisions[0]).toMatchObject({
+      path: '/api/v1/sessions/agent:main:conv-1/approvals/decision',
+      // The same named approval as Approve; the decision value is what tells the
+      // platform to resolve the rest of the live turn without asking.
+      body: { approvalId: 'a1', decision: 'allow-turn' },
+    })
+  })
+
   it('posts a rejection when the user picks Reject', async () => {
     gateway!.setTurn(APPROVAL)
 
